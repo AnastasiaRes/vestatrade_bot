@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Vesta Trading AI Consultant</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="stage">
+      <section class="assistant-shell" aria-label="Vesta Trading AI Consultant">
+        <header class="assistant-header">
+          <div class="brand-lockup">
+            <div class="robot-mark" aria-hidden="true">
+              <img src="/static/vesta_iconka.png" alt="" />
+            </div>
+            <div>
+              <p class="eyebrow">Vesta Trading</p>
+              <h1>AI-консультант</h1>
+            </div>
+          </div>
+          <button class="icon-button" id="resetChat" type="button" title="Новый диалог">
+            <span aria-hidden="true"></span>
+          </button>
+        </header>
+
+        <section class="assistant-body">
+          <div class="messages" id="messages" aria-live="polite">
+            <article class="message bot">
+              <div class="avatar bot-avatar" aria-hidden="true">
+                <img src="/static/vesta_iconka.png" alt="" />
+              </div>
+              <div class="bubble">Здравствуйте! Я AI-консультант Vesta Trading. Помогу найти подходящее решение по ассортименту: подберу товар по запросу, уточню цену, наличие и основные характеристики, а также направлю на карточку товара. Опишите задачу своими словами — я подскажу оптимальный вариант.</div>
+            </article>
+          </div>
+
+          <aside class="side-panel" aria-label="Быстрые действия">
+            <div class="status-card">
+              <span class="status-dot" aria-hidden="true"></span>
+              <div>
+                <strong id="status">Проверяю сервис...</strong>
+                <p id="feedInfo">Данные о фиде появятся после проверки сервиса.</p>
+              </div>
+            </div>
+
+            <div class="quick-card">
+              <h2>Быстрые запросы</h2>
+              <div class="quick-grid">
+                <button class="quick" data-message="нужна труба">Нужна труба</button>
+                <button class="quick" data-message="канализационная труба 50">
+                  Канализационная труба 50
+                </button>
+                <button class="quick" data-message="циркуляционный насос, подешевле">
+                  Насос подешевле
+                </button>
+                <button class="quick" data-message="электрический котёл на 100 м²">
+                  Котёл на 100 м²
+                </button>
+                <button class="quick" data-message="дай ссылку">Дай ссылку</button>
+              </div>
+            </div>
+
+            <div class="tool-row">
+              <button id="reloadFeed" class="secondary" type="button">Обновить фид</button>
+            </div>
+
+            <details class="debug-panel">
+              <summary>Debug</summary>
+              <pre id="debugBox">{}</pre>
+            </details>
+          </aside>
+        </section>
+
+        <form class="composer" id="chatForm">
+          <input
+            id="messageInput"
+            name="message"
+            type="text"
+            autocomplete="off"
+            placeholder="Введите сообщение"
+          />
+          <button class="send-button" type="submit" aria-label="Отправить">
+            <span aria-hidden="true"></span>
+          </button>
+        </form>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>

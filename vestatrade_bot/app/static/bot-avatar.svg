@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Vesta Trade consultant">
+  <defs>
+    <linearGradient id="bg" x1="38" y1="20" x2="226" y2="242" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f9fbff"/>
+      <stop offset="1" stop-color="#dbe7f7"/>
+    </linearGradient>
+    <linearGradient id="blue" x1="73" y1="126" x2="185" y2="245" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0b66d9"/>
+      <stop offset="1" stop-color="#003d9a"/>
+    </linearGradient>
+    <linearGradient id="skin" x1="103" y1="58" x2="161" y2="138" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f6bc83"/>
+      <stop offset="1" stop-color="#d8844b"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#0d2b66" flood-opacity=".22"/>
+    </filter>
+  </defs>
+
+  <circle cx="128" cy="128" r="124" fill="url(#bg)"/>
+  <circle cx="128" cy="128" r="121" fill="none" stroke="#ffffff" stroke-width="6"/>
+
+  <g filter="url(#shadow)">
+    <path d="M55 239c8-52 34-83 73-83s66 31 73 83H55z" fill="#252d39"/>
+    <path d="M70 239c7-47 27-74 58-74s52 27 59 74H70z" fill="url(#blue)"/>
+    <path d="M79 169h98l13 70H66l13-70z" fill="url(#blue)"/>
+    <path d="M74 184h108v17H74z" fill="#3f4855" opacity=".85"/>
+    <path d="M105 158h46l-7 34h-32l-7-34z" fill="#d8844b"/>
+    <path d="M96 160l32 33 32-33 13 15-45 50-45-50 13-15z" fill="#054fb8"/>
+
+    <path d="M82 86c0-35 21-59 51-59s49 23 49 59c0 42-23 72-50 72S82 128 82 86z" fill="url(#skin)"/>
+    <path d="M78 90c-8-35 11-69 46-76 30-6 58 8 68 34 6 16 3 31-4 45-5-20-12-34-25-43-13 14-39 18-66 13-8 8-13 17-19 27z" fill="#2b1d14"/>
+    <path d="M91 74c20 4 48 1 65-13 9 7 15 19 19 36 5-31-8-55-37-61-31-6-54 9-47 38z" fill="#4a2d1d" opacity=".92"/>
+
+    <path d="M91 97c-8 0-13 7-11 17 2 9 8 15 15 14l-4-31z" fill="#d8844b"/>
+    <path d="M177 97c8 0 13 7 11 17-2 9-8 15-15 14l4-31z" fill="#d8844b"/>
+
+    <path d="M105 96c8-6 17-6 25 0" fill="none" stroke="#2b1d14" stroke-width="5" stroke-linecap="round"/>
+    <path d="M139 96c8-6 17-6 25 0" fill="none" stroke="#2b1d14" stroke-width="5" stroke-linecap="round"/>
+    <circle cx="118" cy="110" r="5" fill="#11324f"/>
+    <circle cx="152" cy="110" r="5" fill="#11324f"/>
+    <path d="M133 111c-2 9-4 16-8 22 5 3 11 3 16 0" fill="none" stroke="#b96f3e" stroke-width="4" stroke-linecap="round"/>
+    <path d="M106 134c13 17 39 17 52 0" fill="none" stroke="#402515" stroke-width="6" stroke-linecap="round"/>
+    <path d="M98 125c19 15 49 15 67 0-3 24-17 37-34 37s-31-13-33-37z" fill="#382214" opacity=".95"/>
+    <path d="M110 136c11 9 31 9 42 0" fill="none" stroke="#ffffff" stroke-width="4" stroke-linecap="round" opacity=".82"/>
+
+    <path d="M82 86c8-29 24-43 50-43 27 0 43 14 51 43" fill="none" stroke="#2b1d14" stroke-width="10" stroke-linecap="round"/>
+
+    <g transform="translate(90 190)">
+      <circle cx="13" cy="14" r="13" fill="#0e9ee8"/>
+      <path d="M8 23c2-12 7-19 17-21-5 5-6 10-3 17-5-4-10-3-14 4z" fill="#0754b5" opacity=".9"/>
+      <text x="33" y="20" font-family="Arial, sans-serif" font-size="17" font-weight="900" fill="#ff343e">VESTA</text>
+    </g>
+  </g>
+</svg>
