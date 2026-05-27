@@ -133,7 +133,9 @@ class IntentRouterAgent:
 
         result = self._rule_based(message, session)
         if result.confidence < 0.55:
-            result = self._llm_fallback(message, result)
+            llm_result = self._llm_fallback(message, result)
+            llm_result = self._sanity_check_llm_intent(llm_result, result, message)
+            result = llm_result
         self._normalize_result(result, message, session)
         self._cache[cache_key] = result
         return result
@@ -564,6 +566,55 @@ class IntentRouterAgent:
         if {category, session.category}.issubset({"pipes", "sewer"}) and not explicit_change:
             return False
         return explicit_change or category != session.category
+
+    def _sanity_check_llm_intent(
+        self,
+        llm_result: IntentResult,
+        rule_result: IntentResult,
+        message: str,
+    ) -> IntentResult:
+        """Reject LLM classifications that contradict obvious rule-based evidence.
+
+        qwen3-vl-8b sometimes returns intents like `complectation` for vague phrases
+        ("ну ты понял?"). We refuse such labels unless the original text has at
+        least one anchor word the rule-based extractor would also accept.
+        """
+        text = normalize_text(message)
+        sku_text = collapse_sku_spaces(text)
+
+        if llm_result.intent_type == "complectation" and not any(
+            word in text for word in COMPLECTATION_WORDS
+        ):
+            llm_result.intent_type = rule_result.intent_type
+            llm_result.category = rule_result.category
+
+        if llm_result.intent_type == "exact_sku":
+            sku_match = SKU_RE.search(sku_text) or NUMERIC_SKU_RE.search(sku_text)
+            if not sku_match:
+                llm_result.intent_type = rule_result.intent_type
+                llm_result.slots.pop("sku", None)
+
+        if llm_result.intent_type == "stock_request" and not any(
+            word in text for word in STOCK_WORDS
+        ):
+            llm_result.intent_type = rule_result.intent_type
+
+        if llm_result.intent_type == "link_request" and not any(
+            word in text for word in LINK_WORDS
+        ):
+            llm_result.intent_type = rule_result.intent_type
+
+        if llm_result.intent_type == "cheap_request" and not any(
+            word in text for word in CHEAP_WORDS
+        ):
+            llm_result.intent_type = rule_result.intent_type
+
+        if llm_result.intent_type == "out_of_scope" and not any(
+            word in text for word in OUT_OF_SCOPE
+        ) and rule_result.category != "other":
+            llm_result.intent_type = rule_result.intent_type
+
+        return llm_result
 
     def _llm_fallback(self, message: str, fallback_result: IntentResult) -> IntentResult:
         fallback = self._as_dict(fallback_result)
