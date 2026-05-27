@@ -137,6 +137,9 @@ class GuardrailsAgent:
         if mode in {"products", "link", "complectation"}:
             issues.extend(self._missing_product_facts(draft, answer))
 
+        if mode == "small_talk":
+            issues.extend(self._missing_small_talk_anchors(draft, answer))
+
         return GuardrailsResult(
             ok=not issues,
             issues=issues,
@@ -194,6 +197,22 @@ class GuardrailsAgent:
         if not match:
             return None
         return float(match.group(1).replace(",", "."))
+
+    def _missing_small_talk_anchors(self, draft: str, answer: str) -> list[str]:
+        """Reject answers that LLM truncated below the safe minimum or that dropped key anchors."""
+        issues: list[str] = []
+        answer_stripped = answer.strip()
+        draft_stripped = draft.strip()
+        if len(answer_stripped) < min(40, len(draft_stripped) // 2):
+            issues.append("LLM rewrite truncated small talk answer below minimum length")
+            return issues
+        draft_norm = normalize_text(draft)
+        answer_norm = normalize_text(answer)
+        category_anchors = ["труб", "насос", "котел", "кран", "канализац", "радиатор"]
+        draft_categories = [a for a in category_anchors if a in draft_norm]
+        if draft_categories and not any(a in answer_norm for a in draft_categories):
+            issues.append("LLM rewrite dropped category mentions from small talk answer")
+        return issues
 
     def _missing_clarification_terms(self, draft: str, answer: str) -> list[str]:
         draft_norm = normalize_text(draft)

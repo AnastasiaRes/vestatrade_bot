@@ -96,7 +96,7 @@ class ChatOrchestrator:
         if intent.intent_type == "small_talk" and intent.category == "other":
             answer = self.composer.compose_small_talk(message)
             agents_used.append("ResponseComposerAgent")
-            answer = self._guard_composed_answer(answer, "generic", agents_used)
+            answer = self._guard_composed_answer(answer, "small_talk", agents_used)
             self._append_history(session, message, answer)
             self.sessions.save(session)
             return self._response(session_id, answer, [], False, intent, session, agents_used)
@@ -138,7 +138,7 @@ class ChatOrchestrator:
                 return self._response(session_id, answer, [], False, intent, session, agents_used)
             answer = self.composer.compose_unknown()
             agents_used.append("ResponseComposerAgent")
-            answer = self._guard_composed_answer(answer, "generic", agents_used)
+            answer = self._guard_composed_answer(answer, "small_talk", agents_used)
             self._append_history(session, message, answer)
             self.sessions.save(session)
             return self._response(session_id, answer, [], False, intent, session, agents_used)

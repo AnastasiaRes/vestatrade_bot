@@ -19,43 +19,96 @@ class ResponseComposerAgent:
         self.last_draft = None
 
     def compose_small_talk(self, message: str) -> str:
-        normalized = message.lower().replace("ё", "е")
-        if "зовут" in normalized or "кто ты" in normalized or "ты кто" in normalized:
+        normalized = message.lower().replace("ё", "е").strip()
+        if "зовут" in normalized or "кто ты" in normalized or "ты кто" in normalized or "как обращ" in normalized:
             draft = (
                 "Я AI-консультант Vesta Trading. Помогаю подобрать товары из фида: "
-                "трубы, насосы, котлы, краны, канализацию и радиаторную арматуру."
+                "трубы, насосы, котлы, краны, канализацию и радиаторную арматуру. "
+                "Напишите, что нужно подобрать — уточню параметры и пришлю карточки."
             )
             return self._polish(
-                "ResponseComposerAgent.small_talk",
+                "ResponseComposerAgent.small_talk_identity",
                 message,
                 draft,
-                "Ответь на вопрос о личности бота. Не предлагай товары без запроса.",
+                "Ответь на вопрос о личности бота, сохрани перечисление категорий и приглашение написать запрос.",
             )
-        if "что ты умеешь" in normalized or "помоги" in normalized:
+        if "что ты умеешь" in normalized or "что умеешь" in normalized or "помоги" in normalized or "у меня вопрос" in normalized:
             draft = (
-                "Я могу уточнить параметры, найти товары в фиде, показать цену, наличие "
-                "и прямую ссылку на карточку. Напишите, что нужно подобрать."
+                "Я помогу подобрать товар по запросу, уточню цену, наличие и характеристики "
+                "и дам прямую ссылку на карточку. Категории: трубы, насосы, котлы, краны, "
+                "канализация и радиаторная арматура. Опишите задачу своими словами."
             )
             return self._polish(
-                "ResponseComposerAgent.small_talk",
+                "ResponseComposerAgent.small_talk_capability",
                 message,
                 draft,
-                "Коротко объясни возможности консультанта интернет-магазина.",
+                "Коротко объясни возможности консультанта интернет-магазина, перечисли категории.",
             )
-        if "спасибо" in normalized:
-            draft = "Пожалуйста. Если нужно, могу показать аналоги, дешевле или передать вопрос менеджеру."
+        if "спасибо" in normalized or "благодарю" in normalized:
+            draft = "Пожалуйста! Если нужно, могу показать аналоги, варианты подешевле или передать вопрос менеджеру."
             return self._polish(
-                "ResponseComposerAgent.small_talk",
+                "ResponseComposerAgent.small_talk_thanks",
                 message,
                 draft,
                 "Коротко и дружелюбно ответь на благодарность.",
             )
-        draft = "Дела хорошо, спасибо. Что подберём из товаров Vesta Trading?"
+        if "как дела" in normalized or "как ты" == normalized or normalized.startswith("как ты "):
+            draft = "Дела хорошо, спасибо. Готов помочь с подбором товаров Vesta Trading — что нужно?"
+            return self._polish(
+                "ResponseComposerAgent.small_talk_howareyou",
+                message,
+                draft,
+                "Кратко ответь на вопрос о делах и предложи помощь с подбором.",
+            )
+        if "красив" in normalized or "молодец" in normalized or "умничк" in normalized or "хорош" in normalized and len(normalized) < 25:
+            draft = "Спасибо! Готов помочь с подбором — что нужно по ассортименту?"
+            return self._polish(
+                "ResponseComposerAgent.small_talk_compliment",
+                message,
+                draft,
+                "Скромно поблагодари за комплимент и предложи помощь.",
+            )
+        if "пока" == normalized or "до свидан" in normalized or "до встреч" in normalized:
+            draft = "До свидания! Возвращайтесь, если понадобится подбор по ассортименту Vesta Trading."
+            return self._polish(
+                "ResponseComposerAgent.small_talk_bye",
+                message,
+                draft,
+                "Вежливо попрощайся.",
+            )
+        if any(greet in normalized for greet in ["здравств", "добрый день", "добрый вечер", "доброе утро"]):
+            draft = (
+                "Здравствуйте! Я AI-консультант Vesta Trading. "
+                "Опишите, что нужно подобрать — трубы, насосы, котлы, краны, "
+                "канализацию или радиаторную арматуру, и я уточню параметры."
+            )
+            return self._polish(
+                "ResponseComposerAgent.small_talk_greeting",
+                message,
+                draft,
+                "Поздоровайся и предложи помощь, перечисли категории.",
+            )
+        if "привет" in normalized:
+            draft = (
+                "Привет! Я AI-консультант Vesta Trading. Опишите, что нужно подобрать — "
+                "трубы, насосы, котлы, краны, канализацию или радиаторную арматуру."
+            )
+            return self._polish(
+                "ResponseComposerAgent.small_talk_greeting",
+                message,
+                draft,
+                "Поздоровайся и предложи помощь, перечисли категории.",
+            )
+        draft = (
+            "Я на связи. Если нужно подобрать товар Vesta Trading — "
+            "трубы, насосы, котлы, краны, канализацию или радиаторную арматуру — "
+            "просто опишите задачу своими словами."
+        )
         return self._polish(
             "ResponseComposerAgent.small_talk",
             message,
             draft,
-            "Ответь на small talk и верни разговор к подбору товара.",
+            "Доброжелательно ответь и предложи помощь с подбором, без навязчивого «дела хорошо».",
         )
 
     def compose_confirm_last(self, cards: list[ProductCard]) -> str:
