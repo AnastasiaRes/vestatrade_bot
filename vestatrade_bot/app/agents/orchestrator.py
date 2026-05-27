@@ -93,6 +93,20 @@ class ChatOrchestrator:
             self.sessions.save(session)
             return self._response(session_id, answer, [], False, intent, session, agents_used)
 
+        if session.slots.get("pending_tradeoff"):
+            insulation = self._extract_insulation_hint(message)
+            if insulation:
+                session.slots.pop("pending_tradeoff", None)
+                session.pending_question = None
+                session.pending_intent_type = None
+                answer = self._compose_tradeoff_followup(insulation, message)
+                agents_used.append("ResponseComposerAgent")
+                agents_used.append("GuardrailsAgent")
+                answer = self._guard_composed_answer(answer, "generic", agents_used)
+                self._append_history(session, message, answer)
+                self.sessions.save(session)
+                return self._response(session_id, answer, [], False, intent, session, agents_used)
+
         if intent.intent_type == "small_talk" and intent.category == "other":
             answer = self.composer.compose_small_talk(message)
             agents_used.append("ResponseComposerAgent")
@@ -136,7 +150,7 @@ class ChatOrchestrator:
                 self._append_history(session, message, answer)
                 self.sessions.save(session)
                 return self._response(session_id, answer, [], False, intent, session, agents_used)
-            answer = self.composer.compose_unknown()
+            answer = self.composer.compose_unknown(user_message=message)
             agents_used.append("ResponseComposerAgent")
             answer = self._guard_composed_answer(answer, "small_talk", agents_used)
             self._append_history(session, message, answer)
@@ -144,9 +158,9 @@ class ChatOrchestrator:
             return self._response(session_id, answer, [], False, intent, session, agents_used)
 
         if intent.intent_type == "out_of_scope":
-            answer = self.composer.compose_out_of_scope()
+            answer = self.composer.compose_out_of_scope(user_message=message)
             agents_used.append("ResponseComposerAgent")
-            answer = self._guard_composed_answer(answer, "generic", agents_used)
+            answer = self._guard_composed_answer(answer, "small_talk", agents_used)
             self._append_history(session, message, answer)
             self.sessions.save(session)
             return self._response(session_id, answer, [], False, intent, session, agents_used)
@@ -172,20 +186,6 @@ class ChatOrchestrator:
             self._append_history(session, message, answer)
             self.sessions.save(session)
             return self._response(session_id, answer, [], False, intent, session, agents_used)
-
-        if session.slots.get("pending_tradeoff"):
-            insulation = self._extract_insulation_hint(message)
-            if insulation:
-                session.slots.pop("pending_tradeoff", None)
-                session.pending_question = None
-                session.pending_intent_type = None
-                answer = self._compose_tradeoff_followup(insulation, message)
-                agents_used.append("ResponseComposerAgent")
-                agents_used.append("GuardrailsAgent")
-                answer = self._guard_composed_answer(answer, "generic", agents_used)
-                self._append_history(session, message, answer)
-                self.sessions.save(session)
-                return self._response(session_id, answer, [], False, intent, session, agents_used)
 
         slot_result = self.slot_filling.fill(message, intent, session)
         agents_used.append("SlotFillingAgent")

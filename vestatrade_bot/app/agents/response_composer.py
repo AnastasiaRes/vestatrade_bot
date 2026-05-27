@@ -19,96 +19,96 @@ class ResponseComposerAgent:
         self.last_draft = None
 
     def compose_small_talk(self, message: str) -> str:
-        normalized = message.lower().replace("ё", "е").strip()
+        return self._llm_smart_reply(
+            agent="ResponseComposerAgent.small_talk",
+            user_message=message,
+            fallback_draft=self._small_talk_fallback(message),
+        )
+
+    def _llm_smart_reply(
+        self,
+        agent: str,
+        user_message: str,
+        fallback_draft: str,
+    ) -> str:
+        """Compose a small-talk / non-product reply via LLM with safe fallback.
+
+        The LLM is allowed to acknowledge the user's message naturally, but is
+        instructed to always steer the conversation back to product selection
+        within Vesta Trading and to never invent products, prices or claims.
+        """
+        self.last_llm_requested = True
+        self.last_draft = fallback_draft
+        system = (
+            "Ты — AI-консультант интернет-магазина Vesta Trading. "
+            "Магазин продаёт инженерную сантехнику. Категории: трубы, насосы, "
+            "котлы, краны, канализация, радиаторная арматура. "
+            "Сейчас пользователь написал нетоварное сообщение (приветствие, "
+            "small talk, эмоция, нестандартный вопрос или жалоба). Твои правила:\n"
+            "1. Ответь живо и кратко (1–3 предложения), признай содержание сообщения "
+            "пользователя — не игнорируй его и не отвечай шаблоном.\n"
+            "2. Если пользователь спрашивает что-то вне ассортимента (погода, "
+            "философия, личное), вежливо обозначь, что это вне твоей компетенции.\n"
+            "3. В конце мягко верни разговор к подбору товаров: перечисли 2–4 "
+            "категории и предложи описать задачу.\n"
+            "4. ЗАПРЕЩЕНО: выдумывать товары, цены, наличие, характеристики, "
+            "акции, скидки, ссылки, обещания доставки, факты о компании. Не "
+            "ставь диагнозы и не давай инженерных расчётов.\n"
+            "5. Отвечай по-русски, без markdown-разметки и без эмодзи."
+        )
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_message or "(пустое сообщение)"},
+        ]
+        result = self.llm_client.complete(
+            agent=agent,
+            messages=messages,
+            temperature=0.5,
+            max_tokens=220,
+        )
+        self.last_llm_used = self.last_llm_used or result.llm_used
+        if result.fallback_reason:
+            self.last_llm_fallback_reason = result.fallback_reason
+        if result.llm_used and result.content and result.content.strip():
+            return result.content.strip()
+        return fallback_draft
+
+    def _small_talk_fallback(self, message: str) -> str:
+        """Deterministic fallback for small talk when LLM is unavailable."""
+        normalized = (message or "").lower().replace("ё", "е").strip()
         if "зовут" in normalized or "кто ты" in normalized or "ты кто" in normalized or "как обращ" in normalized:
-            draft = (
+            return (
                 "Я AI-консультант Vesta Trading. Помогаю подобрать товары из фида: "
                 "трубы, насосы, котлы, краны, канализацию и радиаторную арматуру. "
                 "Напишите, что нужно подобрать — уточню параметры и пришлю карточки."
             )
-            return self._polish(
-                "ResponseComposerAgent.small_talk_identity",
-                message,
-                draft,
-                "Ответь на вопрос о личности бота, сохрани перечисление категорий и приглашение написать запрос.",
-            )
         if "что ты умеешь" in normalized or "что умеешь" in normalized or "помоги" in normalized or "у меня вопрос" in normalized:
-            draft = (
+            return (
                 "Я помогу подобрать товар по запросу, уточню цену, наличие и характеристики "
                 "и дам прямую ссылку на карточку. Категории: трубы, насосы, котлы, краны, "
                 "канализация и радиаторная арматура. Опишите задачу своими словами."
             )
-            return self._polish(
-                "ResponseComposerAgent.small_talk_capability",
-                message,
-                draft,
-                "Коротко объясни возможности консультанта интернет-магазина, перечисли категории.",
-            )
         if "спасибо" in normalized or "благодарю" in normalized:
-            draft = "Пожалуйста! Если нужно, могу показать аналоги, варианты подешевле или передать вопрос менеджеру."
-            return self._polish(
-                "ResponseComposerAgent.small_talk_thanks",
-                message,
-                draft,
-                "Коротко и дружелюбно ответь на благодарность.",
-            )
+            return "Пожалуйста! Если нужно, могу показать аналоги, варианты подешевле или передать вопрос менеджеру."
         if "как дела" in normalized or "как ты" == normalized or normalized.startswith("как ты "):
-            draft = "Дела хорошо, спасибо. Готов помочь с подбором товаров Vesta Trading — что нужно?"
-            return self._polish(
-                "ResponseComposerAgent.small_talk_howareyou",
-                message,
-                draft,
-                "Кратко ответь на вопрос о делах и предложи помощь с подбором.",
-            )
-        if "красив" in normalized or "молодец" in normalized or "умничк" in normalized or "хорош" in normalized and len(normalized) < 25:
-            draft = "Спасибо! Готов помочь с подбором — что нужно по ассортименту?"
-            return self._polish(
-                "ResponseComposerAgent.small_talk_compliment",
-                message,
-                draft,
-                "Скромно поблагодари за комплимент и предложи помощь.",
-            )
+            return "Дела хорошо, спасибо. Готов помочь с подбором товаров Vesta Trading — что нужно?"
         if "пока" == normalized or "до свидан" in normalized or "до встреч" in normalized:
-            draft = "До свидания! Возвращайтесь, если понадобится подбор по ассортименту Vesta Trading."
-            return self._polish(
-                "ResponseComposerAgent.small_talk_bye",
-                message,
-                draft,
-                "Вежливо попрощайся.",
-            )
+            return "До свидания! Возвращайтесь, если понадобится подбор по ассортименту Vesta Trading."
         if any(greet in normalized for greet in ["здравств", "добрый день", "добрый вечер", "доброе утро"]):
-            draft = (
+            return (
                 "Здравствуйте! Я AI-консультант Vesta Trading. "
                 "Опишите, что нужно подобрать — трубы, насосы, котлы, краны, "
                 "канализацию или радиаторную арматуру, и я уточню параметры."
             )
-            return self._polish(
-                "ResponseComposerAgent.small_talk_greeting",
-                message,
-                draft,
-                "Поздоровайся и предложи помощь, перечисли категории.",
-            )
         if "привет" in normalized:
-            draft = (
+            return (
                 "Привет! Я AI-консультант Vesta Trading. Опишите, что нужно подобрать — "
                 "трубы, насосы, котлы, краны, канализацию или радиаторную арматуру."
             )
-            return self._polish(
-                "ResponseComposerAgent.small_talk_greeting",
-                message,
-                draft,
-                "Поздоровайся и предложи помощь, перечисли категории.",
-            )
-        draft = (
+        return (
             "Я на связи. Если нужно подобрать товар Vesta Trading — "
             "трубы, насосы, котлы, краны, канализацию или радиаторную арматуру — "
             "просто опишите задачу своими словами."
-        )
-        return self._polish(
-            "ResponseComposerAgent.small_talk",
-            message,
-            draft,
-            "Доброжелательно ответь и предложи помощь с подбором, без навязчивого «дела хорошо».",
         )
 
     def compose_confirm_last(self, cards: list[ProductCard]) -> str:
@@ -143,28 +143,26 @@ class ResponseComposerAgent:
             "Коротко напомни о ранее заданном вопросе и не запускай поиск без ответа.",
         )
 
-    def compose_unknown(self) -> str:
-        draft = (
+    def compose_unknown(self, user_message: str = "") -> str:
+        fallback = (
             "Я консультант по товарам Vesta Trading. Могу помочь с трубами, насосами, "
             "котлами, кранами, канализацией и радиаторной арматурой. Напишите, что нужно подобрать."
         )
-        return self._polish(
-            "ResponseComposerAgent.unknown",
-            "",
-            draft,
-            "Пользователь написал нетоварный или неясный запрос. Не запускай подбор без товарного намерения.",
+        return self._llm_smart_reply(
+            agent="ResponseComposerAgent.unknown",
+            user_message=user_message,
+            fallback_draft=fallback,
         )
 
-    def compose_out_of_scope(self) -> str:
-        draft = (
-            "Я не отвлекаюсь на нетоварные темы. Помогу подобрать товары Vesta Trading: "
-            "трубы, насосы, котлы, краны, канализацию или радиаторную арматуру."
+    def compose_out_of_scope(self, user_message: str = "") -> str:
+        fallback = (
+            "Это вне моей компетенции — я по ассортименту Vesta Trading. "
+            "Помогу подобрать трубы, насосы, котлы, краны, канализацию или радиаторную арматуру."
         )
-        return self._polish(
-            "ResponseComposerAgent.out_of_scope",
-            "",
-            draft,
-            "Вежливо откажись от нетоварной темы и верни разговор к подбору товаров.",
+        return self._llm_smart_reply(
+            agent="ResponseComposerAgent.out_of_scope",
+            user_message=user_message,
+            fallback_draft=fallback,
         )
 
     def compose_no_cheaper(self, cards: list[ProductCard]) -> str:

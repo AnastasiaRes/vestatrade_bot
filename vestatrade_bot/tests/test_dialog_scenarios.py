@@ -304,7 +304,11 @@ def test_out_of_scope_does_not_handoff_to_manager(orchestrator) -> None:
 
     assert response.need_handoff is False
     assert response.products == []
-    assert "нетоварные" in response.answer
+    assert any(marker in response.answer.lower() for marker in ["вне", "нетовар", "не отвлек"])
+    assert "vesta trading" in response.answer.lower() or any(
+        cat in response.answer.lower()
+        for cat in ["труб", "насос", "котел", "котёл", "кран", "канализац", "радиатор"]
+    )
 
 
 def test_guardrails_restore_product_answer_if_llm_drops_card_facts(sample_products) -> None:
