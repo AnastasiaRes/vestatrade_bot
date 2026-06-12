@@ -379,7 +379,9 @@ class FeedSearchAgent:
                 values.append(normalize_text(attr_value))
         if values:
             return any(self._number_matches(value, number) for value in values)
-        fallback = normalize_text(product.name)
+        # В реальном фиде размеры часто только в названии вида «50*1500», а «*»
+        # выбрасывается нормализацией — приводим её к «х», чтобы 50х1500 распознавалось.
+        fallback = normalize_text(product.name.replace("*", "х"))
         if any(key in {"диаметр", "размер"} for key in key_texts):
             return self._diameter_matches_name(fallback, number)
         if "длина" in key_texts:

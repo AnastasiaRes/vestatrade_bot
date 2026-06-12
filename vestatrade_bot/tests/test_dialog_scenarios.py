@@ -694,6 +694,19 @@ def test_product_docs_loader_supports_series_map_and_brand_rules(tmp_path, sampl
     assert by_sku["ECA-6"].docs_text is None
 
 
+def test_bare_pipe_with_diameter_is_not_asked_for_diameter_again(orchestrator) -> None:
+    response = orchestrator.handle_chat("p50", "труба 50")
+
+    assert response.debug["slots"]["diameter_mm"] == 50
+    assert "50 мм" in response.answer
+    assert "какой диаметр" not in response.answer.lower()
+    assert "канализации" in response.answer
+
+    followup = orchestrator.handle_chat("p50", "для канализации")
+    assert followup.debug["slots"]["diameter_mm"] == 50
+    assert "внутренняя или наружная" in followup.answer.lower()
+
+
 def test_degrees_are_not_turned_into_diameter(orchestrator) -> None:
     response = orchestrator.handle_chat("dim1", "отвод 87 градусов на 110")
 

@@ -45,13 +45,20 @@ class SlotFillingAgent:
 
     def _pipes(self, slots: dict) -> SlotFillingResult:
         if not slots.get("pipe_purpose"):
+            if slots.get("diameter_mm"):
+                question = (
+                    f"Понял, труба {slots['diameter_mm']} мм. Для чего она: "
+                    "для холодной или горячей воды, для отопления или для канализации?"
+                )
+            else:
+                question = (
+                    "Труба для чего: для холодной или горячей воды, для отопления "
+                    "или для канализации? И какой диаметр в мм?"
+                )
             return SlotFillingResult(
                 slots=slots,
                 needs_clarification=True,
-                question=(
-                    "Труба для чего: для холодной или горячей воды, для отопления "
-                    "или для канализации? И какой диаметр в мм?"
-                ),
+                question=question,
             )
         missing = []
         if slots.get("pipe_purpose") == "водоснабжение" and not slots.get("water_temperature"):
