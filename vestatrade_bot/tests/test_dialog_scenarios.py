@@ -365,6 +365,18 @@ def test_confirmation_followup_repeats_same_last_product(orchestrator) -> None:
     assert "https://example.test/valve20" in response.answer
 
 
+def test_pure_greeting_gets_fixed_branded_reply(orchestrator) -> None:
+    expected = (
+        "Здравствуйте! Я AI-консультант Vesta Trading. Помогу подобрать оборудование, "
+        "уточнить цену и наличие.\n"
+        "Напишите, что вам нужно — подберу подходящий вариант."
+    )
+    for message in ["привет", "Привет!", "Здравствуйте", "добрый день"]:
+        response = orchestrator.handle_chat(f"greet-{message}", message)
+        assert response.answer == expected, message
+        assert response.products == []
+
+
 def test_small_talk_then_product_continues_to_selection(orchestrator) -> None:
     response = orchestrator.handle_chat("s7", "как дела? нужен насос")
 

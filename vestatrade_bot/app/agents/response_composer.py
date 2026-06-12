@@ -5,6 +5,29 @@ from typing import Any
 from app.models import ProductCard, SearchQuery
 from app.openrouter_client import OpenRouterClient
 
+from .utils import normalize_text
+
+
+GREETING_REPLY = (
+    "Здравствуйте! Я AI-консультант Vesta Trading. Помогу подобрать оборудование, "
+    "уточнить цену и наличие.\n"
+    "Напишите, что вам нужно — подберу подходящий вариант."
+)
+
+PURE_GREETINGS = {
+    "привет",
+    "приветик",
+    "приветствую",
+    "здравствуйте",
+    "здравствуй",
+    "добрый день",
+    "добрый вечер",
+    "доброе утро",
+    "доброго дня",
+    "хай",
+    "ку",
+}
+
 
 MANAGER_PERSONA = (
     "Ты — живой, опытный менеджер-консультант интернет-магазина инженерной сантехники "
@@ -99,6 +122,9 @@ class ResponseComposerAgent:
         return "\n".join(lines)
 
     def compose_small_talk(self, message: str) -> str:
+        if self._is_pure_greeting(message):
+            self.last_draft = GREETING_REPLY
+            return GREETING_REPLY
         return self._llm_smart_reply(
             agent="ResponseComposerAgent.small_talk",
             user_message=message,
@@ -191,6 +217,10 @@ class ResponseComposerAgent:
         ]
         return any(marker in normalized for marker in markers)
 
+    def _is_pure_greeting(self, message: str) -> bool:
+        text = normalize_text(message).strip(" .,!?-")
+        return text in PURE_GREETINGS
+
     def _repeats_last_assistant(self, reply: str) -> bool:
         """Weak models sometimes parrot their previous answer instead of replying anew."""
         last_assistant = next(
@@ -230,17 +260,11 @@ class ResponseComposerAgent:
             return "Дела хорошо, спасибо. Готов помочь с подбором товаров Vesta Trading — что нужно?"
         if "пока" == normalized or "до свидан" in normalized or "до встреч" in normalized:
             return "До свидания! Возвращайтесь, если понадобится подбор по ассортименту Vesta Trading."
-        if any(greet in normalized for greet in ["здравств", "добрый день", "добрый вечер", "доброе утро"]):
-            return (
-                "Здравствуйте! Я AI-консультант Vesta Trading. "
-                "Опишите, что нужно подобрать — трубы, насосы, котлы, краны, "
-                "канализацию или радиаторную арматуру, и я уточню параметры."
-            )
-        if "привет" in normalized:
-            return (
-                "Привет! Я AI-консультант Vesta Trading. Опишите, что нужно подобрать — "
-                "трубы, насосы, котлы, краны, канализацию или радиаторную арматуру."
-            )
+        if any(
+            greet in normalized
+            for greet in ["здравств", "добрый день", "добрый вечер", "доброе утро", "привет"]
+        ):
+            return GREETING_REPLY
         return (
             "Я на связи. Если нужно подобрать товар Vesta Trading — "
             "трубы, насосы, котлы, краны, канализацию или радиаторную арматуру — "
