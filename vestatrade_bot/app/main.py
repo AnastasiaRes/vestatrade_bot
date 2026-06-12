@@ -46,6 +46,7 @@ def health() -> dict[str, Any]:
         "status": "ok",
         "products_loaded": len(orchestrator.search_agent.products),
         "products_loaded_from": orchestrator.products_loaded_from,
+        "product_docs_loaded": orchestrator.docs_attached,
     }
 
 

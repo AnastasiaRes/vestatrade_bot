@@ -27,6 +27,7 @@ class Settings(BaseModel):
     products_cache_path: Path
     usage_budget_path: Path
     handoff_log_path: Path
+    product_docs_dir: Path
     openrouter_timeout_seconds: float
     openrouter_max_retries: int
     input_price_per_1m_tokens_usd: float
@@ -57,6 +58,10 @@ def get_settings() -> Settings:
         handoff_log_path=_resolve_project_path(
             os.getenv("HANDOFF_LOG_PATH"),
             "app/data/handoff_requests.jsonl",
+        ),
+        product_docs_dir=_resolve_project_path(
+            os.getenv("PRODUCT_DOCS_DIR"),
+            "app/data/product_docs",
         ),
         openrouter_timeout_seconds=float(os.getenv("OPENROUTER_TIMEOUT_SECONDS", "30")),
         openrouter_max_retries=int(os.getenv("OPENROUTER_MAX_RETRIES", "2")),

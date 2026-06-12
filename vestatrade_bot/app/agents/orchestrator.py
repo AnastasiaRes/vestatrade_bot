@@ -5,6 +5,7 @@ import re
 from typing import Any
 
 from app.config import Settings, get_settings
+from app.docs_loader import load_docs_for_products
 from app.feed_loader import FeedLoader
 from app.models import (
     ChatProductSummary,
@@ -77,9 +78,13 @@ class ChatOrchestrator:
         self.composer = ResponseComposerAgent(self.llm_client)
         self.handoff = HandoffAgent()
         self.products_loaded_from = "injected" if products is not None else "none"
+        self.docs_attached = 0
+        if products:
+            self.docs_attached = load_docs_for_products(products, self.settings.product_docs_dir)
 
     def reload_products(self, refresh: bool = True) -> tuple[int, str]:
         products, source = self.feed_loader.load_products(refresh=refresh)
+        self.docs_attached = load_docs_for_products(products, self.settings.product_docs_dir)
         self.search_agent.set_products(products)
         self.products_loaded_from = source
         return len(products), source
@@ -90,7 +95,18 @@ class ChatOrchestrator:
         session.slots.pop("fallback_after_repeat", None)
         self.composer.reset_usage()
         self.composer.set_history(session.history)
-        self.composer.set_state(session.category, session.slots)
+        last_summary: str | None = None
+        docs_excerpt: str | None = None
+        if session.last_products:
+            last_card = session.last_products[0]
+            last_summary = (
+                f"{last_card.sku} — {last_card.name}, {last_card.price:g} {last_card.currency}, "
+                f"наличие: {last_card.stock_status}"
+            )
+            last_product = self._find_product_by_sku(last_card.sku)
+            if last_product and last_product.docs_text:
+                docs_excerpt = last_product.docs_text[:700]
+        self.composer.set_state(session.category, session.slots, last_summary, docs_excerpt)
         agents_used: list[str] = []
 
         intent = self.intent_router.route(message, session)
@@ -295,7 +311,12 @@ class ChatOrchestrator:
             self.sessions.save(session)
             return response
 
-        if self._stock_or_link_without_context(intent, session, message):
+        query = self._build_query(message, intent, session)
+        direct_products: list[Product] = []
+        if not session.pending_complectation_parts:
+            direct_products = self.search_agent.search_by_name(message, query)
+
+        if not direct_products and self._stock_or_link_without_context(intent, session, message):
             question = self._stock_clarification_question(intent)
             answer = self.composer.compose_clarification(question, user_message=message)
             agents_used.append("ResponseComposerAgent")
@@ -306,7 +327,7 @@ class ChatOrchestrator:
             self.sessions.save(session)
             return self._response(session_id, answer, [], False, intent, session, agents_used)
 
-        if slot_result.needs_clarification and slot_result.question:
+        if slot_result.needs_clarification and slot_result.question and not direct_products:
             if session.pending_question == slot_result.question:
                 session.question_repeats += 1
             else:
@@ -328,14 +349,14 @@ class ChatOrchestrator:
             # показываем типовой вариант по текущим данным вместо зацикливания.
             session.slots["allow_basic_option"] = True
             session.slots["fallback_after_repeat"] = True
+            query = self._build_query(message, intent, session)
 
         session.pending_question = None
         session.pending_intent_type = None
         session.question_repeats = 0
 
-        query = self._build_query(message, intent, session)
         agents_used.append("FeedSearchAgent")
-        products = self._safe_search(query)
+        products = direct_products or self._safe_search(query)
         if not products:
             alternatives = self.search_agent.search_alternatives(query)
             if alternatives:

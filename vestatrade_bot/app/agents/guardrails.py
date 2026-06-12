@@ -103,6 +103,7 @@ class GuardrailsAgent:
                 [
                     product.name,
                     product.description or "",
+                    product.docs_text or "",
                     " ".join(product.attributes_normalized.values()),
                     " ".join(product.attributes_normalized.keys()),
                 ]

@@ -47,7 +47,13 @@ class ResponseComposerAgent:
     def set_history(self, history: list[dict[str, str]] | None) -> None:
         self._history = list(history or [])
 
-    def set_state(self, category: str | None, slots: dict[str, Any] | None) -> None:
+    def set_state(
+        self,
+        category: str | None,
+        slots: dict[str, Any] | None,
+        last_product_summary: str | None = None,
+        docs_excerpt: str | None = None,
+    ) -> None:
         parts: list[str] = []
         if category:
             parts.append(f"категория: {category}")
@@ -58,6 +64,13 @@ class ResponseComposerAgent:
             parts.append(
                 "известные параметры: "
                 + ", ".join(f"{key}={value}" for key, value in informative.items())
+            )
+        if last_product_summary:
+            parts.append(f"последний показанный товар: {last_product_summary}")
+        if docs_excerpt:
+            parts.append(
+                "выдержка из официальной документации этого товара (можно опираться на эти "
+                f"факты): {docs_excerpt}"
             )
         self._state_summary = "; ".join(parts)
 

@@ -605,6 +605,47 @@ def test_gas_vs_electric_question_gets_advice_not_silent_assumption(orchestrator
     assert followup.debug["slots"]["area_m2"] == 100.0
 
 
+def test_exact_product_name_returns_product_without_interrogation(orchestrator) -> None:
+    response = orchestrator.handle_chat("name1", "Труба PPR 20 мм PN20")
+
+    assert response.products
+    assert response.products[0].sku == "VTp.700.0.020"
+    assert "Труба для чего" not in response.answer
+
+
+def test_product_docs_confirm_complectation(sample_products) -> None:
+    products = [product.model_copy(deep=True) for product in sample_products]
+    for product in products:
+        if product.sku == "ARD-E9":
+            product.docs_text = (
+                "Паспорт изделия. В комплект поставки входят встроенный циркуляционный "
+                "насос и расширительный бак на 6 литров."
+            )
+    orchestrator = ChatOrchestrator(products=products)
+
+    orchestrator.handle_chat("docs1", "электрический котёл на 100 м²")
+    response = orchestrator.handle_chat("docs1", "в котле есть насос и бак?")
+
+    assert response.need_handoff is False
+    assert "ARD-E9" in response.answer
+    assert "насос" in response.answer.lower()
+
+
+def test_product_docs_loader_attaches_by_sku(tmp_path, sample_products) -> None:
+    from app.docs_loader import load_docs_for_products
+
+    products = [product.model_copy(deep=True) for product in sample_products]
+    (tmp_path / "ARD-E9.txt").write_text("Технический паспорт котла", encoding="utf-8")
+    (tmp_path / "UNKNOWN-SKU.txt").write_text("ничейный документ", encoding="utf-8")
+
+    attached = load_docs_for_products(products, tmp_path)
+
+    assert attached == 1
+    by_sku = {product.sku: product for product in products}
+    assert by_sku["ARD-E9"].docs_text == "Технический паспорт котла"
+    assert by_sku["ECA-6"].docs_text is None
+
+
 def test_guardrails_restore_product_answer_if_llm_drops_card_facts(sample_products) -> None:
     orchestrator = ChatOrchestrator(
         products=sample_products,

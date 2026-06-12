@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 
 SKU_RE = re.compile(r"\b[а-яa-z]{1,8}[а-яa-z0-9]*[.\-][а-яa-z0-9.\-]{2,}\b", re.IGNORECASE)
 NUMERIC_SKU_RE = re.compile(r"\b\d{5,}\b")
+# Артикулы вида 68/2/8: минимум два слэша, чтобы не путать с размерами 1/2 и параметрами 25/6.
+SLASH_SKU_RE = re.compile(r"\b\d{1,4}/\d{1,4}/\d{1,4}\b")
 OLD_CIRCULATION_PUMP_RE = re.compile(
     r"\b(?:(grundfos|wilo|valtec|unipump|stout)\s*)?"
     r"((?:ups|up[cс]|up|alpha|star\s*rs|rs)\s*)"
@@ -175,7 +177,11 @@ class IntentRouterAgent:
         if flags["choose_one"]:
             slots["choose_one"] = True
 
-        sku_match = SKU_RE.search(sku_text) or NUMERIC_SKU_RE.search(sku_text)
+        sku_match = (
+            SKU_RE.search(sku_text)
+            or NUMERIC_SKU_RE.search(sku_text)
+            or SLASH_SKU_RE.search(sku_text)
+        )
         if sku_match and self._is_valid_sku_candidate(sku_match.group(0)):
             slots["sku"] = sku_match.group(0)
 
@@ -688,7 +694,11 @@ class IntentRouterAgent:
             llm_result.category = rule_result.category
 
         if llm_result.intent_type == "exact_sku":
-            sku_match = SKU_RE.search(sku_text) or NUMERIC_SKU_RE.search(sku_text)
+            sku_match = (
+                SKU_RE.search(sku_text)
+                or NUMERIC_SKU_RE.search(sku_text)
+                or SLASH_SKU_RE.search(sku_text)
+            )
             if not sku_match:
                 llm_result.intent_type = rule_result.intent_type
                 llm_result.slots.pop("sku", None)

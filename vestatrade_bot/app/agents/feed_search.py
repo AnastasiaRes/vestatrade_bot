@@ -33,6 +33,31 @@ SYNONYMS: dict[str, list[str]] = {
     "радиаторная арматура": ["радиаторная арматура", "термоголовка", "клапан"],
 }
 
+NAME_QUERY_STOPWORDS = {
+    "нужен",
+    "нужна",
+    "нужно",
+    "надо",
+    "хочу",
+    "купить",
+    "покажи",
+    "дай",
+    "есть",
+    "мне",
+    "нам",
+    "для",
+    "или",
+    "что",
+    "это",
+    "по",
+    "сколько",
+    "стоит",
+    "цена",
+    "наличие",
+    "наличии",
+    "пожалуйста",
+}
+
 CATEGORY_NEEDLES: dict[str, list[str]] = {
     "pipes": ["труба", "трубы", "ppr", "полипропилен"],
     "sewer": ["канализац", "ostendorf", "htem", "htee", "htr"],
@@ -92,6 +117,45 @@ class FeedSearchAgent:
         scored = [item for item in scored if item[0] > 0]
         scored.sort(key=lambda item: item[0], reverse=True)
         return [product for _, product in scored[: query.limit]]
+
+    def search_by_name(
+        self,
+        message: str,
+        query: SearchQuery | None = None,
+        limit: int = 3,
+    ) -> list[Product]:
+        """Find products whose card text covers almost all significant query tokens.
+
+        High-precision path for messages that look like a concrete product name
+        (e.g. pasted from the site). Returns [] for generic requests so the
+        normal clarification scenarios stay in charge.
+        """
+        text = normalize_text(message)
+        tokens = [
+            token
+            for token in text.split()
+            if len(token) >= 2 and token not in NAME_QUERY_STOPWORDS
+        ]
+        if len(tokens) < 4:
+            return []
+        matches: list[tuple[float, int, Product]] = []
+        for product in self.products:
+            product_text = self._product_text(product)
+            matched = sum(1 for token in tokens if token in product_text)
+            ratio = matched / len(tokens)
+            if ratio >= 0.8 and matched >= 4:
+                name_score = int(fuzz.partial_ratio(text, normalize_text(product.name)))
+                matches.append((ratio, name_score, product))
+        if not matches:
+            return []
+        if query is not None:
+            candidates = [product for _, _, product in matches]
+            slot_filtered = self._filter_by_slots(candidates, query)
+            if slot_filtered:
+                allowed = {id(product) for product in slot_filtered}
+                matches = [match for match in matches if id(match[2]) in allowed]
+        matches.sort(key=lambda item: (-item[0], -item[1], not item[2].is_in_stock))
+        return [product for _, _, product in matches[:limit]]
 
     def search_alternatives(self, query: SearchQuery) -> list[Product]:
         if not self.products or query.category == "other":

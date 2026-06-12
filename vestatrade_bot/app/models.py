@@ -25,6 +25,7 @@ class Product(BaseModel):
     stock_qty: int | None = None
     attributes_normalized: dict[str, str] = Field(default_factory=dict)
     description: str | None = None
+    docs_text: str | None = None
     updated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     raw: dict[str, Any] = Field(default_factory=dict)
 
