@@ -108,7 +108,11 @@ class GuardrailsAgent:
                 ]
             )
         )
-        missing = [part for part in requested_parts if normalize_text(part) not in text]
+        missing = [
+            part
+            for part in requested_parts
+            if not self._part_confirmed(text, normalize_text(part))
+        ]
         if missing:
             return GuardrailsResult(
                 ok=False,
@@ -120,6 +124,24 @@ class GuardrailsAgent:
                 ),
             )
         return GuardrailsResult(ok=True)
+
+    def _part_confirmed(self, text: str, part: str) -> bool:
+        if part == "бойлер":
+            positive_markers = [
+                "встроенный бойлер",
+                "встроен бойлер",
+                "со встроенным бойлером",
+                "встроенным бойлером",
+                "накопительный бойлер",
+            ]
+            return any(marker in text for marker in positive_markers)
+        if part == "насос":
+            return "насос" in text
+        if part == "бак":
+            return "бак" in text or "расширительн" in text
+        if part in {"обвязка", "группа безопасности"}:
+            return part in text
+        return part in text
 
     def validate_response_text(
         self,
@@ -136,6 +158,8 @@ class GuardrailsAgent:
 
         if mode in {"products", "link", "complectation"}:
             issues.extend(self._missing_product_facts(draft, answer))
+            if mode == "products":
+                issues.extend(self._unsupported_product_claims(draft, answer))
 
         if mode == "small_talk":
             issues.extend(self._missing_small_talk_anchors(draft, answer))
@@ -223,6 +247,22 @@ class GuardrailsAgent:
             if term in draft_norm and term not in answer_norm
         ]
         return missing
+
+    def _unsupported_product_claims(self, draft: str, answer: str) -> list[str]:
+        issues: list[str] = []
+        draft_norm = normalize_text(draft)
+        answer_norm = normalize_text(answer)
+        broad_dimension_claims = [
+            r"вс[её]\s+по\s+\d+\s*мм",
+            r"все\s+варианты\s+по\s+\d+\s*мм",
+            r"всё\s+по\s+\d+\s*мм",
+        ]
+        for pattern in broad_dimension_claims:
+            match = re.search(pattern, answer_norm)
+            if match and match.group(0) not in draft_norm:
+                issues.append("LLM rewrite added unsupported broad dimension claim")
+                break
+        return issues
 
     def _missing_product_facts(self, draft: str, answer: str) -> list[str]:
         missing: list[str] = []

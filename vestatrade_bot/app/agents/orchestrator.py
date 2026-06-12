@@ -63,7 +63,9 @@ class ChatOrchestrator:
     def handle_chat(self, session_id: str, message: str) -> ChatResponse:
         session = self.sessions.get(session_id)
         session.topic_changed = False
+        session.slots.pop("fallback_after_repeat", None)
         self.composer.reset_usage()
+        self.composer.set_history(session.history)
         agents_used: list[str] = []
 
         intent = self.intent_router.route(message, session)
@@ -79,6 +81,7 @@ class ChatOrchestrator:
             session.pending_question = None
             session.pending_intent_type = None
             session.pending_complectation_parts = []
+            session.question_repeats = 0
 
         if self._should_restart_category_context(message, intent, session):
             session.slots = {}
@@ -92,6 +95,61 @@ class ChatOrchestrator:
             self._append_history(session, message, answer)
             self.sessions.save(session)
             return self._response(session_id, answer, [], False, intent, session, agents_used)
+
+        term_answer = self._maybe_term_explanation(message)
+        if term_answer:
+            agents_used.append("ResponseComposerAgent")
+            answer = self._guard_composed_answer(term_answer, "generic", agents_used)
+            self._append_history(session, message, answer)
+            self.sessions.save(session)
+            return self._response(session_id, answer, [], False, intent, session, agents_used)
+
+        engineering_risk = self._maybe_engineering_risk_answer(message)
+        if engineering_risk:
+            agents_used.append("GuardrailsAgent")
+            agents_used.append("HandoffAgent")
+            self._append_history(session, message, engineering_risk)
+            self.sessions.save(session)
+            return self._response(session_id, engineering_risk, [], True, intent, session, agents_used)
+
+        comparison_answer = self._maybe_comparison_answer(message, session)
+        if comparison_answer:
+            agents_used.append("ResponseComposerAgent")
+            answer = self._guard_composed_answer(comparison_answer, "generic", agents_used)
+            self._append_history(session, message, answer)
+            self.sessions.save(session)
+            return self._response(
+                session_id, answer, session.last_products, False, intent, session, agents_used
+            )
+
+        choose_answer = self._maybe_choose_one_answer(message, session)
+        if choose_answer:
+            agents_used.append("ResponseComposerAgent")
+            answer = self._guard_composed_answer(choose_answer, "link", agents_used)
+            self._append_history(session, message, answer)
+            self.sessions.save(session)
+            return self._response(session_id, answer, session.last_products[:1], False, intent, session, agents_used)
+
+        why_answer = self._maybe_why_explanation(message, session)
+        if why_answer:
+            agents_used.append("ResponseComposerAgent")
+            answer = self._guard_composed_answer(why_answer, "generic", agents_used)
+            self._append_history(session, message, answer)
+            self.sessions.save(session)
+            return self._response(session_id, answer, session.last_products, False, intent, session, agents_used)
+
+        if (
+            (self._looks_like_confirmation(message) or self._looks_like_affirmation(message))
+            and session.last_products
+            and intent.category == "other"
+        ):
+            cards = session.last_products
+            answer = self.composer.compose_confirm_last(cards)
+            agents_used.append("ResponseComposerAgent")
+            answer = self._guard_composed_answer(answer, "link", agents_used)
+            self._append_history(session, message, answer)
+            self.sessions.save(session)
+            return self._response(session_id, answer, cards, False, intent, session, agents_used)
 
         if session.slots.get("pending_tradeoff"):
             insulation = self._extract_insulation_hint(message)
@@ -116,13 +174,6 @@ class ChatOrchestrator:
             return self._response(session_id, answer, [], False, intent, session, agents_used)
 
         if self._is_non_product_message(intent):
-            why_answer = self._maybe_why_explanation(message, session)
-            if why_answer:
-                agents_used.append("ResponseComposerAgent")
-                answer = self._guard_composed_answer(why_answer, "generic", agents_used)
-                self._append_history(session, message, answer)
-                self.sessions.save(session)
-                return self._response(session_id, answer, session.last_products, False, intent, session, agents_used)
             sink_question = self._maybe_sink_question(message)
             if sink_question:
                 session.pending_question = sink_question
@@ -210,21 +261,31 @@ class ChatOrchestrator:
             return self._response(session_id, answer, [], False, intent, session, agents_used)
 
         if slot_result.needs_clarification and slot_result.question:
-            answer = self.composer.compose_clarification(
-                slot_result.question,
-                small_talk=bool(intent.flags.get("small_talk")),
-                user_message=message,
-            )
-            agents_used.append("ResponseComposerAgent")
-            answer = self._guard_composed_answer(answer, "clarification", agents_used)
-            session.pending_question = slot_result.question
-            session.pending_intent_type = intent.intent_type
-            self._append_history(session, message, answer)
-            self.sessions.save(session)
-            return self._response(session_id, answer, [], False, intent, session, agents_used)
+            if session.pending_question == slot_result.question:
+                session.question_repeats += 1
+            else:
+                session.question_repeats = 0
+            if session.question_repeats < 2:
+                answer = self.composer.compose_clarification(
+                    slot_result.question,
+                    small_talk=bool(intent.flags.get("small_talk")),
+                    user_message=message,
+                )
+                agents_used.append("ResponseComposerAgent")
+                answer = self._guard_composed_answer(answer, "clarification", agents_used)
+                session.pending_question = slot_result.question
+                session.pending_intent_type = intent.intent_type
+                self._append_history(session, message, answer)
+                self.sessions.save(session)
+                return self._response(session_id, answer, [], False, intent, session, agents_used)
+            # Один и тот же вопрос уже задавали дважды — меняем тактику:
+            # показываем типовой вариант по текущим данным вместо зацикливания.
+            session.slots["allow_basic_option"] = True
+            session.slots["fallback_after_repeat"] = True
 
         session.pending_question = None
         session.pending_intent_type = None
+        session.question_repeats = 0
 
         query = self._build_query(message, intent, session)
         agents_used.append("FeedSearchAgent")
@@ -237,16 +298,28 @@ class ChatOrchestrator:
                     agents_used.append("RankingAgent")
                     ranked_alternatives = self.ranking_agent.rank(alternatives, query)
                 agents_used.append("ProductCardAgent")
-                cards = self.card_agent.build_cards(ranked_alternatives, query, limit=3)
+                cards = self.card_agent.build_cards(
+                    ranked_alternatives,
+                    query,
+                    limit=self._card_limit(query),
+                )
                 agents_used.append("GuardrailsAgent")
                 guard = self.guardrails.validate_cards(cards, ranked_alternatives, query)
                 if guard.ok and cards:
                     agents_used.append("ResponseComposerAgent")
-                    answer = self.composer.compose_products(
-                        cards,
-                        query,
-                        note=self.composer.compose_alternative_note(query),
-                    )
+                    if query.slots.get("choose_one"):
+                        answer = self.composer.compose_choose_one(
+                            cards[0],
+                            query,
+                            alternative=cards[1] if len(cards) > 1 else None,
+                        )
+                        cards = cards[:1]
+                    else:
+                        answer = self.composer.compose_products(
+                            cards,
+                            query,
+                            note=self.composer.compose_alternative_note(query),
+                        )
                     answer = self._guard_composed_answer(answer, "products", agents_used)
                     session.last_products = cards
                     self._append_history(session, message, answer)
@@ -278,7 +351,7 @@ class ChatOrchestrator:
                 return self._response(session_id, answer, [], False, intent, session, agents_used)
             ranked = cheaper_ranked
         agents_used.append("ProductCardAgent")
-        cards = self.card_agent.build_cards(ranked, query, limit=3)
+        cards = self.card_agent.build_cards(ranked, query, limit=self._card_limit(query))
 
         agents_used.append("GuardrailsAgent")
         guard = self.guardrails.validate_cards(cards, ranked, query)
@@ -291,11 +364,19 @@ class ChatOrchestrator:
             return self._response(session_id, answer, [], True, intent, session, agents_used)
 
         agents_used.append("ResponseComposerAgent")
-        answer = self.composer.compose_products(
-            cards,
-            query,
-            note=self.composer.compose_old_pump_note(query),
-        )
+        if query.slots.get("choose_one"):
+            answer = self.composer.compose_choose_one(
+                cards[0],
+                query,
+                alternative=cards[1] if len(cards) > 1 else None,
+            )
+            cards = cards[:1]
+        else:
+            answer = self.composer.compose_products(
+                cards,
+                query,
+                note=self._compose_query_note(query),
+            )
         answer = self._guard_composed_answer(answer, "products", agents_used)
         session.last_products = cards
         self._append_history(session, message, answer)
@@ -461,6 +542,137 @@ class ChatOrchestrator:
             f"Использовал данные: {details}. Подходящие позиции из фида: {skus}."
         )
 
+    def _maybe_choose_one_answer(self, message: str, session: SessionState) -> str | None:
+        if not session.last_products or not self._wants_choose_one(message):
+            return None
+        return self.composer.compose_choose_one(
+            session.last_products[0],
+            SearchQuery(
+                original_text=message,
+                category=session.category or "other",
+                slots=session.slots,
+            ),
+            alternative=session.last_products[1] if len(session.last_products) > 1 else None,
+        )
+
+    def _maybe_comparison_answer(self, message: str, session: SessionState) -> str | None:
+        if len(session.last_products) < 2:
+            return None
+        text = normalize_text(message)
+        markers = ["отлича", "в чем разница", "какая разница", "разница между", "сравни"]
+        if not any(marker in text for marker in markers):
+            return None
+        return self.composer.compose_comparison(session.last_products)
+
+    def _wants_choose_one(self, message: str) -> bool:
+        text = normalize_text(message)
+        markers = [
+            "выбери один",
+            "выбери сама",
+            "выбери сам",
+            "что взять",
+            "какой лучше",
+            "какой выбрать",
+            "посоветуй один",
+            "оставь один",
+            "один вариант",
+        ]
+        return any(marker in text for marker in markers)
+
+    def _maybe_term_explanation(self, message: str) -> str | None:
+        text = normalize_text(message)
+        asks = any(marker in text for marker in ["что такое", "что значит", "не понимаю", "объясни"])
+        if not asks:
+            return None
+        explanations: list[tuple[str, list[str], str]] = [
+            (
+                "монтажная длина",
+                ["монтажн"],
+                "это расстояние между гайками насоса, то есть сколько места он занимает в трубе. "
+                "Частые варианты для циркуляционных насосов — 130 или 180 мм.",
+            ),
+            (
+                "напор",
+                ["напор"],
+                "это способность насоса поднимать или проталкивать воду. В карточках часто указан в метрах: "
+                "например 4 м или 6 м.",
+            ),
+            (
+                "присоединение",
+                ["присоедин"],
+                "это размер подключения к трубе или резьбе. Для насосов часто встречается 25 или 32, "
+                "для кранов — 1/2 или 3/4.",
+            ),
+            (
+                "американка",
+                ["американк"],
+                "это разъёмное соединение с накидной гайкой. С ним кран или узел проще снять без разборки всей трубы.",
+            ),
+            (
+                "термоголовка",
+                ["термоголов"],
+                "это регулятор на радиаторном клапане, который помогает поддерживать температуру в комнате.",
+            ),
+            (
+                "одноконтурный котёл",
+                ["одноконтурн"],
+                "работает только на отопление. Для горячей воды к нему понадобится отдельный бойлер.",
+            ),
+            (
+                "двухконтурный котёл",
+                ["двухконтурн"],
+                "даёт и отопление, и горячую воду — отдельный бойлер не нужен.",
+            ),
+            (
+                "контур",
+                ["контур"],
+                "в котле один контур обычно работает на отопление, два контура — на отопление и горячую воду.",
+            ),
+            (
+                "закрытая камера сгорания",
+                ["закрытая камера", "закрытой камер", "камера сгорания", "коаксиал"],
+                "котёл с закрытой камерой берёт воздух с улицы через коаксиальный дымоход "
+                "(труба в трубе), а не из помещения — это безопаснее для жилых комнат.",
+            ),
+            (
+                "армированная труба",
+                ["армиров"],
+                "это полипропиленовая труба, усиленная стекловолокном или алюминием. Она меньше "
+                "расширяется от горячей воды, поэтому её берут для отопления и горячего водоснабжения.",
+            ),
+            (
+                "pn",
+                ["pn"],
+                "это класс давления трубы. Для горячей воды и отопления часто смотрят PN20 или армированные трубы, "
+                "но точный выбор зависит от задачи.",
+            ),
+        ]
+        for term, roots, explanation in explanations:
+            if any(root in text for root in roots):
+                return self.composer.compose_term_explanation(term, explanation)
+        return None
+
+    def _maybe_engineering_risk_answer(self, message: str) -> str | None:
+        text = normalize_text(message)
+        risky_markers = [
+            "гидравлический расчет",
+            "гидравлический расчёт",
+            "теплопотер",
+            "рассчитай систему",
+            "расчитать систему",
+            "рассчитать систему",
+            "проект отопления",
+            "схему отопления",
+            "схема обвязки",
+        ]
+        if not any(marker in text for marker in risky_markers):
+            return None
+        return (
+            "Это уже инженерно рискованный вопрос: по фиду я не буду делать расчёт системы "
+            "или схему обвязки. Могу помочь подобрать товары из ассортимента по известным "
+            "параметрам, а для расчёта лучше передать задачу специалисту."
+        )
+
     def _maybe_sink_question(self, message: str) -> str | None:
         text = normalize_text(message)
         if "раковин" not in text and "под раковину" not in text:
@@ -469,6 +681,37 @@ class ChatOrchestrator:
             "Под раковину обычно нужны: сифон (слив), гибкая подводка или угловой кран. "
             "Что именно нужно — слив/сифон или запорный кран?"
         )
+
+    def _card_limit(self, query: SearchQuery) -> int:
+        if query.slots.get("choose_one") or query.slots.get("allow_basic_option"):
+            return 1
+        return 3
+
+    def _compose_query_note(self, query: SearchQuery) -> str | None:
+        notes: list[str] = []
+        if query.slots.get("fallback_after_repeat"):
+            if query.category == "pumps":
+                notes.append(
+                    "Чтобы не гонять вас по кругу одним и тем же вопросом, показываю типовой "
+                    "вариант. Для типовой системы отопления чаще смотрят насосы 25/6 с "
+                    "монтажной длиной 180 мм, но лучше сверить с вашей системой."
+                )
+            else:
+                notes.append(
+                    "Чтобы не гонять вас по кругу одним и тем же вопросом, показываю типовые "
+                    "варианты по текущим данным. Уточните недостающие параметры — подберу точнее."
+                )
+        elif query.slots.get("allow_basic_option"):
+            notes.append(
+                "Показываю базовый вариант из фида. Для точного подбора нужны монтажная длина, "
+                "напор, присоединение или модель старого насоса."
+            )
+        old_pump_note = self.composer.compose_old_pump_note(query)
+        if old_pump_note:
+            notes.append(old_pump_note)
+        if query.slots.get("choose_one"):
+            notes.append("Выбираю один основной вариант из подходящих товаров.")
+        return "\n".join(notes) if notes else None
 
     def _looks_like_affirmation(self, message: str) -> bool:
         text = normalize_text(message).strip()
@@ -775,7 +1018,7 @@ class ChatOrchestrator:
         if "обвяз" in text or "группа безопасности" in requested_parts or "обвязка" in requested_parts:
             return (
                 "По какому котлу и какой системе обвязка/группа безопасности нужна? "
-                "Уточните модель котла и тип системы (открытая или закрытая, радиаторы/тёплый пол) — "
+                "Уточните модель/артикул котла и тип системы (открытая или закрытая, радиаторы/тёплый пол) — "
                 "без сверки с документацией не буду подтверждать конкретные узлы."
             )
         return (
@@ -784,8 +1027,9 @@ class ChatOrchestrator:
         )
 
     def _find_product_by_sku(self, sku: str) -> Product | None:
+        needle = normalize_sku_token(sku)
         for product in self.search_agent.products:
-            if product.sku == sku:
+            if normalize_sku_token(product.sku) == needle:
                 return product
         return None
 

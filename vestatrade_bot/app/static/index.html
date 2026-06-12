@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Vesta Trading AI Consultant</title>
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="/styles.css?v=10" />
   </head>
   <body>
     <main class="stage">
@@ -46,10 +46,6 @@
             <div class="quick-card">
               <h2>Быстрые запросы</h2>
               <div class="quick-grid">
-                <button class="quick" data-message="нужна труба">Нужна труба</button>
-                <button class="quick" data-message="канализационная труба 50">
-                  Канализационная труба 50
-                </button>
                 <button class="quick" data-message="циркуляционный насос, подешевле">
                   Насос подешевле
                 </button>
@@ -64,12 +60,10 @@
               <button id="reloadFeed" class="secondary" type="button">Обновить фид</button>
             </div>
 
-            <details class="debug-panel">
-              <summary>Debug</summary>
-              <pre id="debugBox">{}</pre>
-            </details>
           </aside>
         </section>
+
+        <output id="debugBox" hidden aria-hidden="true"></output>
 
         <form class="composer" id="chatForm">
           <input
@@ -86,6 +80,6 @@
       </section>
     </main>
 
-    <script src="app.js"></script>
+    <script src="/app.js?v=10"></script>
   </body>
 </html>

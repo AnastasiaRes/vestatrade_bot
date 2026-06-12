@@ -11,12 +11,40 @@ class ResponseComposerAgent:
         self.last_llm_requested = False
         self.last_llm_fallback_reason: str | None = None
         self.last_draft: str | None = None
+        self._history: list[dict[str, str]] = []
 
     def reset_usage(self) -> None:
         self.last_llm_used = False
         self.last_llm_requested = False
         self.last_llm_fallback_reason = None
         self.last_draft = None
+
+    def set_history(self, history: list[dict[str, str]] | None) -> None:
+        self._history = list(history or [])
+
+    def _history_messages(self, limit: int = 8, max_chars: int = 600) -> list[dict[str, str]]:
+        messages: list[dict[str, str]] = []
+        for entry in self._history[-limit:]:
+            role = entry.get("role")
+            content = (entry.get("content") or "").strip()
+            if role not in {"user", "assistant"} or not content:
+                continue
+            if len(content) > max_chars:
+                content = content[:max_chars] + "…"
+            messages.append({"role": role, "content": content})
+        return messages
+
+    def _history_text(self, limit: int = 6, max_chars: int = 300) -> str:
+        lines: list[str] = []
+        for entry in self._history[-limit:]:
+            content = (entry.get("content") or "").strip()
+            if not content:
+                continue
+            if len(content) > max_chars:
+                content = content[:max_chars] + "…"
+            speaker = "Клиент" if entry.get("role") == "user" else "Бот"
+            lines.append(f"{speaker}: {content}")
+        return "\n".join(lines)
 
     def compose_small_talk(self, message: str) -> str:
         return self._llm_smart_reply(
@@ -47,6 +75,9 @@ class ResponseComposerAgent:
             "small talk, эмоция, нестандартный вопрос или жалоба). Твои правила:\n"
             "1. Ответь живо и кратко (1–3 предложения), признай содержание сообщения "
             "пользователя — не игнорируй его и не отвечай шаблоном.\n"
+            "1а. Тебе передана история диалога — обязательно учитывай её: если "
+            "пользователь ссылается на сказанное ранее, что-то переспрашивает или "
+            "продолжает мысль, отвечай в контексте, а не как на первое сообщение.\n"
             "2. Если пользователь спрашивает что-то вне ассортимента (погода, "
             "философия, личное), вежливо обозначь, что это вне твоей компетенции.\n"
             "3. В конце мягко верни разговор к подбору товаров: перечисли 2–4 "
@@ -58,6 +89,7 @@ class ResponseComposerAgent:
         )
         messages = [
             {"role": "system", "content": system},
+            *self._history_messages(),
             {"role": "user", "content": user_message or "(пустое сообщение)"},
         ]
         result = self.llm_client.complete(
@@ -182,6 +214,106 @@ class ResponseComposerAgent:
             "",
             draft,
             "Честно сообщи, что более дешёвого подходящего товара нет. Не называй тот же товар более дешёвым.",
+        )
+
+    def compose_choose_one(
+        self,
+        card: ProductCard,
+        query: SearchQuery | None = None,
+        alternative: ProductCard | None = None,
+    ) -> str:
+        reasons = []
+        if card.stock_status:
+            reasons.append(f"наличие: {card.stock_status}")
+        if card.price is not None:
+            reasons.append(f"цена {card.price:g} {card.currency}")
+        if query and query.slots:
+            slot_reasons = self._requested_summary(query)
+            if slot_reasons:
+                reasons.append(f"совпадает с параметрами: {slot_reasons}")
+        reason_text = "; ".join(reasons) or "он лучше всего совпадает с текущим подбором"
+        if alternative:
+            alt_line = (
+                f"Альтернатива: {alternative.sku} — {alternative.name}, "
+                f"{alternative.price:g} {alternative.currency}."
+            )
+        else:
+            alt_line = "Альтернатива: могу показать вариант дешевле или с запасом по характеристикам."
+        draft = "\n".join(
+            [
+                f"Рекомендую: {card.sku} — {card.name}. Цена {card.price:g} {card.currency}, "
+                f"наличие: {card.stock_status}.",
+                f"Почему: {reason_text}.",
+                f"Когда не подойдёт: {self._choose_one_caveat(query)}",
+                alt_line,
+                f"Ссылка: {card.url}",
+            ]
+        )
+        return self._polish(
+            "ResponseComposerAgent.choose_one",
+            card.sku,
+            draft,
+            (
+                "Сохрани структуру: Рекомендую / Почему / Когда не подойдёт / Альтернатива. "
+                "Сохрани SKU, цены, наличие и ссылку из черновика без изменений."
+            ),
+        )
+
+    def _choose_one_caveat(self, query: SearchQuery | None) -> str:
+        category = query.category if query else "other"
+        if category == "boilers":
+            return (
+                "если площадь заметно больше или нужна горячая вода (двухконтурная схема) — "
+                "лучше взять модель мощнее, уточните детали."
+            )
+        if category == "pumps":
+            return (
+                "если монтажная длина, присоединение или напор вашей системы отличаются — "
+                "сверьте характеристики в карточке."
+            )
+        if category in {"pipes", "sewer"}:
+            return "если нужен другой диаметр или назначение — уточните, подберу заново."
+        return "если параметры вашей задачи отличаются от указанных — сверьте характеристики в карточке."
+
+    def compose_comparison(self, cards: list[ProductCard]) -> str:
+        cards = cards[:3]
+        seen_keys: list[str] = []
+        for card in cards:
+            for key in card.characteristics:
+                if key not in seen_keys:
+                    seen_keys.append(key)
+        diff_keys = [
+            key
+            for key in seen_keys
+            if len({card.characteristics.get(key) for card in cards}) > 1
+        ]
+        lines = ["Сравниваю показанные варианты по данным фида:"]
+        for card in cards:
+            parts = [f"цена {card.price:g} {card.currency}", f"наличие: {card.stock_status}"]
+            for key in diff_keys[:2]:
+                value = card.characteristics.get(key)
+                if value:
+                    parts.append(f"{key}: {value}")
+            lines.append(f"- {card.sku} — {card.name}: {'; '.join(parts)}")
+        if diff_keys:
+            key = diff_keys[0]
+            values = " против ".join(
+                str(card.characteristics.get(key, "не указано")) for card in cards
+            )
+            lines.append(f"Главное отличие — {key}: {values}.")
+        else:
+            values = " против ".join(f"{card.price:g} {card.currency}" for card in cards)
+            lines.append(f"Главное отличие — цена: {values}.")
+        lines.append("Если опишете вашу систему, порекомендую один вариант.")
+        draft = "\n".join(lines)
+        return self._polish(
+            "ResponseComposerAgent.comparison",
+            ", ".join(card.sku for card in cards),
+            draft,
+            (
+                "Сравни товары только по фактам из черновика. Сохрани все SKU, цены и "
+                "значения характеристик без изменений, ничего не добавляй."
+            ),
         )
 
     def compose_no_match(self, query: SearchQuery) -> str:
@@ -329,6 +461,15 @@ class ResponseComposerAgent:
             ),
         )
 
+    def compose_term_explanation(self, term: str, explanation: str) -> str:
+        draft = f"{term}: {explanation}"
+        return self._polish(
+            "ResponseComposerAgent.term",
+            term,
+            draft,
+            "Объясни термин простыми словами, коротко, без новых товарных фактов.",
+        )
+
     def compose_link_answer(
         self,
         cards: list[ProductCard],
@@ -421,12 +562,16 @@ class ResponseComposerAgent:
     def _polish(self, agent: str, user_message: str, draft: str, instruction: str) -> str:
         self.last_llm_requested = True
         self.last_draft = draft
+        context_block = self._history_text()
+        context_part = f"Недавний диалог:\n{context_block}\n" if context_block else ""
         messages = [
             {
                 "role": "system",
                 "content": (
                     "Ты AI-консультант интернет-магазина Vesta Trading. "
                     "Твоя задача — улучшить формулировку готового безопасного ответа. "
+                    "Учитывай недавний диалог, чтобы ответ звучал связно и не повторял "
+                    "уже сказанное как будто впервые. "
                     "Запрещено добавлять новые факты, товары, цены, остатки, характеристики, URL, "
                     "инженерные расчёты или обещания. Если в черновике есть карточки, сохрани все "
                     "цифры, SKU и ссылки без изменений. Отвечай кратко на русском."
@@ -436,6 +581,7 @@ class ResponseComposerAgent:
                 "role": "user",
                 "content": (
                     f"Инструкция: {instruction}\n"
+                    f"{context_part}"
                     f"Сообщение пользователя: {user_message}\n"
                     f"Безопасный черновик ответа:\n{draft}\n\n"
                     "Верни только финальный текст ответа."

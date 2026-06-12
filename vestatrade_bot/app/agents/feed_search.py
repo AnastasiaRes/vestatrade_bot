@@ -194,6 +194,10 @@ class FeedSearchAgent:
         if boiler_type:
             checks.append(normalize_text(str(boiler_type)) in text)
 
+        contours = slots.get("contours")
+        if contours:
+            checks.append(normalize_text(str(contours)) in text)
+
         element_type = slots.get("element_type")
         if element_type:
             checks.append(normalize_text(str(element_type)) in text)
@@ -312,7 +316,25 @@ class FeedSearchAgent:
         if values:
             return any(self._number_matches(value, number) for value in values)
         fallback = normalize_text(product.name)
+        if any(key in {"диаметр", "размер"} for key in key_texts):
+            return self._diameter_matches_name(fallback, number)
+        if "длина" in key_texts:
+            return self._length_matches_name(fallback, number)
         return self._number_matches(fallback, number)
+
+    def _diameter_matches_name(self, text: str, number: int) -> bool:
+        compact = normalize_text(text)
+        pattern = rf"(?<!pn\s)(?<!pn)(^|[^0-9]){number}\s*(?:мм|mm)\b"
+        if re.search(pattern, compact):
+            return True
+        return bool(re.search(rf"(^|[^0-9]){number}\s*[xх×]\s*\d+", compact))
+
+    def _length_matches_name(self, text: str, number: int) -> bool:
+        compact = normalize_text(text)
+        return bool(
+            re.search(rf"[xх×]\s*{number}([^0-9]|$)", compact)
+            or re.search(rf"(^|[^0-9]){number}\s*(?:мм|mm)([^0-9]|$)", compact)
+        )
 
     def _head_matches(self, product: Product, head_m: float) -> bool:
         head = int(head_m) if head_m.is_integer() else head_m

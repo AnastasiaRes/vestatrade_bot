@@ -1,7 +1,9 @@
 const apiBase = window.location.protocol === "file:" ? "http://127.0.0.1:8000" : "";
 
-let sessionId = localStorage.getItem("vestatrade_session_id") || crypto.randomUUID();
-localStorage.setItem("vestatrade_session_id", sessionId);
+// Каждая загрузка страницы — новая сессия: чат на экране пуст, значит и
+// серверная память диалога должна начинаться с нуля, иначе бот «помнит»
+// слоты из прошлых разговоров, которых пользователь не видит.
+let sessionId = crypto.randomUUID();
 
 const messages = document.querySelector("#messages");
 const form = document.querySelector("#chatForm");
@@ -141,7 +143,9 @@ async function sendMessage(text) {
     }
     typing.remove();
     appendMessage("bot", data.answer, data.products || []);
-    debugBox.textContent = JSON.stringify(data.debug || {}, null, 2);
+    if (debugBox) {
+      debugBox.textContent = JSON.stringify(data.debug || {}, null, 2);
+    }
   } catch (error) {
     typing.remove();
     appendMessage("bot", `Не удалось получить ответ: ${error.message}`);
@@ -188,10 +192,11 @@ reloadFeed.addEventListener("click", async () => {
 
 resetChat.addEventListener("click", () => {
   sessionId = crypto.randomUUID();
-  localStorage.setItem("vestatrade_session_id", sessionId);
   messages.innerHTML = "";
   appendMessage("bot", greeting);
-  debugBox.textContent = "{}";
+  if (debugBox) {
+    debugBox.textContent = "{}";
+  }
   input.value = "";
   input.focus();
 });

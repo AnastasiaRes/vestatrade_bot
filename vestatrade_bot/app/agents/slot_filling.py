@@ -32,7 +32,7 @@ class SlotFillingAgent:
         if category == "pipes":
             return self._pipes(slots)
         if category == "sewer":
-            return self._sewer(slots)
+            return self._sewer(slots, text)
         if category == "pumps":
             return self._pumps(slots)
         if category == "boilers":
@@ -54,6 +54,8 @@ class SlotFillingAgent:
                 ),
             )
         missing = []
+        if slots.get("pipe_purpose") == "водоснабжение" and not slots.get("water_temperature"):
+            missing.append("холодная или горячая вода")
         if not slots.get("diameter_mm"):
             missing.append("диаметр в мм")
         if missing:
@@ -64,7 +66,7 @@ class SlotFillingAgent:
             )
         return SlotFillingResult(slots=slots)
 
-    def _sewer(self, slots: dict) -> SlotFillingResult:
+    def _sewer(self, slots: dict, text: str) -> SlotFillingResult:
         slots.setdefault("pipe_purpose", "канализация")
         missing = []
         if not slots.get("sewer_scope"):
@@ -76,11 +78,15 @@ class SlotFillingAgent:
         if slots.get("element_type") == "труба" and not slots.get("length_mm"):
             missing.append("длина")
         if missing:
-            question = self._build_question(missing[:2])
+            question = self._build_question(missing[:2], slots=slots, text=text)
             return SlotFillingResult(slots=slots, needs_clarification=True, question=question)
         return SlotFillingResult(slots=slots)
 
     def _infer_sewer_followup_slots(self, text: str, slots: dict) -> None:
+        if slots.get("element_type") == "труба" and not slots.get("length_mm"):
+            total_length = self._extract_total_length_m(text)
+            if total_length:
+                slots["total_length_m"] = total_length
         if slots.get("element_type") == "труба" and not slots.get("length_mm"):
             length = self._extract_mm_value(text, min_value=300)
             if length:
@@ -89,6 +95,17 @@ class SlotFillingAgent:
             diameter = self._extract_mm_value(text, min_value=32, max_value=250)
             if diameter:
                 slots["diameter_mm"] = diameter
+
+    def _extract_total_length_m(self, text: str) -> int | None:
+        import re
+
+        match = re.search(r"(?<!\d)(\d{1,3})(?:\s*)(?:метр|метров|метра)\b", text)
+        if not match:
+            return None
+        value = int(match.group(1))
+        if value <= 0:
+            return None
+        return value
 
     def _extract_mm_value(
         self,
@@ -107,9 +124,28 @@ class SlotFillingAgent:
             return value
         return None
 
-    def _build_question(self, missing: list[str]) -> str:
+    def _build_question(self, missing: list[str], slots: dict | None = None, text: str = "") -> str:
+        slots = slots or {}
         if missing == ["длина"]:
-            return "Какая длина трубы нужна?"
+            diameter = slots.get("diameter_mm")
+            total_length = slots.get("total_length_m")
+            if diameter and self._mentions_number(text, int(diameter)) and "метр" not in text:
+                return (
+                    f"Диаметр {diameter} мм уже понял. Уточните длину одного отрезка трубы: "
+                    "500, 1000, 1500 или 2000 мм?"
+                )
+            if total_length:
+                details = []
+                if slots.get("sewer_scope"):
+                    details.append(str(slots["sewer_scope"]))
+                if diameter:
+                    details.append(f"диаметр {diameter} мм")
+                prefix = f"Понял: {', '.join(details)}. " if details else ""
+                return (
+                    f"{prefix}{total_length} м — это общий метраж. В фиде длина указана для одного "
+                    "отрезка трубы. Какая длина одной трубы нужна: 500, 1000, 1500 или 2000 мм?"
+                )
+            return "Какая длина одного отрезка трубы нужна: 500, 1000, 1500 или 2000 мм?"
         if missing == ["диаметр"]:
             return "Какой диаметр нужен?"
         if missing == ["внутренняя или наружная канализация"]:
@@ -122,6 +158,11 @@ class SlotFillingAgent:
             return "Канализация внутренняя или наружная? И что нужно: труба, отвод, тройник или муфта?"
         return "Уточните: " + "; ".join(missing) + "."
 
+    def _mentions_number(self, text: str, number: int) -> bool:
+        import re
+
+        return bool(re.search(rf"(?<!\d){number}(?!\d)", text))
+
     def _pumps(self, slots: dict) -> SlotFillingResult:
         if not slots.get("pump_type") and (
             slots.get("mounting_length_mm")
@@ -131,6 +172,28 @@ class SlotFillingAgent:
         ):
             slots["pump_type"] = "циркуляционный"
         if not slots.get("pump_type"):
+            if (
+                (slots.get("brand") or slots.get("reference_brand"))
+                and slots.get("cheap")
+                and slots.get("product_kind") == "насос"
+            ):
+                return SlotFillingResult(
+                    slots=slots,
+                    needs_clarification=True,
+                    question=(
+                        "Уточните модель старого насоса или маркировку: например UPS 25-40/25-60, "
+                        "монтажную длину 130/180 мм и присоединение."
+                    ),
+                )
+            if slots.get("pump_use") == "повышение давления":
+                return SlotFillingResult(
+                    slots=slots,
+                    needs_clarification=True,
+                    question=(
+                        "При слабом напоре уточните источник воды: центральный водопровод, "
+                        "скважина или колодец? И где нужно повысить напор — в доме или для полива?"
+                    ),
+                )
             if slots.get("pump_use") == "водоснабжение":
                 return SlotFillingResult(
                     slots=slots,
@@ -159,11 +222,16 @@ class SlotFillingAgent:
                 slots.get(key)
                 for key in ["mounting_length_mm", "head_m", "connection_size", "old_model"]
             )
+            if not has_core_param and slots.get("allow_basic_option"):
+                return SlotFillingResult(slots=slots)
             if not has_core_param:
                 return SlotFillingResult(
                     slots=slots,
                     needs_clarification=True,
-                    question="Уточните монтажную длину и напор или модель старого насоса.",
+                    question=(
+                        "Понял, нужен циркуляционный насос. Уточните монтажную длину и напор "
+                        "или модель старого насоса."
+                    ),
                 )
         return SlotFillingResult(slots=slots)
 
@@ -179,6 +247,15 @@ class SlotFillingAgent:
                 slots=slots,
                 needs_clarification=True,
                 question="На какую площадь подбираете котёл?",
+            )
+        if slots.get("boiler_type") == "газовый" and not slots.get("contours"):
+            return SlotFillingResult(
+                slots=slots,
+                needs_clarification=True,
+                question=(
+                    "Котёл одноконтурный (только отопление) или двухконтурный "
+                    "(отопление и горячая вода)?"
+                ),
             )
         return SlotFillingResult(slots=slots)
 

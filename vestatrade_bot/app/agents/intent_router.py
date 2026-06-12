@@ -60,10 +60,12 @@ SYMPTOM_KEYWORDS = [
     "вода шла",
     "не течет",
     "слабый напор",
+    "низкий напор",
     "слабо течет",
     "плохой напор",
     "плохо ид",
     "плохо течет",
+    "давления нет",
 ]
 
 SMALL_TALK = [
@@ -101,6 +103,17 @@ STOCK_WORDS = [
     "забрать прямо сейчас",
     "самовывоз",
 ]
+CHOOSE_ONE_WORDS = [
+    "выбери один",
+    "выбери сама",
+    "выбери сам",
+    "что взять",
+    "какой лучше",
+    "какой выбрать",
+    "посоветуй один",
+    "оставь один",
+    "один вариант",
+]
 COMPLECTATION_WORDS = [
     "есть насос",
     "есть бак",
@@ -123,7 +136,16 @@ class IntentRouterAgent:
 
     def route(self, message: str, session: SessionState | None = None) -> IntentResult:
         normalized_message = normalize_text(message)
-        context_key = session.category if session and session.category else "none"
+        if session:
+            context_key = ":".join(
+                [
+                    session.category or "none",
+                    session.last_intent or "-",
+                    session.pending_intent_type or "-",
+                ]
+            )
+        else:
+            context_key = "none:-:-"
         cache_key = f"{context_key}:{normalized_message}"
         if cache_key in self._cache:
             cached = self._cache[cache_key]
@@ -133,7 +155,7 @@ class IntentRouterAgent:
 
         result = self._rule_based(message, session)
         if result.confidence < 0.55:
-            llm_result = self._llm_fallback(message, result)
+            llm_result = self._llm_fallback(message, result, session)
             llm_result = self._sanity_check_llm_intent(llm_result, result, message)
             result = llm_result
         self._normalize_result(result, message, session)
@@ -147,8 +169,11 @@ class IntentRouterAgent:
             "cheap": any(word in text for word in CHEAP_WORDS),
             "in_stock": any(word in text for word in STOCK_WORDS),
             "small_talk": any(word in text for word in SMALL_TALK),
+            "choose_one": any(word in text for word in CHOOSE_ONE_WORDS),
         }
         slots: dict[str, Any] = {}
+        if flags["choose_one"]:
+            slots["choose_one"] = True
 
         sku_match = SKU_RE.search(sku_text) or NUMERIC_SKU_RE.search(sku_text)
         if sku_match and self._is_valid_sku_candidate(sku_match.group(0)):
@@ -158,6 +183,13 @@ class IntentRouterAgent:
             if normalize_text(brand) in text:
                 slots["brand"] = brand
                 break
+        if (
+            slots.get("brand")
+            and any(marker in text for marker in ["как", "аналог", "замен", "дешев", "подешев"])
+            and "только" not in text
+            and "без аналог" not in text
+        ):
+            slots["reference_brand"] = slots.pop("brand")
 
         category, category_score = self._detect_category(text)
         if category == "other" and session and session.category and self._looks_like_attribute_followup(text):
@@ -175,6 +207,19 @@ class IntentRouterAgent:
             category = "pumps"
             category_score = max(category_score, 0.7)
         self._extract_slots(text, category, slots)
+
+        if (
+            "насос" in text
+            and session
+            and session.category == "boilers"
+            and any(marker in text for marker in ["к нему", "для него", "к этому", "под него", "к ней"])
+        ):
+            category = "pumps"
+            category_score = max(category_score, 0.8)
+            slots["pump_type"] = "циркуляционный"
+            slots["pump_use"] = "отопление"
+            slots["pump_context"] = "котел"
+            slots["allow_basic_option"] = True
 
         intent_type = "unknown"
         confidence = category_score
@@ -261,6 +306,13 @@ class IntentRouterAgent:
         elif "газ" in text:
             slots["boiler_type"] = "газовый"
 
+        if "двухконтурн" in text:
+            slots["contours"] = "двухконтурный"
+        elif "одноконтурн" in text:
+            slots["contours"] = "одноконтурный"
+        elif category == "boilers" and ("гвс" in text or ("горяч" in text and "вод" in text)):
+            slots["contours"] = "двухконтурный"
+
         if "внутрен" in text:
             slots["sewer_scope"] = "внутренняя"
         elif "наруж" in text:
@@ -268,14 +320,12 @@ class IntentRouterAgent:
 
         if category in {"pipes", "sewer"} and "канализац" in text:
             slots["pipe_purpose"] = "канализация"
+        elif category in {"pipes", "sewer"} and "отоплен" in text:
+            slots["pipe_purpose"] = "отопление"
         elif category in {"pipes", "sewer"} and (
-            "отоплен" in text
-            or "водоснаб" in text
-            or "для воды" in text
-            or "горяч" in text
-            or "холодн" in text
+            "водоснаб" in text or "для воды" in text or "горяч" in text or "холодн" in text
         ):
-            slots["pipe_purpose"] = "отопление/водоснабжение"
+            slots["pipe_purpose"] = "водоснабжение"
 
         if category == "pipes":
             if "горяч" in text:
@@ -289,7 +339,29 @@ class IntentRouterAgent:
             slots["application"] = "радиатор"
         if "дач" in text:
             slots["application"] = "дача"
-        if category == "pumps" and "водоснаб" in text:
+        if category == "pumps" and "насос" in text and "котл" in text:
+            slots["pump_type"] = "циркуляционный"
+            slots["pump_use"] = "отопление"
+            slots["pump_context"] = "котел"
+            slots["allow_basic_option"] = True
+        if category == "pumps" and (
+            "слабый напор" in text
+            or "низкий напор" in text
+            or "плохой напор" in text
+            or "давлен" in text
+        ):
+            slots["pump_use"] = "повышение давления"
+            slots["symptom"] = "слабый напор"
+            if "дом" in text:
+                slots["application"] = "дом"
+        elif category == "pumps" and (
+            "вода не ид" in text
+            or "вода шла" in text
+            or "вода" in text and ("ид" in text or "шла" in text)
+        ):
+            slots["pump_use"] = "водоснабжение"
+            slots["symptom"] = "проблема с подачей воды"
+        elif category == "pumps" and "водоснаб" in text:
             slots["pump_use"] = "водоснабжение"
         elif category == "pumps" and "полив" in text:
             slots["pump_use"] = "полив"
@@ -311,6 +383,12 @@ class IntentRouterAgent:
             slots["union"] = True
         if "термоголов" in text:
             slots["thermostatic_head"] = True
+        elif "перекры" in text or "закрывать" in text or "отсек" in text:
+            slots["thermostatic_head"] = False
+            slots["radiator_action"] = "перекрывать поток"
+        elif "регулир" in text or "температур" in text:
+            slots["thermostatic_head"] = True
+            slots["radiator_action"] = "регулировать температуру"
 
         area_match = re.search(
             r"(\d{2,4})\s*(?:м2|м²|квадрат|кв\.?\s*м|кв\b)",
@@ -451,6 +529,8 @@ class IntentRouterAgent:
             "водоснаб",
             "отоплен",
             "канализац",
+            "внутрен",
+            "наруж",
             "дач",
             "полив",
             "скваж",
@@ -466,12 +546,20 @@ class IntentRouterAgent:
             "wilo",
             "ups",
             "upс",
+            "перекрыв",
+            "регулир",
+            "температур",
+            "слабый напор",
+            "низкий напор",
+            "давлен",
             "1/2",
             "3/4",
             "горяч",
             "холодн",
             "квт",
             "квадрат",
+            "контурн",
+            "гвс",
             "380",
             "220",
             "стар",
@@ -494,6 +582,16 @@ class IntentRouterAgent:
         slots = result.slots
         if result.category == "other" and session and session.category and self._looks_like_attribute_followup(text):
             result.category = session.category
+            if result.intent_type == "unknown":
+                result.intent_type = "attribute_request"
+
+        if (
+            session
+            and session.category == "sewer"
+            and result.category == "other"
+            and ("внутрен" in text or "наруж" in text)
+        ):
+            result.category = "sewer"
             if result.intent_type == "unknown":
                 result.intent_type = "attribute_request"
 
@@ -616,7 +714,12 @@ class IntentRouterAgent:
 
         return llm_result
 
-    def _llm_fallback(self, message: str, fallback_result: IntentResult) -> IntentResult:
+    def _llm_fallback(
+        self,
+        message: str,
+        fallback_result: IntentResult,
+        session: SessionState | None = None,
+    ) -> IntentResult:
         fallback = self._as_dict(fallback_result)
         schema_hint = {
             "intent_type": "exact_sku|brand_category|broad_category|cheap_request|stock_request|attribute_request|complectation|small_talk|out_of_scope|unknown",
@@ -625,17 +728,37 @@ class IntentRouterAgent:
             "flags": {},
             "confidence": 0.0,
         }
+        context_part = ""
+        if session and session.history:
+            context_lines = []
+            for entry in session.history[-6:]:
+                content = (entry.get("content") or "").strip()
+                if not content:
+                    continue
+                if len(content) > 300:
+                    content = content[:300] + "…"
+                speaker = "Клиент" if entry.get("role") == "user" else "Бот"
+                context_lines.append(f"{speaker}: {content}")
+            if context_lines:
+                context_part = "Недавний диалог:\n" + "\n".join(context_lines) + "\n"
         messages = [
             {
                 "role": "system",
                 "content": (
                     "Ты классификатор запросов интернет-магазина инженерной сантехники. "
+                    "Классифицируй новое сообщение клиента с учётом недавнего диалога: "
+                    "короткие уточнения (например «а подешевле?», «да», «второй») "
+                    "продолжают предыдущую тему и наследуют её категорию. "
                     "Верни только JSON без Markdown. Не выдумывай факты."
                 ),
             },
             {
                 "role": "user",
-                "content": f"Схема: {json.dumps(schema_hint, ensure_ascii=False)}\nЗапрос: {message}",
+                "content": (
+                    f"Схема: {json.dumps(schema_hint, ensure_ascii=False)}\n"
+                    f"{context_part}"
+                    f"Новое сообщение клиента: {message}"
+                ),
             },
         ]
         data, used = self.llm_client.complete_json("IntentRouterAgent", messages, fallback)

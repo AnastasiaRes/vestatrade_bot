@@ -116,6 +116,7 @@ class SessionState(BaseModel):
     pending_question: str | None = None
     pending_intent_type: str | None = None
     pending_complectation_parts: list[str] = Field(default_factory=list)
+    question_repeats: int = 0
 
 
 class HandoffSummary(BaseModel):
