@@ -5,3 +5,4 @@ __pycache__/
 *.pyc
 .venv/
 vestatrade_bot/app/data/handoff_requests.jsonl
+vestatrade_bot/app/data/chat_logs/

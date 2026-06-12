@@ -694,6 +694,37 @@ def test_product_docs_loader_supports_series_map_and_brand_rules(tmp_path, sampl
     assert by_sku["ECA-6"].docs_text is None
 
 
+def test_chat_logger_writes_readable_transcript(tmp_path, orchestrator) -> None:
+    from app.chat_logger import ChatLogger
+
+    chat_logger = ChatLogger(tmp_path)
+    response = orchestrator.handle_chat("log1", "электрический котёл на 100 м²")
+    chat_logger.log_turn("log1", "электрический котёл на 100 м²", response)
+    followup = orchestrator.handle_chat("log1", "дай ссылку")
+    chat_logger.log_turn("log1", "дай ссылку", followup)
+
+    files = list(tmp_path.rglob("*.md"))
+    assert len(files) == 1
+    content = files[0].read_text(encoding="utf-8")
+    assert "Клиент:** электрический котёл на 100 м²" in content
+    assert "Бот:**" in content
+    assert "Показанные товары: ARD-E9" in content
+    assert "дай ссылку" in content
+
+
+def test_chat_logger_sanitizes_session_id_path(tmp_path, orchestrator) -> None:
+    from app.chat_logger import ChatLogger
+
+    chat_logger = ChatLogger(tmp_path)
+    response = orchestrator.handle_chat("evil", "привет")
+    chat_logger.log_turn("../../evil", "привет", response)
+
+    files = list(tmp_path.rglob("*.md"))
+    assert len(files) == 1
+    assert files[0].is_relative_to(tmp_path)
+    assert ".." not in files[0].name
+
+
 def test_guardrails_restore_product_answer_if_llm_drops_card_facts(sample_products) -> None:
     orchestrator = ChatOrchestrator(
         products=sample_products,

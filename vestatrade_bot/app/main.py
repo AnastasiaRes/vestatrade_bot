@@ -10,6 +10,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.agents.orchestrator import ChatOrchestrator
+from app.chat_logger import ChatLogger
+from app.config import get_settings
 from app.models import ChatRequest, ChatResponse
 
 
@@ -27,6 +29,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 orchestrator = ChatOrchestrator()
+chat_logger = ChatLogger(get_settings().chat_logs_dir)
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -69,7 +72,9 @@ def root_script() -> FileResponse:
 def chat(request: ChatRequest) -> ChatResponse:
     if not request.message.strip():
         raise HTTPException(status_code=400, detail="message must not be empty")
-    return orchestrator.handle_chat(request.session_id, request.message)
+    response = orchestrator.handle_chat(request.session_id, request.message)
+    chat_logger.log_turn(request.session_id, request.message, response)
+    return response
 
 
 @app.post("/reload-feed")
