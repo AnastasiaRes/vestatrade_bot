@@ -107,7 +107,31 @@ class ResponseComposerAgent:
                 "Клиент написал нетоварное сообщение: приветствие, small talk, эмоция или "
                 "вопрос о тебе. Ответь живо и кратко (1–3 предложения), признай содержание "
                 "сообщения, затем мягко предложи помощь с подбором, упомянув 2–3 категории "
-                "ассортимента."
+                "ассортимента. ВАЖНО: не начинай подбор и не задавай технических вопросов "
+                "(тип котла, площадь, диаметр и т.п.), пока клиент сам не назвал задачу — "
+                "на простое приветствие просто поздоровайся и предложи описать задачу."
+            ),
+        )
+
+    def compose_term_consult(self, user_message: str) -> str:
+        fallback = (
+            "Точное значение этого термина не подскажу без проверки — не хочу вводить в "
+            "заблуждение. Могу объяснить базовые понятия: монтажная длина, напор, контуры "
+            "котла, типы труб и кранов. Или опишите задачу — подберу товар из ассортимента: "
+            "трубы, насосы, котлы, краны, канализация, радиаторная арматура."
+        )
+        return self._llm_smart_reply(
+            agent="ResponseComposerAgent.term_consult",
+            user_message=user_message,
+            fallback_draft=fallback,
+            situation=(
+                "Клиент спрашивает значение термина или просит что-то объяснить. Объясни "
+                "простыми словами в 2–4 предложениях, без выдумок: если термин из твоей "
+                "области — объясни по памятке и общим знаниям сантехники; если не уверен — "
+                "честно скажи и предложи уточнить у менеджера. ЗАПРЕЩЕНО утверждать, что "
+                "какой-то товар есть или отсутствует в ассортименте или наличии — это "
+                "проверяется только подбором по каталогу. В конце одним предложением "
+                "предложи помощь с подбором. Не задавай технических вопросов для подбора."
             ),
         )
 
@@ -147,8 +171,25 @@ class ResponseComposerAgent:
             reply = result.content.strip()
             if self._repeats_last_assistant(reply):
                 return fallback_draft
+            if self._contains_assortment_claims(reply):
+                return fallback_draft
             return reply
         return fallback_draft
+
+    def _contains_assortment_claims(self, reply: str) -> bool:
+        """Free-form replies must not assert what the shop stocks — only feed flows may."""
+        normalized = " ".join(reply.lower().replace("ё", "е").split())
+        markers = [
+            "в ассортименте есть",
+            "у нас в ассортименте",
+            "у нас есть",
+            "у нас представлен",
+            "есть в наличии",
+            "в наличии есть",
+            "в продаже есть",
+            "имеется в продаже",
+        ]
+        return any(marker in normalized for marker in markers)
 
     def _repeats_last_assistant(self, reply: str) -> bool:
         """Weak models sometimes parrot their previous answer instead of replying anew."""

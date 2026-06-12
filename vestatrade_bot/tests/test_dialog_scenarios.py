@@ -516,6 +516,22 @@ def test_gas_boiler_scenario_asks_contours_after_area(orchestrator) -> None:
     assert final.debug["slots"]["contours"] == "двухконтурный"
 
 
+def test_what_is_boiler_gets_explanation_not_interrogation(orchestrator) -> None:
+    response = orchestrator.handle_chat("term3", "что такое котел")
+
+    assert response.products == []
+    assert "отоплени" in response.answer.lower()
+    assert "Котёл нужен газовый или электрический?" not in response.answer
+
+
+def test_what_is_unknown_term_does_not_fall_into_product_flow(orchestrator) -> None:
+    response = orchestrator.handle_chat("term4", "что такое сильфон?")
+
+    assert response.products == []
+    assert "Уточните" not in response.answer
+    assert "не подскажу" in response.answer.lower() or "объясн" in response.answer.lower()
+
+
 def test_term_explanation_two_contour_boiler(orchestrator) -> None:
     response = orchestrator.handle_chat("term2", "что такое двухконтурный котёл?")
 
