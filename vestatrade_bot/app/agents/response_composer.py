@@ -1,7 +1,31 @@
 from __future__ import annotations
 
+from typing import Any
+
 from app.models import ProductCard, SearchQuery
 from app.openrouter_client import OpenRouterClient
+
+
+MANAGER_PERSONA = (
+    "Ты — живой, опытный менеджер-консультант интернет-магазина инженерной сантехники "
+    "Vesta Trading. Ассортимент: трубы PPR (включая армированные), насосы (циркуляционные, "
+    "повысительные, дренажные, скважинные), котлы (газовые и электрические), краны и вентили, "
+    "канализация (внутренняя и наружная), радиаторная арматура.\n"
+    "Ориентиры, которыми можно делиться как общими правилами (это не инженерный расчёт): "
+    "мощность котла — примерно 1 кВт на 10 м² плюс запас на утепление и горячую воду; "
+    "двухконтурный котёл даёт отопление и горячую воду, одноконтурный — только отопление; "
+    "монтажная длина циркуляционного насоса обычно 130 или 180 мм, типовой насос отопления — "
+    "25/6 на 180 мм; для горячей воды и отопления берут PN20 или армированные трубы; "
+    "закрытая камера сгорания берёт воздух с улицы через коаксиальный дымоход; "
+    "американка — разъёмное соединение, с ним узел снимается без разборки трубы.\n"
+    "Манера: тёплая и деловая, как у живого менеджера; короткие фразы, без канцелярита, "
+    "без markdown и без эмодзи. Учитывай историю диалога и не переспрашивай то, что клиент "
+    "уже сказал. Если для подбора не хватает одного ключевого параметра — задай один короткий "
+    "вопрос; если вопрос общий — сначала ответь по сути, потом предложи подбор.\n"
+    "ЖЁСТКИЕ ПРАВИЛА: никогда не выдумывай товары, цены, наличие, артикулы, ссылки, акции и "
+    "сроки доставки — такие факты берутся только из переданных тебе данных фида. Не делай "
+    "инженерных расчётов и схем. Не повторяй дословно свой предыдущий ответ."
+)
 
 
 class ResponseComposerAgent:
@@ -12,6 +36,7 @@ class ResponseComposerAgent:
         self.last_llm_fallback_reason: str | None = None
         self.last_draft: str | None = None
         self._history: list[dict[str, str]] = []
+        self._state_summary: str = ""
 
     def reset_usage(self) -> None:
         self.last_llm_used = False
@@ -21,6 +46,20 @@ class ResponseComposerAgent:
 
     def set_history(self, history: list[dict[str, str]] | None) -> None:
         self._history = list(history or [])
+
+    def set_state(self, category: str | None, slots: dict[str, Any] | None) -> None:
+        parts: list[str] = []
+        if category:
+            parts.append(f"категория: {category}")
+        informative = {
+            key: value for key, value in (slots or {}).items() if not isinstance(value, bool)
+        }
+        if informative:
+            parts.append(
+                "известные параметры: "
+                + ", ".join(f"{key}={value}" for key, value in informative.items())
+            )
+        self._state_summary = "; ".join(parts)
 
     def _history_messages(self, limit: int = 8, max_chars: int = 600) -> list[dict[str, str]]:
         messages: list[dict[str, str]] = []
@@ -51,6 +90,12 @@ class ResponseComposerAgent:
             agent="ResponseComposerAgent.small_talk",
             user_message=message,
             fallback_draft=self._small_talk_fallback(message),
+            situation=(
+                "Клиент написал нетоварное сообщение: приветствие, small talk, эмоция или "
+                "вопрос о тебе. Ответь живо и кратко (1–3 предложения), признай содержание "
+                "сообщения, затем мягко предложи помощь с подбором, упомянув 2–3 категории "
+                "ассортимента."
+            ),
         )
 
     def _llm_smart_reply(
@@ -58,37 +103,19 @@ class ResponseComposerAgent:
         agent: str,
         user_message: str,
         fallback_draft: str,
+        situation: str,
     ) -> str:
-        """Compose a small-talk / non-product reply via LLM with safe fallback.
+        """Compose a free-form reply via LLM with manager persona and safe fallback.
 
-        The LLM is allowed to acknowledge the user's message naturally, but is
-        instructed to always steer the conversation back to product selection
-        within Vesta Trading and to never invent products, prices or claims.
+        The LLM may answer general questions and give rule-of-thumb advice from the
+        persona cheat-sheet, but must never invent products, prices or stock —
+        those facts come only from the feed-driven flows.
         """
         self.last_llm_requested = True
         self.last_draft = fallback_draft
-        system = (
-            "Ты — AI-консультант интернет-магазина Vesta Trading. "
-            "Магазин продаёт инженерную сантехнику. Категории: трубы, насосы, "
-            "котлы, краны, канализация, радиаторная арматура. "
-            "Сейчас пользователь написал нетоварное сообщение (приветствие, "
-            "small talk, эмоция, нестандартный вопрос или жалоба). Твои правила:\n"
-            "1. Ответь живо и кратко (1–3 предложения), признай содержание сообщения "
-            "пользователя — не игнорируй его и не отвечай шаблоном.\n"
-            "1а. Тебе передана история диалога — обязательно учитывай её: если "
-            "пользователь ссылается на сказанное ранее, что-то переспрашивает или "
-            "продолжает мысль, отвечай в контексте, а не как на первое сообщение.\n"
-            "2. Если пользователь спрашивает что-то вне ассортимента (погода, "
-            "философия, личное), вежливо обозначь, что это вне твоей компетенции.\n"
-            "3. В конце мягко верни разговор к подбору товаров: перечисли 2–4 "
-            "категории и предложи описать задачу.\n"
-            "4. ЗАПРЕЩЕНО: выдумывать товары, цены, наличие, характеристики, "
-            "акции, скидки, ссылки, обещания доставки, факты о компании. Не "
-            "ставь диагнозы и не давай инженерных расчётов.\n"
-            "5. ЗАПРЕЩЕНО повторять свой предыдущий ответ из истории дословно — "
-            "отвечай именно на новое сообщение.\n"
-            "6. Отвечай по-русски, без markdown-разметки и без эмодзи."
-        )
+        system = MANAGER_PERSONA + "\n\nСитуация: " + situation
+        if self._state_summary:
+            system += f"\nТекущий контекст подбора клиента: {self._state_summary}."
         messages = [
             {"role": "system", "content": system},
             *self._history_messages(),
@@ -207,6 +234,13 @@ class ResponseComposerAgent:
             agent="ResponseComposerAgent.unknown",
             user_message=user_message,
             fallback_draft=fallback,
+            situation=(
+                "Клиент написал сообщение, которое не похоже на конкретный товарный запрос: "
+                "общий вопрос, просьба о совете или неясная формулировка. Если это вопрос по "
+                "твоей области — ответь по сути, используя ориентиры из памятки. Если просят "
+                "совета по выбору — назови понятный критерий выбора и задай один уточняющий "
+                "вопрос. В конце предложи подобрать конкретные варианты из каталога."
+            ),
         )
 
     def compose_out_of_scope(self, user_message: str = "") -> str:
@@ -218,6 +252,11 @@ class ResponseComposerAgent:
             agent="ResponseComposerAgent.out_of_scope",
             user_message=user_message,
             fallback_draft=fallback,
+            situation=(
+                "Клиент спрашивает что-то вне ассортимента магазина (погода, политика, "
+                "личное и т.п.). Вежливо и с лёгкой человеческой интонацией скажи, что это "
+                "вне твоей области, и верни разговор к подбору, упомянув 2–3 категории."
+            ),
         )
 
     def compose_no_cheaper(self, cards: list[ProductCard]) -> str:
@@ -587,17 +626,19 @@ class ResponseComposerAgent:
         self.last_draft = draft
         context_block = self._history_text()
         context_part = f"Недавний диалог:\n{context_block}\n" if context_block else ""
+        if self._state_summary:
+            context_part += f"Текущий контекст подбора: {self._state_summary}.\n"
         messages = [
             {
                 "role": "system",
                 "content": (
-                    "Ты AI-консультант интернет-магазина Vesta Trading. "
-                    "Твоя задача — улучшить формулировку готового безопасного ответа. "
-                    "Учитывай недавний диалог, чтобы ответ звучал связно и не повторял "
-                    "уже сказанное как будто впервые. "
-                    "Запрещено добавлять новые факты, товары, цены, остатки, характеристики, URL, "
-                    "инженерные расчёты или обещания. Если в черновике есть карточки, сохрани все "
-                    "цифры, SKU и ссылки без изменений. Отвечай кратко на русском."
+                    MANAGER_PERSONA
+                    + "\n\nСитуация: тебе дан готовый безопасный черновик ответа. Твоя задача — "
+                    "только улучшить его формулировку, чтобы он звучал как ответ живого "
+                    "менеджера: связно с диалогом, без повторения уже сказанного как будто "
+                    "впервые. Запрещено добавлять новые факты, товары, цены, остатки, "
+                    "характеристики, URL, расчёты или обещания. Если в черновике есть карточки, "
+                    "сохрани все цифры, SKU и ссылки без изменений. Отвечай кратко."
                 ),
             },
             {

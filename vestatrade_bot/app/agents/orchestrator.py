@@ -32,6 +32,30 @@ from .utils import collapse_sku_spaces, merge_slots, normalize_sku as normalize_
 logger = logging.getLogger(__name__)
 
 
+COMPANION_HINTS: dict[str, str] = {
+    "boilers": (
+        "Кстати, к котлу обычно берут ещё циркуляционный насос, группу безопасности и трубы "
+        "для обвязки. Могу подобрать — напишите, например, «насос к нему»."
+    ),
+    "pumps": (
+        "Кстати, к насосу часто ставят два шаровых крана с американкой — так его можно снять, "
+        "не сливая систему. Если нужно, напишите «кран с американкой»."
+    ),
+    "pipes": (
+        "Кстати, к трубам обычно нужны краны и переходники. Если нужно, напишите, "
+        "например, «кран 1/2»."
+    ),
+    "sewer": (
+        "Кстати, к канализационной трубе часто берут отводы и муфты того же диаметра. "
+        "Если нужно, напишите, например, «отвод 50»."
+    ),
+    "radiator_fittings": (
+        "Кстати, если нужна регулировка температуры, к радиаторному клапану берут "
+        "термоголовку — могу подобрать."
+    ),
+}
+
+
 class ChatOrchestrator:
     def __init__(
         self,
@@ -66,6 +90,7 @@ class ChatOrchestrator:
         session.slots.pop("fallback_after_repeat", None)
         self.composer.reset_usage()
         self.composer.set_history(session.history)
+        self.composer.set_state(session.category, session.slots)
         agents_used: list[str] = []
 
         intent = self.intent_router.route(message, session)
@@ -230,6 +255,13 @@ class ChatOrchestrator:
             self.sessions.save(session)
             return self._response(session_id, answer, [], False, intent, session, agents_used)
 
+        gas_vs_electric = self._maybe_gas_vs_electric_consult(message, intent, session)
+        if gas_vs_electric:
+            agents_used.append("ResponseComposerAgent")
+            self._append_history(session, message, gas_vs_electric)
+            self.sessions.save(session)
+            return self._response(session_id, gas_vs_electric, [], False, intent, session, agents_used)
+
         boiler_warning = self._maybe_boiler_warning(message, intent, session)
         if boiler_warning:
             agents_used.append("ResponseComposerAgent")
@@ -335,6 +367,7 @@ class ChatOrchestrator:
                             note=self.composer.compose_alternative_note(query),
                         )
                     answer = self._guard_composed_answer(answer, "products", agents_used)
+                    answer = self._append_companion_hint(answer, session, query.category)
                     session.last_products = cards
                     self._append_history(session, message, answer)
                     self.sessions.save(session)
@@ -392,6 +425,7 @@ class ChatOrchestrator:
                 note=self._compose_query_note(query),
             )
         answer = self._guard_composed_answer(answer, "products", agents_used)
+        answer = self._append_companion_hint(answer, session, query.category)
         session.last_products = cards
         self._append_history(session, message, answer)
         self.sessions.save(session)
@@ -568,6 +602,45 @@ class ChatOrchestrator:
             ),
             alternative=session.last_products[1] if len(session.last_products) > 1 else None,
         )
+
+    def _maybe_gas_vs_electric_consult(
+        self,
+        message: str,
+        intent: IntentResult,
+        session: SessionState,
+    ) -> str | None:
+        text = normalize_text(message)
+        if "газов" not in text or "электрическ" not in text:
+            return None
+        if not any(marker in text for marker in ["или", "лучше", "выбрать", "разница", "отлича"]):
+            return None
+        if (
+            intent.category != "boilers"
+            and session.category != "boilers"
+            and "котел" not in text
+            and "котл" not in text
+        ):
+            return None
+        session.category = "boilers"
+        session.pending_question = "Газ подведён и какая площадь?"
+        session.pending_intent_type = "broad_category"
+        return (
+            "Тут всё решает наличие газа. Если газ подведён — газовый котёл обычно ощутимо "
+            "дешевле в эксплуатации, но нужны дымоход и согласование. Электрический проще и "
+            "дешевле в установке, тише и без дымохода, но дороже по счетам за электричество, "
+            "а для большой площади часто нужно 380 В. "
+            "Подскажите: газ подведён и какая площадь? Подберу конкретные варианты из каталога."
+        )
+
+    def _append_companion_hint(self, answer: str, session: SessionState, category: str) -> str:
+        hint = COMPANION_HINTS.get(category)
+        if not hint:
+            return answer
+        flag = f"companion_hint_{category}"
+        if session.slots.get(flag):
+            return answer
+        session.slots[flag] = True
+        return f"{answer}\n\n{hint}"
 
     def _wants_manager_handoff(self, message: str) -> bool:
         text = normalize_text(message)

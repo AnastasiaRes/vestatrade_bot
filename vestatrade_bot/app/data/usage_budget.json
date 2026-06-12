@@ -1,6 +1,6 @@
 {
   "date": "2026-06-12",
-  "spent_usd": 0.00079634,
+  "spent_usd": 0.00082412,
   "calls": [
     {
       "ts": "2026-06-12T14:00:25.414282",
@@ -105,6 +105,14 @@
       "prompt_tokens": 242,
       "completion_tokens": 18,
       "cost_usd": 2.476e-05
+    },
+    {
+      "ts": "2026-06-12T14:35:01.481301",
+      "agent": "ResponseComposerAgent.clarification",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 291,
+      "completion_tokens": 15,
+      "cost_usd": 2.778e-05
     }
   ]
 }

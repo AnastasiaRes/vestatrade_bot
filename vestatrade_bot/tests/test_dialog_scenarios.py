@@ -579,6 +579,32 @@ def test_smart_reply_does_not_parrot_previous_answer() -> None:
     assert "консультант" in answer.lower()
 
 
+def test_product_answer_suggests_companion_components_once(orchestrator) -> None:
+    response = orchestrator.handle_chat("comp1", "электрический котёл на 100 м²")
+
+    assert response.products
+    assert "насос" in response.answer.lower()
+    assert "групп" in response.answer.lower()
+
+    again = orchestrator.handle_chat("comp1", "покажи дешевле")
+    assert "группу безопасности" not in again.answer
+
+
+def test_gas_vs_electric_question_gets_advice_not_silent_assumption(orchestrator) -> None:
+    response = orchestrator.handle_chat("gve1", "что лучше: газовый или электрический котёл?")
+
+    assert response.products == []
+    assert "газ" in response.answer.lower()
+    assert "электрическ" in response.answer.lower()
+    assert "площадь" in response.answer.lower()
+
+    followup = orchestrator.handle_chat("gve1", "газа нет, дом 100 квадратов")
+
+    assert followup.products
+    assert followup.debug["slots"]["boiler_type"] == "электрический"
+    assert followup.debug["slots"]["area_m2"] == 100.0
+
+
 def test_guardrails_restore_product_answer_if_llm_drops_card_facts(sample_products) -> None:
     orchestrator = ChatOrchestrator(
         products=sample_products,
