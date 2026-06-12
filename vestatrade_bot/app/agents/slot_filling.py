@@ -116,6 +116,10 @@ class SlotFillingAgent:
         import re
 
         for match in re.finditer(r"(?<!\d)(\d{2,5})(?:\s*мм|\s*м\b|\b)", text):
+            tail = text[match.end(1) : match.end(1) + 12]
+            # Угол, температура, объём или секции — это не размер.
+            if re.match(r"\s*(?:градус|°|литр|л\b|секц|м2|м²|квадрат)", tail):
+                continue
             value = int(match.group(1))
             if value < min_value:
                 continue

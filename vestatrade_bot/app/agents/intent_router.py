@@ -435,15 +435,16 @@ class IntentRouterAgent:
         if category in {"pipes", "sewer", "valves", "radiator_fittings"} or any(
             marker in text for marker in ["диаметр", "ø"]
         ):
-            diameter_match = re.search(r"(?:^|\s|d|ø)(\d{2,3})(?:\s*мм|\s|$)", text)
-            if diameter_match:
+            for diameter_match in re.finditer(r"(?:^|\s|d|ø)(\d{2,3})(?:\s*мм|\s|$)", text):
                 tail = text[diameter_match.end(1) : diameter_match.end(1) + 12]
                 value = int(diameter_match.group(1))
-                if (
-                    not re.match(r"\s*(?:м2|м²|кв|квадрат)", tail)
-                    and 10 <= value <= 250
-                ):
+                # Число с единицей не-размера (угол, температура, объём, секции)
+                # не должно превращаться в диаметр — идём к следующему кандидату.
+                if re.match(r"\s*(?:м2|м²|кв|квадрат|градус|°|литр|л\b|секц)", tail):
+                    continue
+                if 10 <= value <= 250:
                     slots["diameter_mm"] = value
+                    break
 
         if category in {"valves", "radiator_fittings"}:
             inch_match = INCH_SIZE_RE.search(text)

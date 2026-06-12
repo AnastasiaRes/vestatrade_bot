@@ -694,6 +694,24 @@ def test_product_docs_loader_supports_series_map_and_brand_rules(tmp_path, sampl
     assert by_sku["ECA-6"].docs_text is None
 
 
+def test_degrees_are_not_turned_into_diameter(orchestrator) -> None:
+    response = orchestrator.handle_chat("dim1", "отвод 87 градусов на 110")
+
+    assert response.debug["slots"].get("diameter_mm") == 110
+
+    response = orchestrator.handle_chat("dim2", "термоголовка на 28 градусов")
+    assert "diameter_mm" not in response.debug["slots"]
+
+
+def test_no_phantom_dimensions_for_unstated_constraints(orchestrator) -> None:
+    response = orchestrator.handle_chat("dim3", "кран шаровый 1/2")
+
+    slots = response.debug["slots"]
+    assert slots.get("size_inch") == "1/2"
+    for key in ["diameter_mm", "length_mm", "area_m2", "power_kw", "head_m", "mounting_length_mm"]:
+        assert key not in slots, f"фантомное ограничение: {key}={slots[key]}"
+
+
 def test_chat_logger_writes_readable_transcript(tmp_path, orchestrator) -> None:
     from app.chat_logger import ChatLogger
 
