@@ -87,6 +87,15 @@ class ChatOrchestrator:
             session.slots = {}
             session.last_products = []
 
+        if self._wants_manager_handoff(message):
+            summary = self.handoff.build_summary(message, session)
+            recorded = self.handoff.record(summary, session.session_id, self.settings.handoff_log_path)
+            answer = self.handoff.compose_user_confirmation(summary, recorded)
+            agents_used.append("HandoffAgent")
+            self._append_history(session, message, answer)
+            self.sessions.save(session)
+            return self._response(session_id, answer, [], True, intent, session, agents_used)
+
         if intent.intent_type == "link_request":
             selected_index = self._select_ordinal_index(message, session.last_products)
             answer = self.composer.compose_link_answer(session.last_products, selected_index)
@@ -121,6 +130,11 @@ class ChatOrchestrator:
             return self._response(
                 session_id, answer, session.last_products, False, intent, session, agents_used
             )
+
+        analogs_response = self._maybe_analogs_response(message, intent, session, agents_used)
+        if analogs_response is not None:
+            self.sessions.save(session)
+            return analogs_response
 
         choose_answer = self._maybe_choose_one_answer(message, session)
         if choose_answer:
@@ -554,6 +568,81 @@ class ChatOrchestrator:
             ),
             alternative=session.last_products[1] if len(session.last_products) > 1 else None,
         )
+
+    def _wants_manager_handoff(self, message: str) -> bool:
+        text = normalize_text(message)
+        negations = ["не надо менеджер", "без менеджера", "не нужен менеджер", "сам разберусь"]
+        if any(neg in text for neg in negations):
+            return False
+        markers = [
+            "менеджер",
+            "оператор",
+            "живой человек",
+            "живым человеком",
+            "с человеком",
+            "позови человека",
+            "сотрудник",
+            "поддержк",
+        ]
+        return any(marker in text for marker in markers)
+
+    def _maybe_analogs_response(
+        self,
+        message: str,
+        intent: IntentResult,
+        session: SessionState,
+        agents_used: list[str],
+    ) -> ChatResponse | None:
+        text = normalize_text(message)
+        if "аналог" not in text:
+            return None
+        if not session.last_products:
+            return None
+        blocking_slots = {"sku", "brand", "reference_brand", "old_model"}
+        if blocking_slots.intersection(intent.slots):
+            return None
+        if intent.category not in {"other", session.category}:
+            return None
+        shown_skus = {normalize_sku_token(card.sku) for card in session.last_products}
+        query = SearchQuery(
+            original_text=message,
+            category=session.category or "other",
+            slots={key: value for key, value in session.slots.items() if key != "cheap"},
+        )
+        agents_used.append("FeedSearchAgent")
+        alternatives = [
+            product
+            for product in self.search_agent.search_alternatives(query)
+            if normalize_sku_token(product.sku) not in shown_skus
+        ]
+        if not alternatives:
+            answer = (
+                "Аналогов к показанным товарам в данных фида не вижу. "
+                "Могу передать вопрос менеджеру — напишите «передай менеджеру»."
+            )
+            self._append_history(session, message, answer)
+            return self._response(session.session_id, answer, [], False, intent, session, agents_used)
+        agents_used.append("ProductCardAgent")
+        cards = self.card_agent.build_cards(alternatives, query, limit=3)
+        agents_used.append("GuardrailsAgent")
+        guard = self.guardrails.validate_cards(cards, alternatives, query)
+        if not guard.ok or not cards:
+            answer = (
+                "Не могу безопасно показать аналоги по данным фида. "
+                "Лучше передать вопрос менеджеру."
+            )
+            self._append_history(session, message, answer)
+            return self._response(session.session_id, answer, [], True, intent, session, agents_used)
+        agents_used.append("ResponseComposerAgent")
+        answer = self.composer.compose_products(
+            cards,
+            query,
+            note="Аналоги к показанным ранее товарам — проверьте отличия в характеристиках:",
+        )
+        answer = self._guard_composed_answer(answer, "products", agents_used)
+        session.last_products = cards
+        self._append_history(session, message, answer)
+        return self._response(session.session_id, answer, cards, False, intent, session, agents_used)
 
     def _maybe_comparison_answer(self, message: str, session: SessionState) -> str | None:
         if len(session.last_products) < 2:

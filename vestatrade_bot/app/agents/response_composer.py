@@ -85,7 +85,9 @@ class ResponseComposerAgent:
             "4. ЗАПРЕЩЕНО: выдумывать товары, цены, наличие, характеристики, "
             "акции, скидки, ссылки, обещания доставки, факты о компании. Не "
             "ставь диагнозы и не давай инженерных расчётов.\n"
-            "5. Отвечай по-русски, без markdown-разметки и без эмодзи."
+            "5. ЗАПРЕЩЕНО повторять свой предыдущий ответ из истории дословно — "
+            "отвечай именно на новое сообщение.\n"
+            "6. Отвечай по-русски, без markdown-разметки и без эмодзи."
         )
         messages = [
             {"role": "system", "content": system},
@@ -102,8 +104,29 @@ class ResponseComposerAgent:
         if result.fallback_reason:
             self.last_llm_fallback_reason = result.fallback_reason
         if result.llm_used and result.content and result.content.strip():
-            return result.content.strip()
+            reply = result.content.strip()
+            if self._repeats_last_assistant(reply):
+                return fallback_draft
+            return reply
         return fallback_draft
+
+    def _repeats_last_assistant(self, reply: str) -> bool:
+        """Weak models sometimes parrot their previous answer instead of replying anew."""
+        last_assistant = next(
+            (
+                entry.get("content", "")
+                for entry in reversed(self._history)
+                if entry.get("role") == "assistant"
+            ),
+            "",
+        )
+        if not last_assistant:
+            return False
+        reply_norm = " ".join(reply.lower().split())
+        last_norm = " ".join(last_assistant.lower().split())
+        if not reply_norm or len(reply_norm) < 40:
+            return False
+        return reply_norm == last_norm or reply_norm in last_norm or last_norm in reply_norm
 
     def _small_talk_fallback(self, message: str) -> str:
         """Deterministic fallback for small talk when LLM is unavailable."""

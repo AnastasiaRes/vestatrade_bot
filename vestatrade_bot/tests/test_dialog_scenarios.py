@@ -524,6 +524,61 @@ def test_term_explanation_two_contour_boiler(orchestrator) -> None:
     assert "отоплен" in response.answer.lower()
 
 
+def test_manager_handoff_is_recorded_and_confirmed(sample_products, tmp_path) -> None:
+    from app.config import get_settings
+
+    settings = get_settings().model_copy(
+        update={"handoff_log_path": tmp_path / "handoff.jsonl"}
+    )
+    orchestrator = ChatOrchestrator(products=sample_products, settings=settings)
+
+    orchestrator.handle_chat("h1", "электрический котёл на 100 м²")
+    response = orchestrator.handle_chat("h1", "передай менеджеру")
+
+    assert response.need_handoff is True
+    assert "менеджер" in response.answer.lower()
+    assert "Более дешёвых" not in response.answer
+
+    log_text = (tmp_path / "handoff.jsonl").read_text(encoding="utf-8")
+    assert '"session_id": "h1"' in log_text
+    assert "ARD-E9" in log_text
+
+
+def test_show_analogs_followup_excludes_already_shown_products(orchestrator) -> None:
+    first = orchestrator.handle_chat("analog1", "насос 25/6 180")
+    assert first.products
+    assert first.products[0].sku == "PUMP-25-60"
+
+    response = orchestrator.handle_chat("analog1", "покажи аналоги")
+
+    assert response.products
+    skus = [product.sku for product in response.products]
+    assert "PUMP-25-40" in skus
+    assert "PUMP-25-60" not in skus
+    assert "Аналоги" in response.answer
+
+
+def test_smart_reply_does_not_parrot_previous_answer() -> None:
+    from app.agents.response_composer import ResponseComposerAgent
+
+    previous_answer = (
+        "Более дешёвых подходящих вариантов в текущем фиде нет. "
+        "Последний подходящий — 2202210. Могу показать аналоги или передать вопрос менеджеру."
+    )
+    composer = ResponseComposerAgent(llm_client=BadRewriteLLM(previous_answer))
+    composer.set_history(
+        [
+            {"role": "user", "content": "а есть что подешевле?"},
+            {"role": "assistant", "content": previous_answer},
+        ]
+    )
+
+    answer = composer.compose_unknown("ну и что мне делать дальше?")
+
+    assert answer != previous_answer
+    assert "консультант" in answer.lower()
+
+
 def test_guardrails_restore_product_answer_if_llm_drops_card_facts(sample_products) -> None:
     orchestrator = ChatOrchestrator(
         products=sample_products,
