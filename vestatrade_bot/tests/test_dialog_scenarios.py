@@ -646,6 +646,38 @@ def test_product_docs_loader_attaches_by_sku(tmp_path, sample_products) -> None:
     assert by_sku["ECA-6"].docs_text is None
 
 
+def test_product_docs_loader_supports_series_map_and_brand_rules(tmp_path, sample_products) -> None:
+    import json
+
+    from app.docs_loader import load_docs_for_products
+
+    products = [product.model_copy(deep=True) for product in sample_products]
+    (tmp_path / "VT.227-228-0425.txt").write_text("Паспорт кранов BASE", encoding="utf-8")
+    (tmp_path / "котлы бренда.txt").write_text("Паспорт электрических котлов", encoding="utf-8")
+    (tmp_path / "product_docs_map.json").write_text(
+        json.dumps(
+            {
+                "котлы бренда.txt": {
+                    "brand": "ARDERIA",
+                    "name_contains_any": ["электрический"],
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    attached = load_docs_for_products(products, tmp_path)
+
+    assert attached == 2
+    by_sku = {product.sku: product for product in products}
+    # серия из имени файла: VT.227 + VT.228 -> кран VT.228.N.04 из фикстуры
+    assert by_sku["VT.228.N.04"].docs_text == "Паспорт кранов BASE"
+    # правило бренда из карты: Arderia + «электрический»
+    assert by_sku["ARD-E9"].docs_text == "Паспорт электрических котлов"
+    assert by_sku["ECA-6"].docs_text is None
+
+
 def test_guardrails_restore_product_answer_if_llm_drops_card_facts(sample_products) -> None:
     orchestrator = ChatOrchestrator(
         products=sample_products,

@@ -4,7 +4,7 @@ import logging
 import re
 from typing import Any
 
-from app.config import Settings, get_settings
+from app.config import PROJECT_ROOT, Settings, get_settings
 from app.docs_loader import load_docs_for_products
 from app.feed_loader import FeedLoader
 from app.models import (
@@ -80,11 +80,14 @@ class ChatOrchestrator:
         self.products_loaded_from = "injected" if products is not None else "none"
         self.docs_attached = 0
         if products:
-            self.docs_attached = load_docs_for_products(products, self.settings.product_docs_dir)
+            self.docs_attached = load_docs_for_products(products, self._docs_dirs())
+
+    def _docs_dirs(self) -> list[Any]:
+        return [self.settings.product_docs_dir, PROJECT_ROOT / "data"]
 
     def reload_products(self, refresh: bool = True) -> tuple[int, str]:
         products, source = self.feed_loader.load_products(refresh=refresh)
-        self.docs_attached = load_docs_for_products(products, self.settings.product_docs_dir)
+        self.docs_attached = load_docs_for_products(products, self._docs_dirs())
         self.search_agent.set_products(products)
         self.products_loaded_from = source
         return len(products), source
@@ -1194,6 +1197,12 @@ class ChatOrchestrator:
             parts.append("обвязка")
         if "бойлер" in text:
             parts.append("бойлер")
+        if "гайк" in text:
+            parts.append("гайки")
+        if "кронштейн" in text:
+            parts.append("кронштейн")
+        if "датчик" in text:
+            parts.append("датчик")
         return parts
 
     def _compose_complectation_question(self, message: str, requested_parts: list[str]) -> str:
