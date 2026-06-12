@@ -1,6 +1,6 @@
 {
   "date": "2026-06-12",
-  "spent_usd": 0.00082412,
+  "spent_usd": 0.00104998,
   "calls": [
     {
       "ts": "2026-06-12T14:00:25.414282",
@@ -113,6 +113,22 @@
       "prompt_tokens": 291,
       "completion_tokens": 15,
       "cost_usd": 2.778e-05
+    },
+    {
+      "ts": "2026-06-12T16:20:57.525375",
+      "agent": "ResponseComposerAgent.clarification",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 821,
+      "completion_tokens": 41,
+      "cost_usd": 7.798e-05
+    },
+    {
+      "ts": "2026-06-12T16:21:09.323661",
+      "agent": "ResponseComposerAgent.products",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 1106,
+      "completion_tokens": 198,
+      "cost_usd": 0.00014788
     }
   ]
 }
