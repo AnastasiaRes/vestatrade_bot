@@ -642,6 +642,21 @@ def test_open_complectation_lists_builtin_components_from_card(sample_products) 
     assert "ARD-E9" in response.answer
 
 
+def test_complectation_targets_first_when_several_products_shown(sample_products) -> None:
+    products = [product.model_copy(deep=True) for product in sample_products]
+    for product in products:
+        if product.sku == "ECA-6":
+            product.description = "Электрический котёл. Встроенный циркуляционный насос."
+    orchestrator = ChatOrchestrator(products=products)
+    # «что есть из котлов» показывает несколько позиций
+    orchestrator.handle_chat("multi", "что есть в наличии из котлов?")
+    response = orchestrator.handle_chat("multi", "а гайки в комплекте идут?")
+
+    # отвечает по первому показанному товару, а не переспрашивает «по какому товару»
+    assert "По какому котлу или товару" not in response.answer
+    assert response.debug["intent"] == "complectation"
+
+
 def test_check_documentation_request_does_not_fabricate(sample_products) -> None:
     # Котёл без встроенных узлов в описании — бот не должен выдумывать «документацию»
     products = [product.model_copy(deep=True) for product in sample_products]

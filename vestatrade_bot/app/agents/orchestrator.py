@@ -508,7 +508,9 @@ class ChatOrchestrator:
         target_card: ProductCard | None = None
         if sku_from_message:
             target_product = self._find_product_by_sku(sku_from_message)
-        if not target_product and len(session.last_products) == 1:
+        if not target_product and session.last_products:
+            # Если показано несколько — вопрос о комплекте относится к основной
+            # (первой) позиции; не переспрашиваем «по какому товару».
             target_card = session.last_products[0]
             target_product = self._find_product_by_sku(target_card.sku)
 
