@@ -630,6 +630,53 @@ def _boiler_with_builtins(sample_products):
     return products
 
 
+class _CtxLLM:
+    """Fake LLM that echoes a fixed reply for the context agent and ignores the rest."""
+
+    def __init__(self, reply: str) -> None:
+        self.reply = reply
+        self.system_seen = ""
+
+    def complete(self, agent, messages, temperature=0.1, max_tokens=500):
+        if agent == "ResponseComposerAgent.context":
+            self.system_seen = messages[0]["content"]
+            return LLMResult(content=self.reply, llm_used=True)
+        return LLMResult(content=None, llm_used=False, fallback_reason="off")
+
+    def complete_json(self, agent, messages, fallback):
+        return fallback, False
+
+
+def test_context_agent_answers_followup_about_shown_products(sample_products) -> None:
+    llm = _CtxLLM("Дешевле всех ECA-6 за 30000 RUB, и его 5 шт в наличии.")
+    orchestrator = ChatOrchestrator(products=sample_products, llm_client=llm)
+    orchestrator.handle_chat("ctx", "что есть в наличии из котлов?")
+    response = orchestrator.handle_chat("ctx", "а что в наличии и что посоветуешь?")
+
+    assert "ECA-6" in response.answer
+    # карточные данные реально попали в промпт агента
+    assert "ARD-E9" in llm.system_seen and "38000" in llm.system_seen
+
+
+def test_context_agent_invented_price_is_rejected(sample_products) -> None:
+    llm = _CtxLLM("Рекомендую ARD-E9 за 19999 RUB — отличная цена.")
+    orchestrator = ChatOrchestrator(products=sample_products, llm_client=llm)
+    orchestrator.handle_chat("ctx2", "что есть в наличии из котлов?")
+    response = orchestrator.handle_chat("ctx2", "а что посоветуешь?")
+
+    assert "19999" not in response.answer  # выдуманная цена отброшена guardrail'ом
+
+
+def test_pump_fit_question_uses_context_not_new_boiler_search(sample_products) -> None:
+    llm = _CtxLLM("Это циркуляционный насос для отопления, подходит к котлам отопления.")
+    orchestrator = ChatOrchestrator(products=sample_products, llm_client=llm)
+    orchestrator.handle_chat("fit", "циркуляционный насос 25/6 180")
+    response = orchestrator.handle_chat("fit", "а под какой котёл этот насос подходит?")
+
+    assert "газовый или электрический" not in response.answer.lower()
+    assert "циркуляционный насос" in response.answer.lower()
+
+
 def test_open_complectation_lists_builtin_components_from_card(sample_products) -> None:
     orchestrator = ChatOrchestrator(products=_boiler_with_builtins(sample_products))
     orchestrator.handle_chat("ck", "электрический котёл на 100 м²")

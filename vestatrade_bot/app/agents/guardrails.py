@@ -287,6 +287,32 @@ class GuardrailsAgent:
         ]
         return missing
 
+    def validate_context_answer(self, answer: str, context: str) -> GuardrailsResult:
+        """Reject a context-grounded answer that invents prices, stock or SKUs.
+
+        Every price (… руб), stock quantity (… шт.) and article number the model
+        states must already appear in the provided card context; otherwise it made
+        the fact up and we fall back to a safe reply.
+        """
+        issues: list[str] = []
+        ctx = normalize_text(context)
+        ctx_compact = re.sub(r"\s+", "", ctx)
+        ctx_numbers = set(re.findall(r"\d+", ctx))
+        ans = normalize_text(answer)
+
+        for match in re.finditer(r"(\d[\d\s]*)\s*(?:руб|rub|₽)", ans):
+            if re.sub(r"\s+", "", match.group(1)) not in ctx_compact:
+                issues.append(f"invented price: {match.group(0).strip()}")
+        for match in re.finditer(r"(\d+)\s*шт", ans):
+            if match.group(1) not in ctx_numbers:
+                issues.append(f"invented stock qty: {match.group(0).strip()}")
+        # артикулы вида VT.227.N.04 / VRS.256.18.0 / 2201375
+        for token in re.findall(r"\b[a-zа-я]{2,}[.\-][a-zа-я0-9.\-]{2,}\b", ans):
+            if token not in ctx and token.replace(".", "").replace("-", "") not in ctx_compact:
+                issues.append(f"invented sku: {token}")
+
+        return GuardrailsResult(ok=not issues, issues=issues, safe_message=None)
+
     def _fabricated_specs(self, draft: str, answer: str) -> list[str]:
         """Reject specs the LLM invented while polishing a product/complectation answer.
 

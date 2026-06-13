@@ -621,6 +621,55 @@ class ResponseComposerAgent:
             "Объясни термин простыми словами, коротко, без новых товарных фактов.",
         )
 
+    def answer_in_context(self, user_message: str, context_block: str, fallback: str) -> str:
+        """Grounded conversational answer about products already shown to the customer.
+
+        The model gets the full card facts (price, stock, specs, passport, built-in
+        parts) of the shown products and the dialogue, and answers the free-form
+        follow-up using ONLY those facts. The orchestrator guards the result against
+        invented prices/SKUs/stock before sending it.
+        """
+        self.last_llm_requested = True
+        self.last_draft = fallback
+        system = (
+            MANAGER_PERSONA
+            + "\n\nСитуация: клиент задаёт вопрос про товары, которые ты уже показал в этом "
+            "диалоге. Ниже приведены точные данные их карточек (цена, наличие, остаток, "
+            "характеристики, паспорт, встроенные узлы). Ответь на вопрос, опираясь СТРОГО на "
+            "эти данные и историю диалога:\n"
+            "- спрашивают про наличие/цену/характеристику конкретной позиции — назови её из данных;\n"
+            "- просят посоветовать/«что лучше» — порекомендуй одну позицию и кратко объясни почему "
+            "(по мощности, цене, наличию), при равенстве — самую дешёвую или с большим остатком;\n"
+            "- спрашивают «под какой котёл/систему подходит», про совместимость — отвечай по типу и "
+            "характеристикам товара и истории диалога;\n"
+            "- просят данные из паспорта — используй приведённый текст паспорта;\n"
+            "- если для ответа реально не хватает данных в карточках — честно скажи об этом и "
+            "предложи уточнить или передать менеджеру.\n"
+            "СТРОГО ЗАПРЕЩЕНО придумывать цены, артикулы, остатки, характеристики и ссылки, которых "
+            "нет в данных ниже. Не повторяй весь список карточек — отвечай по существу вопроса.\n\n"
+            "ДАННЫЕ ПОКАЗАННЫХ ТОВАРОВ:\n" + context_block
+        )
+        messages = [
+            {"role": "system", "content": system},
+            *self._history_messages(),
+            {"role": "user", "content": user_message or "(пустое сообщение)"},
+        ]
+        result = self.llm_client.complete(
+            agent="ResponseComposerAgent.context",
+            messages=messages,
+            temperature=0.3,
+            max_tokens=400,
+        )
+        self.last_llm_used = self.last_llm_used or result.llm_used
+        if result.fallback_reason:
+            self.last_llm_fallback_reason = result.fallback_reason
+        if result.llm_used and result.content and result.content.strip():
+            reply = result.content.strip()
+            if self._repeats_last_assistant(reply):
+                return fallback
+            return reply
+        return fallback
+
     def compose_builtin_components(
         self,
         card: ProductCard,

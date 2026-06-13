@@ -145,6 +145,11 @@ class ChatOrchestrator:
         if self._is_pending_continuation(intent, session, message):
             self._restore_pending_intent(intent, session)
 
+        # «этот насос», «тот что ты предложил» — это вопрос про показанное, а не смена
+        # темы; иначе topic-change стёр бы контекст ещё до ответа агента.
+        if session.last_products and self._references_shown_products(message):
+            intent.is_topic_change = False
+
         # Вопрос про уже показанный товар («что входит в комплект», «проверь
         # документацию», «есть ли там насос») — это запрос к карточке, а не новый
         # подбор. Перенаправляем в комплектацию, иначе уходит в LLM/подбор насоса.
@@ -265,6 +270,15 @@ class ChatOrchestrator:
                 self._append_history(session, message, answer)
                 self.sessions.save(session)
                 return self._response(session_id, answer, [], False, intent, session, agents_used)
+
+        # Свободный вопрос про уже показанные товары — отвечает LLM-агент по их карточкам.
+        # Стоит после подтверждений/tradeoff, но до общих fallback'ов (small talk /
+        # unknown / повторный поиск), которые иначе «съели» бы вопрос или зациклили список.
+        if self._is_contextual_followup(message, intent, session):
+            context_response = self._answer_from_context(message, intent, session, agents_used)
+            if context_response is not None:
+                self.sessions.save(session)
+                return context_response
 
         if intent.intent_type == "small_talk" and intent.category == "other":
             answer = self.composer.compose_small_talk(message)
@@ -796,6 +810,149 @@ class ChatOrchestrator:
             "поддержк",
         ]
         return any(marker in text for marker in markers)
+
+    def _is_contextual_followup(
+        self,
+        message: str,
+        intent: IntentResult,
+        session: SessionState,
+    ) -> bool:
+        """A free-form question about products already shown — hand to the LLM agent.
+
+        Catches conversational turns the rule pipeline can't script (stock/price of a
+        specific item, "что лучше", "под какой котёл подходит", "а по паспорту") while
+        leaving concrete searches, refinements and slot answers to the deterministic
+        flow.
+        """
+        if not session.last_products or intent.is_topic_change:
+            return False
+        text = normalize_text(message)
+        if intent.intent_type in {"exact_sku", "link_request", "complectation", "small_talk"}:
+            return False
+        # Новый товар другой категории — это новый подбор, не вопрос про показанное
+        # (если только нет явной ссылки на ранее показанное).
+        if intent.category not in {"other", session.category} and not self._references_shown_products(message):
+            return False
+        # Уточнения и команды, которые умеет детерминированный конвейер.
+        refine_signals = [
+            "дешевле",
+            "подешевле",
+            "аналог",
+            "ссылк",
+            "выбери один",
+            "к нему",
+            "американк",
+            "сравни",
+        ]
+        if any(signal in text for signal in refine_signals):
+            return False
+        # Новый числовой параметр (мм/квт/площадь) — это рефайн поиска.
+        if re.search(r"\d+\s*(?:мм|кв|м2|м²|квт|метр|контур)", text):
+            return False
+        # Маркеры именно товарного вопроса/ссылки на показанное — чтобы не перехватывать
+        # отвлечённый small talk вроде «какие у тебя планы?».
+        context_markers = [
+            "наличи",
+            "в наличии",
+            "цена",
+            "стоит",
+            "сколько",
+            "паспорт",
+            "характеристик",
+            "лучше",
+            "посоветуй",
+            "что взять",
+            "что выбрать",
+            "под какой",
+            "к какому",
+            "подходит",
+            "для какого",
+            "совмест",
+            "разниц",
+            "отлич",
+            "этот",
+            "эту",
+            "эти",
+            "тот",
+            "они",
+            "их ",
+            "него",
+            "нему",
+            "нем ",
+            "ней",
+        ]
+        return any(marker in text for marker in context_markers)
+
+    def _references_shown_products(self, message: str) -> bool:
+        # Однозначные ссылки на показанное. Дательные «к нему/к ней» намеренно НЕ
+        # включаем — это companion-запрос («насос к нему»), а не вопрос про товар.
+        text = normalize_text(message)
+        return any(
+            ref in text
+            for ref in [
+                "этот",
+                "эту",
+                "эти ",
+                "тот ",
+                "того ",
+                "ты предложил",
+                "ты показал",
+                "что предложил",
+                "что ты показал",
+                "которые показал",
+                "которые ты",
+                "предложенн",
+            ]
+        )
+
+    def _build_context_block(self, session: SessionState) -> str:
+        lines: list[str] = []
+        for index, card in enumerate(session.last_products[:3], start=1):
+            product = self._find_product_by_sku(card.sku)
+            stock = card.stock_status
+            if card.stock_qty is not None:
+                stock = f"{stock}, {card.stock_qty} шт."
+            lines.append(f"{index}. {card.name} (артикул {card.sku})")
+            lines.append(f"   Цена: {card.price:g} {card.currency}. Наличие: {stock}.")
+            if card.characteristics:
+                attrs = "; ".join(f"{k}: {v}" for k, v in card.characteristics.items())
+                lines.append(f"   Характеристики: {attrs}")
+            if product:
+                components = self.guardrails.list_builtin_components(product)
+                if components:
+                    lines.append(f"   Встроенные узлы (по карточке): {', '.join(components)}")
+                if product.docs_text:
+                    lines.append(f"   Паспорт (выдержка): {product.docs_text[:600]}")
+                elif product.description:
+                    lines.append(f"   Описание: {product.description[:400]}")
+            lines.append(f"   Ссылка: {card.url}")
+        return "\n".join(lines)
+
+    def _answer_from_context(
+        self,
+        message: str,
+        intent: IntentResult,
+        session: SessionState,
+        agents_used: list[str],
+    ) -> ChatResponse | None:
+        context_block = self._build_context_block(session)
+        if not context_block:
+            return None
+        fallback = (
+            "По показанным товарам уточните, пожалуйста, что именно интересует — наличие, "
+            "цену, характеристики или сравнение. Или назову артикул, чтобы посмотреть детальнее."
+        )
+        agents_used.append("ResponseComposerAgent")
+        answer = self.composer.answer_in_context(message, context_block, fallback)
+        agents_used.append("GuardrailsAgent")
+        guard = self.guardrails.validate_context_answer(answer, context_block)
+        if not guard.ok:
+            logger.warning("Context answer rejected: %s", "; ".join(guard.issues))
+            answer = fallback
+        self._append_history(session, message, answer)
+        return self._response(
+            session.session_id, answer, session.last_products, False, intent, session, agents_used
+        )
 
     def _maybe_analogs_response(
         self,
