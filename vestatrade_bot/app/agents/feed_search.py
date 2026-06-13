@@ -224,8 +224,23 @@ class FeedSearchAgent:
             )
         )
 
+    def _category_text(self, product: Product) -> str:
+        """Identity for category matching — name + type, WITHOUT marketing description.
+
+        A boiler whose description mentions a built-in «насос» must not be classified
+        as a pump, so the long description is excluded here.
+        """
+        type_attr = ""
+        for key, value in product.attributes_normalized.items():
+            if "тип товара" in normalize_text(key):
+                type_attr = value
+                break
+        return normalize_text(
+            " ".join([product.name, product.category_path, product.brand or "", type_attr])
+        )
+
     def _category_matches(self, product: Product, category: str) -> bool:
-        text = self._product_text(product)
+        text = self._category_text(product)
         needles = CATEGORY_NEEDLES.get(category, [])
         if category == "pipes" and "канализац" in text:
             return False

@@ -1,0 +1,88 @@
+"""Целевой повторный живой прогон: проверяем исправленное + не покрытые ранее зоны."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from app.agents.orchestrator import ChatOrchestrator  # noqa: E402
+
+
+SCENARIOS: list[tuple[str, list[str]]] = [
+    # — Перепроверка исправленного —
+    ("Тон: small talk / off-topic", [
+        "здаров", "ты классный", "какая завтра погода?", "расскажи анекдот",
+    ]),
+    ("Деградация агента (был loop)", [
+        "газовый котел на 100 м2 одноконтурный", "одноконтурный",
+        "а насос к нему", "а под какой котел этот насос подходит?",
+    ]),
+    ("Двухконтурный из 'горячей воды'", [
+        "нужен газовый котел", "и чтобы горячую воду грел", "100 м2",
+    ]),
+    ("Американка фильтрует", [
+        "кран шаровый для воды", "3/4", "с американкой",
+    ]),
+    ("Мета: скидка/доставка/гарантия", [
+        "газовый котел на 100 м2 одноконтурный", "одноконтурный",
+        "а скидка есть?", "когда доставите?", "а гарантия какая?",
+    ]),
+    ("Переход 'к делу'", [
+        "привет", "как дела", "ладно, к делу",
+    ]),
+    ("Консультация газ/электричество", [
+        "что лучше для дома 100 м2 газ или электричество?",
+    ]),
+    # — Не покрытые ранее зоны —
+    ("Память между ходами", [
+        "нужен газовый котел", "100 м2", "одноконтурный",
+        "а сколько стоит самый мощный?", "а первый сколько стоит?",
+    ]),
+    ("Выбор по порядку (второй/дай ссылку)", [
+        "циркуляционный насос 25/6 180", "дай ссылку на второй",
+    ]),
+    ("Дешевле и аналоги", [
+        "циркуляционный насос для отопления", "25/6 180",
+        "а есть подешевле?", "покажи аналоги",
+    ]),
+    ("Сразу всё в одном сообщении", [
+        "нужен газовый одноконтурный котел на 120 квадратов",
+    ]),
+    ("Уточнение неоднозначного", [
+        "нужно что-то для воды",
+    ]),
+]
+
+
+def main() -> int:
+    orch = ChatOrchestrator()
+    orch.reload_products(refresh=False)
+    out = ["# Повторный живой прогон", "", f"Модель: {orch.settings.openrouter_model}", ""]
+    for index, (title, messages) in enumerate(SCENARIOS):
+        sid = f"recheck-{index}"
+        out.append(f"## {index + 1}. {title}")
+        out.append("")
+        for message in messages:
+            resp = orch.handle_chat(sid, message)
+            tag = ""
+            if resp.products:
+                tag += "  [товары: " + ", ".join(p.sku for p in resp.products) + "]"
+            if resp.need_handoff:
+                tag += "  [HANDOFF]"
+            out.append(f"**Клиент:** {message}")
+            out.append(f"**Бот:** {resp.answer.strip()}{tag}")
+            out.append("")
+        out.append("---")
+        out.append("")
+        print(f"[{index + 1}/{len(SCENARIOS)}] {title}", flush=True)
+    report = PROJECT_ROOT / "reports" / "live_recheck_report.md"
+    report.write_text("\n".join(out), encoding="utf-8")
+    print(f"\nОтчёт: {report}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

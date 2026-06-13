@@ -437,6 +437,21 @@ def test_radiator_shutoff_followup_is_remembered(orchestrator) -> None:
     assert "1/2 или 3/4" in response.answer
 
 
+def test_boiler_with_pump_in_description_is_not_a_pump(sample_products) -> None:
+    from app.agents.feed_search import FeedSearchAgent
+
+    products = [product.model_copy(deep=True) for product in sample_products]
+    for product in products:
+        if product.sku == "ARD-E9":
+            product.description = "Электрический котёл со встроенным циркуляционным насосом."
+            product.category_path = "ПРОКАЧИВАЕМ СКИДКИ"
+    agent = FeedSearchAgent(products)
+    boiler = next(p for p in products if p.sku == "ARD-E9")
+
+    assert agent._category_matches(boiler, "boilers") is True
+    assert agent._category_matches(boiler, "pumps") is False
+
+
 def test_americanka_filter_excludes_valves_without_union(orchestrator) -> None:
     orchestrator.handle_chat("am", "кран шаровый для воды")
     orchestrator.handle_chat("am", "3/4")

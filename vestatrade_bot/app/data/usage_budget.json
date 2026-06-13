@@ -1,6 +1,6 @@
 {
   "date": "2026-06-14",
-  "spent_usd": 0.02005408,
+  "spent_usd": 0.02640302,
   "calls": [
     {
       "ts": "2026-06-14T00:00:31.196781",
@@ -1033,6 +1033,326 @@
       "prompt_tokens": 859,
       "completion_tokens": 61,
       "cost_usd": 8.702e-05
+    },
+    {
+      "ts": "2026-06-14T01:13:05.261092",
+      "agent": "IntentRouterAgent",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 213,
+      "completion_tokens": 32,
+      "cost_usd": 2.664e-05
+    },
+    {
+      "ts": "2026-06-14T01:13:06.762752",
+      "agent": "ResponseComposerAgent.small_talk",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 858,
+      "completion_tokens": 54,
+      "cost_usd": 8.484e-05
+    },
+    {
+      "ts": "2026-06-14T01:13:08.569728",
+      "agent": "ResponseComposerAgent.small_talk",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 924,
+      "completion_tokens": 41,
+      "cost_usd": 8.622e-05
+    },
+    {
+      "ts": "2026-06-14T01:13:10.228427",
+      "agent": "ResponseComposerAgent.out_of_scope",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 900,
+      "completion_tokens": 67,
+      "cost_usd": 9.21e-05
+    },
+    {
+      "ts": "2026-06-14T01:13:11.296095",
+      "agent": "ResponseComposerAgent.out_of_scope",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 984,
+      "completion_tokens": 59,
+      "cost_usd": 9.642e-05
+    },
+    {
+      "ts": "2026-06-14T01:13:16.345289",
+      "agent": "ResponseComposerAgent.products",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 1554,
+      "completion_tokens": 657,
+      "cost_usd": 0.00032142
+    },
+    {
+      "ts": "2026-06-14T01:13:27.432350",
+      "agent": "ResponseComposerAgent.products",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 2166,
+      "completion_tokens": 643,
+      "cost_usd": 0.00036618
+    },
+    {
+      "ts": "2026-06-14T01:13:31.321817",
+      "agent": "ResponseComposerAgent.products",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 1914,
+      "completion_tokens": 233,
+      "cost_usd": 0.00022302
+    },
+    {
+      "ts": "2026-06-14T01:13:34.529365",
+      "agent": "ResponseComposerAgent.context",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 2297,
+      "completion_tokens": 185,
+      "cost_usd": 0.00023926
+    },
+    {
+      "ts": "2026-06-14T01:13:35.518345",
+      "agent": "ResponseComposerAgent.clarification",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 882,
+      "completion_tokens": 14,
+      "cost_usd": 7.476e-05
+    },
+    {
+      "ts": "2026-06-14T01:13:36.562000",
+      "agent": "ResponseComposerAgent.clarification",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 973,
+      "completion_tokens": 14,
+      "cost_usd": 8.204e-05
+    },
+    {
+      "ts": "2026-06-14T01:13:38.089674",
+      "agent": "IntentRouterAgent",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 310,
+      "completion_tokens": 39,
+      "cost_usd": 3.65e-05
+    },
+    {
+      "ts": "2026-06-14T01:13:43.686419",
+      "agent": "ResponseComposerAgent.products",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 1269,
+      "completion_tokens": 271,
+      "cost_usd": 0.00018282
+    },
+    {
+      "ts": "2026-06-14T01:13:45.200358",
+      "agent": "ResponseComposerAgent.clarification",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 891,
+      "completion_tokens": 24,
+      "cost_usd": 7.848e-05
+    },
+    {
+      "ts": "2026-06-14T01:13:51.472473",
+      "agent": "ResponseComposerAgent.products",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 1541,
+      "completion_tokens": 448,
+      "cost_usd": 0.00025768
+    },
+    {
+      "ts": "2026-06-14T01:13:56.163844",
+      "agent": "ResponseComposerAgent.products",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 1561,
+      "completion_tokens": 311,
+      "cost_usd": 0.00021818
+    },
+    {
+      "ts": "2026-06-14T01:14:01.171380",
+      "agent": "ResponseComposerAgent.products",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 1554,
+      "completion_tokens": 658,
+      "cost_usd": 0.00032172
+    },
+    {
+      "ts": "2026-06-14T01:14:10.208097",
+      "agent": "ResponseComposerAgent.products",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 2160,
+      "completion_tokens": 662,
+      "cost_usd": 0.0003714
+    },
+    {
+      "ts": "2026-06-14T01:14:12.384777",
+      "agent": "IntentRouterAgent",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 560,
+      "completion_tokens": 32,
+      "cost_usd": 5.44e-05
+    },
+    {
+      "ts": "2026-06-14T01:14:14.145524",
+      "agent": "IntentRouterAgent",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 646,
+      "completion_tokens": 32,
+      "cost_usd": 6.128e-05
+    },
+    {
+      "ts": "2026-06-14T01:14:15.371748",
+      "agent": "IntentRouterAgent",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 560,
+      "completion_tokens": 32,
+      "cost_usd": 5.44e-05
+    },
+    {
+      "ts": "2026-06-14T01:14:16.474118",
+      "agent": "ResponseComposerAgent.small_talk",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 925,
+      "completion_tokens": 34,
+      "cost_usd": 8.42e-05
+    },
+    {
+      "ts": "2026-06-14T01:14:17.849025",
+      "agent": "ResponseComposerAgent.small_talk",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 974,
+      "completion_tokens": 40,
+      "cost_usd": 8.992e-05
+    },
+    {
+      "ts": "2026-06-14T01:14:19.014652",
+      "agent": "IntentRouterAgent",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 227,
+      "completion_tokens": 32,
+      "cost_usd": 2.776e-05
+    },
+    {
+      "ts": "2026-06-14T01:14:20.191442",
+      "agent": "ResponseComposerAgent.clarification",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 882,
+      "completion_tokens": 14,
+      "cost_usd": 7.476e-05
+    },
+    {
+      "ts": "2026-06-14T01:14:21.202391",
+      "agent": "ResponseComposerAgent.clarification",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 965,
+      "completion_tokens": 16,
+      "cost_usd": 8.2e-05
+    },
+    {
+      "ts": "2026-06-14T01:14:30.457979",
+      "agent": "ResponseComposerAgent.products",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 1670,
+      "completion_tokens": 684,
+      "cost_usd": 0.0003388
+    },
+    {
+      "ts": "2026-06-14T01:14:31.742326",
+      "agent": "IntentRouterAgent",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 459,
+      "completion_tokens": 32,
+      "cost_usd": 4.632e-05
+    },
+    {
+      "ts": "2026-06-14T01:14:34.177290",
+      "agent": "ResponseComposerAgent.context",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 3043,
+      "completion_tokens": 114,
+      "cost_usd": 0.00027764
+    },
+    {
+      "ts": "2026-06-14T01:14:35.349945",
+      "agent": "IntentRouterAgent",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 555,
+      "completion_tokens": 32,
+      "cost_usd": 5.4e-05
+    },
+    {
+      "ts": "2026-06-14T01:14:37.652328",
+      "agent": "ResponseComposerAgent.context",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 3172,
+      "completion_tokens": 53,
+      "cost_usd": 0.00026966
+    },
+    {
+      "ts": "2026-06-14T01:14:41.521654",
+      "agent": "ResponseComposerAgent.products",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 1336,
+      "completion_tokens": 476,
+      "cost_usd": 0.00024968
+    },
+    {
+      "ts": "2026-06-14T01:14:44.186751",
+      "agent": "ResponseComposerAgent.link",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 1573,
+      "completion_tokens": 85,
+      "cost_usd": 0.00015134
+    },
+    {
+      "ts": "2026-06-14T01:14:45.742965",
+      "agent": "ResponseComposerAgent.clarification",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 911,
+      "completion_tokens": 29,
+      "cost_usd": 8.158e-05
+    },
+    {
+      "ts": "2026-06-14T01:14:52.439939",
+      "agent": "ResponseComposerAgent.products",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 1426,
+      "completion_tokens": 450,
+      "cost_usd": 0.00024908
+    },
+    {
+      "ts": "2026-06-14T01:14:54.087107",
+      "agent": "ResponseComposerAgent.no_cheaper",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 1601,
+      "completion_tokens": 56,
+      "cost_usd": 0.00014488
+    },
+    {
+      "ts": "2026-06-14T01:15:02.578350",
+      "agent": "ResponseComposerAgent.products",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 2244,
+      "completion_tokens": 617,
+      "cost_usd": 0.00036462
+    },
+    {
+      "ts": "2026-06-14T01:15:12.073444",
+      "agent": "ResponseComposerAgent.products",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 1559,
+      "completion_tokens": 677,
+      "cost_usd": 0.00032782
+    },
+    {
+      "ts": "2026-06-14T01:15:13.321210",
+      "agent": "IntentRouterAgent",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 216,
+      "completion_tokens": 31,
+      "cost_usd": 2.658e-05
+    },
+    {
+      "ts": "2026-06-14T01:15:14.904949",
+      "agent": "ResponseComposerAgent.clarification",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 888,
+      "completion_tokens": 25,
+      "cost_usd": 7.854e-05
     }
   ]
 }
