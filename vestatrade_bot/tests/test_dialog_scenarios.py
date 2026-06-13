@@ -619,6 +619,41 @@ def test_product_answer_suggests_companion_components_once(orchestrator) -> None
     assert "группу безопасности" not in again.answer
 
 
+def test_difference_question_after_boiler_type_clarification_explains(orchestrator) -> None:
+    orchestrator.handle_chat("diff1", "нужен котёл")
+    asked = orchestrator.handle_chat("diff1", "ой нужен котел")
+    assert "газовый или электрический" in asked.answer.lower()
+
+    response = orchestrator.handle_chat("diff1", "а в чём разница?")
+    assert response.answer != asked.answer
+    assert "газ" in response.answer.lower()
+    assert "электрическ" in response.answer.lower()
+    assert "дымоход" in response.answer.lower()
+    assert response.products == []
+
+    # Повторный вопрос тоже объясняет, а не вываливает список товаров
+    again = orchestrator.handle_chat("diff1", "есть ли разница?")
+    assert again.products == []
+    assert "газ" in again.answer.lower()
+
+
+def test_difference_question_wins_over_card_comparison_for_concept(orchestrator) -> None:
+    orchestrator.handle_chat("diff2", "что есть в наличии из котлов?")
+    response = orchestrator.handle_chat("diff2", "а чем отличается газовый от электрического?")
+
+    assert "дымоход" in response.answer.lower()
+    assert "Главное отличие — мощность" not in response.answer
+
+
+def test_one_vs_two_contour_question_is_explained(orchestrator) -> None:
+    orchestrator.handle_chat("contour", "нужен газовый котёл")
+    response = orchestrator.handle_chat("contour", "а в чём разница между одноконтурным и двухконтурным?")
+
+    assert "горяч" in response.answer.lower()
+    assert "бойлер" in response.answer.lower()
+    assert response.products == []
+
+
 def test_gas_vs_electric_question_gets_advice_not_silent_assumption(orchestrator) -> None:
     response = orchestrator.handle_chat("gve1", "что лучше: газовый или электрический котёл?")
 

@@ -56,6 +56,33 @@ COMPANION_HINTS: dict[str, str] = {
     ),
 }
 
+GAS_VS_ELECTRIC_CONSULT = (
+    "Главное отличие — топливо и эксплуатация.\n"
+    "Газовый: дешевле в эксплуатации (газ выгоднее электричества), мощный, тянет большие "
+    "площади. Минусы — нужен подведённый газ, дымоход и согласование, монтаж дороже.\n"
+    "Электрический: проще и дешевле в установке, тихий, без дымохода и согласований. "
+    "Минусы — дороже по счетам, а для большой площади часто нужно 380 В.\n"
+    "Если коротко: есть газ — обычно берут газовый ради экономии; газа нет или площадь "
+    "небольшая — электрический.\n"
+    "Подскажите: газ подведён и какая площадь? Подберу конкретные варианты из каталога."
+)
+
+ONE_VS_TWO_CONTOUR_CONSULT = (
+    "Одноконтурный котёл работает только на отопление — для горячей воды к нему нужен "
+    "отдельный бойлер. Двухконтурный даёт и отопление, и горячую воду сразу, бойлер не "
+    "нужен. Если горячую воду из крана хотите от котла — берите двухконтурный; если ГВС "
+    "не нужна или есть отдельный бойлер — хватит одноконтурного.\n"
+    "Нужна горячая вода от котла? И какая площадь? Подберу варианты."
+)
+
+PIPE_TYPES_CONSULT = (
+    "Полипропиленовые трубы бывают трёх исполнений. Обычная PN20 — для холодной воды и "
+    "несложных задач. Армированная стекловолокном (PP-FIBER) и алюминием (PP-ALUX) меньше "
+    "расширяются от горячей воды и держат более высокое давление — их берут для отопления и "
+    "горячего водоснабжения. Для тёплого пола и стояков чаще берут армированные.\n"
+    "Скажите назначение (отопление, горячая или холодная вода) и диаметр — подберу."
+)
+
 
 class ChatOrchestrator:
     def __init__(
@@ -165,6 +192,13 @@ class ChatOrchestrator:
             self.sessions.save(session)
             return self._response(session_id, engineering_risk, [], True, intent, session, agents_used)
 
+        consultation = self._maybe_consultation_answer(message, intent, session)
+        if consultation:
+            agents_used.append("ResponseComposerAgent")
+            self._append_history(session, message, consultation)
+            self.sessions.save(session)
+            return self._response(session_id, consultation, [], False, intent, session, agents_used)
+
         comparison_answer = self._maybe_comparison_answer(message, session)
         if comparison_answer:
             agents_used.append("ResponseComposerAgent")
@@ -273,13 +307,6 @@ class ChatOrchestrator:
             self._append_history(session, message, answer)
             self.sessions.save(session)
             return self._response(session_id, answer, [], False, intent, session, agents_used)
-
-        gas_vs_electric = self._maybe_gas_vs_electric_consult(message, intent, session)
-        if gas_vs_electric:
-            agents_used.append("ResponseComposerAgent")
-            self._append_history(session, message, gas_vs_electric)
-            self.sessions.save(session)
-            return self._response(session_id, gas_vs_electric, [], False, intent, session, agents_used)
 
         boiler_warning = self._maybe_boiler_warning(message, intent, session)
         if boiler_warning:
@@ -627,34 +654,73 @@ class ChatOrchestrator:
             alternative=session.last_products[1] if len(session.last_products) > 1 else None,
         )
 
-    def _maybe_gas_vs_electric_consult(
+    def _maybe_consultation_answer(
         self,
         message: str,
         intent: IntentResult,
         session: SessionState,
     ) -> str | None:
+        """Explain a difference / give advice in context instead of repeating a question.
+
+        Triggers on consulting phrasing ("в чём разница", "что лучше", "что
+        посоветуешь", "чем отличается") and routes to the relevant conceptual
+        explanation using the current category and the pending clarification —
+        so "а в чём разница?" right after "газовый или электрический?" gets a
+        real answer, not the same question again.
+        """
         text = normalize_text(message)
-        if "газов" not in text or "электрическ" not in text:
+        consult_markers = [
+            "разниц",
+            "отлич",
+            "что лучше",
+            "какой лучше",
+            "что выбрать",
+            "какой выбрать",
+            "что посоветуеш",
+            "посоветуй",
+            "что взять",
+            "что брать",
+            "плюсы и минус",
+            "за и против",
+        ]
+        if not any(marker in text for marker in consult_markers):
             return None
-        if not any(marker in text for marker in ["или", "лучше", "выбрать", "разница", "отлича"]):
-            return None
-        if (
-            intent.category != "boilers"
-            and session.category != "boilers"
-            and "котел" not in text
-            and "котл" not in text
-        ):
-            return None
-        session.category = "boilers"
-        session.pending_question = "Газ подведён и какая площадь?"
-        session.pending_intent_type = "broad_category"
-        return (
-            "Тут всё решает наличие газа. Если газ подведён — газовый котёл обычно ощутимо "
-            "дешевле в эксплуатации, но нужны дымоход и согласование. Электрический проще и "
-            "дешевле в установке, тише и без дымохода, но дороже по счетам за электричество, "
-            "а для большой площади часто нужно 380 В. "
-            "Подскажите: газ подведён и какая площадь? Подберу конкретные варианты из каталога."
+
+        pending = normalize_text(session.pending_question or "")
+        in_boiler_context = (
+            intent.category == "boilers"
+            or session.category == "boilers"
+            or "котел" in text
+            or "котл" in text
+            or ("газов" in pending and "электрическ" in pending)
         )
+        names_gas_electric = "газов" in text and "электрическ" in text
+        pending_is_boiler_type = "газов" in pending and "электрическ" in pending
+
+        # Одноконтурный vs двухконтурный (явно про контуры/ГВС).
+        if in_boiler_context and ("контур" in text or "гвс" in text):
+            session.category = "boilers"
+            return ONE_VS_TWO_CONTOUR_CONSULT
+
+        # Газовый vs электрический — по словам в сообщении или по заданному вопросу.
+        if in_boiler_context and (names_gas_electric or pending_is_boiler_type):
+            session.category = "boilers"
+            if not session.slots.get("boiler_type"):
+                session.pending_question = "Котёл нужен газовый или электрический?"
+                session.pending_intent_type = "broad_category"
+            return GAS_VS_ELECTRIC_CONSULT
+
+        # Типы полипропиленовых труб (обычная vs армированная).
+        in_pipe_context = (
+            intent.category == "pipes" or session.category == "pipes" or "труба" in text or "трубы" in text
+        )
+        if in_pipe_context and any(
+            marker in text for marker in ["армиров", "fiber", "alux", "pn20", "pn 20", "стеклов", "алюмин"]
+        ):
+            session.category = "pipes"
+            return PIPE_TYPES_CONSULT
+
+        return None
 
     def _append_companion_hint(self, answer: str, session: SessionState, category: str) -> str:
         hint = COMPANION_HINTS.get(category)
