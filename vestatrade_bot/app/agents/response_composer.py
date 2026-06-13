@@ -195,7 +195,7 @@ class ResponseComposerAgent:
             self.last_llm_fallback_reason = result.fallback_reason
         if result.llm_used and result.content and result.content.strip():
             reply = result.content.strip()
-            if self._repeats_last_assistant(reply):
+            if self._repeats_last_assistant(reply) or self._is_degenerate(reply):
                 return fallback_draft
             if self._contains_assortment_claims(reply):
                 return fallback_draft
@@ -220,6 +220,21 @@ class ResponseComposerAgent:
     def _is_pure_greeting(self, message: str) -> bool:
         text = normalize_text(message).strip(" .,!?-")
         return text in PURE_GREETINGS
+
+    def _is_degenerate(self, text: str) -> bool:
+        """Detect a weak model looping (the same line/prefix over and over)."""
+        from collections import Counter
+
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if len(lines) < 4:
+            return False
+        normalized = [" ".join(line.lower().split()) for line in lines]
+        if Counter(normalized).most_common(1)[0][1] >= 3:
+            return True
+        prefixes = [" ".join(line.split()[:3]).lower() for line in lines if len(line.split()) >= 3]
+        if prefixes and Counter(prefixes).most_common(1)[0][1] >= max(4, int(len(prefixes) * 0.6)):
+            return True
+        return False
 
     def _repeats_last_assistant(self, reply: str) -> bool:
         """Weak models sometimes parrot their previous answer instead of replying anew."""
@@ -658,14 +673,14 @@ class ResponseComposerAgent:
             agent="ResponseComposerAgent.context",
             messages=messages,
             temperature=0.3,
-            max_tokens=400,
+            max_tokens=280,
         )
         self.last_llm_used = self.last_llm_used or result.llm_used
         if result.fallback_reason:
             self.last_llm_fallback_reason = result.fallback_reason
         if result.llm_used and result.content and result.content.strip():
             reply = result.content.strip()
-            if self._repeats_last_assistant(reply):
+            if self._repeats_last_assistant(reply) or self._is_degenerate(reply):
                 return fallback
             return reply
         return fallback

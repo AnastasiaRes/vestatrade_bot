@@ -667,6 +667,34 @@ def test_context_agent_invented_price_is_rejected(sample_products) -> None:
     assert "19999" not in response.answer  # выдуманная цена отброшена guardrail'ом
 
 
+def test_meta_questions_are_deflected_without_inventing(orchestrator) -> None:
+    orchestrator.handle_chat("meta", "газовый котёл на 100 м²")
+    for message in ["а скидка есть?", "когда доставите?", "какая гарантия?"]:
+        response = orchestrator.handle_chat("meta", message)
+        assert "менеджер" in response.answer.lower()
+        assert "%" not in response.answer  # не выдумывает скидку
+        assert "Нашёл подходящие варианты" not in response.answer  # не вываливает список
+
+
+def test_transition_phrase_does_not_dump_products(orchestrator) -> None:
+    orchestrator.handle_chat("tr", "привет")
+    orchestrator.handle_chat("tr", "как дела")
+    response = orchestrator.handle_chat("tr", "ладно, к делу")
+
+    assert response.products == []
+    assert "Артикул" not in response.answer
+
+
+def test_context_agent_degenerate_loop_is_rejected(sample_products) -> None:
+    loop = "\n".join(["Если нужен другой вариант — есть модели." for _ in range(8)])
+    llm = _CtxLLM(loop)
+    orchestrator = ChatOrchestrator(products=sample_products, llm_client=llm)
+    orchestrator.handle_chat("loop", "циркуляционный насос 25/6 180")
+    response = orchestrator.handle_chat("loop", "а под какой котёл этот насос подходит?")
+
+    assert response.answer.count("Если нужен другой вариант") <= 1  # зацикливание отброшено
+
+
 def test_passport_question_routes_to_context_agent_with_passport_text(sample_products) -> None:
     products = [product.model_copy(deep=True) for product in sample_products]
     for product in products:

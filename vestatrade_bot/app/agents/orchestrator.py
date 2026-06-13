@@ -181,6 +181,13 @@ class ChatOrchestrator:
             self.sessions.save(session)
             return self._response(session_id, answer, [], True, intent, session, agents_used)
 
+        meta_answer = self._maybe_meta_question(message)
+        if meta_answer:
+            agents_used.append("ResponseComposerAgent")
+            self._append_history(session, message, meta_answer)
+            self.sessions.save(session)
+            return self._response(session_id, meta_answer, session.last_products, False, intent, session, agents_used)
+
         if intent.intent_type == "link_request":
             selected_index = self._select_ordinal_index(message, session.last_products)
             answer = self.composer.compose_link_answer(session.last_products, selected_index)
@@ -738,14 +745,18 @@ class ChatOrchestrator:
             return None
 
         pending = normalize_text(session.pending_question or "")
+        has_gas = "газ" in text
+        has_electric = "электрическ" in text or "электричеств" in text
+        names_gas_electric = has_gas and has_electric
         in_boiler_context = (
             intent.category == "boilers"
             or session.category == "boilers"
             or "котел" in text
             or "котл" in text
             or ("газов" in pending and "электрическ" in pending)
+            # Сравнение «газ или электричество» в магазине отопления — это про котёл.
+            or names_gas_electric
         )
-        names_gas_electric = "газов" in text and "электрическ" in text
         pending_is_boiler_type = "газов" in pending and "электрическ" in pending
 
         # Одноконтурный vs двухконтурный (явно про контуры/ГВС).
@@ -803,6 +814,30 @@ class ChatOrchestrator:
             return answer
         session.slots[flag] = True
         return f"{answer}\n\n{hint}"
+
+    def _maybe_meta_question(self, message: str) -> str | None:
+        """Questions about commercial terms not in the feed (discount/delivery/warranty/payment)."""
+        text = normalize_text(message)
+        topics = {
+            "скидк": "скидки и акции",
+            "акци": "скидки и акции",
+            "достав": "доставку и сроки",
+            "привез": "доставку и сроки",
+            "когда буд": "доставку и сроки",
+            "гаранти": "гарантию",
+            "оплат": "оплату",
+            "рассрочк": "оплату и рассрочку",
+            "самовывоз": "самовывоз",
+            "возврат": "возврат",
+        }
+        matched = next((label for key, label in topics.items() if key in text), None)
+        if not matched:
+            return None
+        return (
+            f"По вопросам про {matched} у меня нет данных в каталоге — это уточнит менеджер. "
+            "Напишите «передай менеджеру», и я зафиксирую заявку. А с подбором товара, ценой и "
+            "наличием по каталогу помогу прямо сейчас."
+        )
 
     def _wants_manager_handoff(self, message: str) -> bool:
         text = normalize_text(message)
