@@ -213,6 +213,16 @@ class ChatOrchestrator:
             self.sessions.save(session)
             return self._response(session_id, consultation, [], False, intent, session, agents_used)
 
+        # Открытый вопрос «что входит в полную комплектацию / ответь по паспорту» —
+        # отдаём диалоговому агенту: у него в контексте текст паспорта, он ответит по
+        # нему и без дословных повторов (детерминированный путь лишь зачитывал встроенные
+        # узлы и отфутболивал «смотрите в паспорте»). Конкретные детали остаются в правилах.
+        if session.last_products and self._is_open_complectation_question(message):
+            context_response = self._answer_from_context(message, intent, session, agents_used)
+            if context_response is not None:
+                self.sessions.save(session)
+                return context_response
+
         comparison_answer = self._maybe_comparison_answer(message, session)
         if comparison_answer:
             agents_used.append("ResponseComposerAgent")
@@ -883,6 +893,37 @@ class ChatOrchestrator:
         ]
         return any(marker in text for marker in context_markers)
 
+    def _passport_snippet(self, docs_text: str, limit: int = 900) -> str:
+        """Excerpt of the passport, preferring the «комплект поставки» section."""
+        low = docs_text.lower()
+        for keyword in ["комплект поставки", "комплектность", "комплектац", "в комплект"]:
+            idx = low.find(keyword)
+            if idx >= 0:
+                start = max(0, idx - 80)
+                return docs_text[start : start + limit]
+        return docs_text[:limit]
+
+    def _is_open_complectation_question(self, message: str) -> bool:
+        """Explicit «full package / answer from the passport» escalation (no specific part).
+
+        Basic «что входит в комплект?» stays on the deterministic built-in list; this is
+        for when the customer pushes for the full packaging or the passport.
+        """
+        text = normalize_text(message)
+        open_markers = [
+            "полную комплектац",
+            "полная комплектац",
+            "полной комплектац",
+            "что входит в полн",
+            "по паспорту",
+            "в паспорте",
+            "по тех паспорт",
+            "по документац",
+            "состав комплект поставки",
+            "комплект поставки",
+        ]
+        return any(marker in text for marker in open_markers) and not self._requested_parts(message)
+
     def _references_shown_products(self, message: str) -> bool:
         # Однозначные ссылки на показанное. Дательные «к нему/к ней» намеренно НЕ
         # включаем — это companion-запрос («насос к нему»), а не вопрос про товар.
@@ -922,9 +963,9 @@ class ChatOrchestrator:
                 if components:
                     lines.append(f"   Встроенные узлы (по карточке): {', '.join(components)}")
                 if product.docs_text:
-                    lines.append(f"   Паспорт (выдержка): {product.docs_text[:600]}")
+                    lines.append(f"   Паспорт (выдержка): {self._passport_snippet(product.docs_text)}")
                 elif product.description:
-                    lines.append(f"   Описание: {product.description[:400]}")
+                    lines.append(f"   Описание: {product.description[:500]}")
             lines.append(f"   Ссылка: {card.url}")
         return "\n".join(lines)
 

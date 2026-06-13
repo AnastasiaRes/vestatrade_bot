@@ -667,6 +667,21 @@ def test_context_agent_invented_price_is_rejected(sample_products) -> None:
     assert "19999" not in response.answer  # выдуманная цена отброшена guardrail'ом
 
 
+def test_passport_question_routes_to_context_agent_with_passport_text(sample_products) -> None:
+    products = [product.model_copy(deep=True) for product in sample_products]
+    for product in products:
+        if product.sku == "ARD-E9":
+            product.docs_text = "ПАСПОРТ. В комплект поставки входит котёл и руководство по эксплуатации."
+    llm = _CtxLLM("По паспорту в комплект входит котёл и руководство.")
+    orchestrator = ChatOrchestrator(products=products, llm_client=llm)
+    orchestrator.handle_chat("psp", "электрический котёл на 100 м²")
+    response = orchestrator.handle_chat("psp", "ответь по паспорту, что входит в полную комплектацию")
+
+    # вопрос ушёл к контекст-агенту, и текст паспорта попал ему в промпт
+    assert "руководство" in llm.system_seen.lower()
+    assert "руководство" in response.answer.lower()
+
+
 def test_pump_fit_question_uses_context_not_new_boiler_search(sample_products) -> None:
     llm = _CtxLLM("Это циркуляционный насос для отопления, подходит к котлам отопления.")
     orchestrator = ChatOrchestrator(products=sample_products, llm_client=llm)
