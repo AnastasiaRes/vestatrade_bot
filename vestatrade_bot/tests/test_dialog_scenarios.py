@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.agents.orchestrator import ChatOrchestrator
+from app.models import SearchQuery
 from app.openrouter_client import LLMResult
 
 
@@ -704,6 +705,54 @@ def test_product_docs_loader_supports_series_map_and_brand_rules(tmp_path, sampl
     # правило бренда из карты: Arderia + «электрический»
     assert by_sku["ARD-E9"].docs_text == "Паспорт электрических котлов"
     assert by_sku["ECA-6"].docs_text is None
+
+
+def test_missing_diameter_pipe_does_not_show_fittings_or_sewer(orchestrator) -> None:
+    orchestrator.handle_chat("nf", "нужна труба")
+    orchestrator.handle_chat("nf", "горячая вода")
+    response = orchestrator.handle_chat("nf", "16 мм")
+
+    # 16 мм трубы PPR в фиде нет — честно показываем ближайшие PPR-трубы, не фитинги/канализацию
+    assert "Точного совпадения" in response.answer
+    for product in response.products:
+        assert "труба" in product.name.lower()
+        assert "канализац" not in product.name.lower()
+        assert "угольник" not in product.name.lower()
+        assert "муфта" not in product.name.lower()
+
+    followup = orchestrator.handle_chat("nf", "Мне нужна труба диаметром 16 мм а не фитинги")
+    for product in followup.products:
+        assert "канализац" not in product.name.lower()
+        assert "110" not in product.name
+
+
+def test_search_by_name_rejects_constraint_violating_match(orchestrator) -> None:
+    # Раньше «труба 16 мм а не фитинги» по словам цеплялась за канализацию 110 мм
+    cards = orchestrator.search_agent.search_by_name(
+        "Мне нужна труба диаметром 16 мм а не фитинги",
+        SearchQuery(original_text="x", category="pipes", slots={"element_type": "труба", "diameter_mm": 16}),
+    )
+    assert all("канализац" not in card.name.lower() for card in cards)
+
+
+def test_complectation_polish_cannot_invent_pump_specs(sample_products) -> None:
+    products = [product.model_copy(deep=True) for product in sample_products]
+    for product in products:
+        if product.sku == "ARD-E9":
+            product.description = "Электрический котёл со встроенным циркуляционным насосом."
+    orchestrator = ChatOrchestrator(
+        products=products,
+        llm_client=BadRewriteLLM(
+            "Для котла ARD-E9 есть насос — типовой для отопления, 25/6 на 180 мм. "
+            "Карточка товара: https://example.test/arde9"
+        ),
+    )
+    orchestrator.handle_chat("inv", "электрический котёл на 100 м²")
+    response = orchestrator.handle_chat("inv", "а насос встроенный есть?")
+
+    assert "25/6" not in response.answer
+    assert "180 мм" not in response.answer
+    assert "ARD-E9" in response.answer
 
 
 def test_bare_pipe_with_diameter_is_not_asked_for_diameter_again(orchestrator) -> None:

@@ -159,6 +159,7 @@ class GuardrailsAgent:
 
         if mode in {"products", "link", "complectation"}:
             issues.extend(self._missing_product_facts(draft, answer))
+            issues.extend(self._fabricated_specs(draft, answer))
             if mode == "products":
                 issues.extend(self._unsupported_product_claims(draft, answer))
 
@@ -248,6 +249,28 @@ class GuardrailsAgent:
             if term in draft_norm and term not in answer_norm
         ]
         return missing
+
+    def _fabricated_specs(self, draft: str, answer: str) -> list[str]:
+        """Reject specs the LLM invented while polishing a product/complectation answer.
+
+        Product and complectation drafts already contain every fact. A measurement
+        (e.g. "180 мм", "9 квт") or pump-code ("25/6") in the answer is allowed only
+        if every number in it also occurs in the draft; otherwise the model made it
+        up (often pulling defaults like "25/6 на 180 мм" from its persona) and we
+        fall back to the safe draft.
+        """
+        draft_numbers = set(re.findall(r"\d+", normalize_text(draft)))
+        answer_norm = normalize_text(answer)
+        spec_patterns = [
+            r"(\d+)\s*/\s*(\d+)",                 # 25/6 — насосные коды
+            r"(\d+)(?:[.,]\d+)?\s*(?:мм|квт|бар)",  # 180 мм, 9 квт, 3 бар
+        ]
+        for pattern in spec_patterns:
+            for match in re.finditer(pattern, answer_norm):
+                numbers = [g for g in match.groups() if g]
+                if any(number not in draft_numbers for number in numbers):
+                    return [f"LLM rewrite invented spec: {match.group(0).strip()}"]
+        return []
 
     def _unsupported_product_claims(self, draft: str, answer: str) -> list[str]:
         issues: list[str] = []

@@ -140,20 +140,17 @@ class FeedSearchAgent:
             return []
         matches: list[tuple[float, int, Product]] = []
         for product in self.products:
-            product_text = self._product_text(product)
-            matched = sum(1 for token in tokens if token in product_text)
+            # Сопоставляем только с идентичностью товара (название/категория),
+            # без длинного маркетингового описания — иначе общая лексика паспорта
+            # даёт ложные совпадения.
+            identity = self._identity_text(product)
+            matched = sum(1 for token in tokens if token in identity)
             ratio = matched / len(tokens)
             if ratio >= 0.8 and matched >= 4:
                 name_score = int(fuzz.partial_ratio(text, normalize_text(product.name)))
                 matches.append((ratio, name_score, product))
         if not matches:
             return []
-        if query is not None:
-            candidates = [product for _, _, product in matches]
-            slot_filtered = self._filter_by_slots(candidates, query)
-            if slot_filtered:
-                allowed = {id(product) for product in slot_filtered}
-                matches = [match for match in matches if id(match[2]) in allowed]
         matches.sort(key=lambda item: (-item[0], -item[1], not item[2].is_in_stock))
         return [product for _, _, product in matches[:limit]]
 
@@ -205,6 +202,24 @@ class FeedSearchAgent:
                     product.brand or "",
                     product.description or "",
                     attr_text,
+                ]
+            )
+        )
+
+    def _identity_text(self, product: Product) -> str:
+        """Short product identity (no marketing description) for name matching.
+
+        Feed descriptions are long passport-like prose; matching a pasted product
+        name against them caused false positives (a sewer pipe whose passport
+        mentions «диаметром»/«фитинги»/«160» matched a "труба 16 мм" query).
+        """
+        return normalize_text(
+            " ".join(
+                [
+                    product.sku,
+                    product.name,
+                    product.category_path,
+                    product.brand or "",
                 ]
             )
         )
@@ -287,6 +302,7 @@ class FeedSearchAgent:
 
     def _has_strict_slots(self, query: SearchQuery) -> bool:
         strict_by_category = {
+            "pipes": {"diameter_mm", "element_type", "length_mm"},
             "sewer": {"sewer_scope", "element_type", "diameter_mm", "length_mm"},
             "pumps": {"pump_type", "mounting_length_mm", "head_m", "connection_size", "old_model"},
             "valves": {"application", "diameter_mm", "body_form", "union", "size_inch"},
