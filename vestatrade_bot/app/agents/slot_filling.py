@@ -254,10 +254,15 @@ class SlotFillingAgent:
                 question="Котёл нужен газовый или электрический?",
             )
         if not slots.get("area_m2") and not slots.get("power_kw"):
+            prefix = ""
+            if slots.get("contours") == "двухконтурный":
+                prefix = "Понял, нужен двухконтурный котёл — с горячей водой. "
+            elif slots.get("contours") == "одноконтурный":
+                prefix = "Понял, одноконтурный — только отопление. "
             return SlotFillingResult(
                 slots=slots,
                 needs_clarification=True,
-                question="На какую площадь подбираете котёл?",
+                question=prefix + "На какую площадь подбираете котёл?",
             )
         if slots.get("boiler_type") == "газовый" and not slots.get("contours"):
             return SlotFillingResult(

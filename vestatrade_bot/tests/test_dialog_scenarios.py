@@ -437,6 +437,26 @@ def test_radiator_shutoff_followup_is_remembered(orchestrator) -> None:
     assert "1/2 или 3/4" in response.answer
 
 
+def test_americanka_filter_excludes_valves_without_union(orchestrator) -> None:
+    orchestrator.handle_chat("am", "кран шаровый для воды")
+    orchestrator.handle_chat("am", "3/4")
+    response = orchestrator.handle_chat("am", "с американкой")
+
+    assert response.products
+    for product in response.products:
+        name = product.name.lower()
+        assert "полусгон" in name or "американк" in name, product.name
+
+
+def test_hot_water_followup_is_acknowledged_as_two_contour(orchestrator) -> None:
+    orchestrator.handle_chat("hw", "нужен газовый котёл")
+    response = orchestrator.handle_chat("hw", "и чтобы горячую воду грел")
+
+    assert response.debug["slots"].get("contours") == "двухконтурный"
+    assert "двухконтурный" in response.answer.lower()
+    assert "площад" in response.answer.lower()
+
+
 def test_valve_understands_vody_case(orchestrator) -> None:
     response = orchestrator.handle_chat("s12", "кран шаровый для воды 20 угловой")
 

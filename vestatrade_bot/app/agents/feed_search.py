@@ -292,6 +292,10 @@ class FeedSearchAgent:
         if body_form:
             checks.append(normalize_text(str(body_form)) in text)
 
+        if slots.get("union"):
+            # «американка» = разъёмное соединение с полусгоном/накидной гайкой.
+            checks.append("полусгон" in text or "американк" in text or "накидн" in text)
+
         application = slots.get("application")
         if application and slots.get("category_strict_application"):
             checks.append(normalize_text(str(application)) in text)
@@ -375,6 +379,9 @@ class FeedSearchAgent:
         body_form = slots.get("body_form")
         if body_form:
             score += 20 if normalize_text(str(body_form)) in text else -8
+
+        if slots.get("union"):
+            score += 20 if ("полусгон" in text or "американк" in text or "накидн" in text) else -15
 
         application = slots.get("application")
         if application:
