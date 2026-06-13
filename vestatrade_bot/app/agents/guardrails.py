@@ -126,6 +126,43 @@ class GuardrailsAgent:
             )
         return GuardrailsResult(ok=True)
 
+    def list_builtin_components(self, product: Product) -> list[str]:
+        """Read the card (name + description + docs + attrs) and list components the
+        feed actually states are built in / included. No guessing — a component is
+        listed only when its keyword is present (and "встроен" appears for the
+        ambiguous ones, so "подключение насоса" doesn't count as a built-in pump).
+        """
+        text = normalize_text(
+            " ".join(
+                [
+                    product.name,
+                    product.description or "",
+                    product.docs_text or "",
+                    " ".join(product.attributes_normalized.values()),
+                    " ".join(product.attributes_normalized.keys()),
+                ]
+            )
+        )
+        has_builtin_word = "встроен" in text
+        found: list[str] = []
+        # (подпись, ключевые слова, требуется ли рядом слово «встроен»)
+        catalogue = [
+            ("циркуляционный насос", ["насос"], True),
+            ("расширительный бак", ["расширительн", "расширительный бак"], True),
+            ("3-ходовой клапан", ["ходов клапан", "ходовой клапан", "ходовый клапан", "трехходов"], False),
+            ("манометр", ["манометр"], False),
+            ("закрытая камера сгорания", ["закрытая камера", "закрыт камер"], False),
+            ("бойлер", ["встроенный бойлер", "накопительный бойлер"], False),
+            ("группа безопасности", ["группа безопасн", "групп безопасн"], False),
+        ]
+        for label, needles, require_builtin in catalogue:
+            if not any(needle in text for needle in needles):
+                continue
+            if require_builtin and not has_builtin_word:
+                continue
+            found.append(label)
+        return found
+
     def _part_confirmed(self, text: str, part: str) -> bool:
         if part == "бойлер":
             positive_markers = [

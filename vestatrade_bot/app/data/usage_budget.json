@@ -1,6 +1,6 @@
 {
   "date": "2026-06-13",
-  "spent_usd": 0.00284134,
+  "spent_usd": 0.0036125,
   "calls": [
     {
       "ts": "2026-06-13T22:44:07.832670",
@@ -201,6 +201,70 @@
       "prompt_tokens": 1667,
       "completion_tokens": 651,
       "cost_usd": 0.00032866
+    },
+    {
+      "ts": "2026-06-13T23:18:45.296092",
+      "agent": "ResponseComposerAgent.clarification",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 863,
+      "completion_tokens": 11,
+      "cost_usd": 7.234e-05
+    },
+    {
+      "ts": "2026-06-13T23:18:50.415131",
+      "agent": "ResponseComposerAgent.clarification",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 898,
+      "completion_tokens": 14,
+      "cost_usd": 7.604e-05
+    },
+    {
+      "ts": "2026-06-13T23:18:54.967154",
+      "agent": "IntentRouterAgent",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 336,
+      "completion_tokens": 39,
+      "cost_usd": 3.858e-05
+    },
+    {
+      "ts": "2026-06-13T23:18:56.115408",
+      "agent": "ResponseComposerAgent.clarification",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 957,
+      "completion_tokens": 15,
+      "cost_usd": 8.106e-05
+    },
+    {
+      "ts": "2026-06-13T23:19:10.191608",
+      "agent": "ResponseComposerAgent.products",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 1199,
+      "completion_tokens": 253,
+      "cost_usd": 0.00017182
+    },
+    {
+      "ts": "2026-06-13T23:20:45.361116",
+      "agent": "IntentRouterAgent",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 491,
+      "completion_tokens": 34,
+      "cost_usd": 4.948e-05
+    },
+    {
+      "ts": "2026-06-13T23:20:51.508724",
+      "agent": "ResponseComposerAgent.unknown",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 1238,
+      "completion_tokens": 220,
+      "cost_usd": 0.00016504
+    },
+    {
+      "ts": "2026-06-13T23:21:24.074778",
+      "agent": "ResponseComposerAgent.clarification",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 1295,
+      "completion_tokens": 44,
+      "cost_usd": 0.0001168
     }
   ]
 }

@@ -619,6 +619,56 @@ def test_product_answer_suggests_companion_components_once(orchestrator) -> None
     assert "группу безопасности" not in again.answer
 
 
+def _boiler_with_builtins(sample_products):
+    products = [product.model_copy(deep=True) for product in sample_products]
+    for product in products:
+        if product.sku == "ARD-E9":
+            product.description = (
+                "Электрический котёл. Встроенный циркуляционный насос, встроенный "
+                "расширительный бак, манометр, закрытая камера сгорания."
+            )
+    return products
+
+
+def test_open_complectation_lists_builtin_components_from_card(sample_products) -> None:
+    orchestrator = ChatOrchestrator(products=_boiler_with_builtins(sample_products))
+    orchestrator.handle_chat("ck", "электрический котёл на 100 м²")
+    response = orchestrator.handle_chat("ck", "а что входит в комплект?")
+
+    assert response.need_handoff is False
+    assert response.debug["intent"] == "complectation"
+    assert "насос" in response.answer.lower()
+    assert "бак" in response.answer.lower()
+    assert "ARD-E9" in response.answer
+
+
+def test_check_documentation_request_does_not_fabricate(sample_products) -> None:
+    # Котёл без встроенных узлов в описании — бот не должен выдумывать «документацию»
+    products = [product.model_copy(deep=True) for product in sample_products]
+    for product in products:
+        if product.sku == "ARD-E9":
+            product.description = "Электрический котёл мощностью 9 кВт."
+            product.docs_text = None
+    orchestrator = ChatOrchestrator(products=products)
+    orchestrator.handle_chat("doc", "электрический котёл на 100 м²")
+    response = orchestrator.handle_chat("doc", "проверь документацию и ответь, что входит")
+
+    assert response.debug["intent"] == "complectation"
+    assert "не детализирован" in response.answer or "не вижу" in response.answer.lower()
+    # никаких выдуманных списков датчиков
+    assert "датчик температуры воды в трубах" not in response.answer
+
+
+def test_part_question_after_boiler_routes_to_complectation(sample_products) -> None:
+    orchestrator = ChatOrchestrator(products=_boiler_with_builtins(sample_products))
+    orchestrator.handle_chat("pq", "электрический котёл на 100 м²")
+    response = orchestrator.handle_chat("pq", "продолжи, есть ли там насос?")
+
+    assert response.debug["intent"] == "complectation"
+    assert "насос" in response.answer.lower()
+    assert "Для какой задачи нужен насос" not in response.answer
+
+
 def test_boiler_built_in_pump_question_is_answered_from_description(sample_products) -> None:
     products = [product.model_copy(deep=True) for product in sample_products]
     for product in products:

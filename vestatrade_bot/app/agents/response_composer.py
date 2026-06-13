@@ -621,6 +621,39 @@ class ResponseComposerAgent:
             "Объясни термин простыми словами, коротко, без новых товарных фактов.",
         )
 
+    def compose_builtin_components(
+        self,
+        card: ProductCard,
+        components: list[str],
+    ) -> str:
+        if components:
+            parts = ", ".join(components)
+            draft = (
+                f"По описанию карточки {card.sku} ({card.name}) в котёл встроены: {parts}. "
+                f"Полную комплектацию поставки лучше сверить в паспорте или у менеджера. "
+                f"Карточка: {card.url}"
+            )
+            instruction = (
+                "Перечисли встроенные компоненты строго из черновика, ничего не добавляя и "
+                "не выдумывая. Сохрани SKU и ссылку."
+            )
+        else:
+            draft = (
+                f"В данных карточки {card.sku} состав комплекта поставки не детализирован. "
+                f"По характеристикам это {card.name}. Точную комплектацию подскажет менеджер "
+                f"или паспорт изделия. Карточка: {card.url}"
+            )
+            instruction = (
+                "Честно скажи, что состав комплекта в данных фида не детализирован, не выдумывай "
+                "узлы. Сохрани SKU и ссылку."
+            )
+        return self._polish(
+            "ResponseComposerAgent.builtin",
+            card.sku,
+            draft,
+            instruction,
+        )
+
     def compose_link_answer(
         self,
         cards: list[ProductCard],

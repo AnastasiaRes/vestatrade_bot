@@ -145,6 +145,15 @@ class ChatOrchestrator:
         if self._is_pending_continuation(intent, session, message):
             self._restore_pending_intent(intent, session)
 
+        # Вопрос про уже показанный товар («что входит в комплект», «проверь
+        # документацию», «есть ли там насос») — это запрос к карточке, а не новый
+        # подбор. Перенаправляем в комплектацию, иначе уходит в LLM/подбор насоса.
+        if self._looks_like_card_question(message, session):
+            intent.intent_type = "complectation"
+            if session.category:
+                intent.category = session.category
+            intent.is_topic_change = False
+
         if intent.is_topic_change:
             session.slots = {}
             session.last_products = []
@@ -546,6 +555,21 @@ class ChatOrchestrator:
             agents_used.append("HandoffAgent")
             self._append_history(session, message, answer)
             return self._response(session.session_id, answer, [], True, intent, session, agents_used)
+
+        # Открытый вопрос «что входит в комплект / проверь документацию» — читаем
+        # карточку и перечисляем встроенные компоненты, а не отказываем.
+        if requested_parts == ["комплектация"]:
+            components = self.guardrails.list_builtin_components(target_product)
+            agents_used.append("GuardrailsAgent")
+            agents_used.append("ResponseComposerAgent")
+            session.pending_question = None
+            session.pending_intent_type = None
+            session.pending_complectation_parts = []
+            answer = self.composer.compose_builtin_components(target_card, components)
+            answer = self._guard_composed_answer(answer, "complectation", agents_used)
+            session.last_products = [target_card]
+            self._append_history(session, message, answer)
+            return self._response(session.session_id, answer, [target_card], False, intent, session, agents_used)
 
         guard = self.guardrails.validate_complectation_answer(target_product, requested_parts)
         agents_used.append("GuardrailsAgent")
@@ -1312,13 +1336,70 @@ class ChatOrchestrator:
             ]
         )
 
+    def _looks_like_card_question(self, message: str, session: SessionState) -> bool:
+        """True for questions about an already shown product's card / documentation."""
+        if not session.last_products:
+            return False
+        text = normalize_text(message)
+        markers = [
+            "что входит",
+            "что в комплект",
+            "в комплект",
+            "комплектац",
+            "что идет в комплект",
+            "проверь документ",
+            "посмотри документ",
+            "в документац",
+            "по документац",
+            "в паспорт",
+            "по паспорт",
+            "проверь карточк",
+            "проверь описание",
+            "проверь характеристик",
+            "есть ли там",
+            "есть ли в нем",
+            "есть ли у",
+            "входит ли",
+            "идет ли",
+            "в нем есть",
+            "в него входит",
+            "не входит",
+            "входит насос",
+        ]
+        if any(marker in text for marker in markers):
+            return True
+        # «расширительный бак есть?», «насос идёт?» — деталь + глагол наличия.
+        part_words = [
+            "насос",
+            "бак",
+            "расширительн",
+            "клапан",
+            "бойлер",
+            "манометр",
+            "датчик",
+            "группа безопас",
+            "камера сгоран",
+        ]
+        presence_verbs = ["есть", "входит", "идет", "имеется", "включен", "встроен"]
+        if (
+            any(part in text for part in part_words)
+            and any(verb in text for verb in presence_verbs)
+            and not any(stop in text for stop in ["в наличии", "на складе", "сколько"])
+        ):
+            return True
+        return False
+
     def _requested_parts(self, message: str) -> list[str]:
         text = normalize_text(message)
         parts: list[str] = []
         if "насос" in text:
             parts.append("насос")
-        if "бак" in text:
+        if "бак" in text or "расширительн" in text:
             parts.append("бак")
+        if "клапан" in text:
+            parts.append("клапан")
+        if "манометр" in text:
+            parts.append("манометр")
         if ("групп" in text and "безопас" in text) or "безопасн" in text:
             parts.append("группа безопасности")
         if "обвяз" in text:
