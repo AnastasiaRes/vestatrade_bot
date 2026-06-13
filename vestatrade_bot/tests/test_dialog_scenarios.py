@@ -619,6 +619,35 @@ def test_product_answer_suggests_companion_components_once(orchestrator) -> None
     assert "группу безопасности" not in again.answer
 
 
+def test_boiler_built_in_pump_question_is_answered_from_description(sample_products) -> None:
+    products = [product.model_copy(deep=True) for product in sample_products]
+    for product in products:
+        if product.sku == "ARD-E9":
+            product.description = "Электрический котёл со встроенным циркуляционным насосом."
+    orchestrator = ChatOrchestrator(products=products)
+
+    orchestrator.handle_chat("bp", "электрический котёл на 100 м²")
+    response = orchestrator.handle_chat("bp", "то есть в котёл не входит насос?")
+
+    assert response.debug["intent"] == "complectation"
+    assert "ARD-E9" in response.answer
+    assert "насос" in response.answer.lower()
+    # слоты не должны обнуляться вопросом о комплектации
+    assert response.debug["slots"].get("boiler_type") == "электрический"
+    assert response.debug["slots"].get("area_m2") == 100.0
+
+
+def test_electric_choice_never_shows_gas_boilers(orchestrator) -> None:
+    orchestrator.handle_chat("eg", "нужен котёл")
+    orchestrator.handle_chat("eg", "да нужна горячая вода от котла")
+    orchestrator.handle_chat("eg", "электрический")
+    response = orchestrator.handle_chat("eg", "100 м2")
+
+    for product in response.products:
+        assert "газов" not in product.name.lower(), product.name
+    assert "бойлер" in response.answer.lower()
+
+
 def test_difference_question_after_boiler_type_clarification_explains(orchestrator) -> None:
     orchestrator.handle_chat("diff1", "нужен котёл")
     asked = orchestrator.handle_chat("diff1", "ой нужен котел")

@@ -307,6 +307,7 @@ class FeedSearchAgent:
             "pumps": {"pump_type", "mounting_length_mm", "head_m", "connection_size", "old_model"},
             "valves": {"application", "diameter_mm", "body_form", "union", "size_inch"},
             "radiator_fittings": {"application", "connection_form", "diameter_mm", "thermostatic_head"},
+            "boilers": {"boiler_type", "contours"},
         }
         strict_keys = strict_by_category.get(query.category, set())
         return bool(strict_keys.intersection(query.slots))
@@ -361,7 +362,15 @@ class FeedSearchAgent:
 
         boiler_type = slots.get("boiler_type")
         if boiler_type:
-            score += 30 if normalize_text(str(boiler_type)) in text else -15
+            # Чужой тип котла (газовый вместо электрического) — не альтернатива.
+            if normalize_text(str(boiler_type)) in text:
+                score += 30
+            else:
+                return 0
+
+        contours = slots.get("contours")
+        if contours:
+            score += 20 if normalize_text(str(contours)) in text else -10
 
         body_form = slots.get("body_form")
         if body_form:

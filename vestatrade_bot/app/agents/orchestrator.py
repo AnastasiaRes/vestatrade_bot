@@ -389,6 +389,7 @@ class ChatOrchestrator:
         products = direct_products or self._safe_search(query)
         if not products:
             alternatives = self.search_agent.search_alternatives(query)
+            alternatives = self._drop_underpowered_boilers(alternatives, query)
             if alternatives:
                 ranked_alternatives = alternatives
                 if query.cheap:
@@ -721,6 +722,27 @@ class ChatOrchestrator:
             return PIPE_TYPES_CONSULT
 
         return None
+
+    def _drop_underpowered_boilers(
+        self,
+        products: list[Product],
+        query: SearchQuery,
+    ) -> list[Product]:
+        """Keep boiler alternatives that are not too weak for the requested area.
+
+        Otherwise a single underpowered model (e.g. 6 кВт for 100 м²) makes the
+        guardrail reject the whole set and the customer sees nothing instead of the
+        suitable option.
+        """
+        if query.category != "boilers" or not query.slots.get("area_m2"):
+            return products
+        required_kw = float(query.slots["area_m2"]) / 10.0
+        kept: list[Product] = []
+        for product in products:
+            power = self.guardrails._extract_power_kw(product)
+            if power is None or power >= required_kw * 0.75:
+                kept.append(product)
+        return kept or products
 
     def _append_companion_hint(self, answer: str, session: SessionState, category: str) -> str:
         hint = COMPANION_HINTS.get(category)

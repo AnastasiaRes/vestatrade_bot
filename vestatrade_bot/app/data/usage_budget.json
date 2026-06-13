@@ -1,6 +1,6 @@
 {
   "date": "2026-06-13",
-  "spent_usd": 0.00082404,
+  "spent_usd": 0.00284134,
   "calls": [
     {
       "ts": "2026-06-13T22:44:07.832670",
@@ -57,6 +57,150 @@
       "prompt_tokens": 1398,
       "completion_tokens": 205,
       "cost_usd": 0.00017334
+    },
+    {
+      "ts": "2026-06-13T23:01:09.099890",
+      "agent": "ResponseComposerAgent.small_talk",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 801,
+      "completion_tokens": 46,
+      "cost_usd": 7.788e-05
+    },
+    {
+      "ts": "2026-06-13T23:01:21.525871",
+      "agent": "IntentRouterAgent",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 343,
+      "completion_tokens": 32,
+      "cost_usd": 3.704e-05
+    },
+    {
+      "ts": "2026-06-13T23:01:22.454868",
+      "agent": "ResponseComposerAgent.small_talk",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 861,
+      "completion_tokens": 44,
+      "cost_usd": 8.208e-05
+    },
+    {
+      "ts": "2026-06-13T23:01:34.634270",
+      "agent": "IntentRouterAgent",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 398,
+      "completion_tokens": 32,
+      "cost_usd": 4.144e-05
+    },
+    {
+      "ts": "2026-06-13T23:01:37.052730",
+      "agent": "ResponseComposerAgent.small_talk",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 919,
+      "completion_tokens": 44,
+      "cost_usd": 8.672e-05
+    },
+    {
+      "ts": "2026-06-13T23:02:01.937846",
+      "agent": "ResponseComposerAgent.term",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 1036,
+      "completion_tokens": 90,
+      "cost_usd": 0.00010988
+    },
+    {
+      "ts": "2026-06-13T23:02:22.023983",
+      "agent": "ResponseComposerAgent.clarification",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 1015,
+      "completion_tokens": 11,
+      "cost_usd": 8.45e-05
+    },
+    {
+      "ts": "2026-06-13T23:03:09.472263",
+      "agent": "ResponseComposerAgent.products",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 1291,
+      "completion_tokens": 208,
+      "cost_usd": 0.00016568
+    },
+    {
+      "ts": "2026-06-13T23:03:27.494474",
+      "agent": "ResponseComposerAgent.products",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 1455,
+      "completion_tokens": 100,
+      "cost_usd": 0.0001464
+    },
+    {
+      "ts": "2026-06-13T23:03:56.826658",
+      "agent": "ResponseComposerAgent.clarification",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 1358,
+      "completion_tokens": 13,
+      "cost_usd": 0.00011254
+    },
+    {
+      "ts": "2026-06-13T23:04:14.289575",
+      "agent": "ResponseComposerAgent.clarification",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 1174,
+      "completion_tokens": 10,
+      "cost_usd": 9.692e-05
+    },
+    {
+      "ts": "2026-06-13T23:04:33.746854",
+      "agent": "ResponseComposerAgent.products",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 1261,
+      "completion_tokens": 230,
+      "cost_usd": 0.00016988
+    },
+    {
+      "ts": "2026-06-13T23:05:02.394545",
+      "agent": "IntentRouterAgent",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 467,
+      "completion_tokens": 32,
+      "cost_usd": 4.696e-05
+    },
+    {
+      "ts": "2026-06-13T23:05:04.867770",
+      "agent": "ResponseComposerAgent.products",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 1338,
+      "completion_tokens": 219,
+      "cost_usd": 0.00017274
+    },
+    {
+      "ts": "2026-06-13T23:06:37.308112",
+      "agent": "ResponseComposerAgent.clarification",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 1303,
+      "completion_tokens": 27,
+      "cost_usd": 0.00011234
+    },
+    {
+      "ts": "2026-06-13T23:06:43.554214",
+      "agent": "ResponseComposerAgent.clarification",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 1176,
+      "completion_tokens": 15,
+      "cost_usd": 9.858e-05
+    },
+    {
+      "ts": "2026-06-13T23:06:48.535777",
+      "agent": "IntentRouterAgent",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 442,
+      "completion_tokens": 39,
+      "cost_usd": 4.706e-05
+    },
+    {
+      "ts": "2026-06-13T23:06:53.669216",
+      "agent": "ResponseComposerAgent.products",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "prompt_tokens": 1667,
+      "completion_tokens": 651,
+      "cost_usd": 0.00032866
     }
   ]
 }

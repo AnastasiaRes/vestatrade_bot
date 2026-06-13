@@ -489,6 +489,17 @@ class ResponseComposerAgent:
         )
 
     def compose_alternative_note(self, query: SearchQuery) -> str:
+        # Электрических двухконтурных в фиде нет — это типовая ситуация, объясняем по-человечески.
+        if (
+            query.category == "boilers"
+            and query.slots.get("boiler_type") == "электрический"
+            and query.slots.get("contours") == "двухконтурный"
+        ):
+            return (
+                "Электрического двухконтурного котла в наличии нет — у электрических обычно один "
+                "контур. Показываю одноконтурный вариант: для горячей воды к нему ставят отдельный "
+                "бойлер косвенного нагрева."
+            )
         requested = self._requested_summary(query)
         if requested:
             return (
