@@ -83,6 +83,52 @@ PIPE_TYPES_CONSULT = (
     "Скажите назначение (отопление, горячая или холодная вода) и диаметр — подберу."
 )
 
+# Слова, означающие, что клиент уже назвал конкретный тип товара — тогда воронку
+# по системе не запускаем, ведём обычный подбор.
+SPECIFIC_PRODUCT_WORDS = [
+    "котел",
+    "котёл",
+    "котл",
+    "бойлер",
+    "насос",
+    "помпа",
+    "нсос",
+    "труба",
+    "трубы",
+    "трубу",
+    "кран",
+    "вентиль",
+    "американк",
+    "радиатор",
+    "батаре",
+    "термоголов",
+    "термостат",
+    "фитинг",
+    "отвод",
+    "тройник",
+    "муфта",
+    "угольник",
+    "клапан",
+    "коллектор",
+]
+
+# Воронки по «системам»: клиент называет систему/проект целиком, а не товар.
+# Объясняем, из чего состоит система, и предлагаем сузить до конкретной категории.
+HEATING_FUNNEL = (
+    "Система отопления — это не только котёл: ещё циркуляционный насос, трубы, "
+    "радиаторы и запорно-регулирующая арматура. С чего начнём — котёл, насос, "
+    "трубы или радиаторная арматура?"
+)
+WATER_SUPPLY_FUNNEL = (
+    "Водоснабжение складывается из нескольких частей: насос (если вода из скважины "
+    "или колодца), трубы, краны и фитинги. Что подобрать в первую очередь — "
+    "насос, трубы или краны?"
+)
+GENERAL_FUNNEL = (
+    "Подскажите, что именно нужно — в каталоге Vesta Trading есть котлы, насосы, "
+    "трубы, краны, канализация и радиаторная арматура. С чего начнём?"
+)
+
 
 class ChatOrchestrator:
     def __init__(
@@ -297,6 +343,21 @@ class ChatOrchestrator:
                 self.sessions.save(session)
                 return context_response
 
+        # Клиент назвал систему/проект целиком («система отопления», «водоснабжение»,
+        # «сантехнику в дом») без конкретного товара — не подбираем наугад, а объясняем
+        # состав системы и сужаем до категории. Это и есть «воронка»: от общего к частному.
+        # Стоит до small talk / unknown, чтобы системные фразы получали детерминированную
+        # воронку, а не свободный ответ LLM с риском выдумать характеристики.
+        scope_funnel = self._maybe_scope_funnel(message, intent, session)
+        if scope_funnel:
+            answer = scope_funnel
+            agents_used.append("ResponseComposerAgent")
+            session.pending_question = scope_funnel
+            session.pending_intent_type = "broad_category"
+            self._append_history(session, message, answer)
+            self.sessions.save(session)
+            return self._response(session_id, answer, [], False, intent, session, agents_used)
+
         if intent.intent_type == "small_talk" and intent.category == "other":
             answer = self.composer.compose_small_talk(message)
             agents_used.append("ResponseComposerAgent")
@@ -420,6 +481,18 @@ class ChatOrchestrator:
             session.slots["allow_basic_option"] = True
             session.slots["fallback_after_repeat"] = True
             query = self._build_query(message, intent, session)
+
+        # Защита от «вываливания» случайных товаров: если категория не определена и
+        # нет ни артикула, ни бренда, ни конкретного параметра — открытый поиск выдаёт
+        # шум (угольники на «есть дом»). Вместо этого спрашиваем, что подбираем.
+        if not direct_products and not self._is_searchable(query):
+            session.slots["scope_funnel"] = "general"
+            session.pending_question = GENERAL_FUNNEL
+            session.pending_intent_type = "broad_category"
+            agents_used.append("ResponseComposerAgent")
+            self._append_history(session, message, GENERAL_FUNNEL)
+            self.sessions.save(session)
+            return self._response(session_id, GENERAL_FUNNEL, [], False, intent, session, agents_used)
 
         session.pending_question = None
         session.pending_intent_type = None
@@ -642,6 +715,42 @@ class ChatOrchestrator:
             in_stock_only=bool(session.slots.get("in_stock") or intent.flags.get("in_stock")),
         )
 
+    def _is_searchable(self, query: SearchQuery) -> bool:
+        """True when the query carries enough signal to run a meaningful search.
+
+        A bare category=other query with no SKU, brand or constraining slot would
+        otherwise fuzzy-match the whole feed and surface noise. We only search when
+        there is at least one concrete anchor.
+        """
+        if query.sku or query.brand:
+            return True
+        if query.category and query.category != "other":
+            return True
+        meaningful_slots = {
+            "diameter_mm",
+            "size_inch",
+            "head_m",
+            "mounting_length_mm",
+            "connection_size",
+            "old_model",
+            "power_kw",
+            "area_m2",
+            "boiler_type",
+            "pump_type",
+            "pump_use",
+            "element_type",
+            "sewer_scope",
+            "pipe_purpose",
+            "length_mm",
+            "application",
+            "cheap",
+            "in_stock",
+        }
+        return any(
+            key in meaningful_slots and value not in (None, "", [], {})
+            for key, value in query.slots.items()
+        )
+
     def _is_non_product_message(self, intent: IntentResult) -> bool:
         if intent.intent_type != "unknown" or intent.category != "other":
             return False
@@ -711,6 +820,74 @@ class ChatOrchestrator:
             ),
             alternative=session.last_products[1] if len(session.last_products) > 1 else None,
         )
+
+    def _maybe_scope_funnel(
+        self,
+        message: str,
+        intent: IntentResult,
+        session: SessionState,
+    ) -> str | None:
+        """Narrow a system/project-level request to a concrete category.
+
+        "Нужна система отопления", "водоснабжение", "сантехнику в дом" describe a
+        whole system, not a single product. Instead of dumping random fittings or
+        equating отопление with «котёл», we explain the system's components and ask
+        which one to start with. Returns None as soon as the user names a concrete
+        product type, so normal product flows keep working.
+        """
+        text = normalize_text(message)
+
+        # Если клиент уже в конкретной категории и это не смена темы, то «для дачи»,
+        # «водоснабжения», «в доме» — это уточнения текущего подбора, а не новый
+        # системный запрос. Воронку не запускаем, ведём текущий сценарий.
+        if session.category and session.category != "other" and not intent.is_topic_change:
+            return None
+
+        # Возражение «это не только котёл / не один котёл» — клиент уточняет, что
+        # имел в виду систему, а не отдельный товар. Соглашаемся и снова сужаем.
+        if "не только" in text or "не один" in text:
+            if "отоплен" in text or session.slots.get("scope_funnel") == "heating":
+                session.slots["scope_funnel"] = "heating"
+                return "Согласен, отопление — это целая система. " + HEATING_FUNNEL
+            if session.slots.get("scope_funnel") == "water" or "водоснаб" in text:
+                session.slots["scope_funnel"] = "water"
+                return "Верно, водоснабжение — это система. " + WATER_SUPPLY_FUNNEL
+
+        # Клиент уже назвал конкретный товар — воронка не нужна, ведём подбор.
+        if any(word in text for word in SPECIFIC_PRODUCT_WORDS):
+            session.slots.pop("scope_funnel", None)
+            return None
+
+        # Отопление как система (без конкретного узла).
+        if "отоплен" in text or ("тепл" in text and "пол" in text):
+            session.slots["scope_funnel"] = "heating"
+            return HEATING_FUNNEL
+
+        # Водоснабжение / водопровод как система.
+        if "водоснаб" in text or "водопровод" in text:
+            session.slots["scope_funnel"] = "water"
+            return WATER_SUPPLY_FUNNEL
+
+        # Общий проект / «сантехнику в дом» / «обустроить ванную» — самый широкий запрос.
+        # Ультра-общие фразы без этих маркеров («есть дом») перехватит safety-net
+        # перед поиском, поэтому держим список узким, чтобы не глушить small talk.
+        general_markers = [
+            "сантехник",
+            "обустро",
+            "в дом",
+            "для дома",
+            "на дач",
+            "для дачи",
+            "ванну",
+            "ванной",
+            "санузел",
+            "кухн",
+        ]
+        if any(marker in text for marker in general_markers):
+            session.slots["scope_funnel"] = "general"
+            return GENERAL_FUNNEL
+
+        return None
 
     def _maybe_consultation_answer(
         self,

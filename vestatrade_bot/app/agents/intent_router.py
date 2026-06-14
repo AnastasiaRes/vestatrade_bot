@@ -145,6 +145,28 @@ COMPLECTATION_WORDS = [
 LINK_WORDS = ["дай ссылку", "ссылку", "ссылка"]
 TOPIC_CHANGE_WORDS = ["теперь", "а теперь", "еще нужен", "ещё нужен", "другой", "нужен"]
 
+VALID_INTENTS = {
+    "exact_sku",
+    "brand_category",
+    "broad_category",
+    "cheap_request",
+    "stock_request",
+    "attribute_request",
+    "complectation",
+    "small_talk",
+    "out_of_scope",
+    "unknown",
+}
+VALID_CATEGORIES = {
+    "pipes",
+    "pumps",
+    "boilers",
+    "valves",
+    "sewer",
+    "radiator_fittings",
+    "other",
+}
+
 
 class IntentRouterAgent:
     def __init__(self, llm_client: OpenRouterClient | None = None) -> None:
@@ -702,6 +724,15 @@ class IntentRouterAgent:
         """
         text = normalize_text(message)
         sku_text = collapse_sku_spaces(text)
+
+        # The model occasionally echoes the schema enum string verbatim
+        # ("exact_sku|brand_category|…") or invents a label/category. Snap any
+        # out-of-vocabulary value back to the rule-based guess so the
+        # orchestrator never receives a garbage intent_type/category.
+        if llm_result.intent_type not in VALID_INTENTS:
+            llm_result.intent_type = rule_result.intent_type
+        if llm_result.category not in VALID_CATEGORIES:
+            llm_result.category = rule_result.category
 
         if llm_result.intent_type == "complectation" and not any(
             word in text for word in COMPLECTATION_WORDS

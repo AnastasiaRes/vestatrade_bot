@@ -37,6 +37,42 @@ def test_pipe_starts_with_purpose_question(orchestrator) -> None:
     assert response.products == []
 
 
+def test_heating_system_is_funneled_not_equated_with_boiler(orchestrator) -> None:
+    response = orchestrator.handle_chat("sf1", "нужна система отопления")
+
+    # Отопление — это система, а не только котёл: воронка перечисляет узлы и не
+    # вываливает товары и не спрашивает сразу «газовый или электрический».
+    assert response.products == []
+    answer = response.answer.lower()
+    assert "котёл" in answer or "котел" in answer
+    assert "насос" in answer
+    assert "радиатор" in answer
+    assert "газовый или электрический" not in answer
+
+
+def test_heating_funnel_narrows_to_boiler_when_user_picks_one(orchestrator) -> None:
+    orchestrator.handle_chat("sf2", "нужна система отопления")
+    response = orchestrator.handle_chat("sf2", "котёл")
+
+    assert response.debug["category"] == "boilers"
+    assert "газовый или электрический" in response.answer.lower()
+
+
+def test_vague_house_request_does_not_dump_random_products(orchestrator) -> None:
+    response = orchestrator.handle_chat("sf3", "нужно в дом сантехнику")
+
+    assert response.products == []
+    answer = response.answer.lower()
+    assert "котлы" in answer and "насосы" in answer and "трубы" in answer
+
+
+def test_bare_query_with_no_signal_asks_instead_of_searching(orchestrator) -> None:
+    # «хочу что-нибудь» не несёт ни категории, ни параметров — нельзя искать вслепую.
+    response = orchestrator.handle_chat("sf4", "хочу обустроить ванную")
+
+    assert response.products == []
+
+
 def test_pipe_purpose_followup_continues_context(orchestrator) -> None:
     orchestrator.handle_chat("s1b", "нужна труба")
     response = orchestrator.handle_chat("s1b", "водоснабжения")
