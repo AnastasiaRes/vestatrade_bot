@@ -124,6 +124,11 @@ WATER_SUPPLY_FUNNEL = (
     "или колодца), трубы, краны и фитинги. Что подобрать в первую очередь — "
     "насос, трубы или краны?"
 )
+WARM_FLOOR_FUNNEL = (
+    "Тёплый пол — это трубы, циркуляционный насос и запорно-регулирующая арматура "
+    "(плюс коллектор и автоматика, которых может не быть в каталоге). Что подобрать "
+    "из наличия — трубы или насос?"
+)
 GENERAL_FUNNEL = (
     "Подскажите, что именно нужно — в каталоге Vesta Trading есть котлы, насосы, "
     "трубы, краны, канализация и радиаторная арматура. С чего начнём?"
@@ -858,8 +863,13 @@ class ChatOrchestrator:
             session.slots.pop("scope_funnel", None)
             return None
 
+        # Тёплый пол — отдельная подсистема отопления со своим составом.
+        if ("тепл" in text and "пол" in text) or "теплый пол" in text:
+            session.slots["scope_funnel"] = "heating"
+            return WARM_FLOOR_FUNNEL
+
         # Отопление как система (без конкретного узла).
-        if "отоплен" in text or ("тепл" in text and "пол" in text):
+        if "отоплен" in text:
             session.slots["scope_funnel"] = "heating"
             return HEATING_FUNNEL
 
