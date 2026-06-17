@@ -19,6 +19,7 @@ from app.models import (
 from app.openrouter_client import OpenRouterClient
 from app.session_store import InMemorySessionStore
 
+from .consultant import ConsultantAgent
 from .feed_search import FeedSearchAgent
 from .guardrails import GuardrailsAgent
 from .handoff import HandoffAgent
@@ -154,6 +155,7 @@ class ChatOrchestrator:
         self.card_agent = ProductCardAgent()
         self.guardrails = GuardrailsAgent()
         self.composer = ResponseComposerAgent(self.llm_client)
+        self.consultant = ConsultantAgent(self.llm_client)
         self.handoff = HandoffAgent()
         self.products_loaded_from = "injected" if products is not None else "none"
         self.docs_attached = 0
@@ -347,6 +349,16 @@ class ChatOrchestrator:
             if context_response is not None:
                 self.sessions.save(session)
                 return context_response
+
+        # Консультативный/проектный разговор («дом построить», «240 м², газ и
+        # электричество», «есть другие котлы?», «что ещё нужно?», «в котле встроенный
+        # насос?») ведёт ConsultantAgent: LLM рассуждает по предметной области и
+        # опирается на реальные товары из фида. Если LLM недоступна (нет ключа/бюджета),
+        # метод возвращает None и мы продолжаем детерминированным пайплайном.
+        consult_response = self._maybe_consult(session_id, message, intent, session, agents_used)
+        if consult_response is not None:
+            self.sessions.save(session)
+            return consult_response
 
         # Клиент назвал систему/проект целиком («система отопления», «водоснабжение»,
         # «сантехнику в дом») без конкретного товара — не подбираем наугад, а объясняем
@@ -826,6 +838,240 @@ class ChatOrchestrator:
             alternative=session.last_products[1] if len(session.last_products) > 1 else None,
         )
 
+    # --- Консультант (RAG) ---------------------------------------------------
+
+    CONSULT_MARKERS = [
+        "построить",
+        "строю",
+        "коттедж",
+        "посовет",
+        "что ещё",
+        "что еще",
+        "в итоге",
+        "комплект",
+        "под ключ",
+        "закрыть",
+        "что нужно",
+        "что ещё нужно",
+        "есть другие",
+        "есть ещё",
+        "есть еще",
+        "встроен",
+        "рециркуляц",
+        "обвяз",
+        "котельн",
+        "инженерн",
+    ]
+
+    def _maybe_consult(
+        self,
+        session_id: str,
+        message: str,
+        intent: IntentResult,
+        session: SessionState,
+        agents_used: list[str],
+    ):
+        # Без реального ключа консультант недоступен — идём детерминированным путём
+        # (так офлайн-тесты и rule-based fallback остаются прежними).
+        if not self.settings.openrouter_api_key:
+            return None
+        if not self._should_consult(message, intent, session):
+            return None
+
+        self._update_project_state(message, intent, session)
+        categories, retrieval_slots = self._consult_plan(message, intent, session)
+        retrieved: list[Product] = []
+        if categories:
+            retrieved = self.search_agent.retrieve_for_consult(
+                categories, retrieval_slots, per_category=4
+            )
+        # Уже показанные товары держим в каталоге, чтобы follow-up'ы («а в котле
+        # встроенный насос?») не противоречили ранее предложенному.
+        seen = {normalize_sku_token(p.sku) for p in retrieved}
+        for card in session.last_products[:3]:
+            product = self._find_product_by_sku(card.sku)
+            if product and normalize_sku_token(product.sku) not in seen:
+                retrieved.insert(0, product)
+                seen.add(normalize_sku_token(product.sku))
+
+        agents_used.append("ConsultantAgent")
+        result = self.consultant.respond(message, session, retrieved, session.history)
+        if not result.llm_used:
+            # LLM не ответила — откатываемся к обычному пайплайну.
+            agents_used.pop()
+            return None
+
+        answer = result.answer
+        cards = result.cards
+        # Если ответ не прошёл проверку достоверности — не показываем возможный бред
+        # модели, а собираем чистый список реальных товаров из фида.
+        if not result.grounded:
+            # Берём корректно отсортированную выдержку из фида, а не то, что мог
+            # неудачно выбрать слабый LLM.
+            fallback_cards = self.card_agent.build_cards(
+                retrieved, self._build_query(message, intent, session), limit=5
+            ) or cards
+            if fallback_cards:
+                answer = self._plain_catalog_answer(fallback_cards)
+                cards = fallback_cards
+
+        if cards:
+            session.last_products = cards
+        # Запоминаем основную категорию, чтобы follow-up'ы держали контекст.
+        primary = self._primary_session_category(categories)
+        if primary:
+            session.category = primary
+        session.last_intent = "consult"
+        session.pending_question = None
+        session.pending_intent_type = None
+
+        self._append_history(session, message, answer)
+        need_handoff = not result.grounded and not cards
+        return self._response(
+            session_id, answer, cards, need_handoff, intent, session, agents_used
+        )
+
+    def _plain_catalog_answer(self, cards: list[ProductCard]) -> str:
+        import html
+
+        lines = ["Вот что есть по вашему запросу в наличии:"]
+        for card in cards:
+            stock = card.stock_status
+            if card.stock_qty is not None and card.stock_qty > 0:
+                stock = f"в наличии {card.stock_qty} шт"
+            lines.append(
+                f"• {html.unescape(card.name)} — арт. {card.sku}, {card.price:g} {card.currency}, "
+                f"{stock}. {card.url}"
+            )
+        lines.append("Скажите, что из этого подобрать детальнее или собрать в комплект.")
+        return "\n".join(lines)
+
+    def _should_consult(self, message: str, intent: IntentResult, session: SessionState) -> bool:
+        text = normalize_text(message)
+
+        # Точный артикул и запрос ссылки — детерминированные пути, мимо консультанта.
+        if intent.intent_type in {"exact_sku", "link_request"}:
+            return False
+        if intent.slots.get("sku") or session.slots.get("sku"):
+            return False
+
+        # Явные консультативные/проектные маркеры перебивают даже ошибочную
+        # классификацию интента («дом построить» иногда уходит в out_of_scope).
+        if any(marker in text for marker in self.CONSULT_MARKERS):
+            return True
+
+        # Идёт проектный разговор — продолжаем у консультанта.
+        if any(session.slots.get(key) for key in ("project", "heat_sources")):
+            return True
+        if session.last_intent == "consult" and intent.category != "other":
+            return True
+
+        # Момент рекомендации котла: дана площадь/мощность или источник тепла.
+        if intent.category == "boilers" and (
+            intent.slots.get("area_m2")
+            or intent.slots.get("power_kw")
+            or "газ" in text
+            or "электр" in text
+        ):
+            return True
+
+        # «А насосы есть?», «канализация тоже есть?» — каталожный вопрос через «есть».
+        category_words = [
+            "котел",
+            "котёл",
+            "насос",
+            "труб",
+            "кран",
+            "канализац",
+            "радиатор",
+            "фитинг",
+            "бойлер",
+        ]
+        if "есть" in text and any(word in text for word in category_words):
+            return True
+
+        # Чистый small talk без проектного контекста — не к консультанту.
+        return False
+
+    def _update_project_state(self, message: str, intent: IntentResult, session: SessionState) -> None:
+        text = normalize_text(message)
+        if intent.slots.get("area_m2"):
+            session.slots["area_m2"] = intent.slots["area_m2"]
+        sources: list[str] = []
+        existing = session.slots.get("heat_sources")
+        if existing:
+            sources.extend(existing.split(", "))
+        if "газ" in text and "газ" not in sources:
+            sources.append("газ")
+        if "электр" in text and "электричество" not in sources:
+            sources.append("электричество")
+        if sources:
+            session.slots["heat_sources"] = ", ".join(dict.fromkeys(sources))
+        if any(word in text for word in ["дом", "коттедж", "построить", "строю"]):
+            session.slots.setdefault("project", "частный дом")
+
+    def _consult_plan(
+        self,
+        message: str,
+        intent: IntentResult,
+        session: SessionState,
+    ) -> tuple[list[str], dict]:
+        text = normalize_text(message)
+        slots = dict(session.slots)
+        if intent.slots.get("boiler_type"):
+            slots["boiler_type"] = intent.slots["boiler_type"]
+        if "газ" in text and "электр" not in text:
+            slots["boiler_type"] = "газовый"
+        elif "электр" in text and "газ" not in text:
+            slots["boiler_type"] = "электрический"
+
+        named: list[str] = []
+        if "котел" in text or "котёл" in text or "котельн" in text:
+            named.append("boilers")
+        if "насос" in text:
+            named.append("pumps")
+        if "труб" in text and "канализац" not in text:
+            named.append("pipes")
+        if "кран" in text or "вентил" in text:
+            named.append("valves")
+        if "канализац" in text:
+            named.append("sewer")
+        if "радиатор" in text:
+            named.append("radiators")
+        if "фитинг" in text:
+            named.append("fittings")
+
+        broad = any(
+            marker in text
+            for marker in ["что ещё", "что еще", "в итоге", "комплект", "что нужно", "под ключ", "закрыть"]
+        )
+        if broad:
+            return ["boilers", "pumps", "pipes", "valves", "sewer"], slots
+        # Вопрос про встроенный насос котла — нужен и котёл, и насосы в контексте.
+        if "встроен" in text and "pumps" not in named:
+            named = ["boilers", "pumps"]
+        if named:
+            return named, slots
+        # Проект известен (площадь/источник), товар не назван — стартуем с котла.
+        if session.slots.get("area_m2") or session.slots.get("heat_sources"):
+            return ["boilers"], slots
+        return [], slots
+
+    def _primary_session_category(self, categories: list[str]) -> str | None:
+        mapping = {
+            "boilers": "boilers",
+            "pumps": "pumps",
+            "pipes": "pipes",
+            "valves": "valves",
+            "sewer": "sewer",
+            "radiators": "radiator_fittings",
+            "fittings": "pipes",
+        }
+        for category in categories:
+            if category in mapping:
+                return mapping[category]
+        return None
+
     def _maybe_scope_funnel(
         self,
         message: str,
@@ -959,12 +1205,14 @@ class ChatOrchestrator:
                 session.pending_intent_type = "broad_category"
             return GAS_VS_ELECTRIC_CONSULT
 
-        # Типы полипропиленовых труб (обычная vs армированная).
+        # Типы полипропиленовых труб (обычная vs армированная; для горячей vs холодной).
         in_pipe_context = (
-            intent.category == "pipes" or session.category == "pipes" or "труба" in text or "трубы" in text
+            intent.category == "pipes" or session.category == "pipes"
+            or "труба" in text or "трубы" in text or "труб" in text
         )
         if in_pipe_context and any(
-            marker in text for marker in ["армиров", "fiber", "alux", "pn20", "pn 20", "стеклов", "алюмин"]
+            marker in text
+            for marker in ["армиров", "fiber", "alux", "pn20", "pn 20", "стеклов", "алюмин", "горяч", "холодн"]
         ):
             session.category = "pipes"
             return PIPE_TYPES_CONSULT

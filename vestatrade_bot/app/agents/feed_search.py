@@ -67,6 +67,26 @@ CATEGORY_NEEDLES: dict[str, list[str]] = {
     "radiator_fittings": ["радиатор", "термоголов", "термостатическ", "клапан"],
 }
 
+# Канонические категории по названию (приоритет) и пути категории фида.
+# Котлы и насосы лежат в акционных разделах, поэтому сперва смотрим имя товара,
+# и только потом — путь категории. Фитинги (угольник/муфта/тройник) отделяем от труб.
+_NAME_CATEGORY_RULES: list[tuple[str, list[str]]] = [
+    ("boilers", ["котел", "котёл", "boiler"]),
+    ("pumps", ["насос", "помпа"]),
+    ("radiators", ["радиатор алюмин", "радиатор биметал", "радиатор стальн", "радиатор панельн"]),
+    ("fittings", ["угольник", "муфта", "тройник", "отвод ppr", "переходник", "американка ppr"]),
+]
+_PATH_CATEGORY_RULES: list[tuple[str, list[str]]] = [
+    ("sewer", ["канализац"]),
+    ("radiator_fittings", ["арматура для радиатор", "радиаторная арматура"]),
+    ("radiators", ["радиаторы отоплен"]),
+    ("valves", ["водозапорн", "запорн", "краны", "арматура"]),
+    ("fittings", ["фитинг"]),
+    ("pipes", ["трубы"]),
+    ("pumps", ["насос"]),
+    ("boilers", ["котел", "котёл", "котельн"]),
+]
+
 
 class FeedSearchAgent:
     def __init__(self, products: list[Product] | None = None) -> None:
@@ -244,7 +264,112 @@ class FeedSearchAgent:
         needles = CATEGORY_NEEDLES.get(category, [])
         if category == "pipes" and "канализац" in text:
             return False
+        # Фитинги (угольник/муфта/тройник) содержат «ppr» в названии — это не труба.
+        if category == "pipes" and self.canonical_category(product) == "fittings":
+            return False
         return any(normalize_text(needle) in text for needle in needles)
+
+    def canonical_category(self, product: Product) -> str:
+        """Single canonical bucket for a product.
+
+        Name wins first (boilers/pumps live in promo category paths), then the
+        feed category path. Fittings (угольник/муфта/тройник) are kept separate
+        from pipes so a «труба» request never surfaces an угольник.
+        """
+        name = normalize_text(product.name)
+        for category, needles in _NAME_CATEGORY_RULES:
+            if any(needle in name for needle in needles):
+                return category
+        path = normalize_text(product.category_path)
+        for category, needles in _PATH_CATEGORY_RULES:
+            if any(needle in path for needle in needles):
+                return category
+        return "other"
+
+    def retrieve_for_consult(
+        self,
+        categories: list[str],
+        slots: dict | None = None,
+        per_category: int = 4,
+    ) -> list[Product]:
+        """Return real, category-correct products for the consultant to cite.
+
+        Groups the feed by canonical category, keeps only the requested ones, and
+        sorts each group sensibly (in stock first; boilers by power; otherwise by
+        price). Never invents — only returns feed rows.
+        """
+        slots = slots or {}
+        wanted = [self._canon_alias(category) for category in categories]
+        wanted = [category for category in wanted if category]
+        if not wanted:
+            return []
+
+        grouped: dict[str, list[Product]] = {category: [] for category in wanted}
+        for product in self.products:
+            if product.price is None or not product.url:
+                continue
+            canon = self.canonical_category(product)
+            if canon in grouped:
+                grouped[canon].append(product)
+
+        result: list[Product] = []
+        for category in wanted:
+            items = grouped.get(category, [])
+            items = self._sort_for_consult(items, category, slots)
+            result.extend(items[:per_category])
+        return result
+
+    def _canon_alias(self, category: str) -> str:
+        aliases = {
+            "radiator_fittings": "radiator_fittings",
+            "radiators": "radiators",
+            "boilers": "boilers",
+            "pumps": "pumps",
+            "pipes": "pipes",
+            "fittings": "fittings",
+            "valves": "valves",
+            "sewer": "sewer",
+        }
+        return aliases.get(category, category)
+
+    def _sort_for_consult(
+        self,
+        products: list[Product],
+        category: str,
+        slots: dict,
+    ) -> list[Product]:
+        if category == "boilers":
+            boiler_type = slots.get("boiler_type")
+            if boiler_type:
+                typed = [
+                    product
+                    for product in products
+                    if normalize_text(str(boiler_type)) in self._product_text(product)
+                ]
+                products = typed or products
+            required_kw = None
+            if slots.get("power_kw"):
+                required_kw = float(slots["power_kw"])
+            elif slots.get("area_m2"):
+                required_kw = float(slots["area_m2"]) / 10.0
+            if required_kw:
+                def closeness(product: Product) -> tuple:
+                    power = self._extract_power_kw(product) or 0.0
+                    enough = power >= required_kw * 0.9
+                    return (not product.is_in_stock, not enough, abs(power - required_kw))
+
+                return sorted(products, key=closeness)
+            return sorted(products, key=lambda p: (not p.is_in_stock, p.price or float("inf")))
+        return sorted(products, key=lambda p: (not p.is_in_stock, p.price or float("inf")))
+
+    def _extract_power_kw(self, product: Product) -> float | None:
+        text = normalize_text(
+            " ".join([product.name, " ".join(product.attributes_normalized.values())])
+        )
+        match = re.search(r"(\d+(?:[.,]\d+)?)\s*квт", text)
+        if match:
+            return float(match.group(1).replace(",", "."))
+        return None
 
     def _filter_by_slots(self, products: list[Product], query: SearchQuery) -> list[Product]:
         result = []
