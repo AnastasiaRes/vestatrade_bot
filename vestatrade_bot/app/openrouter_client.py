@@ -44,12 +44,14 @@ class OpenRouterClient:
         messages: list[dict[str, str]],
         temperature: float = 0.1,
         max_tokens: int = 500,
+        model: str | None = None,
     ) -> LLMResult:
         if not self.settings.openrouter_api_key:
             return self._fallback("OPENROUTER_API_KEY is not set")
         if not self.budget.can_call():
             return self._fallback("daily LLM budget is exhausted")
 
+        model_name = model or self.settings.openrouter_model
         headers = {
             "Authorization": f"Bearer {self.settings.openrouter_api_key}",
             "Content-Type": "application/json",
@@ -57,7 +59,7 @@ class OpenRouterClient:
             "X-Title": "Vesta Trading Chat Bot",
         }
         payload = {
-            "model": self.settings.openrouter_model,
+            "model": model_name,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
@@ -79,7 +81,7 @@ class OpenRouterClient:
                 usage = data.get("usage") or {}
                 cost = self.budget.record_call(
                     agent=agent,
-                    model=self.settings.openrouter_model,
+                    model=model_name,
                     prompt_chars=prompt_chars,
                     completion_chars=len(content or ""),
                     usage=usage,
@@ -105,8 +107,11 @@ class OpenRouterClient:
         agent: str,
         messages: list[dict[str, str]],
         fallback: dict[str, Any],
+        model: str | None = None,
     ) -> tuple[dict[str, Any], bool]:
-        result = self.complete(agent=agent, messages=messages, temperature=0.0, max_tokens=600)
+        result = self.complete(
+            agent=agent, messages=messages, temperature=0.0, max_tokens=600, model=model
+        )
         if not result.llm_used or not result.content:
             return fallback, False
         content = result.content.strip()

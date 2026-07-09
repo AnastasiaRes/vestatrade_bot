@@ -23,6 +23,7 @@ class Settings(BaseModel):
     feed_url: str
     openrouter_api_key: str | None
     openrouter_model: str
+    openrouter_model_strong: str
     daily_budget_usd: float
     products_cache_path: Path
     usage_budget_path: Path
@@ -46,6 +47,12 @@ def get_settings() -> Settings:
         openrouter_model=os.getenv(
             "OPENROUTER_MODEL",
             "qwen/qwen3-vl-8b-instruct",
+        ),
+        # Сильная модель для подбора/консультанта. По умолчанию = дешёвой,
+        # чтобы без настройки ничего не ломалось; в .env можно указать мощнее.
+        openrouter_model_strong=os.getenv(
+            "OPENROUTER_MODEL_STRONG",
+            os.getenv("OPENROUTER_MODEL", "qwen/qwen3-vl-8b-instruct"),
         ),
         daily_budget_usd=float(os.getenv("DAILY_BUDGET_USD", "10")),
         products_cache_path=_resolve_project_path(

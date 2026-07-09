@@ -5,3 +5,5 @@ __pycache__/
 server.log
 .env
 
+app/data/products_cache.json
+app/data/usage_budget.json

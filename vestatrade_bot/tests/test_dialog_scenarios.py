@@ -404,9 +404,8 @@ def test_confirmation_followup_repeats_same_last_product(orchestrator) -> None:
 
 def test_pure_greeting_gets_fixed_branded_reply(orchestrator) -> None:
     expected = (
-        "Здравствуйте! Я AI-консультант Vesta Trading. Помогу подобрать оборудование, "
-        "уточнить цену и наличие.\n"
-        "Напишите, что вам нужно — подберу подходящий вариант."
+        "Добрый день. Веста Трейдинг, консультант на связи. "
+        "Подскажите, что подбираем: котельную, отопление, водоснабжение или канализацию?"
     )
     for message in ["привет", "Привет!", "Здравствуйте", "добрый день"]:
         response = orchestrator.handle_chat(f"greet-{message}", message)

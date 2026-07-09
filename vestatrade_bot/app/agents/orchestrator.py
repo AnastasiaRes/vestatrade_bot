@@ -155,7 +155,9 @@ class ChatOrchestrator:
         self.card_agent = ProductCardAgent()
         self.guardrails = GuardrailsAgent()
         self.composer = ResponseComposerAgent(self.llm_client)
-        self.consultant = ConsultantAgent(self.llm_client)
+        self.consultant = ConsultantAgent(
+            self.llm_client, model=self.settings.openrouter_model_strong
+        )
         self.handoff = HandoffAgent()
         self.products_loaded_from = "injected" if products is not None else "none"
         self.docs_attached = 0
@@ -861,6 +863,40 @@ class ChatOrchestrator:
         "обвяз",
         "котельн",
         "инженерн",
+        # запрос на ведение/подбор «под ключ»
+        "помоги",
+        "помогите",
+        "подбери",
+        "подберите",
+        "сориентир",
+        "ориентир",
+        "составь",
+        "составить список",
+        "список того",
+        "выбрать все",
+        "выбрать всё",
+        "выбери все",
+        "выбери всё",
+        "давай все",
+        "давай всё",
+        "нужно все",
+        "нужно всё",
+        "как скажешь",
+        "на твое усмотрение",
+        "на твоё усмотрение",
+        "сам реши",
+        "что зачем",
+    ]
+
+    # Системные слова — заявка на ведение подбора, а не конкретный товар.
+    CONSULT_SYSTEM_WORDS = [
+        "отоплен",
+        "водоснаб",
+        "водопровод",
+        "канализац",
+        "теплый пол",
+        "тёплый пол",
+        "тепл",
     ]
 
     def _maybe_consult(
@@ -975,6 +1011,18 @@ class ChatOrchestrator:
         ):
             return True
 
+        # Системная заявка («мне нужно отопление», «хочу тёплый пол») без точного
+        # товара — это просьба повести подбор, ведёт консультант, а не воронка.
+        if any(word in text for word in self.CONSULT_SYSTEM_WORDS):
+            return True
+
+        # Короткое согласие/«давай»/«начнём» в активном проектном контексте —
+        # продолжаем у консультанта, чтобы не зациклить воронку.
+        if session.last_intent in {"consult", "broad_category"} and any(
+            token in text for token in ["давай", "начн", "ок", "да", "хорошо", "поехали", "погнали"]
+        ):
+            return True
+
         # «А насосы есть?», «канализация тоже есть?» — каталожный вопрос через «есть».
         category_words = [
             "котел",
@@ -993,20 +1041,34 @@ class ChatOrchestrator:
         # Чистый small talk без проектного контекста — не к консультанту.
         return False
 
+    # Формулировки, означающие отсутствие газа.
+    NO_GAS_MARKERS = ["газа нет", "газа нету", "без газа", "нет газа", "не газ", "газ отсутств"]
+
     def _update_project_state(self, message: str, intent: IntentResult, session: SessionState) -> None:
         text = normalize_text(message)
         if intent.slots.get("area_m2"):
             session.slots["area_m2"] = intent.slots["area_m2"]
+
+        # Источники тепла с учётом отрицания: «газа нет» → has_gas=False, а не +газ.
+        no_gas = any(marker in text for marker in self.NO_GAS_MARKERS)
+        if no_gas:
+            session.slots["has_gas"] = False
+        elif "газ" in text:
+            session.slots["has_gas"] = True
+        if "электр" in text or no_gas:
+            # «газа нет» обычно подразумевает электрическую котельную.
+            session.slots["has_electricity"] = True
+
         sources: list[str] = []
-        existing = session.slots.get("heat_sources")
-        if existing:
-            sources.extend(existing.split(", "))
-        if "газ" in text and "газ" not in sources:
+        if session.slots.get("has_gas") is True:
             sources.append("газ")
-        if "электр" in text and "электричество" not in sources:
+        if session.slots.get("has_electricity") is True:
             sources.append("электричество")
+        if session.slots.get("has_gas") is False:
+            sources.append("газа нет")
         if sources:
             session.slots["heat_sources"] = ", ".join(dict.fromkeys(sources))
+
         if any(word in text for word in ["дом", "коттедж", "построить", "строю"]):
             session.slots.setdefault("project", "частный дом")
 
@@ -1018,11 +1080,12 @@ class ChatOrchestrator:
     ) -> tuple[list[str], dict]:
         text = normalize_text(message)
         slots = dict(session.slots)
+        # boiler_type берём из intent_router — там отрицание («газа нет») уже учтено.
+        # НЕ выводим тип из подстроки «газ» (иначе «газа нет» → газовый, баг из логов).
         if intent.slots.get("boiler_type"):
             slots["boiler_type"] = intent.slots["boiler_type"]
-        if "газ" in text and "электр" not in text:
-            slots["boiler_type"] = "газовый"
-        elif "электр" in text and "газ" not in text:
+        # Если по проекту газа нет — это электрическая котельная, чем бы ни был тип.
+        if slots.get("has_gas") is False and not slots.get("boiler_type"):
             slots["boiler_type"] = "электрический"
 
         named: list[str] = []
@@ -1043,8 +1106,29 @@ class ChatOrchestrator:
 
         broad = any(
             marker in text
-            for marker in ["что ещё", "что еще", "в итоге", "комплект", "что нужно", "под ключ", "закрыть"]
+            for marker in [
+                "что ещё",
+                "что еще",
+                "в итоге",
+                "комплект",
+                "что нужно",
+                "под ключ",
+                "закрыть",
+                "выбрать все",
+                "выбрать всё",
+                "давай все",
+                "давай всё",
+                "нужно все",
+                "нужно всё",
+                "все и",
+                "всё и",
+                "список",
+            ]
         )
+        # Тёплый пол — это трубы + насос (+ арматура).
+        warm_floor = ("теплый пол" in text or "тёплый пол" in text or ("тепл" in text and "пол" in text))
+        if warm_floor and not named:
+            return ["pipes", "pumps", "valves"], slots
         if broad:
             return ["boilers", "pumps", "pipes", "valves", "sewer"], slots
         # Вопрос про встроенный насос котла — нужен и котёл, и насосы в контексте.
