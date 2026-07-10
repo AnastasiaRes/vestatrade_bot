@@ -3,7 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from app.agents.orchestrator import ChatOrchestrator
-from app.models import SearchQuery
+from app.config import get_settings
+from app.models import Product, ProductCard, SearchQuery
 from app.openrouter_client import LLMResult
 
 
@@ -71,6 +72,268 @@ def test_bare_query_with_no_signal_asks_instead_of_searching(orchestrator) -> No
     response = orchestrator.handle_chat("sf4", "хочу обустроить ванную")
 
     assert response.products == []
+    assert "ванной" in response.answer.lower()
+    assert "водоснабжение" in response.answer.lower()
+    assert "канализация" in response.answer.lower()
+
+
+def test_warm_floor_all_followup_keeps_project_context(orchestrator) -> None:
+    first = orchestrator.handle_chat("wf1", "всё для тёплого пола")
+    response = orchestrator.handle_chat("wf1", "всё")
+
+    assert first.products == []
+    assert response.products == []
+    assert response.debug["slots"]["scope_funnel"] == "warm_floor"
+    assert "тёплого пола" in response.answer.lower()
+    assert "площадь" in response.answer.lower()
+    assert "водяной" in response.answer.lower()
+
+
+def test_warm_floor_area_builds_article_cart_without_random_fittings(sample_products) -> None:
+    products = [
+        *sample_products,
+        Product(
+            sku="FIT-ANGLE-20",
+            name="Угольник 90 PPR 20мм",
+            category_path="Фитинги полипропиленовые",
+            brand="VALTEC",
+            url="https://example.test/fitting-angle-20",
+            price=15,
+            currency="RUB",
+            stock_status="в наличии",
+            stock_qty=200,
+            attributes_normalized={
+                "артикул": "FIT-ANGLE-20",
+                "тип товара": "Угольник",
+                "диаметр (мм)": "20",
+            },
+        ),
+    ]
+    bot = ChatOrchestrator(products=products)
+
+    first = bot.handle_chat("wf-cart", "хочу сделать теплые полы, что для этого нужно?")
+    response = bot.handle_chat("wf-cart", "50м2")
+
+    assert first.products == []
+    assert response.products
+    names = " ".join(product.name for product in response.products)
+    assert "Угольник" not in names
+    assert "FIT-ANGLE-20" not in response.answer
+    assert {"VTp.700.0.020", "PUMP-25-40", "VALVE-20-ANGLE"}.issubset(
+        {product.sku for product in response.products}
+    )
+    assert "Почему:" in response.answer
+    assert response.debug["slots"]["project_scope"] == "warm_floor"
+
+
+def test_project_cart_summary_returns_discussed_articles(orchestrator) -> None:
+    orchestrator.handle_chat("wf-summary", "хочу сделать теплые полы, что для этого нужно?")
+    selected = orchestrator.handle_chat("wf-summary", "50м2")
+    response = orchestrator.handle_chat("wf-summary", "собери артикулы корзиной")
+
+    assert response.products
+    assert {product.sku for product in response.products} == {product.sku for product in selected.products}
+    assert "корзину" in response.answer.lower()
+    assert "VTp.700.0.020" in response.answer
+    assert "PUMP-25-40" in response.answer
+    assert "не буду выдумывать количество" in response.answer.lower()
+
+
+def test_project_cart_updates_component_after_followup(orchestrator) -> None:
+    orchestrator.handle_chat("wf-update", "хочу сделать теплые полы, что для этого нужно?")
+    orchestrator.handle_chat("wf-update", "50м2")
+    pump = orchestrator.handle_chat("wf-update", "насос 25/6 180")
+    response = orchestrator.handle_chat("wf-update", "собери артикулы корзиной")
+
+    assert pump.products
+    assert pump.products[0].sku == "PUMP-25-60"
+    assert "PUMP-25-60" in response.answer
+    assert "PUMP-25-40" not in response.answer
+
+
+def test_project_negated_warm_floor_does_not_switch_to_warm_floor(orchestrator) -> None:
+    orchestrator.handle_chat("bath-no-wf", "обустраиваю санузел в доме, нужен список по артикулам")
+    response = orchestrator.handle_chat(
+        "bath-no-wf",
+        "давай без тёплого пола, только вода и канализация",
+    )
+
+    assert "без тёплого пола" in response.answer.lower()
+    assert "какая площадь" not in response.answer.lower()
+    assert response.debug["slots"].get("scope_funnel") != "warm_floor"
+
+
+def test_project_cart_handles_paraphrased_warm_floor_flow(orchestrator) -> None:
+    orchestrator.handle_chat("wf-phrased", "надо собрать комплект на водяной теплый пол")
+    selected = orchestrator.handle_chat("wf-phrased", "площадь 60 квадратов")
+    response = orchestrator.handle_chat("wf-phrased", "дайте итог по артикулам")
+
+    assert selected.products
+    assert response.products
+    assert {product.sku for product in response.products} == {product.sku for product in selected.products}
+    assert response.debug["slots"]["project_scope"] == "warm_floor"
+    assert "корзину" in response.answer.lower()
+
+
+def test_project_scope_change_starts_new_cart(orchestrator) -> None:
+    orchestrator.handle_chat("project-switch", "хочу сделать теплые полы, что нужно?")
+    orchestrator.handle_chat("project-switch", "50м2")
+    bathroom = orchestrator.handle_chat(
+        "project-switch",
+        "теперь собери всё для ванной по артикулам",
+    )
+    response = orchestrator.handle_chat("project-switch", "собери корзину")
+
+    assert bathroom.products
+    assert response.products
+    assert response.debug["slots"]["project_scope"] == "bathroom"
+    assert "PUMP-25-40" not in response.answer
+    assert "PUMP-25-60" not in response.answer
+    assert all("насос" not in product.name.lower() for product in response.products)
+
+
+def test_scope_followup_is_generic_for_water_supply(orchestrator) -> None:
+    first = orchestrator.handle_chat("scope-water", "нужно водоснабжение")
+    response = orchestrator.handle_chat("scope-water", "комплектом")
+
+    assert first.products == []
+    assert response.products == []
+    assert response.debug["slots"]["scope_funnel"] == "water"
+    answer = response.answer.lower()
+    assert "источник воды" in answer
+    assert "центральный водопровод" in answer
+    assert "скважина" in answer
+
+
+def test_system_scope_is_not_hijacked_by_llm(sample_products) -> None:
+    settings = get_settings().model_copy(
+        update={
+            "llm_provider": "ollama",
+            "ollama_base_url": "http://llm.test",
+            "ollama_model": "test-model",
+            "ollama_model_strong": "test-model",
+        }
+    )
+    llm = BadRewriteLLM(
+        "Насос — артикул 001-2345, цена 15000 руб.; трубы — артикул 002-3456."
+    )
+    bot = ChatOrchestrator(settings=settings, products=sample_products, llm_client=llm)
+
+    response = bot.handle_chat("water-safe-llm", "нужно водоснабжение")
+
+    assert response.products == []
+    assert "001-2345" not in response.answer
+    assert "водоснабжение" in response.answer.lower()
+    assert "насос" in response.answer.lower()
+    assert response.debug["any_llm_used"] is False
+
+
+def test_project_area_followup_survives_llm_lost_slots(sample_products) -> None:
+    settings = get_settings().model_copy(
+        update={
+            "llm_provider": "ollama",
+            "ollama_base_url": "http://llm.test",
+            "ollama_model": "test-model",
+            "ollama_model_strong": "test-model",
+        }
+    )
+    llm = BadRewriteLLM("Окей, уточните площадь.")
+    bot = ChatOrchestrator(settings=settings, products=sample_products, llm_client=llm)
+
+    bot.handle_chat("wf-area-llm", "хочу сделать теплые полы, что нужно?")
+    response = bot.handle_chat("wf-area-llm", "50м2")
+
+    assert response.products
+    assert response.debug["slots"]["area_m2"] == 50.0
+    assert "Угольник" not in response.answer
+
+
+def test_concrete_heating_pump_request_is_not_free_llm_consult(sample_products) -> None:
+    settings = get_settings().model_copy(
+        update={
+            "llm_provider": "ollama",
+            "ollama_base_url": "http://llm.test",
+            "ollama_model": "test-model",
+            "ollama_model_strong": "test-model",
+        }
+    )
+    llm = BadRewriteLLM("Этот насос имеет мощность 72 кВт и точно подходит.")
+    bot = ChatOrchestrator(settings=settings, products=sample_products, llm_client=llm)
+
+    response = bot.handle_chat("pump-safe-llm", "ладно, нужен насос для отопления")
+
+    assert "72 кВт" not in response.answer
+    assert "точно подходит" not in response.answer.lower()
+    assert "монтаж" in response.answer.lower() or response.products
+
+
+def test_boiler_context_pump_request_skips_drainage_pumps(sample_products) -> None:
+    settings = get_settings().model_copy(
+        update={
+            "llm_provider": "ollama",
+            "ollama_base_url": "http://llm.test",
+            "ollama_model": "test-model",
+            "ollama_model_strong": "test-model",
+        }
+    )
+    drain = Product(
+        sku="DRAIN-350",
+        name="Дренажный насос 350 Вт",
+        category_path="Насосы дренажные",
+        url="https://example.test/drain",
+        price=2500,
+        currency="RUB",
+        stock_status="в наличии",
+        stock_qty=5,
+        attributes_normalized={"тип товара": "Дренажный насос"},
+    )
+    bot = ChatOrchestrator(
+        settings=settings,
+        products=[*sample_products, drain],
+        llm_client=BadRewriteLLM("Покажу дренажный насос."),
+    )
+    session = bot.sessions.get("pump-boiler-context")
+    session.category = "boilers"
+    session.slots["boiler_type"] = "газовый"
+    session.last_products = [
+        ProductCard(
+            sku="GAS-24",
+            name="Котёл газовый 24 кВт",
+            price=36000,
+            currency="RUB",
+            stock_status="в наличии",
+            stock_qty=1,
+            url="https://example.test/gas24",
+        )
+    ]
+    bot.sessions.save(session)
+
+    response = bot.handle_chat("pump-boiler-context", "а насос к нему")
+
+    assert response.products
+    assert "DRAIN-350" not in {product.sku for product in response.products}
+    assert "Дренажный" not in response.answer
+    assert "циркуляц" in response.answer.lower()
+
+
+def test_scope_followup_is_generic_for_heating(orchestrator) -> None:
+    first = orchestrator.handle_chat("scope-heat", "нужно отопление в дом")
+    response = orchestrator.handle_chat("scope-heat", "под ключ")
+
+    assert first.products == []
+    assert response.products == []
+    assert response.debug["slots"]["scope_funnel"] == "heating"
+    answer = response.answer.lower()
+    assert "площадь" in answer
+    assert "источник тепла" in answer
+
+
+def test_arbitrary_plumbing_project_starts_discovery_not_random_search(orchestrator) -> None:
+    response = orchestrator.handle_chat("scope-random", "делаю ремонт кухни по сантехнике")
+
+    assert response.products == []
+    answer = response.answer.lower()
+    assert "котлы" in answer and "насосы" in answer and "трубы" in answer
 
 
 def test_pipe_purpose_followup_continues_context(orchestrator) -> None:
@@ -181,6 +444,39 @@ def test_sewer_strictly_respects_scope_diameter_and_length(orchestrator) -> None
     assert [product.sku for product in response.products] == ["HTEM-50-500"]
     assert "HTEM-50-1500" not in response.answer
     assert "OUT-110-1000" not in response.answer
+
+
+def test_sewer_scope_and_diameter_defaults_to_pipe_and_accepts_bare_length(orchestrator) -> None:
+    orchestrator.handle_chat("s2bare", "теперь канализация 50 внутренняя")
+    response = orchestrator.handle_chat("s2bare", "1500")
+
+    assert response.products
+    assert response.products[0].sku == "HTEM-50-1500"
+    assert response.debug["slots"]["element_type"] == "труба"
+    assert response.debug["slots"]["length_mm"] == 1500
+
+
+def test_concrete_sewer_request_bypasses_consultant_llm(sample_products, monkeypatch) -> None:
+    settings = get_settings().model_copy(
+        update={
+            "openrouter_api_key": "test-key",
+            "llm_enabled": True,
+        }
+    )
+    monkeypatch.setattr("app.agents.orchestrator.get_settings", lambda: settings)
+    bot = ChatOrchestrator(
+        products=sample_products,
+        llm_client=BadRewriteLLM("Уточните площадь дома и есть ли газ."),
+    )
+
+    first = bot.handle_chat("sewer-llm", "теперь канализация 50 внутренняя")
+    response = bot.handle_chat("sewer-llm", "1500")
+
+    assert "площадь дома" not in first.answer.lower()
+    assert "газ" not in first.answer.lower()
+    assert response.products
+    assert response.products[0].sku == "HTEM-50-1500"
+    assert response.debug["consultant_llm_used"] is False
 
 
 def test_circulation_pump_cheap_asks_relevant_params(orchestrator) -> None:
@@ -421,6 +717,111 @@ def test_small_talk_then_product_continues_to_selection(orchestrator) -> None:
     assert "Для какой задачи нужен насос" in response.answer
 
 
+def test_pure_small_talk_uses_llm_but_keeps_safe_fallback(sample_products) -> None:
+    orchestrator = ChatOrchestrator(
+        products=sample_products,
+        llm_client=BadRewriteLLM("Неподходящая перепись от LLM."),
+    )
+
+    response = orchestrator.handle_chat("s7b", "ты классный")
+
+    assert response.debug["intent"] == "small_talk"
+    assert response.debug["response_llm_requested"] is True
+    assert response.debug["response_llm_used"] is True
+    assert response.answer.startswith("Спасибо")
+    assert "Неподходящая" not in response.answer
+
+
+def test_pure_small_talk_accepts_safe_llm_reply(sample_products) -> None:
+    orchestrator = ChatOrchestrator(
+        products=sample_products,
+        llm_client=BadRewriteLLM(
+            "Спасибо за добрые слова. Помогу подобрать котёл, насос или трубы из ассортимента Vesta Trading."
+        ),
+    )
+
+    response = orchestrator.handle_chat("s7c", "ты классный")
+
+    assert response.debug["intent"] == "small_talk"
+    assert response.debug["response_llm_requested"] is True
+    assert response.debug["response_llm_used"] is True
+    assert response.answer.startswith("Спасибо за добрые слова")
+
+
+def test_small_talk_rejects_awkward_personal_refusal(sample_products) -> None:
+    orchestrator = ChatOrchestrator(
+        products=sample_products,
+        llm_client=BadRewriteLLM(
+            "Все в порядке, спасибо. Как у вас дела? Я не могу обсуждать персональные вопросы."
+        ),
+    )
+
+    response = orchestrator.handle_chat("s7d", "как дела?")
+
+    assert response.debug["intent"] == "small_talk"
+    assert response.debug["response_llm_requested"] is True
+    assert response.debug["response_llm_used"] is True
+    assert "персональные вопросы" not in response.answer
+    assert response.answer.startswith("Дела хорошо")
+
+
+def test_small_talk_rejects_reciprocal_personal_question(sample_products) -> None:
+    orchestrator = ChatOrchestrator(
+        products=sample_products,
+        llm_client=BadRewriteLLM(
+            "Привет! Я в порядке. Как у вас дела? Помогу подобрать котлы, насосы или трубы."
+        ),
+    )
+
+    response = orchestrator.handle_chat("s7e", "как дела?")
+
+    assert response.debug["response_llm_requested"] is True
+    assert response.debug["response_llm_used"] is True
+    assert "Как у вас дела" not in response.answer
+    assert response.answer.startswith("Дела хорошо")
+
+
+def test_small_talk_keeps_how_are_you_acknowledgement(sample_products) -> None:
+    orchestrator = ChatOrchestrator(
+        products=sample_products,
+        llm_client=BadRewriteLLM(
+            "Привет! Как я могу помочь вам сегодня? Подберу котлы, насосы или трубы."
+        ),
+    )
+
+    response = orchestrator.handle_chat("s7g", "как дела?")
+
+    assert response.debug["response_llm_requested"] is True
+    assert response.debug["response_llm_used"] is True
+    assert response.answer.startswith("Дела хорошо")
+
+
+def test_small_talk_rejects_premature_technical_questions(sample_products) -> None:
+    orchestrator = ChatOrchestrator(
+        products=sample_products,
+        llm_client=BadRewriteLLM(
+            "Отлично! Уточните тип котла, контурность, диаметр и материал трубы или тип насоса."
+        ),
+    )
+
+    response = orchestrator.handle_chat("s7f", "ладно, к делу")
+
+    assert response.debug["response_llm_requested"] is True
+    assert response.debug["response_llm_used"] is True
+    assert "тип котла" not in response.answer
+    assert "контурность" not in response.answer
+    assert response.answer.startswith("Конечно")
+
+
+def test_informal_greeting_with_product_stays_respectful(orchestrator) -> None:
+    response = orchestrator.handle_chat("tone1", "привет, насос")
+
+    assert response.debug["category"] == "pumps"
+    assert response.answer.startswith("Здравствуйте.")
+    assert "Для какой задачи нужен насос" in response.answer
+    assert not response.answer.startswith("Привет.")
+
+
 def test_topic_change_resets_old_slots(orchestrator) -> None:
     orchestrator.handle_chat("s8", 'кран шаровый для воды 20 угловой')
     response = orchestrator.handle_chat("s8", "теперь нужен котёл")
@@ -569,12 +970,14 @@ def test_same_question_is_not_asked_three_times(orchestrator) -> None:
 
     second = orchestrator.handle_chat("repeat1", "я не знаю")
     assert "монтажную длину" in second.answer
+    assert "измерить" in second.answer.lower() or "посмотреть" in second.answer.lower()
     assert second.products == []
 
     third = orchestrator.handle_chat("repeat1", "ну не знаю я")
     assert third.products
     assert "по кругу" in third.answer
     assert "180 мм" in third.answer
+    assert "чаще смотрят насосы 25/6" not in third.answer
 
 
 def test_comparison_request_lists_differences_not_duplicate_cards(orchestrator) -> None:
@@ -657,6 +1060,16 @@ def test_show_analogs_followup_excludes_already_shown_products(orchestrator) -> 
     assert "Аналоги" in response.answer
 
 
+def test_cheaper_analog_does_not_return_more_expensive_products(orchestrator) -> None:
+    first = orchestrator.handle_chat("analog-cheap", "покажи насос для отопления 25 6 180")
+    response = orchestrator.handle_chat("analog-cheap", "есть аналог подешевле?")
+
+    assert first.products
+    assert response.products == []
+    assert "деш" in response.answer.lower()
+    assert "Аналоги к показанным" not in response.answer
+
+
 def test_smart_reply_does_not_parrot_previous_answer() -> None:
     from app.agents.response_composer import ResponseComposerAgent
 
@@ -684,6 +1097,7 @@ def test_product_answer_suggests_companion_components_once(orchestrator) -> None
     assert response.products
     assert "насос" in response.answer.lower()
     assert "групп" in response.answer.lower()
+    assert "нужен не всегда" in response.answer.lower() or "не всегда" in response.answer.lower()
 
     again = orchestrator.handle_chat("comp1", "покажи дешевле")
     assert "группу безопасности" not in again.answer
@@ -728,6 +1142,15 @@ def test_context_agent_answers_followup_about_shown_products(sample_products) ->
     assert "ARD-E9" in llm.system_seen and "38000" in llm.system_seen
 
 
+def test_what_is_better_from_shown_uses_deterministic_choice(orchestrator) -> None:
+    orchestrator.handle_chat("better", "электрический котёл на 100 м²")
+    response = orchestrator.handle_chat("better", "а что лучше из показанных?")
+
+    assert "По показанным товарам уточните" not in response.answer
+    assert response.products
+    assert "рекоменд" in response.answer.lower() or "выбрал" in response.answer.lower()
+
+
 def test_context_agent_invented_price_is_rejected(sample_products) -> None:
     llm = _CtxLLM("Рекомендую ARD-E9 за 19999 RUB — отличная цена.")
     orchestrator = ChatOrchestrator(products=sample_products, llm_client=llm)
@@ -735,6 +1158,37 @@ def test_context_agent_invented_price_is_rejected(sample_products) -> None:
     response = orchestrator.handle_chat("ctx2", "а что посоветуешь?")
 
     assert "19999" not in response.answer  # выдуманная цена отброшена guardrail'ом
+
+
+def test_context_agent_hyphenated_word_is_not_treated_as_sku(sample_products) -> None:
+    llm = _CtxLLM("Из-за цены я бы выбрал ECA-6 за 30000 RUB.")
+    orchestrator = ChatOrchestrator(products=sample_products, llm_client=llm)
+    orchestrator.handle_chat("ctx-hyphen", "что есть в наличии из котлов?")
+    response = orchestrator.handle_chat("ctx-hyphen", "а что в наличии и что посоветуешь?")
+
+    assert "Из-за" in response.answer
+    assert "ECA-6" in response.answer
+
+
+def test_context_agent_invented_measurement_is_rejected(sample_products) -> None:
+    llm = _CtxLLM("У этого насоса мощность 72 кВт, длина шланга 4 м.")
+    orchestrator = ChatOrchestrator(products=sample_products, llm_client=llm)
+    orchestrator.handle_chat("ctx-measure", "циркуляционный насос 25/6 180")
+    response = orchestrator.handle_chat("ctx-measure", "а что по мощности?")
+
+    assert "72 кВт" not in response.answer
+    assert "шланг" not in response.answer.lower()
+
+
+def test_builtin_pump_question_bypasses_context_llm(sample_products) -> None:
+    llm = _CtxLLM("Да, насос встроен, мощность 72 кВт.")
+    orchestrator = ChatOrchestrator(products=_boiler_with_builtins(sample_products), llm_client=llm)
+    orchestrator.handle_chat("builtin-pump", "электрический котёл на 100 м²")
+    response = orchestrator.handle_chat("builtin-pump", "а есть встроенный насос?")
+
+    assert "насос" in response.answer.lower()
+    assert "72 кВт" not in response.answer
+    assert response.debug["response_llm_used"] is False
 
 
 def test_meta_questions_are_deflected_without_inventing(orchestrator) -> None:
@@ -788,6 +1242,9 @@ def test_pump_fit_question_uses_context_not_new_boiler_search(sample_products) -
 
     assert "газовый или электрический" not in response.answer.lower()
     assert "циркуляционный насос" in response.answer.lower()
+    assert "не вижу привязки" in response.answer.lower()
+    assert "не буду подтверждать совместимость" in response.answer.lower()
+    assert "выходное отверстие" not in response.answer.lower()
 
 
 def test_open_complectation_lists_builtin_components_from_card(sample_products) -> None:
@@ -862,6 +1319,18 @@ def test_boiler_built_in_pump_question_is_answered_from_description(sample_produ
     assert response.debug["slots"].get("area_m2") == 100.0
 
 
+def test_complectation_yes_no_followup_answers_directly(sample_products) -> None:
+    orchestrator = ChatOrchestrator(products=_boiler_with_builtins(sample_products))
+    orchestrator.handle_chat("yn", "электрический котёл на 100 м²")
+    first = orchestrator.handle_chat("yn", "насос туда включен или нет?")
+    response = orchestrator.handle_chat("yn", "да или нет?")
+
+    assert first.answer.lower().startswith("да")
+    assert response.answer.lower().startswith("да")
+    assert "ARD-E9" in response.answer
+    assert "насос" in response.answer.lower()
+
+
 def test_electric_choice_never_shows_gas_boilers(orchestrator) -> None:
     orchestrator.handle_chat("eg", "нужен котёл")
     orchestrator.handle_chat("eg", "да нужна горячая вода от котла")
@@ -899,6 +1368,71 @@ def test_difference_question_wins_over_card_comparison_for_concept(orchestrator)
     assert "Главное отличие — мощность" not in response.answer
 
 
+def test_two_contour_boiler_filter_marks_one_contour_alternatives(sample_products) -> None:
+    products = [
+        *sample_products,
+        Product(
+            sku="GAS-ONE-24",
+            name="Котел газовый Arderia SB24 одноконтурный 24 кВт",
+            category_path="Котлы газовые",
+            brand="ARDERIA",
+            url="https://example.test/gas-one-24",
+            price=36000,
+            currency="RUB",
+            stock_status="в наличии",
+            stock_qty=2,
+            attributes_normalized={
+                "артикул": "GAS-ONE-24",
+                "мощность": "24 кВт",
+                "тип котла": "Газовый",
+                "количество контуров": "одноконтурный",
+            },
+        ),
+    ]
+    orchestrator = ChatOrchestrator(products=products)
+
+    response = orchestrator.handle_chat("dual", "газовый двухконтурный котёл на 100 м²")
+
+    assert response.products
+    assert response.products[0].sku == "GAS-ONE-24"
+    answer = response.answer.lower()
+    assert "двухконтур" in answer
+    assert "горячую воду" in answer or "гвс" in answer
+
+
+def test_one_contour_boiler_hot_water_is_not_presented_as_direct_gvs(orchestrator) -> None:
+    orchestrator.handle_chat("one-gvs", "хочу газовый двухконтурный котёл на 120 квадратов")
+    response = orchestrator.handle_chat("one-gvs", "а одноконтурный подойдет для горячей воды?")
+
+    answer = response.answer.lower()
+    assert "не готовит горячую воду" in answer
+    assert "бойлер" in answer
+    assert "не буду выдавать" in answer
+
+
+def test_explicit_boiler_request_does_not_go_to_free_llm(sample_products, monkeypatch) -> None:
+    settings = get_settings().model_copy(
+        update={
+            "openrouter_api_key": "test-key",
+            "llm_enabled": True,
+        }
+    )
+    monkeypatch.setattr("app.agents.orchestrator.get_settings", lambda: settings)
+    llm = BadRewriteLLM(
+        "Котёл KOT-2500G, насос NAS-250, трубы TUB-25, фитинги FIT-25. Итого 23000 руб."
+    )
+    orchestrator = ChatOrchestrator(products=sample_products, llm_client=llm)
+
+    response = orchestrator.handle_chat("dual-llm", "газовый двухконтурный котел на 100 м2")
+
+    answer = response.answer.lower()
+    assert "kot-2500g" not in answer
+    assert "nas-250" not in answer
+    assert "tub-25" not in answer
+    assert response.debug["any_llm_used"] is False
+    assert "двухконтур" in answer
+
+
 def test_one_vs_two_contour_question_is_explained(orchestrator) -> None:
     orchestrator.handle_chat("contour", "нужен газовый котёл")
     response = orchestrator.handle_chat("contour", "а в чём разница между одноконтурным и двухконтурным?")
@@ -921,6 +1455,51 @@ def test_gas_vs_electric_question_gets_advice_not_silent_assumption(orchestrator
     assert followup.products
     assert followup.debug["slots"]["boiler_type"] == "электрический"
     assert followup.debug["slots"]["area_m2"] == 100.0
+
+
+def test_pending_boiler_area_followup_bypasses_consultant_llm(sample_products, monkeypatch) -> None:
+    settings = get_settings().model_copy(
+        update={
+            "openrouter_api_key": "test-key",
+            "llm_enabled": True,
+        }
+    )
+    monkeypatch.setattr("app.agents.orchestrator.get_settings", lambda: settings)
+    bot = ChatOrchestrator(
+        products=sample_products,
+        llm_client=BadRewriteLLM("Извините за путаницу. На какую площадь подбираете котёл?"),
+    )
+
+    bot.handle_chat("egvs", "нужен электрический котел")
+    bot.handle_chat("egvs", "и чтобы горячую воду грел")
+    response = bot.handle_chat("egvs", "на 90 м2")
+
+    assert response.products
+    assert response.debug["slots"]["area_m2"] == 90.0
+    assert "На какую площадь" not in response.answer
+    assert response.debug["consultant_llm_used"] is False
+
+
+def test_english_llm_boiler_slots_are_normalized_before_search(sample_products) -> None:
+    bot = ChatOrchestrator(products=sample_products)
+    session = bot.sessions.get("slot-normalize")
+    session.category = "boilers"
+    session.pending_question = "На какую площадь подбираете котёл?"
+    session.pending_intent_type = "broad_category"
+    session.slots.update(
+        {
+            "boiler_type": "electric",
+            "contours": "two_contour",
+        }
+    )
+    bot.sessions.save(session)
+
+    response = bot.handle_chat("slot-normalize", "на 90 м2")
+
+    assert response.products
+    assert response.products[0].sku == "ARD-E9"
+    assert "electric" not in response.answer.lower()
+    assert "Электрического двухконтурного" in response.answer
 
 
 def test_exact_product_name_returns_product_without_interrogation(orchestrator) -> None:

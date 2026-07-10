@@ -17,7 +17,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-os.environ["OPENROUTER_API_KEY"] = ""  # детерминированный режим, без LLM
+os.environ["LLM_PROVIDER"] = "disabled"  # детерминированный режим, без LLM
+# os.environ["OPENROUTER_API_KEY"] = ""  # старый OpenRouter-режим, оставлен для отката
 
 from app.agents.orchestrator import ChatOrchestrator  # noqa: E402
 from app.agents.utils import normalize_sku  # noqa: E402

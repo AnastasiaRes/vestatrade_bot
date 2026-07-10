@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import logging
 import re
 from typing import Any
@@ -36,8 +37,9 @@ logger = logging.getLogger(__name__)
 
 COMPANION_HINTS: dict[str, str] = {
     "boilers": (
-        "Кстати, к котлу обычно берут ещё циркуляционный насос, группу безопасности и трубы "
-        "для обвязки. Могу подобрать — напишите, например, «насос к нему»."
+        "Кстати, у настенных котлов циркуляционный насос часто уже встроен, поэтому отдельный "
+        "насос нужен не всегда. Его добавляют для тёплого пола, бойлера, нескольких контуров "
+        "или длинной системы; также обычно проверяют группу безопасности и трубы для обвязки."
     ),
     "pumps": (
         "Кстати, к насосу часто ставят два шаровых крана с американкой — так его можно снять, "
@@ -126,14 +128,102 @@ WATER_SUPPLY_FUNNEL = (
     "насос, трубы или краны?"
 )
 WARM_FLOOR_FUNNEL = (
-    "Тёплый пол — это трубы, циркуляционный насос и запорно-регулирующая арматура "
-    "(плюс коллектор и автоматика, которых может не быть в каталоге). Что подобрать "
-    "из наличия — трубы или насос?"
+    "Для водяного тёплого пола обычно нужны труба, коллектор, смесительный узел или "
+    "насосная группа, запорная арматура, фитинги, теплоизоляция, демпферная лента, "
+    "крепёж и автоматика. В каталоге могу подобрать то, что есть: трубы, насос, "
+    "краны, фитинги/арматуру. Давайте соберём комплект по шагам: какая площадь "
+    "тёплого пола?"
 )
 GENERAL_FUNNEL = (
     "Подскажите, что именно нужно — в каталоге Vesta Trading есть котлы, насосы, "
     "трубы, краны, канализация и радиаторная арматура. С чего начнём?"
 )
+BATHROOM_FUNNEL = (
+    "Для ванной обычно нужны несколько блоков: водоснабжение, канализация, "
+    "смесители/краны, трубы и фитинги, запорная арматура, при необходимости насосы, "
+    "тёплый пол и радиатор или полотенцесушитель. В нашем каталоге могу подобрать "
+    "трубы, краны, насосы, канализацию и арматуру. Начнём с водоснабжения, "
+    "канализации или тёплого пола?"
+)
+WARM_FLOOR_ALL_FOLLOWUP = (
+    "Окей, собираем комплект для тёплого пола. Чтобы не гадать: какая площадь "
+    "тёплого пола в м² и это водяной тёплый пол от котла или электрический? "
+    "Если пока не знаете — могу дать типовой список комплекта и начать с "
+    "универсальных позиций из каталога."
+)
+HEATING_ALL_FOLLOWUP = (
+    "Окей, собираем отопление как систему. Для старта нужны 2 вещи: площадь "
+    "помещения/дома и источник тепла — газ, электричество или уже выбранный котёл. "
+    "После этого подберём из каталога котёл, насосы, трубы и арматуру по шагам."
+)
+WATER_SUPPLY_ALL_FOLLOWUP = (
+    "Окей, собираем водоснабжение. Сначала уточните источник воды: центральный "
+    "водопровод, скважина или колодец, и где нужна вода — дом, ванная, кухня, "
+    "полив. После этого подберём насос, трубы, краны и фитинги из каталога."
+)
+BATHROOM_ALL_FOLLOWUP = (
+    "Окей, собираем ванную/санузел. Базово там два обязательных блока: "
+    "водоснабжение и канализация; дальше краны, трубы, фитинги, запорная арматура, "
+    "при необходимости насос или тёплый пол. Начнём с размеров/точек воды или с "
+    "канализации?"
+)
+GENERAL_ALL_FOLLOWUP = (
+    "Окей, пойдём как по проекту, но без угадывания товаров. Сначала выберите "
+    "систему: отопление, водоснабжение, канализация, ванная/санузел или котельная. "
+    "Дальше задам 1–2 параметра и покажу позиции только из фида."
+)
+SCOPE_FOLLOWUP_ANSWERS = {
+    "heating": HEATING_ALL_FOLLOWUP,
+    "water": WATER_SUPPLY_ALL_FOLLOWUP,
+    "warm_floor": WARM_FLOOR_ALL_FOLLOWUP,
+    "bathroom": BATHROOM_ALL_FOLLOWUP,
+    "general": GENERAL_ALL_FOLLOWUP,
+}
+
+PROJECT_SCOPE_LABELS: dict[str, str] = {
+    "warm_floor": "тёплого пола",
+    "bathroom": "ванной/санузла",
+    "heating": "отопления",
+    "water": "водоснабжения",
+    "sewer": "канализации",
+    "general": "инженерной сантехники",
+}
+
+PROJECT_CATEGORY_LABELS: dict[str, str] = {
+    "boilers": "Котёл",
+    "pumps": "Насос",
+    "pipes": "Трубы",
+    "valves": "Запорная арматура",
+    "sewer": "Канализация",
+    "radiator_fittings": "Радиаторная арматура",
+}
+
+PROJECT_CATEGORY_REASONS: dict[str, str] = {
+    "boilers": "закрывает источник тепла; мощность и тип котла нужно сверять с площадью, топливом и ГВС",
+    "pumps": "нужен для циркуляции или отдельного контура, если штатного насоса котла/узла недостаточно",
+    "pipes": "это базовая магистраль системы; диаметр и материал уточняются по задаче",
+    "valves": "нужна для отсечения и обслуживания узлов без слива всей системы",
+    "sewer": "закрывает отвод стоков; диаметр и длина зависят от участка",
+    "radiator_fittings": "нужна для подключения и регулировки приборов отопления",
+}
+
+PROJECT_SCOPE_CATEGORIES: dict[str, list[str]] = {
+    "warm_floor": ["pipes", "pumps", "valves"],
+    "bathroom": ["pipes", "valves", "sewer"],
+    "heating": ["boilers", "pumps", "pipes", "valves", "radiator_fittings"],
+    "water": ["pipes", "valves", "pumps"],
+    "sewer": ["sewer"],
+    "general": ["boilers", "pumps", "pipes", "valves", "sewer"],
+}
+
+PROJECT_CART_CATEGORY_ORDER = [
+    "boilers",
+    "pumps",
+    "pipes",
+    "valves",
+    "sewer",
+    "radiator_fittings",
+]
 
 
 class ChatOrchestrator:
@@ -156,7 +246,7 @@ class ChatOrchestrator:
         self.guardrails = GuardrailsAgent()
         self.composer = ResponseComposerAgent(self.llm_client)
         self.consultant = ConsultantAgent(
-            self.llm_client, model=self.settings.openrouter_model_strong
+            self.llm_client, model=self.settings.llm_model_strong
         )
         self.handoff = HandoffAgent()
         self.products_loaded_from = "injected" if products is not None else "none"
@@ -179,6 +269,8 @@ class ChatOrchestrator:
         session.topic_changed = False
         session.slots.pop("fallback_after_repeat", None)
         self.composer.reset_usage()
+        self.consultant.last_llm_used = False
+        self.consultant.last_fallback_reason = None
         self.composer.set_history(session.history)
         last_summary: str | None = None
         docs_excerpt: str | None = None
@@ -214,6 +306,9 @@ class ChatOrchestrator:
                 intent.category = session.category
             intent.is_topic_change = False
 
+        if intent.is_topic_change and self._is_project_component_turn(intent, session):
+            intent.is_topic_change = False
+
         if intent.is_topic_change:
             session.slots = {}
             session.last_products = []
@@ -226,6 +321,12 @@ class ChatOrchestrator:
         if self._should_restart_category_context(message, intent, session):
             session.slots = {}
             session.last_products = []
+
+        if intent.category == "pumps" and self._pump_requested_for_boiler_context(message, session):
+            intent.slots.setdefault("pump_type", "циркуляционный")
+            intent.slots.setdefault("pump_use", "отопление")
+            intent.slots.setdefault("pump_context", "котел")
+            intent.slots.setdefault("allow_basic_option", True)
 
         if self._wants_manager_handoff(message):
             summary = self.handoff.build_summary(message, session)
@@ -268,6 +369,21 @@ class ChatOrchestrator:
             self.sessions.save(session)
             return self._response(session_id, engineering_risk, [], True, intent, session, agents_used)
 
+        hot_water_answer = self._maybe_one_contour_hot_water_answer(message, intent, session)
+        if hot_water_answer:
+            agents_used.append("ResponseComposerAgent")
+            self._append_history(session, message, hot_water_answer)
+            self.sessions.save(session)
+            return self._response(
+                session_id,
+                hot_water_answer,
+                session.last_products,
+                False,
+                intent,
+                session,
+                agents_used,
+            )
+
         consultation = self._maybe_consultation_answer(message, intent, session)
         if consultation:
             agents_used.append("ResponseComposerAgent")
@@ -285,10 +401,27 @@ class ChatOrchestrator:
                 self.sessions.save(session)
                 return context_response
 
+        if intent.intent_type == "complectation" and session.last_products:
+            response = self._handle_complectation(message, session, intent, agents_used)
+            self.sessions.save(session)
+            return response
+
         comparison_answer = self._maybe_comparison_answer(message, session)
         if comparison_answer:
             agents_used.append("ResponseComposerAgent")
             answer = self._guard_composed_answer(comparison_answer, "generic", agents_used)
+            self._append_history(session, message, answer)
+            self.sessions.save(session)
+            return self._response(
+                session_id, answer, session.last_products, False, intent, session, agents_used
+            )
+
+        yes_no_complectation = self._maybe_yes_no_complectation_followup(message, session)
+        if yes_no_complectation:
+            agents_used.append("ResponseComposerAgent")
+            answer = self._guard_composed_answer(
+                yes_no_complectation, "complectation", agents_used
+            )
             self._append_history(session, message, answer)
             self.sessions.save(session)
             return self._response(
@@ -347,10 +480,26 @@ class ChatOrchestrator:
         # Стоит после подтверждений/tradeoff, но до общих fallback'ов (small talk /
         # unknown / повторный поиск), которые иначе «съели» бы вопрос или зациклили список.
         if self._is_contextual_followup(message, intent, session):
+            compatibility_answer = self._maybe_pump_compatibility_answer(message, session)
+            if compatibility_answer:
+                agents_used.append("ResponseComposerAgent")
+                answer = self._guard_composed_answer(compatibility_answer, "generic", agents_used)
+                self._append_history(session, message, answer)
+                self.sessions.save(session)
+                return self._response(
+                    session_id, answer, session.last_products, False, intent, session, agents_used
+                )
             context_response = self._answer_from_context(message, intent, session, agents_used)
             if context_response is not None:
                 self.sessions.save(session)
                 return context_response
+
+        project_response = self._maybe_project_cart_response(
+            session_id, message, intent, session, agents_used
+        )
+        if project_response is not None:
+            self.sessions.save(session)
+            return project_response
 
         # Консультативный/проектный разговор («дом построить», «240 м², газ и
         # электричество», «есть другие котлы?», «что ещё нужно?», «в котле встроенный
@@ -372,6 +521,16 @@ class ChatOrchestrator:
             answer = scope_funnel
             agents_used.append("ResponseComposerAgent")
             session.pending_question = scope_funnel
+            session.pending_intent_type = "broad_category"
+            self._append_history(session, message, answer)
+            self.sessions.save(session)
+            return self._response(session_id, answer, [], False, intent, session, agents_used)
+
+        scope_followup = self._maybe_scope_followup_answer(message, session)
+        if scope_followup:
+            answer = scope_followup
+            agents_used.append("ResponseComposerAgent")
+            session.pending_question = answer
             session.pending_intent_type = "broad_category"
             self._append_history(session, message, answer)
             self.sessions.save(session)
@@ -552,6 +711,7 @@ class ChatOrchestrator:
                         )
                     answer = self._guard_composed_answer(answer, "products", agents_used)
                     answer = self._append_companion_hint(answer, session, query.category)
+                    self._remember_project_cart(session, cards, replace_category=query.category)
                     session.last_products = cards
                     self._append_history(session, message, answer)
                     self.sessions.save(session)
@@ -610,6 +770,7 @@ class ChatOrchestrator:
             )
         answer = self._guard_composed_answer(answer, "products", agents_used)
         answer = self._append_companion_hint(answer, session, query.category)
+        self._remember_project_cart(session, cards, replace_category=query.category)
         session.last_products = cards
         self._append_history(session, message, answer)
         self.sessions.save(session)
@@ -711,6 +872,8 @@ class ChatOrchestrator:
         answer = self.composer.compose_complectation_confirmed(target_card, requested_parts)
         answer = self._guard_composed_answer(answer, "complectation", agents_used)
         session.last_products = [target_card]
+        session.slots["last_complectation_parts"] = requested_parts
+        session.slots["last_complectation_sku"] = target_card.sku
         self._append_history(session, message, answer)
         return self._response(session.session_id, answer, [target_card], False, intent, session, agents_used)
 
@@ -724,15 +887,32 @@ class ChatOrchestrator:
         return self.search_agent.search(query)
 
     def _build_query(self, message: str, intent: IntentResult, session: SessionState) -> SearchQuery:
+        slots = self._normalized_query_slots(session.slots)
         return SearchQuery(
             original_text=message,
             category=intent.category if intent.category != "other" else session.category or "other",
-            slots=session.slots,
-            sku=session.slots.get("sku"),
-            brand=session.slots.get("brand"),
-            cheap=bool(session.slots.get("cheap") or intent.flags.get("cheap")),
-            in_stock_only=bool(session.slots.get("in_stock") or intent.flags.get("in_stock")),
+            slots=slots,
+            sku=slots.get("sku"),
+            brand=slots.get("brand"),
+            cheap=bool(slots.get("cheap") or intent.flags.get("cheap")),
+            in_stock_only=bool(slots.get("in_stock") or intent.flags.get("in_stock")),
         )
+
+    def _normalized_query_slots(self, raw_slots: dict[str, Any]) -> dict[str, Any]:
+        slots = dict(raw_slots)
+        boiler_type = normalize_text(str(slots.get("boiler_type") or ""))
+        if boiler_type:
+            if boiler_type in {"electric", "electrical", "electric boiler"} or "электр" in boiler_type:
+                slots["boiler_type"] = "электрический"
+            elif boiler_type in {"gas", "gas boiler"} or "газ" in boiler_type:
+                slots["boiler_type"] = "газовый"
+        contours = normalize_text(str(slots.get("contours") or ""))
+        if contours:
+            if "двух" in contours or contours == "2" or "two" in contours or "double" in contours or "dual" in contours:
+                slots["contours"] = "двухконтурный"
+            elif "одно" in contours or contours == "1" or "one" in contours or "single" in contours:
+                slots["contours"] = "одноконтурный"
+        return slots
 
     def _is_searchable(self, query: SearchQuery) -> bool:
         """True when the query carries enough signal to run a meaningful search.
@@ -827,6 +1007,47 @@ class ChatOrchestrator:
             f"Использовал данные: {details}. Подходящие позиции из фида: {skus}."
         )
 
+    def _maybe_pump_compatibility_answer(self, message: str, session: SessionState) -> str | None:
+        if not session.last_products:
+            return None
+        text = normalize_text(message)
+        markers = [
+            "под какой котел",
+            "под какой котёл",
+            "к какому котлу",
+            "с каким котлом",
+            "подходит к котлу",
+            "совместим с котлом",
+            "совместима с котлом",
+        ]
+        if not any(marker in text for marker in markers):
+            return None
+        pump_card: ProductCard | None = None
+        for card in session.last_products:
+            product = self._find_product_by_sku(card.sku)
+            if product and self.search_agent.canonical_category(product) == "pumps":
+                pump_card = card
+                break
+        if not pump_card:
+            return None
+
+        details = []
+        for key, value in pump_card.characteristics.items():
+            key_norm = normalize_text(key)
+            if any(marker in key_norm for marker in ["напор", "монтаж", "присоедин", "мощность"]):
+                details.append(f"{key}: {value}")
+        detail_text = "; ".join(details) if details else "в карточке нет достаточных параметров для проверки совместимости"
+        return (
+            f"По фиду не вижу привязки насоса {pump_card.sku} к конкретным моделям котлов, "
+            "поэтому не буду подтверждать совместимость с определённым котлом. "
+            f"По карточке насоса есть такие данные: {detail_text}. "
+            "Циркуляционный насос подбирают не «под котёл» напрямую, а под систему: напор, расход, "
+            "монтажную длину, присоединение и схему контуров. Если в настенном котле уже есть "
+            "встроенный насос, отдельный насос обычно нужен только на тёплый пол, бойлер, "
+            "длинную ветку или отдельные контуры. Для точного подтверждения лучше сверить схему "
+            "или передать вопрос менеджеру."
+        )
+
     def _maybe_choose_one_answer(self, message: str, session: SessionState) -> str | None:
         if not session.last_products or not self._wants_choose_one(message):
             return None
@@ -907,9 +1128,9 @@ class ChatOrchestrator:
         session: SessionState,
         agents_used: list[str],
     ):
-        # Без реального ключа консультант недоступен — идём детерминированным путём
+        # Без настроенной LLM консультант недоступен — идём детерминированным путём
         # (так офлайн-тесты и rule-based fallback остаются прежними).
-        if not self.settings.openrouter_api_key:
+        if not self.settings.llm_enabled:
             return None
         if not self._should_consult(message, intent, session):
             return None
@@ -991,6 +1212,51 @@ class ChatOrchestrator:
         if intent.slots.get("sku") or session.slots.get("sku"):
             return False
 
+        if (
+            session.pending_question
+            and intent.category == "boilers"
+            and {"area_m2", "power_kw", "boiler_type", "contours"}.intersection(intent.slots)
+        ):
+            return False
+
+        if self._is_explicit_boiler_product_request(text, intent):
+            return False
+
+        concrete_non_boiler = {"pumps", "pipes", "valves", "sewer", "radiator_fittings"}
+        broad_markers = [
+            "что ещё",
+            "что еще",
+            "в итоге",
+            "комплект",
+            "под ключ",
+            "что нужно",
+            "собери",
+            "подбери",
+            "подберите",
+            "корзин",
+        ]
+        concrete_slot_keys = {
+            "diameter_mm",
+            "sewer_scope",
+            "element_type",
+            "length_mm",
+            "pipe_purpose",
+            "pump_type",
+            "pump_use",
+            "head_m",
+            "mounting_length_mm",
+            "size_inch",
+            "application",
+        }
+        if intent.category in concrete_non_boiler and concrete_slot_keys.intersection(intent.slots):
+            if not any(marker in text for marker in broad_markers):
+                return False
+        if intent.category in concrete_non_boiler and any(
+            word in text for word in SPECIFIC_PRODUCT_WORDS
+        ):
+            if not any(marker in text for marker in broad_markers):
+                return False
+
         # Явные консультативные/проектные маркеры перебивают даже ошибочную
         # классификацию интента («дом построить» иногда уходит в out_of_scope).
         if any(marker in text for marker in self.CONSULT_MARKERS):
@@ -1041,6 +1307,18 @@ class ChatOrchestrator:
         # Чистый small talk без проектного контекста — не к консультанту.
         return False
 
+    def _is_explicit_boiler_product_request(self, text: str, intent: IntentResult) -> bool:
+        if intent.category != "boilers":
+            return False
+        if not any(word in text for word in ["котел", "котёл", "котл"]):
+            return False
+        return bool(
+            intent.slots.get("boiler_type")
+            or intent.slots.get("contours")
+            or intent.slots.get("area_m2")
+            or intent.slots.get("power_kw")
+        )
+
     # Формулировки, означающие отсутствие газа.
     NO_GAS_MARKERS = ["газа нет", "газа нету", "без газа", "нет газа", "не газ", "газ отсутств"]
 
@@ -1048,6 +1326,10 @@ class ChatOrchestrator:
         text = normalize_text(message)
         if intent.slots.get("area_m2"):
             session.slots["area_m2"] = intent.slots["area_m2"]
+        if intent.slots.get("boiler_type"):
+            session.slots["boiler_type"] = intent.slots["boiler_type"]
+        if intent.slots.get("contours"):
+            session.slots["contours"] = intent.slots["contours"]
 
         # Источники тепла с учётом отрицания: «газа нет» → has_gas=False, а не +газ.
         no_gas = any(marker in text for marker in self.NO_GAS_MARKERS)
@@ -1068,9 +1350,20 @@ class ChatOrchestrator:
             sources.append("газа нет")
         if sources:
             session.slots["heat_sources"] = ", ".join(dict.fromkeys(sources))
+        if session.slots.get("has_gas") is True and session.slots.get("has_electricity") is True:
+            mentions_both_sources = "газ" in text and "электр" in text
+            if mentions_both_sources:
+                session.slots.pop("boiler_type", None)
+                session.slots["boiler_types"] = ["газовый", "электрический"]
 
         if any(word in text for word in ["дом", "коттедж", "построить", "строю"]):
             session.slots.setdefault("project", "частный дом")
+        if "скваж" in text:
+            session.slots["water_source"] = "скважина"
+        elif "колод" in text:
+            session.slots["water_source"] = "колодец"
+        elif "центральн" in text:
+            session.slots["water_source"] = "центральный водопровод"
 
     def _consult_plan(
         self,
@@ -1084,9 +1377,23 @@ class ChatOrchestrator:
         # НЕ выводим тип из подстроки «газ» (иначе «газа нет» → газовый, баг из логов).
         if intent.slots.get("boiler_type"):
             slots["boiler_type"] = intent.slots["boiler_type"]
+        if intent.slots.get("contours"):
+            slots["contours"] = intent.slots["contours"]
         # Если по проекту газа нет — это электрическая котельная, чем бы ни был тип.
         if slots.get("has_gas") is False and not slots.get("boiler_type"):
             slots["boiler_type"] = "электрический"
+        if slots.get("has_gas") is True and slots.get("has_electricity") is True:
+            current_mentions_only_electric = "электр" in text and "газ" not in text
+            current_mentions_only_gas = "газ" in text and "электр" not in text
+            if current_mentions_only_electric:
+                slots["boiler_type"] = "электрический"
+                slots.pop("boiler_types", None)
+            elif current_mentions_only_gas:
+                slots["boiler_type"] = "газовый"
+                slots.pop("boiler_types", None)
+            else:
+                slots.pop("boiler_type", None)
+                slots["boiler_types"] = ["газовый", "электрический"]
 
         named: list[str] = []
         if "котел" in text or "котёл" in text or "котельн" in text:
@@ -1126,7 +1433,10 @@ class ChatOrchestrator:
             ]
         )
         # Тёплый пол — это трубы + насос (+ арматура).
-        warm_floor = ("теплый пол" in text or "тёплый пол" in text or ("тепл" in text and "пол" in text))
+        warm_floor = (
+            ("теплый пол" in text or "тёплый пол" in text or ("тепл" in text and "пол" in text))
+            and not self._negates_warm_floor(text)
+        )
         if warm_floor and not named:
             return ["pipes", "pumps", "valves"], slots
         if broad:
@@ -1155,6 +1465,547 @@ class ChatOrchestrator:
             if category in mapping:
                 return mapping[category]
         return None
+
+    # --- Проектная подборка / корзина -----------------------------------------
+
+    def _maybe_project_cart_response(
+        self,
+        session_id: str,
+        message: str,
+        intent: IntentResult,
+        session: SessionState,
+        agents_used: list[str],
+    ) -> ChatResponse | None:
+        text = normalize_text(message)
+        if (
+            session.category
+            and session.category != "other"
+            and not session.slots.get("project_scope")
+            and not self._wants_project_selection(text)
+            and not self._wants_project_cart_summary(text)
+        ):
+            return None
+        explicit_scope = self._explicit_project_scope_from_text(text)
+        if explicit_scope:
+            self._reset_project_context_if_scope_changed(explicit_scope, session)
+        self._update_project_state(message, intent, session)
+        area = self._project_area_from_text(text)
+        if area is not None:
+            session.slots["area_m2"] = area
+
+        if self._wants_project_cart_summary(text) and not explicit_scope:
+            cards = self._project_cart_cards(session)
+            if not cards and session.last_products:
+                cards = session.last_products
+                self._remember_project_cart(session, cards)
+            if cards:
+                answer = self._compose_project_cart_summary(session, cards)
+                agents_used.append("ResponseComposerAgent")
+                session.last_products = cards
+                session.last_intent = "project_cart"
+                session.pending_question = None
+                session.pending_intent_type = None
+                self._append_history(session, message, answer)
+                return self._response(session_id, answer, cards, False, intent, session, agents_used)
+
+        scope = explicit_scope or self._project_scope_from_message(text, session)
+        if not scope:
+            return None
+        if not self._should_handle_project_cart(text, intent, session):
+            intro = self._project_intro_for_scope(scope, text)
+            if intro and not any(word in text for word in SPECIFIC_PRODUCT_WORDS):
+                session.slots["scope_funnel"] = scope
+                session.pending_question = intro
+                session.pending_intent_type = "broad_category"
+                agents_used.append("ResponseComposerAgent")
+                self._append_history(session, message, intro)
+                return self._response(session_id, intro, [], False, intent, session, agents_used)
+            return None
+
+        session.slots["project_scope"] = scope
+        session.slots["scope_funnel"] = scope
+
+        clarification = self._project_clarification(scope, session, text)
+        if clarification:
+            agents_used.append("ResponseComposerAgent")
+            session.pending_question = clarification
+            session.pending_intent_type = "broad_category"
+            session.last_intent = "project_cart"
+            self._append_history(session, message, clarification)
+            return self._response(session_id, clarification, [], False, intent, session, agents_used)
+
+        cards_by_category = self._project_cards_by_category(scope, message, session)
+        cards = [
+            card
+            for category in PROJECT_CART_CATEGORY_ORDER
+            for card in cards_by_category.get(category, [])
+        ]
+        if not cards:
+            answer = (
+                "По текущему фиду не вижу товаров, из которых можно безопасно собрать подборку "
+                "по артикулам. Не буду придумывать позиции. Уточните систему или напишите "
+                "«передай менеджеру» — зафиксирую задачу."
+            )
+            agents_used.append("ResponseComposerAgent")
+            self._append_history(session, message, answer)
+            return self._response(session_id, answer, [], True, intent, session, agents_used)
+
+        self._remember_project_cart(
+            session,
+            cards,
+            replace_categories=list(cards_by_category),
+        )
+        session.last_products = cards
+        session.last_intent = "project_cart"
+        session.category = self._primary_session_category(list(cards_by_category)) or session.category
+        session.pending_question = None
+        session.pending_intent_type = None
+        answer = self._compose_project_selection_answer(scope, cards_by_category, session)
+        agents_used.append("FeedSearchAgent")
+        agents_used.append("ProductCardAgent")
+        agents_used.append("ResponseComposerAgent")
+        self._append_history(session, message, answer)
+        return self._response(session_id, answer, cards, False, intent, session, agents_used)
+
+    def _explicit_project_scope_from_text(self, text: str) -> str | None:
+        if "тепл" in text and "пол" in text and not self._negates_warm_floor(text):
+            return "warm_floor"
+        if ("вод" in text or "водоснаб" in text) and "канализац" in text:
+            return "bathroom"
+        if any(marker in text for marker in ["ванн", "санузел", "санузла"]):
+            return "bathroom"
+        if "котельн" in text or "отоплен" in text:
+            return "heating"
+        if "водоснаб" in text or "водопровод" in text:
+            return "water"
+        if "канализац" in text:
+            return "sewer"
+        if any(marker in text for marker in ["сантехник", "инженерн", "для дома", "в дом"]):
+            return "general"
+        return None
+
+    def _negates_warm_floor(self, text: str) -> bool:
+        return bool(
+            re.search(
+                r"\b(?:без|не|кроме|исключи|убери|только\s+не)\s+[^.?!,;]{0,24}(?:тепл|тёпл)[^,.?!;]{0,12}пол",
+                text,
+            )
+        )
+
+    def _project_area_from_text(self, text: str) -> float | None:
+        match = re.search(r"(\d{2,4})\s*(?:м2|м²|квадрат|кв\.?\s*м|кв\b)", text)
+        if not match:
+            return None
+        try:
+            return float(match.group(1))
+        except ValueError:
+            return None
+
+    def _project_intro_for_scope(self, scope: str, text: str = "") -> str | None:
+        if scope == "bathroom" and self._negates_warm_floor(text):
+            return (
+                "Ок, без тёплого пола. Для ванной/санузла оставляем водоснабжение и "
+                "канализацию: трубы, краны/запорную арматуру и канализационные элементы. "
+                "Начнём с размеров труб/точек воды или с канализации?"
+            )
+        return {
+            "warm_floor": WARM_FLOOR_FUNNEL,
+            "heating": HEATING_FUNNEL,
+            "water": WATER_SUPPLY_FUNNEL,
+            "bathroom": BATHROOM_FUNNEL,
+            "general": GENERAL_FUNNEL,
+        }.get(scope)
+
+    def _reset_project_context_if_scope_changed(
+        self,
+        new_scope: str,
+        session: SessionState,
+    ) -> None:
+        old_scope = session.slots.get("project_scope") or session.slots.get("scope_funnel")
+        if not old_scope or old_scope == new_scope:
+            return
+        for key in [
+            "project_cart",
+            "project_scope",
+            "scope_funnel",
+            "area_m2",
+            "power_kw",
+            "heat_sources",
+            "has_gas",
+            "has_electricity",
+            "boiler_type",
+            "boiler_types",
+            "contours",
+            "pump_type",
+            "pump_use",
+            "project_note",
+            "pipe_purpose",
+            "water_source",
+            "element_type",
+            "sewer_scope",
+            "length_mm",
+            "total_length_m",
+            "diameter_mm",
+        ]:
+            session.slots.pop(key, None)
+        session.last_products = []
+        session.category = None
+        session.pending_question = None
+        session.pending_intent_type = None
+
+    def _project_scope_from_message(self, text: str, session: SessionState) -> str | None:
+        explicit = self._explicit_project_scope_from_text(text)
+        if explicit:
+            return explicit
+        if session.slots.get("project_scope") and (
+            self._is_project_followup(text) or self._is_project_source_followup(text)
+        ):
+            return str(session.slots["project_scope"])
+        if session.slots.get("scope_funnel") and (
+            self._is_project_followup(text) or self._is_project_source_followup(text)
+        ):
+            return str(session.slots["scope_funnel"])
+        return None
+
+    def _should_handle_project_cart(
+        self,
+        text: str,
+        intent: IntentResult,
+        session: SessionState,
+    ) -> bool:
+        if self._wants_project_cart_summary(text):
+            return True
+        if self._wants_project_selection(text):
+            return True
+        if self._is_project_parameter_followup(text, intent, session):
+            return True
+        if session.slots.get("project_cart") and any(
+            marker in text
+            for marker in ["что еще", "что ещё", "еще нужно", "ещё нужно", "дальше", "продолж"]
+        ):
+            return True
+        return False
+
+    def _wants_project_selection(self, text: str) -> bool:
+        markers = [
+            "что нужно",
+            "что для этого нужно",
+            "что еще нужно",
+            "что ещё нужно",
+            "собери",
+            "собрать",
+            "подбери",
+            "подберите",
+            "подборк",
+            "комплект",
+            "корзин",
+            "по артикул",
+            "артикул",
+            "под ключ",
+            "все для",
+            "всё для",
+            "все что нужно",
+            "всё что нужно",
+            "мы же собирали",
+        ]
+        if any(marker in text for marker in markers):
+            return True
+        return text.strip(" .,!?:;") in {"все", "всё", "комплектом", "полностью"}
+
+    def _wants_project_cart_summary(self, text: str) -> bool:
+        summary_markers = [
+            "собери артикул",
+            "собрать артикул",
+            "список артикул",
+            "артикулы списком",
+            "артикулы с тем",
+            "как корзин",
+            "в корзин",
+            "корзин",
+            "итог",
+            "что обсудили",
+        ]
+        return any(marker in text for marker in summary_markers)
+
+    def _is_project_followup(self, text: str) -> bool:
+        if self._wants_project_selection(text) or self._wants_project_cart_summary(text):
+            return True
+        return bool(re.search(r"\d{2,4}\s*(?:м2|м²|квадрат|кв\.?\s*м|кв\b)", text))
+
+    def _is_project_source_followup(self, text: str) -> bool:
+        return any(marker in text for marker in ["скваж", "колод", "центральн", "водопровод"])
+
+    def _is_project_parameter_followup(
+        self,
+        text: str,
+        intent: IntentResult,
+        session: SessionState,
+    ) -> bool:
+        if not (session.slots.get("project_scope") or session.slots.get("scope_funnel")):
+            return False
+        if intent.slots.get("area_m2"):
+            return True
+        if self._is_project_source_followup(text):
+            return True
+        return bool(re.search(r"\d{2,4}\s*(?:м2|м²|квадрат|кв\.?\s*м|кв\b)", text))
+
+    def _is_project_component_turn(self, intent: IntentResult, session: SessionState) -> bool:
+        if not (session.slots.get("project_cart") or session.slots.get("project_scope")):
+            return False
+        return intent.category in {
+            "boilers",
+            "pumps",
+            "pipes",
+            "valves",
+            "sewer",
+            "radiator_fittings",
+        }
+
+    def _project_clarification(
+        self,
+        scope: str,
+        session: SessionState,
+        text: str,
+    ) -> str | None:
+        if scope == "warm_floor" and not session.slots.get("area_m2"):
+            if "что нужно" in text:
+                return WARM_FLOOR_FUNNEL
+            return WARM_FLOOR_ALL_FOLLOWUP
+        if scope == "heating" and not (
+            session.slots.get("area_m2")
+            or session.slots.get("heat_sources")
+            or session.slots.get("boiler_type")
+        ):
+            return HEATING_ALL_FOLLOWUP
+        if scope == "water" and not (
+            session.slots.get("water_source")
+            or session.slots.get("pump_use")
+            or session.slots.get("project_cart")
+        ):
+            return WATER_SUPPLY_ALL_FOLLOWUP
+        if scope == "general" and not (
+            session.slots.get("area_m2")
+            or session.slots.get("heat_sources")
+            or session.slots.get("project_cart")
+        ):
+            return GENERAL_ALL_FOLLOWUP
+        return None
+
+    def _project_cards_by_category(
+        self,
+        scope: str,
+        message: str,
+        session: SessionState,
+    ) -> dict[str, list[ProductCard]]:
+        categories = list(PROJECT_SCOPE_CATEGORIES.get(scope, PROJECT_SCOPE_CATEGORIES["general"]))
+        if scope == "water" and session.slots.get("water_source") == "центральный водопровод":
+            categories = [category for category in categories if category != "pumps"]
+        slots = self._project_retrieval_slots(scope, session)
+        result: dict[str, list[ProductCard]] = {}
+        for category in categories:
+            per_category = 2 if category == "boilers" and slots.get("boiler_types") else 1
+            category_slots = dict(slots)
+            if category == "sewer" and scope in {"bathroom", "sewer"}:
+                category_slots.setdefault("element_type", "труба")
+            products = self.search_agent.retrieve_for_consult(
+                [category],
+                category_slots,
+                per_category=per_category,
+            )
+            cards = self.card_agent.build_cards(
+                products,
+                SearchQuery(original_text=message, category=category, slots=category_slots),
+                limit=per_category,
+            )
+            if cards:
+                result[category] = cards
+        return result
+
+    def _project_retrieval_slots(self, scope: str, session: SessionState) -> dict:
+        slots = dict(session.slots)
+        if scope in {"warm_floor", "heating"}:
+            slots.setdefault("pump_type", "циркуляционный")
+            slots.setdefault("pump_use", "отопление")
+        if scope == "warm_floor":
+            slots.setdefault("pipe_purpose", "отопление")
+            slots.setdefault("project_note", "водяной тёплый пол")
+        if scope == "water":
+            slots.setdefault("pipe_purpose", "водоснабжение")
+            source = normalize_text(str(slots.get("water_source") or ""))
+            if "скваж" in source:
+                slots.setdefault("pump_type", "скважинный")
+                slots.setdefault("pump_use", "водоснабжение")
+            elif "колод" in source:
+                slots.setdefault("pump_type", "насосная станция")
+                slots.setdefault("pump_use", "водоснабжение")
+        if scope == "bathroom":
+            slots.setdefault("pipe_purpose", "водоснабжение")
+        return slots
+
+    def _remember_project_cart(
+        self,
+        session: SessionState,
+        cards: list[ProductCard],
+        replace_category: str | None = None,
+        replace_categories: list[str] | None = None,
+    ) -> None:
+        if not cards:
+            return
+        if not session.slots.get("project_scope") and not session.slots.get("project_cart"):
+            return
+        raw_cart = session.slots.get("project_cart") or {}
+        cart: dict[str, list[str]] = {
+            str(category): [str(sku) for sku in skus]
+            for category, skus in raw_cart.items()
+            if isinstance(skus, list)
+        }
+        categories_to_replace = set(replace_categories or [])
+        if replace_category and replace_category != "other":
+            categories_to_replace.add(replace_category)
+        for category in categories_to_replace:
+            cart[category] = []
+        for card in cards:
+            product = self._find_product_by_sku(card.sku)
+            category = self.search_agent.canonical_category(product) if product else replace_category
+            if not category or category == "other":
+                continue
+            # Фитинги добавляем только когда их явно подобрали отдельным запросом; в
+            # широкую корзину они не попадают автоматически, чтобы не повторять баг с угольниками.
+            if category == "fittings" and "fittings" not in categories_to_replace:
+                continue
+            bucket = cart.setdefault(category, [])
+            if card.sku not in bucket:
+                bucket.append(card.sku)
+        session.slots["project_cart"] = cart
+
+    def _project_cart_cards(self, session: SessionState) -> list[ProductCard]:
+        cart = session.slots.get("project_cart") or {}
+        if not isinstance(cart, dict):
+            return []
+        cards: list[ProductCard] = []
+        seen: set[str] = set()
+        for category in PROJECT_CART_CATEGORY_ORDER:
+            skus = cart.get(category, [])
+            if not isinstance(skus, list):
+                continue
+            for sku in skus:
+                product = self._find_product_by_sku(str(sku))
+                if not product or sku in seen:
+                    continue
+                card = self.card_agent.build_card(
+                    product,
+                    SearchQuery(
+                        original_text="корзина проекта",
+                        category=category,
+                        slots=session.slots,
+                    ),
+                )
+                if card:
+                    cards.append(card)
+                    seen.add(str(sku))
+        return cards
+
+    def _compose_project_selection_answer(
+        self,
+        scope: str,
+        cards_by_category: dict[str, list[ProductCard]],
+        session: SessionState,
+    ) -> str:
+        scope_label = PROJECT_SCOPE_LABELS.get(scope, "подбора")
+        lines = [
+            f"Хорошо, собираю стартовую подборку для {scope_label} по артикулам из фида.",
+            "Это не окончательная инженерная спецификация: количества труб, контуров и расходников нужно считать по схеме. Товары, цены и наличие ниже беру только из фида.",
+        ]
+        area = session.slots.get("area_m2")
+        if area:
+            lines.append(f"Площадь {float(area):g} м² учёл как исходный параметр, но метраж трубы без схемы не рассчитываю.")
+
+        for category in PROJECT_CART_CATEGORY_ORDER:
+            cards = cards_by_category.get(category)
+            if not cards:
+                continue
+            label = PROJECT_CATEGORY_LABELS.get(category, category)
+            reason = self._project_category_reason(category, scope, session)
+            for card in cards:
+                lines.append(
+                    f"{label}: {html.unescape(card.name)} — арт. {card.sku}, "
+                    f"{card.price:g} {card.currency}, {self._card_stock_text(card)}. Почему: {reason}."
+                )
+
+        note = self._project_missing_note(scope)
+        if note:
+            lines.append(note)
+        lines.append(
+            "Дальше можно редактировать подборку: напишите, например, «замените насос», "
+            "«труба другого диаметра», «без канализации» или «соберите артикулы корзиной»."
+        )
+        return "\n".join(lines)
+
+    def _compose_project_cart_summary(
+        self,
+        session: SessionState,
+        cards: list[ProductCard],
+    ) -> str:
+        scope = str(session.slots.get("project_scope") or session.slots.get("scope_funnel") or "general")
+        scope_label = PROJECT_SCOPE_LABELS.get(scope, "подбора")
+        lines = [f"Собрал обсуждённые позиции как корзину для {scope_label}:"]
+        total = 0.0
+        for card in cards:
+            total += card.price
+            lines.append(
+                f"- {html.unescape(card.name)} — арт. {card.sku}, "
+                f"{card.price:g} {card.currency}, {self._card_stock_text(card)}."
+            )
+        if cards:
+            currency = cards[0].currency
+            lines.append(f"Ориентир по сумме, если считать по 1 шт. каждого артикула: {total:g} {currency}.")
+        lines.append(
+            "Количество по трубам, канализации и расходникам нужно считать отдельно по метражу/схеме; "
+            "я не буду выдумывать количество без этих данных."
+        )
+        return "\n".join(lines)
+
+    def _project_missing_note(self, scope: str) -> str | None:
+        if scope == "warm_floor":
+            return (
+                "По тёплому полу дополнительно обычно нужны коллектор, смесительный узел, "
+                "теплоизоляция, демпферная лента, крепёж и автоматика. Если этих позиций нет "
+                "в найденном фиде, я не ставлю им выдуманные артикулы."
+            )
+        if scope == "bathroom":
+            return (
+                "Для ванной отдельно могут понадобиться смесители, сифоны, подводка и крепёж; "
+                "если их нет в фиде, я честно не добавляю их в корзину."
+            )
+        if scope == "heating":
+            return (
+                "По отоплению ещё могут понадобиться радиаторы, коллекторы, группа безопасности, "
+                "расширительный бак и бойлер ГВС — эти узлы нужно сверять по схеме и наличию в фиде."
+            )
+        return None
+
+    def _project_category_reason(
+        self,
+        category: str,
+        scope: str,
+        session: SessionState,
+    ) -> str:
+        if category == "pumps" and scope == "water":
+            source = normalize_text(str(session.slots.get("water_source") or ""))
+            if "скваж" in source:
+                return "подходит как насос для подачи воды из скважины; параметры по глубине и расходу нужно сверить отдельно"
+            if "колод" in source:
+                return "подходит как стартовый вариант насосного узла для водоснабжения; параметры по глубине и расходу нужно сверить отдельно"
+            return "насос для водоснабжения нужен не всегда; его ставят при слабом давлении или автономном источнике воды"
+        return PROJECT_CATEGORY_REASONS.get(
+            category,
+            "подходит как часть системы по данным категории фида",
+        )
+
+    def _card_stock_text(self, card: ProductCard) -> str:
+        if card.stock_qty is not None and card.stock_qty > 0:
+            return f"в наличии {card.stock_qty} шт"
+        return card.stock_status
 
     def _maybe_scope_funnel(
         self,
@@ -1195,7 +2046,7 @@ class ChatOrchestrator:
 
         # Тёплый пол — отдельная подсистема отопления со своим составом.
         if ("тепл" in text and "пол" in text) or "теплый пол" in text:
-            session.slots["scope_funnel"] = "heating"
+            session.slots["scope_funnel"] = "warm_floor"
             return WARM_FLOOR_FUNNEL
 
         # Отопление как система (без конкретного узла).
@@ -1218,16 +2069,92 @@ class ChatOrchestrator:
             "для дома",
             "на дач",
             "для дачи",
-            "ванну",
-            "ванной",
-            "санузел",
             "кухн",
         ]
+        bathroom_markers = ["ванну", "ванной", "ванная", "санузел", "санузла"]
+        if any(marker in text for marker in bathroom_markers):
+            session.slots["scope_funnel"] = "bathroom"
+            return BATHROOM_FUNNEL
         if any(marker in text for marker in general_markers):
             session.slots["scope_funnel"] = "general"
             return GENERAL_FUNNEL
 
         return None
+
+    def _maybe_scope_followup_answer(self, message: str, session: SessionState) -> str | None:
+        scope = session.slots.get("scope_funnel")
+        if not scope:
+            return None
+        text = normalize_text(message).strip(" .,!?:;")
+        if not self._wants_full_scope_followup(text):
+            return None
+        return SCOPE_FOLLOWUP_ANSWERS.get(str(scope))
+
+    def _wants_full_scope_followup(self, text: str) -> bool:
+        direct = {
+            "все",
+            "всё",
+            "давай все",
+            "давай всё",
+            "комплектом",
+            "полный комплект",
+            "полностью",
+            "под ключ",
+        }
+        if text in direct:
+            return True
+        markers = [
+            "все для",
+            "всё для",
+            "все что нужно",
+            "всё что нужно",
+            "собери все",
+            "собери всё",
+            "нужно все",
+            "нужно всё",
+        ]
+        return any(marker in text for marker in markers)
+
+    def _maybe_yes_no_complectation_followup(
+        self,
+        message: str,
+        session: SessionState,
+    ) -> str | None:
+        text = normalize_text(message).strip(" ?!.,")
+        if text not in {"да или нет", "да нет", "так да или нет"}:
+            return None
+        parts = session.slots.get("last_complectation_parts") or []
+        sku = session.slots.get("last_complectation_sku")
+        if not parts or not sku or not session.last_products:
+            return None
+        part_text = ", ".join(parts)
+        return (
+            f"Да: по данным карточки {sku} подтверждено — {part_text}. "
+            "Для стандартной схемы это означает, что отдельно такой узел обычно не подбираем, "
+            "но точную комплектацию поставки всё равно лучше сверить по паспорту или у менеджера."
+        )
+
+    def _maybe_one_contour_hot_water_answer(
+        self,
+        message: str,
+        intent: IntentResult,
+        session: SessionState,
+    ) -> str | None:
+        text = normalize_text(message)
+        asks_hot_water = "гвс" in text or ("горяч" in text and "вод" in text)
+        mentions_one_contour = "одноконтур" in text or session.slots.get("contours") == "одноконтурный"
+        boiler_context = intent.category == "boilers" or session.category == "boilers"
+        if not (asks_hot_water and mentions_one_contour and boiler_context):
+            return None
+        return (
+            "Одноконтурный котёл сам по себе работает на отопление и не готовит горячую воду "
+            "для кранов напрямую. Для ГВС к нему обычно добавляют бойлер косвенного нагрева "
+            "или отдельную схему приготовления горячей воды. Поэтому показанные одноконтурные "
+            "котлы можно рассматривать как источник отопления, но я не буду выдавать их за "
+            "двухконтурные модели. Если нужна горячая вода от котла без отдельного бойлера, "
+            "нужен именно двухконтурный котёл; в текущем фиде точного двухконтурного варианта "
+            "я не вижу."
+        )
 
     def _maybe_consultation_answer(
         self,
@@ -1500,6 +2427,20 @@ class ChatOrchestrator:
             ]
         )
 
+    def _pump_requested_for_boiler_context(self, message: str, session: SessionState) -> bool:
+        text = normalize_text(message)
+        if "насос" not in text:
+            return False
+        if not any(marker in text for marker in ["к нему", "к котл", "для котл", "на котл"]):
+            return False
+        if session.category == "boilers" or session.slots.get("boiler_type") or session.slots.get("heat_sources"):
+            return True
+        for card in session.last_products:
+            product = self._find_product_by_sku(card.sku)
+            if product and self.search_agent.canonical_category(product) == "boilers":
+                return True
+        return False
+
     def _build_context_block(self, session: SessionState) -> str:
         lines: list[str] = []
         for index, card in enumerate(session.last_products[:3], start=1):
@@ -1572,16 +2513,31 @@ class ChatOrchestrator:
             category=session.category or "other",
             slots={key: value for key, value in session.slots.items() if key != "cheap"},
         )
+        wants_cheaper = bool(intent.flags.get("cheap") or intent.slots.get("cheap") or "дешев" in text)
+        if wants_cheaper:
+            query.cheap = True
         agents_used.append("FeedSearchAgent")
         alternatives = [
             product
             for product in self.search_agent.search_alternatives(query)
             if normalize_sku_token(product.sku) not in shown_skus
         ]
+        if wants_cheaper:
+            min_shown_price = min((card.price for card in session.last_products), default=None)
+            if min_shown_price is not None:
+                alternatives = [
+                    product
+                    for product in alternatives
+                    if product.price is not None and product.price < min_shown_price
+                ]
         if not alternatives:
             answer = (
-                "Аналогов к показанным товарам в данных фида не вижу. "
-                "Могу передать вопрос менеджеру — напишите «передай менеджеру»."
+                self.composer.compose_no_cheaper(session.last_products)
+                if wants_cheaper
+                else (
+                    "Аналогов к показанным товарам в данных фида не вижу. "
+                    "Могу передать вопрос менеджеру — напишите «передай менеджеру»."
+                )
             )
             self._append_history(session, message, answer)
             return self._response(session.session_id, answer, [], False, intent, session, agents_used)
@@ -1623,6 +2579,7 @@ class ChatOrchestrator:
             "выбери сама",
             "выбери сам",
             "что взять",
+            "что лучше",
             "какой лучше",
             "какой выбрать",
             "посоветуй один",
@@ -1785,8 +2742,9 @@ class ChatOrchestrator:
             if query.category == "pumps":
                 notes.append(
                     "Чтобы не гонять вас по кругу одним и тем же вопросом, показываю типовой "
-                    "вариант. Для типовой системы отопления чаще смотрят насосы 25/6 с "
-                    "монтажной длиной 180 мм, но лучше сверить с вашей системой."
+                    "вариант из фида. Для циркуляционного насоса важно сверить напор, "
+                    "монтажную длину 130/180 мм и присоединение; без этих данных это не "
+                    "окончательный подбор."
                 )
             else:
                 notes.append(
@@ -2223,12 +3181,18 @@ class ChatOrchestrator:
                 "category": intent.category,
                 "slots": session.slots,
                 "agents_used": agents_used,
-                "llm_used": intent.llm_used or self.composer.last_llm_used,
+                "llm_used": intent.llm_used
+                or self.composer.last_llm_used
+                or self.consultant.last_llm_used,
                 "intent_llm_used": intent.llm_used,
                 "response_llm_used": self.composer.last_llm_used,
                 "response_llm_requested": self.composer.last_llm_requested,
                 "response_llm_fallback_reason": self.composer.last_llm_fallback_reason,
-                "any_llm_used": intent.llm_used or self.composer.last_llm_used,
+                "consultant_llm_used": self.consultant.last_llm_used,
+                "consultant_llm_fallback_reason": self.consultant.last_fallback_reason,
+                "any_llm_used": intent.llm_used
+                or self.composer.last_llm_used
+                or self.consultant.last_llm_used,
                 "topic_changed": session.topic_changed,
                 "products_loaded_from": self.products_loaded_from,
             },

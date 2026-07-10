@@ -2,7 +2,7 @@
 
 MVP чат-бота для интернет-магазина Vesta Trade. Бот работает как продавец-консультант: понимает живой запрос, задаёт 1-2 уточняющих вопроса, ищет товары в XML-фиде, показывает карточки с ценой, наличием и прямой ссылкой.
 
-LLM-роли вызываются только через OpenRouter и только после rule-based логики. Ключ API не хранится в коде, дневной бюджет контролируется локально.
+LLM-роли вызываются через настраиваемый провайдер (`ollama` по умолчанию) и только после rule-based логики. Ключи API не хранятся в коде, дневной бюджет контролируется локально.
 
 ## Архитектура
 
@@ -25,15 +25,23 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Откройте `.env` и укажите ключ:
+Откройте `.env` и укажите Ollama-сервер:
 
 ```bash
-OPENROUTER_API_KEY=your_openrouter_key_here
-OPENROUTER_MODEL=qwen/qwen3-vl-8b-instruct
+LLM_PROVIDER=ollama
+OLLAMA_BASE_URL=http://100.83.233.66:11434
+OLLAMA_MODEL=qwen2.5-coder:7b
+OLLAMA_MODEL_STRONG=qwen2.5-coder:7b
 DAILY_BUDGET_USD=10
+
+# Старый OpenRouter-режим оставлен для отката:
+# LLM_PROVIDER=openrouter
+# OPENROUTER_API_KEY=your_openrouter_key_here
+# OPENROUTER_MODEL=qwen/qwen3-vl-8b-instruct
+# OPENROUTER_MODEL_STRONG=qwen/qwen3-vl-8b-instruct
 ```
 
-Если ключ не задан или дневной бюджет исчерпан, бот не падает: LLM-вызовы отключаются, используется безопасный rule-based fallback.
+Если LLM-провайдер не настроен или дневной бюджет исчерпан, бот не падает: LLM-вызовы отключаются, используется безопасный rule-based fallback.
 
 ## Запуск
 
@@ -79,7 +87,7 @@ curl -X POST http://127.0.0.1:8000/chat \
 curl -X POST http://127.0.0.1:8000/reload-feed
 ```
 
-## Бюджет OpenRouter
+## Бюджет LLM
 
 Файл учёта расходов:
 
@@ -87,12 +95,33 @@ curl -X POST http://127.0.0.1:8000/reload-feed
 app/data/usage_budget.json
 ```
 
-Перед каждым LLM-вызовом проверяется дневной лимит `DAILY_BUDGET_USD`. После успешного вызова записываются примерные токены и стоимость. Цены можно переопределить:
+Перед каждым LLM-вызовом проверяется дневной лимит `DAILY_BUDGET_USD`. После успешного вызова записываются примерные токены и стоимость. Для локальной Ollama цены по умолчанию нулевые. Если нужен платный провайдер, цены можно переопределить:
 
 ```bash
-OPENROUTER_INPUT_PRICE_PER_1M_TOKENS_USD=0.08
-OPENROUTER_OUTPUT_PRICE_PER_1M_TOKENS_USD=0.30
+LLM_INPUT_PRICE_PER_1M_TOKENS_USD=0.08
+LLM_OUTPUT_PRICE_PER_1M_TOKENS_USD=0.30
+
+# Старые OpenRouter-переменные тоже поддерживаются:
+# OPENROUTER_INPUT_PRICE_PER_1M_TOKENS_USD=0.08
+# OPENROUTER_OUTPUT_PRICE_PER_1M_TOKENS_USD=0.30
 ```
+
+## Проверка LLM
+
+Проверить, какая LLM реально используется и отвечает ли endpoint:
+
+```bash
+python scripts/check_llm.py
+```
+
+Для разовой проверки через удалённый Ollama-сервер:
+
+```bash
+OLLAMA_BASE_URL=http://100.83.233.66:11434 python scripts/check_llm.py
+```
+
+Если в результате `FAILED` или указан `localhost:11434`, но локальная Ollama не запущена,
+бот будет работать через безопасный fallback без LLM-ответа.
 
 ## Тесты
 
@@ -100,7 +129,7 @@ OPENROUTER_OUTPUT_PRICE_PER_1M_TOKENS_USD=0.30
 pytest
 ```
 
-Тесты используют локальные fixtures и не требуют живого фида или OpenRouter API.
+Тесты используют локальные fixtures и не требуют живого фида или LLM API.
 
 ## Команды из ТЗ
 

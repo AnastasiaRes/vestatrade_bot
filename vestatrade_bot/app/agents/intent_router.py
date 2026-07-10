@@ -679,6 +679,33 @@ class IntentRouterAgent:
         slots.pop("напор", None)
         if result.category == "pumps":
             slots.pop("diameter", None)
+        self._normalize_slot_values(slots)
+
+    def _normalize_slot_values(self, slots: dict[str, Any]) -> None:
+        boiler_type = normalize_text(str(slots.get("boiler_type") or ""))
+        if boiler_type:
+            if boiler_type in {"electric", "electrical", "electric boiler"} or "электр" in boiler_type:
+                slots["boiler_type"] = "электрический"
+            elif boiler_type in {"gas", "gas boiler"} or "газ" in boiler_type:
+                slots["boiler_type"] = "газовый"
+
+        contours = normalize_text(str(slots.get("contours") or ""))
+        if contours:
+            if (
+                "двух" in contours
+                or "2" == contours
+                or "two" in contours
+                or "double" in contours
+                or "dual" in contours
+            ):
+                slots["contours"] = "двухконтурный"
+            elif (
+                "одно" in contours
+                or "1" == contours
+                or "one" in contours
+                or "single" in contours
+            ):
+                slots["contours"] = "одноконтурный"
 
     def _to_float_slot(self, value: Any) -> float | None:
         if isinstance(value, (int, float)):

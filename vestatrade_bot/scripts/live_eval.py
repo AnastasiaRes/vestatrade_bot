@@ -1,7 +1,7 @@
 """Единоразовый «живой» прогон бота с реальной LLM по широкому набору сценок.
 
 Запуск:  .venv/bin/python scripts/live_eval.py
-НЕ отключает OPENROUTER_API_KEY — использует реальную модель из .env.
+НЕ отключает LLM — использует реальную модель из .env.
 Отчёт печатается в stdout и пишется в reports/live_eval_report.md.
 """
 
@@ -46,6 +46,21 @@ SCENARIOS: list[tuple[str, list[str]]] = [
     ]),
     ("Канализация", [
         "канализационная труба 50", "внутренняя", "1500 мм",
+    ]),
+    ("Проектная корзина: тёплый пол", [
+        "хочу сделать теплые полы, что для этого нужно?",
+        "50м2",
+        "а еще что нужно?",
+        "собери артикулы корзиной",
+    ]),
+    ("Проектная корзина: ванная", [
+        "собери всё для ванной по артикулам",
+        "собери артикулы корзиной",
+    ]),
+    ("Проектная корзина: водоснабжение", [
+        "нужно водоснабжение",
+        "скважина",
+        "собери артикулы корзиной",
     ]),
     ("Кран", [
         "кран шаровый для воды", "3/4", "с американкой",
@@ -93,11 +108,16 @@ SCENARIOS: list[tuple[str, list[str]]] = [
 def main() -> int:
     orch = ChatOrchestrator()
     count, source = orch.reload_products(refresh=False)
+    total_turns = 0
+    llm_used_turns = 0
+    llm_requested_turns = 0
+    llm_fallback_reasons: dict[str, int] = {}
     out: list[str] = [
-        "# Живой прогон с реальной LLM",
+        "# Живой прогон бота",
         "",
-        f"Товаров: {count} ({source}), модель: {orch.settings.openrouter_model}, "
+        f"Товаров: {count} ({source}), модель: {orch.settings.llm_model}, "
         f"паспортов привязано: {orch.docs_attached}",
+        f"LLM provider: {orch.settings.llm_provider}, llm_enabled: {orch.settings.llm_enabled}",
         "",
     ]
 
@@ -107,11 +127,31 @@ def main() -> int:
         out.append("")
         for message in messages:
             resp = orch.handle_chat(sid, message)
+            total_turns += 1
+            debug = resp.debug or {}
+            any_llm_used = bool(debug.get("any_llm_used"))
+            llm_requested = bool(
+                debug.get("intent_llm_used")
+                or debug.get("response_llm_requested")
+                or "ConsultantAgent" in debug.get("agents_used", [])
+            )
+            if any_llm_used:
+                llm_used_turns += 1
+            if llm_requested:
+                llm_requested_turns += 1
+            for key in ["response_llm_fallback_reason", "consultant_llm_fallback_reason"]:
+                reason = debug.get(key)
+                if reason:
+                    llm_fallback_reasons[str(reason)] = llm_fallback_reasons.get(str(reason), 0) + 1
             flags = []
             if resp.need_handoff:
                 flags.append("HANDOFF")
             if resp.products:
                 flags.append("товары: " + ", ".join(p.sku for p in resp.products))
+            if llm_requested and not any_llm_used:
+                flags.append("LLM fallback")
+            elif any_llm_used:
+                flags.append("LLM used")
             flag_str = f"  _[{'; '.join(flags)}]_" if flags else ""
             answer = resp.answer.strip()
             out.append(f"**Клиент:** {message}")
@@ -121,6 +161,21 @@ def main() -> int:
         out.append("---")
         out.append("")
         print(f"[{index + 1}/{len(SCENARIOS)}] {title} — готово", flush=True)
+
+    summary = [
+        "## LLM summary",
+        "",
+        f"- Turns total: {total_turns}",
+        f"- Turns that requested LLM: {llm_requested_turns}",
+        f"- Turns that used LLM successfully: {llm_used_turns}",
+        f"- Turns that fell back after LLM request: {llm_requested_turns - llm_used_turns}",
+    ]
+    if llm_fallback_reasons:
+        summary.append("- Fallback reasons:")
+        for reason, qty in sorted(llm_fallback_reasons.items(), key=lambda item: (-item[1], item[0])):
+            summary.append(f"  - {qty}x {reason}")
+    summary.append("")
+    out[4:4] = summary
 
     report = PROJECT_ROOT / "reports" / "live_eval_report.md"
     report.write_text("\n".join(out), encoding="utf-8")

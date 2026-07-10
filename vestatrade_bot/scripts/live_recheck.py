@@ -60,7 +60,7 @@ SCENARIOS: list[tuple[str, list[str]]] = [
 def main() -> int:
     orch = ChatOrchestrator()
     orch.reload_products(refresh=False)
-    out = ["# Повторный живой прогон", "", f"Модель: {orch.settings.openrouter_model}", ""]
+    out = ["# Повторный живой прогон", "", f"Модель: {orch.settings.llm_model}", ""]
     for index, (title, messages) in enumerate(SCENARIOS):
         sid = f"recheck-{index}"
         out.append(f"## {index + 1}. {title}")

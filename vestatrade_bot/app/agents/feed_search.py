@@ -339,14 +339,32 @@ class FeedSearchAgent:
         slots: dict,
     ) -> list[Product]:
         if category == "boilers":
+            boiler_types = slots.get("boiler_types") or []
+            if isinstance(boiler_types, str):
+                boiler_types = [boiler_types]
             boiler_type = slots.get("boiler_type")
-            if boiler_type:
+            if boiler_types:
+                allowed = [normalize_text(str(value)) for value in boiler_types if value]
+                products = [
+                    product
+                    for product in products
+                    if any(value in self._product_text(product) for value in allowed)
+                ]
+            elif boiler_type:
                 typed = [
                     product
                     for product in products
                     if normalize_text(str(boiler_type)) in self._product_text(product)
                 ]
-                products = typed or products
+                products = typed
+            contours = slots.get("contours")
+            if contours:
+                contour_filtered = [
+                    product
+                    for product in products
+                    if normalize_text(str(contours)) in self._product_text(product)
+                ]
+                products = contour_filtered
             required_kw = None
             if slots.get("power_kw"):
                 required_kw = float(slots["power_kw"])
@@ -359,6 +377,55 @@ class FeedSearchAgent:
                     return (not product.is_in_stock, not enough, abs(power - required_kw))
 
                 return sorted(products, key=closeness)
+            return sorted(products, key=lambda p: (not p.is_in_stock, p.price or float("inf")))
+        if category == "pumps":
+            pump_type = normalize_text(str(slots.get("pump_type") or ""))
+            pump_use = normalize_text(str(slots.get("pump_use") or slots.get("project_note") or ""))
+            if pump_type:
+                if "скваж" in pump_type:
+                    products = [
+                        product
+                        for product in products
+                        if "скваж" in self._product_text(product)
+                    ]
+                elif "станц" in pump_type:
+                    products = [
+                        product
+                        for product in products
+                        if "насосная станц" in self._product_text(product)
+                    ]
+                else:
+                    products = [
+                        product
+                        for product in products
+                        if pump_type in self._product_text(product)
+                    ]
+            if any(marker in pump_use for marker in ["отоплен", "тепл", "тёпл"]):
+                products = [
+                    product
+                    for product in products
+                    if "циркуляц" in self._product_text(product)
+                ]
+            elif "водоснаб" in pump_use:
+                water_supply = [
+                    product
+                    for product in products
+                    if not any(
+                        stop in self._product_text(product)
+                        for stop in ["дренаж", "циркуляц", "отопл"]
+                    )
+                ]
+                if water_supply:
+                    products = water_supply
+            return sorted(products, key=lambda p: (not p.is_in_stock, p.price or float("inf")))
+        if category == "sewer":
+            element_type = normalize_text(str(slots.get("element_type") or ""))
+            if element_type:
+                products = [
+                    product
+                    for product in products
+                    if element_type in self._product_text(product)
+                ]
             return sorted(products, key=lambda p: (not p.is_in_stock, p.price or float("inf")))
         return sorted(products, key=lambda p: (not p.is_in_stock, p.price or float("inf")))
 

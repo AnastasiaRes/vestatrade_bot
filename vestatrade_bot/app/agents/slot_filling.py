@@ -34,7 +34,7 @@ class SlotFillingAgent:
         if category == "sewer":
             return self._sewer(slots, text)
         if category == "pumps":
-            return self._pumps(slots)
+            return self._pumps(slots, text)
         if category == "boilers":
             return self._boilers(slots)
         if category == "valves":
@@ -90,6 +90,13 @@ class SlotFillingAgent:
         return SlotFillingResult(slots=slots)
 
     def _infer_sewer_followup_slots(self, text: str, slots: dict) -> None:
+        if (
+            not slots.get("element_type")
+            and slots.get("sewer_scope")
+            and slots.get("diameter_mm")
+            and not any(word in text for word in ["отвод", "тройник", "муфта"])
+        ):
+            slots["element_type"] = "труба"
         if slots.get("element_type") == "труба" and not slots.get("length_mm"):
             total_length = self._extract_total_length_m(text)
             if total_length:
@@ -174,7 +181,7 @@ class SlotFillingAgent:
 
         return bool(re.search(rf"(?<!\d){number}(?!\d)", text))
 
-    def _pumps(self, slots: dict) -> SlotFillingResult:
+    def _pumps(self, slots: dict, text: str) -> SlotFillingResult:
         if not slots.get("pump_type") and (
             slots.get("mounting_length_mm")
             or slots.get("head_m")
@@ -236,6 +243,23 @@ class SlotFillingAgent:
             if not has_core_param and slots.get("allow_basic_option"):
                 return SlotFillingResult(slots=slots)
             if not has_core_param:
+                if self._does_not_know_params(text):
+                    if slots.get("pump_param_help_given"):
+                        slots["allow_basic_option"] = True
+                        slots["fallback_after_repeat"] = True
+                        return SlotFillingResult(slots=slots)
+                    slots["pump_param_help_given"] = True
+                    return SlotFillingResult(
+                        slots=slots,
+                        needs_clarification=True,
+                        question=(
+                            "Не страшно, монтажную длину можно посмотреть на старом насосе "
+                            "или измерить расстояние между гайками подключения — часто бывает "
+                            "130 или 180 мм. Напор обычно пишется в маркировке насоса: например "
+                            "25-40 или 25-60. Если старого насоса нет, напишите площадь и задачу "
+                            "системы — отопление, тёплый пол или водоснабжение."
+                        ),
+                    )
                 return SlotFillingResult(
                     slots=slots,
                     needs_clarification=True,
@@ -245,6 +269,18 @@ class SlotFillingAgent:
                     ),
                 )
         return SlotFillingResult(slots=slots)
+
+    def _does_not_know_params(self, text: str) -> bool:
+        markers = [
+            "не знаю",
+            "незнаю",
+            "не понимаю",
+            "без понятия",
+            "не в курсе",
+            "не помню",
+            "не могу сказать",
+        ]
+        return any(marker in text for marker in markers)
 
     def _boilers(self, slots: dict) -> SlotFillingResult:
         if not slots.get("boiler_type"):

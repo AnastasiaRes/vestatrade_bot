@@ -70,6 +70,134 @@ def test_consult_retrieval_boilers_prefers_adequate_power() -> None:
     assert retrieved[0].sku == "SB32"
 
 
+def test_consult_retrieval_respects_boiler_contours() -> None:
+    one_contour = Product(
+        sku="SB24",
+        name="Котел газовый Arderia SB24 одноконтурный 24 кВт",
+        category_path="Котлы газовые",
+        url="https://example.test/sb24",
+        price=36000,
+        stock_status="в наличии",
+        stock_qty=1,
+        attributes_normalized={"тип котла": "Газовый", "контуры": "одноконтурный"},
+    )
+    two_contour = Product(
+        sku="D24",
+        name="Котел газовый Arderia D24 двухконтурный 24 кВт",
+        category_path="Котлы газовые",
+        url="https://example.test/d24",
+        price=39000,
+        stock_status="в наличии",
+        stock_qty=1,
+        attributes_normalized={"тип котла": "Газовый", "контуры": "двухконтурный"},
+    )
+    agent = FeedSearchAgent([one_contour, two_contour])
+
+    retrieved = agent.retrieve_for_consult(
+        ["boilers"],
+        {"boiler_type": "газовый", "contours": "двухконтурный"},
+        per_category=4,
+    )
+
+    assert [product.sku for product in retrieved] == ["D24"]
+
+
+def test_consult_retrieval_keeps_heating_pump_circulation_only() -> None:
+    drainage = Product(
+        sku="DRAIN-350",
+        name="Дренажный насос 350 Вт",
+        category_path="Насосы дренажные",
+        url="https://example.test/drain",
+        price=2500,
+        stock_status="в наличии",
+        stock_qty=5,
+        attributes_normalized={"тип товара": "Дренажный насос"},
+    )
+    circulation = Product(
+        sku="CIRC-25-60",
+        name="Насос циркуляционный 25-60 180 мм",
+        category_path="Насосы циркуляционные",
+        url="https://example.test/circ",
+        price=6100,
+        stock_status="в наличии",
+        stock_qty=2,
+        attributes_normalized={"тип товара": "Циркуляционный насос"},
+    )
+    agent = FeedSearchAgent([drainage, circulation])
+
+    retrieved = agent.retrieve_for_consult(
+        ["pumps"],
+        {"pump_type": "циркуляционный", "pump_use": "отопление"},
+        per_category=4,
+    )
+
+    assert [product.sku for product in retrieved] == ["CIRC-25-60"]
+
+
+def test_consult_retrieval_for_well_water_supply_skips_drainage_pump() -> None:
+    drainage = Product(
+        sku="DRAIN-350",
+        name="Дренажный насос 350 Вт",
+        category_path="Насосы дренажные",
+        url="https://example.test/drain",
+        price=2500,
+        stock_status="в наличии",
+        stock_qty=5,
+        attributes_normalized={"тип товара": "Дренажный насос"},
+    )
+    well = Product(
+        sku="WELL-550",
+        name="Винтовой скважинный насос 550 Вт",
+        category_path="Насосы скважинные",
+        url="https://example.test/well",
+        price=9500,
+        stock_status="в наличии",
+        stock_qty=1,
+        attributes_normalized={"тип товара": "Скважинный насос"},
+    )
+    agent = FeedSearchAgent([drainage, well])
+
+    retrieved = agent.retrieve_for_consult(
+        ["pumps"],
+        {"pump_type": "скважинный", "pump_use": "водоснабжение"},
+        per_category=4,
+    )
+
+    assert [product.sku for product in retrieved] == ["WELL-550"]
+
+
+def test_consult_retrieval_sewer_project_can_prefer_pipe_over_cheaper_bend() -> None:
+    bend = Product(
+        sku="BEND-50",
+        name="Отвод 87°, HTB, 50",
+        category_path="Канализация внутренняя",
+        url="https://example.test/bend",
+        price=50,
+        stock_status="в наличии",
+        stock_qty=50,
+        attributes_normalized={"тип товара": "Отвод"},
+    )
+    pipe = Product(
+        sku="PIPE-50",
+        name="Труба канализационная внутренняя 50x1500",
+        category_path="Канализация внутренняя",
+        url="https://example.test/pipe",
+        price=280,
+        stock_status="в наличии",
+        stock_qty=20,
+        attributes_normalized={"тип товара": "Труба"},
+    )
+    agent = FeedSearchAgent([bend, pipe])
+
+    retrieved = agent.retrieve_for_consult(
+        ["sewer"],
+        {"element_type": "труба"},
+        per_category=4,
+    )
+
+    assert [product.sku for product in retrieved] == ["PIPE-50"]
+
+
 def test_cheap_sorting(sample_products: list[Product]) -> None:
     search = FeedSearchAgent(sample_products)
     products = search.search(
@@ -87,4 +215,3 @@ def test_cheap_sorting(sample_products: list[Product]) -> None:
     ))
 
     assert [product.sku for product in ranked[:2]] == ["PUMP-25-40", "PUMP-25-60"]
-

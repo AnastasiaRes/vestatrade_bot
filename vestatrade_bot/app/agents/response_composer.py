@@ -40,16 +40,20 @@ MANAGER_PERSONA = (
     "25/6 на 180 мм; для горячей воды и отопления берут PN20 или армированные трубы; "
     "закрытая камера сгорания берёт воздух с улицы через коаксиальный дымоход; "
     "американка — разъёмное соединение, с ним узел снимается без разборки трубы.\n"
-    "Манера: вежливая, дружелюбная и профессиональная — представитель серьёзной компании. "
-    "Обращайся к клиенту на «вы». Будь приветлив и тёпл, но без фамильярности, сленга, "
-    "шуточек и панибратства. Короткие, ясные фразы, без канцелярита, без markdown и без "
-    "эмодзи. Если вопрос вне твоей области — мягко и культурно поясни это и вежливо верни "
-    "разговор к подбору оборудования. Учитывай историю диалога и не переспрашивай то, что "
-    "клиент уже сказал. Если для подбора не хватает одного ключевого параметра — задай один "
-    "короткий вопрос; если вопрос общий — сначала ответь по сути, потом предложи подбор.\n"
+    "Манера: уважительная, вежливая, дружелюбная и профессиональная — представитель "
+    "серьёзной компании. Обращайся к клиенту на «вы». Даже если клиент пишет резко, "
+    "раздражённо или неформально, отвечай спокойно и с уважением: без ответной грубости, "
+    "осуждения, фамильярности, сленга, шуточек и панибратства. Короткие, ясные фразы, "
+    "без канцелярита, без markdown и без эмодзи. Если вопрос вне твоей области — мягко "
+    "и культурно поясни это и вежливо верни разговор к подбору оборудования. Учитывай "
+    "историю диалога и не переспрашивай то, что клиент уже сказал. Если для подбора не "
+    "хватает одного ключевого параметра — задай один короткий вопрос; если вопрос общий — "
+    "сначала ответь по сути, потом предложи подбор.\n"
     "ЖЁСТКИЕ ПРАВИЛА: никогда не выдумывай товары, цены, наличие, артикулы, ссылки, акции и "
     "сроки доставки — такие факты берутся только из переданных тебе данных фида. Не делай "
-    "инженерных расчётов и схем. Не повторяй дословно свой предыдущий ответ."
+    "инженерных расчётов и схем. Строго соблюдай ограничения клиента: тип котла, "
+    "контурность, диаметр, материал, бюджет и наличие. Если показываешь альтернативу, "
+    "ясно назови, какое ограничение она не закрывает. Не повторяй дословно свой предыдущий ответ."
 )
 
 
@@ -124,21 +128,22 @@ class ResponseComposerAgent:
         return "\n".join(lines)
 
     def compose_small_talk(self, message: str) -> str:
-        if self._is_pure_greeting(message):
-            self.last_draft = GREETING_REPLY
-            return GREETING_REPLY
+        fallback = GREETING_REPLY if self._is_pure_greeting(message) else self._small_talk_fallback(message)
         return self._llm_smart_reply(
             agent="ResponseComposerAgent.small_talk",
             user_message=message,
-            fallback_draft=self._small_talk_fallback(message),
+            fallback_draft=fallback,
             situation=(
                 "Клиент написал нетоварное сообщение: приветствие, small talk, эмоция или "
-                "вопрос о тебе. Ответь вежливо и приветливо, кратко (1–2 предложения), на «вы», "
-                "признай содержание сообщения и мягко предложи помощь с подбором, упомянув 2–3 "
-                "категории ассортимента. Без сленга, шуток и фамильярности — это серьёзная "
-                "компания. ВАЖНО: не начинай подбор и не задавай технических вопросов (тип "
-                "котла, площадь, диаметр и т.п.), пока клиент сам не назвал задачу — на простое "
-                "приветствие просто поздоровайтесь и предложите описать задачу."
+                "вопрос о тебе. Ответь вежливо, уважительно и приветливо, кратко (1–2 "
+                "предложения), на «вы». Признай содержание сообщения и мягко предложи помощь "
+                "с подбором, упомянув 2–3 категории ассортимента: котлы, насосы, трубы, "
+                "краны, канализация, радиаторная арматура. Без сленга, шуток, фамильярности "
+                "и технической воды. ВАЖНО: не начинай подбор и не задавай технических "
+                "вопросов, пока клиент сам не назвал задачу. На «как дела?» ответь спокойно "
+                "от лица консультанта и сразу верни к помощи с подбором. Не спрашивай клиента "
+                "в ответ «как у вас дела?» и не говори, что не можешь обсуждать личные или "
+                "персональные вопросы."
             ),
         )
 
@@ -276,6 +281,13 @@ class ResponseComposerAgent:
             return "Пожалуйста! Если нужно, могу показать аналоги, варианты подешевле или передать вопрос менеджеру."
         if "как дела" in normalized or "как ты" == normalized or normalized.startswith("как ты "):
             return "Дела хорошо, спасибо. Готов помочь с подбором товаров Vesta Trading — что нужно?"
+        if any(word in normalized for word in ["классн", "красив", "умниц", "молодец", "хорош"]):
+            return (
+                "Спасибо, очень приятно. Помогу подобрать товары Vesta Trading по задаче: "
+                "котёл, насос, трубы, краны, канализацию или радиаторную арматуру."
+            )
+        if "к делу" in normalized or "по делу" in normalized:
+            return "Конечно. Опишите, что нужно подобрать — я уточню параметры и предложу подходящие товары из фида."
         if "пока" == normalized or "до свидан" in normalized or "до встреч" in normalized:
             return "До свидания! Возвращайтесь, если понадобится подбор по ассортименту Vesta Trading."
         if any(
@@ -408,15 +420,8 @@ class ResponseComposerAgent:
                 f"Ссылка: {card.url}",
             ]
         )
-        return self._polish(
-            "ResponseComposerAgent.choose_one",
-            card.sku,
-            draft,
-            (
-                "Сохрани структуру: Рекомендую / Почему / Когда не подойдёт / Альтернатива. "
-                "Сохрани SKU, цены, наличие и ссылку из черновика без изменений."
-            ),
-        )
+        self.last_draft = draft
+        return draft
 
     def _choose_one_caveat(self, query: SearchQuery | None) -> str:
         category = query.category if query else "other"
@@ -465,15 +470,8 @@ class ResponseComposerAgent:
             lines.append(f"Главное отличие — цена: {values}.")
         lines.append("Если опишете вашу систему, порекомендую один вариант.")
         draft = "\n".join(lines)
-        return self._polish(
-            "ResponseComposerAgent.comparison",
-            ", ".join(card.sku for card in cards),
-            draft,
-            (
-                "Сравни товары только по фактам из черновика. Сохрани все SKU, цены и "
-                "значения характеристик без изменений, ничего не добавляй."
-            ),
-        )
+        self.last_draft = draft
+        return draft
 
     def compose_no_match(self, query: SearchQuery) -> str:
         slots = query.slots
@@ -498,14 +496,17 @@ class ResponseComposerAgent:
                 "Не буду подбирать другую длину или наружную канализацию вместо нужной. "
                 "Можно уточнить параметры или передать вопрос менеджеру."
             )
+        elif query.category == "boilers":
+            requested = self._requested_summary(query) or query.original_text
+            draft = (
+                f"Не вижу точного совпадения в фиде: {requested}. "
+                "Не буду показывать котёл другого типа как подходящий без предупреждения. "
+                "Можно уточнить параметры, рассмотреть ближайшие альтернативы или передать вопрос менеджеру."
+            )
         else:
             draft = "Не нашёл подходящие товары в данных фида. Могу уточнить параметры или передать вопрос менеджеру."
-        return self._polish(
-            "ResponseComposerAgent.no_match",
-            query.original_text,
-            draft,
-            "Честно сообщи, что точного совпадения нет. Не предлагай неподходящие товары.",
-        )
+        self.last_draft = draft
+        return draft
 
     def compose_alternative_note(self, query: SearchQuery) -> str:
         # Электрических двухконтурных в фиде нет — это типовая ситуация, объясняем по-человечески.
@@ -518,6 +519,14 @@ class ResponseComposerAgent:
                 "Электрического двухконтурного котла в наличии нет — у электрических обычно один "
                 "контур. Показываю одноконтурный вариант: для горячей воды к нему ставят отдельный "
                 "бойлер косвенного нагрева."
+            )
+        if query.category == "boilers" and query.slots.get("contours") == "двухконтурный":
+            boiler_type = query.slots.get("boiler_type")
+            type_text = f" типа «{boiler_type}»" if boiler_type else ""
+            return (
+                f"Точного двухконтурного котла{type_text} в фиде не вижу. "
+                "Ниже только ближайшие альтернативы из фида: если в характеристиках указан один "
+                "контур, горячую воду нужно решать отдельно через бойлер или другую схему."
             )
         requested = self._requested_summary(query)
         if requested:
@@ -567,7 +576,7 @@ class ResponseComposerAgent:
             elif "здравств" in normalized or "добрый" in normalized:
                 prefix = "Здравствуйте. "
             elif "привет" in normalized:
-                prefix = "Привет. "
+                prefix = "Здравствуйте. "
         draft = f"{prefix}{question}"
         return self._polish(
             "ResponseComposerAgent.clarification",
@@ -621,15 +630,8 @@ class ResponseComposerAgent:
 
         lines.append(self._next_action(query, len(cards)))
         draft = "\n".join(lines)
-        return self._polish(
-            "ResponseComposerAgent.products",
-            query.original_text,
-            draft,
-            (
-                "Сделай ответ чуть более человеческим, но строго сохрани все SKU, цены, "
-                "наличие и URL из черновика. Не добавляй товары, характеристики, остатки или ссылки."
-            ),
-        )
+        self.last_draft = draft
+        return draft
 
     def compose_term_explanation(self, term: str, explanation: str) -> str:
         draft = f"{term}: {explanation}"
@@ -701,26 +703,14 @@ class ResponseComposerAgent:
                 f"Полную комплектацию поставки лучше сверить в паспорте или у менеджера. "
                 f"Карточка: {card.url}"
             )
-            instruction = (
-                "Перечисли встроенные компоненты строго из черновика, ничего не добавляя и "
-                "не выдумывая. Сохрани SKU и ссылку."
-            )
         else:
             draft = (
                 f"В данных карточки {card.sku} состав комплекта поставки не детализирован. "
                 f"По характеристикам это {card.name}. Точную комплектацию подскажет менеджер "
                 f"или паспорт изделия. Карточка: {card.url}"
             )
-            instruction = (
-                "Честно скажи, что состав комплекта в данных фида не детализирован, не выдумывай "
-                "узлы. Сохрани SKU и ссылку."
-            )
-        return self._polish(
-            "ResponseComposerAgent.builtin",
-            card.sku,
-            draft,
-            instruction,
-        )
+        self.last_draft = draft
+        return draft
 
     def compose_link_answer(
         self,
@@ -766,16 +756,20 @@ class ResponseComposerAgent:
 
     def compose_complectation_confirmed(self, card: ProductCard, requested_parts: list[str]) -> str:
         parts = ", ".join(requested_parts)
-        draft = (
-            f"По данным фида для {card.sku} вижу подтверждение: {parts}. "
-            f"Карточка товара: {card.url}"
-        )
-        return self._polish(
-            "ResponseComposerAgent.complectation",
-            parts,
-            draft,
-            "Ответь только по подтверждённой комплектации из фида. Не добавляй непроверенные узлы.",
-        )
+        if requested_parts == ["насос"]:
+            draft = (
+                f"Да, по данным фида для {card.sku} насос указан в характеристиках этой модели. "
+                "Для стандартной схемы отдельный циркуляционный насос обычно не нужен, но если "
+                "есть тёплые полы, несколько контуров, бойлер или длинная трасса, может "
+                f"понадобиться дополнительный насосный узел. Карточка товара: {card.url}"
+            )
+        else:
+            draft = (
+                f"Да, по данным фида для {card.sku} вижу подтверждение: {parts}. "
+                f"Карточка товара: {card.url}"
+            )
+        self.last_draft = draft
+        return draft
 
     def _next_action(self, query: SearchQuery, cards_count: int) -> str:
         if query.cheap:
@@ -807,6 +801,8 @@ class ResponseComposerAgent:
             details.append(f"монтажная длина {slots['mounting_length_mm']} мм")
         if slots.get("boiler_type"):
             details.append(str(slots["boiler_type"]))
+        if slots.get("contours"):
+            details.append(str(slots["contours"]))
         if slots.get("area_m2"):
             details.append(f"{slots['area_m2']:g} м²")
         return ", ".join(details)

@@ -24,7 +24,7 @@ class LLMResult:
 
 
 class OpenRouterClient:
-    endpoint = "https://openrouter.ai/api/v1/chat/completions"
+    openrouter_endpoint = "https://openrouter.ai/api/v1/chat/completions"
 
     def __init__(
         self,
@@ -38,6 +38,32 @@ class OpenRouterClient:
         logger.info("LLM fallback: %s", reason)
         return LLMResult(content=None, llm_used=False, fallback_reason=reason)
 
+    def _endpoint(self) -> str | None:
+        if self.settings.llm_provider == "ollama":
+            if not self.settings.ollama_base_url:
+                return None
+            base_url = self.settings.ollama_base_url.rstrip("/")
+            if base_url.endswith("/v1"):
+                return f"{base_url}/chat/completions"
+            return f"{base_url}/v1/chat/completions"
+        if self.settings.llm_provider == "openrouter":
+            return self.openrouter_endpoint
+        return None
+
+    def _headers(self) -> dict[str, str] | None:
+        headers = {"Content-Type": "application/json"}
+        if self.settings.llm_provider == "openrouter":
+            if not self.settings.openrouter_api_key:
+                return None
+            headers.update(
+                {
+                    "Authorization": f"Bearer {self.settings.openrouter_api_key}",
+                    "HTTP-Referer": "http://localhost",
+                    "X-Title": "Vesta Trading Chat Bot",
+                }
+            )
+        return headers
+
     def complete(
         self,
         agent: str,
@@ -46,18 +72,17 @@ class OpenRouterClient:
         max_tokens: int = 500,
         model: str | None = None,
     ) -> LLMResult:
-        if not self.settings.openrouter_api_key:
-            return self._fallback("OPENROUTER_API_KEY is not set")
+        if not self.settings.llm_enabled:
+            return self._fallback(f"LLM provider '{self.settings.llm_provider}' is not configured")
         if not self.budget.can_call():
             return self._fallback("daily LLM budget is exhausted")
 
-        model_name = model or self.settings.openrouter_model
-        headers = {
-            "Authorization": f"Bearer {self.settings.openrouter_api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "http://localhost",
-            "X-Title": "Vesta Trading Chat Bot",
-        }
+        endpoint = self._endpoint()
+        headers = self._headers()
+        if not endpoint or not headers:
+            return self._fallback(f"LLM provider '{self.settings.llm_provider}' is not configured")
+
+        model_name = model or self.settings.llm_model
         payload = {
             "model": model_name,
             "messages": messages,
@@ -67,10 +92,10 @@ class OpenRouterClient:
         prompt_chars = len(json.dumps(messages, ensure_ascii=False))
 
         last_error: Exception | None = None
-        for attempt in range(self.settings.openrouter_max_retries + 1):
+        for attempt in range(self.settings.llm_max_retries + 1):
             try:
-                with httpx.Client(timeout=self.settings.openrouter_timeout_seconds) as client:
-                    response = client.post(self.endpoint, headers=headers, json=payload)
+                with httpx.Client(timeout=self.settings.llm_timeout_seconds) as client:
+                    response = client.post(endpoint, headers=headers, json=payload)
                     response.raise_for_status()
                     data = response.json()
                 content = (
@@ -95,12 +120,13 @@ class OpenRouterClient:
             except (httpx.HTTPError, ValueError, KeyError) as exc:
                 last_error = exc
                 logger.warning(
-                    "OpenRouter call failed for agent=%s attempt=%s: %s",
+                    "%s LLM call failed for agent=%s attempt=%s: %s",
+                    self.settings.llm_provider,
                     agent,
                     attempt + 1,
                     exc,
                 )
-        return self._fallback(f"OpenRouter request failed: {last_error}")
+        return self._fallback(f"{self.settings.llm_provider} request failed: {last_error}")
 
     def complete_json(
         self,
@@ -123,4 +149,3 @@ class OpenRouterClient:
         except json.JSONDecodeError:
             logger.warning("LLM JSON parse failed for %s: %s", agent, content[:500])
             return fallback, True
-

@@ -275,6 +275,30 @@ class GuardrailsAgent:
         draft_categories = [a for a in category_anchors if a in draft_norm]
         if draft_categories and not any(a in answer_norm for a in draft_categories):
             issues.append("LLM rewrite dropped category mentions from small talk answer")
+        if "дела хорошо" in draft_norm and "дел" not in answer_norm:
+            issues.append("LLM rewrite dropped how-are-you acknowledgement")
+        awkward_refusals = [
+            "не могу обсуждать личные",
+            "не могу обсуждать персональные",
+            "не могу отвечать на личные",
+            "персональные вопросы",
+            "личные вопросы",
+        ]
+        if any(marker in answer_norm for marker in awkward_refusals):
+            issues.append("LLM rewrite used awkward small talk refusal")
+        reciprocal_personal = ["как у вас дела", "как ваши дела", "как у тебя дела"]
+        if any(marker in answer_norm for marker in reciprocal_personal):
+            issues.append("LLM rewrite asked a reciprocal personal small talk question")
+        premature_tech_questions = [
+            "тип котла",
+            "контурность",
+            "диаметр и материал",
+            "материал трубы",
+            "тип насоса",
+            "потребляемая мощность",
+        ]
+        if any(marker in answer_norm for marker in premature_tech_questions):
+            issues.append("LLM rewrite started technical selection before the task")
         return issues
 
     def _missing_clarification_terms(self, draft: str, answer: str) -> list[str]:
@@ -308,10 +332,34 @@ class GuardrailsAgent:
                 issues.append(f"invented stock qty: {match.group(0).strip()}")
         # артикулы вида VT.227.N.04 / VRS.256.18.0 / 2201375
         for token in re.findall(r"\b[a-zа-я]{2,}[.\-][a-zа-я0-9.\-]{2,}\b", ans):
+            if not re.search(r"\d", token):
+                continue
             if token not in ctx and token.replace(".", "").replace("-", "") not in ctx_compact:
                 issues.append(f"invented sku: {token}")
+        issues.extend(self._invented_context_measurements(ans, ctx, ctx_numbers))
+        for term in ["шланг"]:
+            if term in ans and term not in ctx:
+                issues.append(f"invented context term: {term}")
 
         return GuardrailsResult(ok=not issues, issues=issues, safe_message=None)
+
+    def _invented_context_measurements(
+        self,
+        answer_norm: str,
+        context_norm: str,
+        context_numbers: set[str],
+    ) -> list[str]:
+        issues: list[str] = []
+        measurement_re = re.compile(
+            r"(\d+(?:[,.]\d+)?)\s*(квт|вт|мм|см|м|бар|дюйм(?:а|ов)?|л/мин|м3/ч|м2|м²)"
+        )
+        for match in measurement_re.finditer(answer_norm):
+            unit = match.group(2)
+            digit_parts = set(re.findall(r"\d+", match.group(1)))
+            if unit in context_norm and digit_parts and digit_parts.issubset(context_numbers):
+                continue
+            issues.append(f"invented measurement: {match.group(0).strip()}")
+        return issues
 
     def _fabricated_specs(self, draft: str, answer: str) -> list[str]:
         """Reject specs the LLM invented while polishing a product/complectation answer.
