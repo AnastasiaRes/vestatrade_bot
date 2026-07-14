@@ -19,6 +19,11 @@ def _resolve_project_path(value: str | None, default: str) -> Path:
     return PROJECT_ROOT / raw
 
 
+def _split_csv(value: str | None, default: str) -> list[str]:
+    raw = value if value is not None else default
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
 class Settings(BaseModel):
     feed_url: str
     llm_provider: str
@@ -34,6 +39,8 @@ class Settings(BaseModel):
     handoff_log_path: Path
     product_docs_dir: Path
     chat_logs_dir: Path
+    allowed_origins: list[str]
+    reload_feed_token: str | None
     llm_timeout_seconds: float
     llm_max_retries: int
     input_price_per_1m_tokens_usd: float
@@ -106,6 +113,8 @@ def get_settings() -> Settings:
             os.getenv("CHAT_LOGS_DIR"),
             "app/data/chat_logs",
         ),
+        allowed_origins=_split_csv(os.getenv("ALLOWED_ORIGINS"), "*"),
+        reload_feed_token=os.getenv("RELOAD_FEED_TOKEN"),
         llm_timeout_seconds=float(
             os.getenv("LLM_TIMEOUT_SECONDS", os.getenv("OPENROUTER_TIMEOUT_SECONDS", "30"))
         ),

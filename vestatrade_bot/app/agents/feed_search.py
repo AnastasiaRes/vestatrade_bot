@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import logging
 import re
 
@@ -18,6 +19,10 @@ except ImportError:  # pragma: no cover - exercised only without optional depend
     class _FuzzFallback:
         @staticmethod
         def partial_ratio(a: str, b: str) -> int:
+            return int(SequenceMatcher(None, a, b).ratio() * 100)
+
+        @staticmethod
+        def ratio(a: str, b: str) -> int:
             return int(SequenceMatcher(None, a, b).ratio() * 100)
 
     fuzz = _FuzzFallback()
@@ -65,6 +70,8 @@ CATEGORY_NEEDLES: dict[str, list[str]] = {
     "boilers": ["котел", "котёл", "boiler"],
     "valves": ["кран", "шаровый", "вентиль"],
     "radiator_fittings": ["радиатор", "термоголов", "термостатическ", "клапан"],
+    "radiators": ["радиатор", "батаре", "биметалл"],
+    "fittings": ["угольник", "муфт", "тройник", "переходник", "фитинг"],
 }
 
 # Канонические категории по названию (приоритет) и пути категории фида.
@@ -164,7 +171,12 @@ class FeedSearchAgent:
             # без длинного маркетингового описания — иначе общая лексика паспорта
             # даёт ложные совпадения.
             identity = self._identity_text(product)
-            matched = sum(1 for token in tokens if token in identity)
+            identity_tokens = set(identity.split())
+            matched = sum(
+                1
+                for token in tokens
+                if self._name_token_matches(token, identity, identity_tokens)
+            )
             ratio = matched / len(tokens)
             if ratio >= 0.8 and matched >= 4:
                 name_score = int(fuzz.partial_ratio(text, normalize_text(product.name)))
@@ -244,6 +256,20 @@ class FeedSearchAgent:
             )
         )
 
+    def _name_token_matches(self, token: str, identity: str, identity_tokens: set[str]) -> bool:
+        if token in identity:
+            return True
+        if len(token) < 4:
+            return False
+        for identity_token in identity_tokens:
+            if len(identity_token) < 4:
+                continue
+            if abs(len(identity_token) - len(token)) > 2:
+                continue
+            if fuzz.ratio(token, identity_token) >= 84:
+                return True
+        return False
+
     def _category_text(self, product: Product) -> str:
         """Identity for category matching — name + type, WITHOUT marketing description.
 
@@ -262,6 +288,13 @@ class FeedSearchAgent:
     def _category_matches(self, product: Product, category: str) -> bool:
         text = self._category_text(product)
         needles = CATEGORY_NEEDLES.get(category, [])
+        canonical = self.canonical_category(product)
+        if category == "radiators":
+            return canonical == "radiators"
+        if category == "fittings":
+            return canonical == "fittings"
+        if category == "sewer" and canonical == "fittings":
+            return any(marker in text for marker in ["htea", "htu", "ht ", "kg "])
         if category == "pipes" and "канализац" in text:
             return False
         # Фитинги (угольник/муфта/тройник) содержат «ppr» в названии — это не труба.
@@ -417,6 +450,29 @@ class FeedSearchAgent:
                 ]
                 if water_supply:
                     products = water_supply
+            elif "полив" in pump_use:
+                irrigation = [
+                    product
+                    for product in products
+                    if not any(
+                        stop in self._product_text(product)
+                        for stop in ["циркуляц", "отопл"]
+                    )
+                ]
+                if irrigation:
+                    products = irrigation
+                if not pump_type:
+                    def irrigation_priority(product: Product) -> tuple:
+                        text = self._product_text(product)
+                        if "дренаж" in text:
+                            kind_priority = 0
+                        elif any(marker in text for marker in ["скваж", "насосная станц", "поверхност"]):
+                            kind_priority = 1
+                        else:
+                            kind_priority = 2
+                        return (kind_priority, not product.is_in_stock, product.price or float("inf"))
+
+                    return sorted(products, key=irrigation_priority)
             return sorted(products, key=lambda p: (not p.is_in_stock, p.price or float("inf")))
         if category == "sewer":
             element_type = normalize_text(str(slots.get("element_type") or ""))
@@ -425,6 +481,27 @@ class FeedSearchAgent:
                     product
                     for product in products
                     if element_type in self._product_text(product)
+                ]
+            return sorted(products, key=lambda p: (not p.is_in_stock, p.price or float("inf")))
+        if category == "pipes":
+            project_note = normalize_text(str(slots.get("project_note") or ""))
+            if "тепл" in project_note and "пол" in project_note:
+                # PPR is suitable for distribution mains in a heating system, but
+                # it is not a flexible loop pipe for a water underfloor circuit.
+                # Never surface ordinary PPR as though it closes that requirement.
+                loop_pipe_markers = [
+                    "pex",
+                    "pe-rt",
+                    "pert",
+                    "сшит",
+                    "металлопласт",
+                    "для теплого пола",
+                    "теплый пол",
+                ]
+                products = [
+                    product
+                    for product in products
+                    if any(marker in self._product_text(product) for marker in loop_pipe_markers)
                 ]
             return sorted(products, key=lambda p: (not p.is_in_stock, p.price or float("inf")))
         return sorted(products, key=lambda p: (not p.is_in_stock, p.price or float("inf")))
@@ -459,6 +536,24 @@ class FeedSearchAgent:
         length = slots.get("length_mm")
         if length:
             checks.append(self._dimension_matches(product, int(length), ["длина"]))
+
+        secondary_diameter = slots.get("secondary_diameter_mm")
+        if secondary_diameter:
+            checks.append(self._fitting_dimension_matches(product, int(secondary_diameter)))
+
+        radiator_size = slots.get("radiator_size_mm")
+        if radiator_size:
+            checks.append(
+                self._dimension_matches(
+                    product,
+                    int(radiator_size),
+                    ["межосев", "высот", "размер"],
+                )
+            )
+
+        sections = slots.get("sections")
+        if sections:
+            checks.append(self._dimension_matches(product, int(sections), ["секц"]))
 
         pump_type = slots.get("pump_type")
         if pump_type:
@@ -514,10 +609,18 @@ class FeedSearchAgent:
     def _has_strict_slots(self, query: SearchQuery) -> bool:
         strict_by_category = {
             "pipes": {"diameter_mm", "element_type", "length_mm"},
-            "sewer": {"sewer_scope", "element_type", "diameter_mm", "length_mm"},
+            "sewer": {
+                "sewer_scope",
+                "element_type",
+                "diameter_mm",
+                "secondary_diameter_mm",
+                "length_mm",
+            },
             "pumps": {"pump_type", "mounting_length_mm", "head_m", "connection_size", "old_model"},
             "valves": {"application", "diameter_mm", "body_form", "union", "size_inch"},
             "radiator_fittings": {"application", "connection_form", "diameter_mm", "thermostatic_head"},
+            "radiators": {"radiator_size_mm", "length_mm", "sections", "size_inch"},
+            "fittings": {"diameter_mm", "secondary_diameter_mm", "size_inch", "element_type"},
             "boilers": {"boiler_type", "contours"},
         }
         strict_keys = strict_by_category.get(query.category, set())
@@ -558,6 +661,22 @@ class FeedSearchAgent:
         length = slots.get("length_mm")
         if length:
             score += 20 if self._dimension_matches(product, int(length), ["длина"]) else -8
+
+        secondary_diameter = slots.get("secondary_diameter_mm")
+        if secondary_diameter:
+            score += 20 if self._fitting_dimension_matches(product, int(secondary_diameter)) else -12
+
+        radiator_size = slots.get("radiator_size_mm")
+        if radiator_size:
+            score += 25 if self._dimension_matches(
+                product,
+                int(radiator_size),
+                ["межосев", "высот", "размер"],
+            ) else -12
+
+        sections = slots.get("sections")
+        if sections:
+            score += 20 if self._dimension_matches(product, int(sections), ["секц"]) else -10
 
         pump_type = slots.get("pump_type")
         if pump_type:
@@ -602,12 +721,24 @@ class FeedSearchAgent:
         return bool(re.search(rf"(^|[^0-9]){number}([^0-9]|$)", text))
 
     def _inch_size_matches(self, product: Product, size_inch: str) -> bool:
-        normalized = size_inch.replace(" ", "")
-        text = self._product_text(product)
-        if normalized in text:
-            return True
-        attr_blob = " ".join(product.attributes_normalized.values())
-        return normalized in normalize_text(attr_blob)
+        normalized = re.sub(r"\s+", "", normalize_text(size_inch))
+        candidates: set[str] = set()
+        for key, value in product.attributes_normalized.items():
+            key_norm = normalize_text(key)
+            if "дюйм" not in key_norm and "резьб" not in key_norm:
+                continue
+            value_norm = re.sub(r"\s+", "", normalize_text(str(value)))
+            match = re.fullmatch(r"(11/4|1/2|3/4|3/8|1/4|1|2)", value_norm)
+            if match:
+                candidates.add(match.group(1))
+
+        name = normalize_text(html.unescape(product.name))
+        for match in re.finditer(
+            r"(?<![\d/])(1\s+1\s*/\s*4|1\s*/\s*2|3\s*/\s*4|3\s*/\s*8|1\s*/\s*4|[12])\s*\"",
+            name,
+        ):
+            candidates.add(re.sub(r"\s+", "", match.group(1)))
+        return normalized in candidates
 
     def _dimension_matches(self, product: Product, number: int, keys: list[str]) -> bool:
         key_texts = [normalize_text(key) for key in keys]
@@ -622,6 +753,11 @@ class FeedSearchAgent:
         # выбрасывается нормализацией — приводим её к «х», чтобы 50х1500 распознавалось.
         fallback = normalize_text(product.name.replace("*", "х"))
         if any(key in {"диаметр", "размер"} for key in key_texts):
+            fitting_diameter = re.search(
+                r"(?:htb|htu|htea)\D{0,12}(\d{2,3})(?:\D|$)", fallback
+            )
+            if fitting_diameter and int(fitting_diameter.group(1)) == number:
+                return True
             return self._diameter_matches_name(fallback, number)
         if "длина" in key_texts:
             return self._length_matches_name(fallback, number)
@@ -632,14 +768,24 @@ class FeedSearchAgent:
         pattern = rf"(?<!pn\s)(?<!pn)(^|[^0-9]){number}\s*(?:мм|mm)\b"
         if re.search(pattern, compact):
             return True
-        return bool(re.search(rf"(^|[^0-9]){number}\s*[xх×]\s*\d+", compact))
+        return bool(
+            re.search(rf"(^|[^0-9]){number}\s*[xх×]\s*\d+", compact)
+            or re.search(rf"(^|[^0-9]){number}\s+quot\s+\d+", compact)
+        )
 
     def _length_matches_name(self, text: str, number: int) -> bool:
         compact = normalize_text(text)
         return bool(
             re.search(rf"[xх×]\s*{number}([^0-9]|$)", compact)
+            or re.search(rf"\d+\s*/\s*\d+\s*/\s*{number}([^0-9]|$)", compact)
             or re.search(rf"(^|[^0-9]){number}\s*(?:мм|mm)([^0-9]|$)", compact)
         )
+
+    def _fitting_dimension_matches(self, product: Product, number: int) -> bool:
+        text = normalize_text(
+            " ".join([product.name, *product.attributes_normalized.values()])
+        )
+        return self._number_matches(text, number)
 
     def _head_matches(self, product: Product, head_m: float) -> bool:
         head = int(head_m) if head_m.is_integer() else head_m

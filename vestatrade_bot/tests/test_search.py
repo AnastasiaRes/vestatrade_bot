@@ -22,6 +22,60 @@ def test_search_by_name(sample_products: list[Product]) -> None:
     assert results[0].sku == "VT.228.N.04"
 
 
+def test_search_by_name_tolerates_typos() -> None:
+    product = Product(
+        sku="VALVE-20-ANGLE",
+        name="Кран шаровый угловой для воды 20 мм",
+        category_path="Краны шаровые",
+        brand="VALTEC",
+        url="https://example.test/valve20",
+        price=500,
+        stock_status="в наличии",
+        stock_qty=7,
+    )
+    agent = FeedSearchAgent([product])
+
+    results = agent.search_by_name(
+        "Кран шаровыи углавой для вады 20 мм",
+        SearchQuery(original_text="Кран шаровыи углавой для вады 20 мм"),
+    )
+
+    assert [result.sku for result in results] == ["VALVE-20-ANGLE"]
+
+
+def test_valve_inch_filter_does_not_confuse_one_two_and_fractions() -> None:
+    products = [
+        Product(
+            sku=f"VALVE-{size.replace(' ', '').replace('/', '-')}",
+            name=f'Кран шаровой {size}&quot; вн.-вн.',
+            category_path="Краны шаровые",
+            url=f"https://example.test/valve-{index}",
+            price=1000 + index,
+            stock_status="в наличии",
+            attributes_normalized={"диаметр подключения, дюйм": size},
+        )
+        for index, size in enumerate(["1/2", "3/4", "1", "1 1/4", "2"], start=1)
+    ]
+    agent = FeedSearchAgent(products)
+
+    expected = {
+        "1/2": "VALVE-1-2",
+        "3/4": "VALVE-3-4",
+        "1": "VALVE-1",
+        "1 1/4": "VALVE-11-4",
+        "2": "VALVE-2",
+    }
+    for size, sku in expected.items():
+        results = agent.search(
+            SearchQuery(
+                original_text=f"кран {size} дюйма",
+                category="valves",
+                slots={"size_inch": size},
+            )
+        )
+        assert [result.sku for result in results] == [sku]
+
+
 def test_fitting_is_not_classified_as_pipe() -> None:
     fitting = Product(
         sku="VTp.751.0.025",
@@ -164,6 +218,48 @@ def test_consult_retrieval_for_well_water_supply_skips_drainage_pump() -> None:
     )
 
     assert [product.sku for product in retrieved] == ["WELL-550"]
+
+
+def test_consult_retrieval_for_irrigation_prefers_drainage_and_skips_circulation() -> None:
+    drainage = Product(
+        sku="DRAIN-350",
+        name="Дренажный насос 350 Вт",
+        category_path="Насосы дренажные",
+        url="https://example.test/drain",
+        price=2500,
+        stock_status="в наличии",
+        stock_qty=5,
+        attributes_normalized={"тип товара": "Дренажный насос"},
+    )
+    well = Product(
+        sku="WELL-550",
+        name="Винтовой скважинный насос 550 Вт",
+        category_path="Насосы скважинные",
+        url="https://example.test/well",
+        price=9500,
+        stock_status="в наличии",
+        stock_qty=1,
+        attributes_normalized={"тип товара": "Скважинный насос"},
+    )
+    circulation = Product(
+        sku="CIRC-25-60",
+        name="Насос циркуляционный 25-60 180 мм",
+        category_path="Насосы циркуляционные",
+        url="https://example.test/circ",
+        price=6100,
+        stock_status="в наличии",
+        stock_qty=2,
+        attributes_normalized={"тип товара": "Циркуляционный насос"},
+    )
+    agent = FeedSearchAgent([circulation, well, drainage])
+
+    retrieved = agent.retrieve_for_consult(
+        ["pumps"],
+        {"pump_use": "полив"},
+        per_category=4,
+    )
+
+    assert [product.sku for product in retrieved] == ["DRAIN-350", "WELL-550"]
 
 
 def test_consult_retrieval_sewer_project_can_prefer_pipe_over_cheaper_bend() -> None:

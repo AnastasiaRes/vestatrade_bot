@@ -90,7 +90,7 @@ class GuardrailsAgent:
             issues=issues,
             need_handoff=bool(issues),
             safe_message=(
-                "Не могу безопасно показать подборку: в данных фида не хватает подтверждённых "
+                "Не могу безопасно показать подборку: в карточках не хватает подтверждённых "
                 "ссылок, цен или характеристик. Лучше передать вопрос менеджеру."
                 if issues
                 else None
@@ -120,7 +120,7 @@ class GuardrailsAgent:
                 issues=[f"no feed confirmation for {part}" for part in missing],
                 need_handoff=True,
                 safe_message=(
-                    "Не вижу подтверждения комплектации в данных фида. Лучше проверить "
+                    "Не вижу подтверждения комплектации в карточке товара. Лучше проверить "
                     "карточку/документацию или передать вопрос менеджеру."
                 ),
             )
@@ -143,24 +143,19 @@ class GuardrailsAgent:
                 ]
             )
         )
-        has_builtin_word = "встроен" in text
         found: list[str] = []
-        # (подпись, ключевые слова, требуется ли рядом слово «встроен»)
         catalogue = [
-            ("циркуляционный насос", ["насос"], True),
-            ("расширительный бак", ["расширительн", "расширительный бак"], True),
-            ("3-ходовой клапан", ["ходов клапан", "ходовой клапан", "ходовый клапан", "трехходов"], False),
-            ("манометр", ["манометр"], False),
-            ("закрытая камера сгорания", ["закрытая камера", "закрыт камер"], False),
-            ("бойлер", ["встроенный бойлер", "накопительный бойлер"], False),
-            ("группа безопасности", ["группа безопасн", "групп безопасн"], False),
+            ("циркуляционный насос", "насос"),
+            ("расширительный бак", "бак"),
+            ("3-ходовой клапан", "клапан"),
+            ("манометр", "манометр"),
+            ("закрытая камера сгорания", "камера"),
+            ("бойлер", "бойлер"),
+            ("группа безопасности", "группа безопасности"),
         ]
-        for label, needles, require_builtin in catalogue:
-            if not any(needle in text for needle in needles):
-                continue
-            if require_builtin and not has_builtin_word:
-                continue
-            found.append(label)
+        for label, part in catalogue:
+            if self._part_confirmed(text, part):
+                found.append(label)
         return found
 
     def _part_confirmed(self, text: str, part: str) -> bool:
@@ -173,13 +168,43 @@ class GuardrailsAgent:
                 "накопительный бойлер",
             ]
             return any(marker in text for marker in positive_markers)
-        if part == "насос":
-            return "насос" in text
-        if part == "бак":
-            return "бак" in text or "расширительн" in text
-        if part in {"обвязка", "группа безопасности"}:
-            return part in text
-        return part in text
+        patterns: dict[str, list[str]] = {
+            "насос": [
+                r"встроенн\w*\s+(?:циркуляционн\w*\s+)?насос",
+                r"насос.{0,45}встроен",
+                r"в комплект.{0,160}насос",
+                r"комплект поставки.{0,500}насос",
+            ],
+            "бак": [
+                r"встроенн\w*.{0,35}(?:расширительн\w*\s+)?бак",
+                r"расширительн\w*\s+бак.{0,45}встроен",
+                r"в комплект.{0,160}(?:расширительн\w*\s+)?бак",
+                r"комплект поставки.{0,500}(?:расширительн\w*\s+)?бак",
+            ],
+            "клапан": [
+                r"встроенн\w*.{0,35}(?:трех|3)[- ]?ходов\w*\s+клапан",
+                r"(?:трех|3х|3)[- .]?ход\w*.{0,12}клапан",
+                r"в комплект.{0,160}клапан",
+                r"комплект поставки.{0,500}клапан",
+            ],
+            "манометр": [
+                r"встроенн\w*.{0,45}манометр",
+                r"в комплект.{0,160}манометр",
+                r"комплект поставки.{0,500}манометр",
+            ],
+            "камера": [r"закрыт\w*\s+камер\w*\s+сгоран"],
+            "группа безопасности": [
+                r"встроенн\w*.{0,45}групп\w*\s+безопасн",
+                r"в комплект.{0,160}групп\w*\s+безопасн",
+            ],
+            "обвязка": [r"в комплект.{0,160}обвяз"],
+        }
+        if part in patterns:
+            return any(re.search(pattern, text) for pattern in patterns[part])
+        return bool(
+            re.search(rf"в комплект.{{0,160}}{re.escape(part)}", text)
+            or re.search(rf"комплект поставки.{{0,500}}{re.escape(part)}", text)
+        )
 
     def validate_response_text(
         self,
@@ -309,6 +334,16 @@ class GuardrailsAgent:
             for term in CLARIFICATION_TERMS
             if term in draft_norm and term not in answer_norm
         ]
+        if "площад" in draft_norm and any(
+            marker in answer_norm
+            for marker in [
+                "без уточнения площади",
+                "площадь уточнять не",
+                "площадь не нужно уточнять",
+                "площадь не важна",
+            ]
+        ):
+            missing.append("LLM rewrite contradicted the area clarification")
         return missing
 
     def validate_context_answer(self, answer: str, context: str) -> GuardrailsResult:

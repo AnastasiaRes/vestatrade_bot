@@ -7,3 +7,4 @@ server.log
 
 app/data/products_cache.json
 app/data/usage_budget.json
+tmp/

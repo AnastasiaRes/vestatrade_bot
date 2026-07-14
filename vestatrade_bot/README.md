@@ -87,6 +87,66 @@ curl -X POST http://127.0.0.1:8000/chat \
 curl -X POST http://127.0.0.1:8000/reload-feed
 ```
 
+Если задан `RELOAD_FEED_TOKEN`, перезагрузка требует админский заголовок:
+
+```bash
+curl -X POST http://127.0.0.1:8000/reload-feed \
+  -H "X-Admin-Token: $RELOAD_FEED_TOKEN"
+```
+
+## Виджет для сайта
+
+В проекте есть полноценный embeddable-виджет на Shadow DOM. Он подключается
+одним скриптом, сам создаёт кнопку чата в углу страницы, изолирует стили от
+сайта и обращается к тому же API `/chat`.
+
+Локальное демо после запуска FastAPI:
+
+```text
+http://127.0.0.1:8000/widget-demo
+```
+
+Минимальная вставка на сайт:
+
+```html
+<script
+  src="https://bot.vestatrade.ru/widget-loader.js"
+  data-api-base="https://bot.vestatrade.ru"
+></script>
+```
+
+Пример с настройками:
+
+```html
+<script
+  src="https://bot.vestatrade.ru/widget-loader.js"
+  data-api-base="https://bot.vestatrade.ru"
+  data-title="AI-консультант"
+  data-subtitle="Vesta Trading"
+  data-position="right"
+  data-accent="#0655d9"
+  data-quick="Подберите циркуляционный насос подешевле|Подберите электрический котёл для дома площадью 100 м²|Дайте ссылку на товар"
+></script>
+```
+
+Поддерживаемые параметры:
+- `data-api-base` — URL сервера бота, например `https://bot.vestatrade.ru`.
+- `data-assets-base` — URL для статических файлов, если они лежат отдельно.
+- `data-title`, `data-subtitle`, `data-greeting`, `data-placeholder` — тексты интерфейса.
+- `data-position` — `right` или `left`.
+- `data-accent` — основной цвет виджета.
+- `data-width`, `data-height`, `data-z-index` — размеры и слой.
+- `data-open="true"` — открыть чат сразу после загрузки страницы.
+- `data-show-quick="false"` — скрыть быстрые запросы.
+- `data-quick="запрос 1|запрос 2"` — быстрые запросы через `|`.
+- `data-persist-session="false"` — не сохранять `session_id` в `localStorage`.
+
+Для продакшена укажите домены сайта в `.env`:
+
+```bash
+ALLOWED_ORIGINS=https://vestatrade.ru,https://www.vestatrade.ru
+```
+
 ## Бюджет LLM
 
 Файл учёта расходов:

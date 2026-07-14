@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -9,6 +10,9 @@ from app.models import HandoffSummary, ProductCard, SessionState
 
 
 logger = logging.getLogger(__name__)
+
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}")
+_PHONE_RE = re.compile(r"(?:\+?\d[\s().-]*){10,}")
 
 
 class HandoffAgent:
@@ -62,15 +66,27 @@ class HandoffAgent:
         if known:
             details.append(f"параметры: {known}")
         context_part = f" Сохранил контекст диалога ({'; '.join(details)})." if details else ""
-        status_part = (
-            "Заявка зафиксирована, менеджер увидит историю запроса и свяжется с вами."
-            if recorded
-            else "Передайте, пожалуйста, ваш вопрос менеджеру напрямую — у меня не получилось сохранить заявку."
-        )
+        if recorded and self._has_contact_info(summary):
+            status_part = "Заявка зафиксирована: менеджер увидит историю запроса и контакт для связи."
+        elif recorded:
+            status_part = (
+                "Я сохранил обращение и историю диалога для менеджера. "
+                "Чтобы менеджер мог связаться с вами, оставьте телефон, email или удобный способ связи."
+            )
+        else:
+            status_part = (
+                "Передайте, пожалуйста, ваш вопрос менеджеру напрямую — "
+                "у меня не получилось сохранить заявку."
+            )
         return (
             f"Передаю вопрос менеджеру.{context_part} {status_part} "
             "Пока я на связи — могу продолжить подбор по ассортименту."
         )
+
+    def _has_contact_info(self, summary: HandoffSummary) -> bool:
+        values = [summary.wanted, *(str(value) for value in summary.known_slots.values())]
+        text = " ".join(values)
+        return bool(_EMAIL_RE.search(text) or _PHONE_RE.search(text))
 
     def compose_answer(self, summary: HandoffSummary) -> str:
         missing = ", ".join(summary.missing) if summary.missing else "нужна проверка менеджера"
@@ -82,4 +98,3 @@ class HandoffAgent:
             f"Известно: {known}. Не хватает: {missing}. "
             f"Рассматривались товары: {products}."
         )
-

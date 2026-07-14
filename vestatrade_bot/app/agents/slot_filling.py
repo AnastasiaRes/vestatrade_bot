@@ -31,6 +31,8 @@ class SlotFillingAgent:
 
         if category == "pipes":
             return self._pipes(slots)
+        if category == "fittings":
+            return self._fittings(slots)
         if category == "sewer":
             return self._sewer(slots, text)
         if category == "pumps":
@@ -41,6 +43,8 @@ class SlotFillingAgent:
             return self._valves(slots, text)
         if category == "radiator_fittings":
             return self._radiator(slots)
+        if category == "radiators":
+            return self._radiators(slots)
         return SlotFillingResult(slots=slots)
 
     def _pipes(self, slots: dict) -> SlotFillingResult:
@@ -65,6 +69,22 @@ class SlotFillingAgent:
             missing.append("холодная или горячая вода")
         if not slots.get("diameter_mm"):
             missing.append("диаметр в мм")
+        if missing:
+            return SlotFillingResult(
+                slots=slots,
+                needs_clarification=True,
+                question="Уточните " + " и ".join(missing[:2]) + ".",
+            )
+        return SlotFillingResult(slots=slots)
+
+    def _fittings(self, slots: dict) -> SlotFillingResult:
+        missing = []
+        if not slots.get("fitting_system"):
+            missing.append("система: PPR или канализация")
+        if not slots.get("element_type"):
+            missing.append("тип: муфта, угольник, тройник или переходник")
+        if not slots.get("diameter_mm") and not slots.get("size_inch"):
+            missing.append("размер в мм или дюймах")
         if missing:
             return SlotFillingResult(
                 slots=slots,
@@ -132,7 +152,10 @@ class SlotFillingAgent:
         for match in re.finditer(r"(?<!\d)(\d{2,5})(?:\s*мм|\s*м\b|\b)", text):
             tail = text[match.end(1) : match.end(1) + 12]
             # Угол, температура, объём или секции — это не размер.
-            if re.match(r"\s*(?:градус|°|литр|л\b|секц|м2|м²|квадрат)", tail):
+            if re.match(
+                r"\s*(?:м\b|метр|градус|°|литр|л\b|секц|м2|м²|квадрат)",
+                tail,
+            ):
                 continue
             value = int(match.group(1))
             if value < min_value:
@@ -160,7 +183,7 @@ class SlotFillingAgent:
                     details.append(f"диаметр {diameter} мм")
                 prefix = f"Понял: {', '.join(details)}. " if details else ""
                 return (
-                    f"{prefix}{total_length} м — это общий метраж. В фиде длина указана для одного "
+                    f"{prefix}{total_length} м — это общий метраж. В карточке длина указана для одного "
                     "отрезка трубы. Какая длина одной трубы нужна: 500, 1000, 1500 или 2000 мм?"
                 )
             return "Какая длина одного отрезка трубы нужна: 500, 1000, 1500 или 2000 мм?"
@@ -217,6 +240,18 @@ class SlotFillingAgent:
                     slots=slots,
                     needs_clarification=True,
                     question="Источник воды какой: скважина, колодец или центральный водопровод?",
+                )
+            if slots.get("pump_use") == "полив":
+                return SlotFillingResult(
+                    slots=slots,
+                    needs_clarification=True,
+                    question=(
+                        "Для полива насос подбирают по источнику воды. Из бочки, ёмкости "
+                        "или для откачки воды обычно смотрят дренажный; из скважины — "
+                        "скважинный; из колодца или для подачи в дом — поверхностный насос "
+                        "или насосную станцию. Циркуляционный насос нужен для отопления. "
+                        "Откуда берём воду для полива?"
+                    ),
                 )
             if slots.get("application") == "дача":
                 return SlotFillingResult(
@@ -284,10 +319,20 @@ class SlotFillingAgent:
 
     def _boilers(self, slots: dict) -> SlotFillingResult:
         if not slots.get("boiler_type"):
+            area = slots.get("area_m2")
+            prefix = (
+                f"Понял, подбираем котёл примерно на {float(area):g} м². "
+                if area
+                else ""
+            )
             return SlotFillingResult(
                 slots=slots,
                 needs_clarification=True,
-                question="Котёл нужен газовый или электрический?",
+                question=(
+                    prefix + "Газовый или электрический?"
+                    if prefix
+                    else "Котёл нужен газовый или электрический?"
+                ),
             )
         if not slots.get("area_m2") and not slots.get("power_kw"):
             prefix = ""
@@ -305,8 +350,7 @@ class SlotFillingAgent:
                 slots=slots,
                 needs_clarification=True,
                 question=(
-                    "Котёл одноконтурный (только отопление) или двухконтурный "
-                    "(отопление и горячая вода)?"
+                    "Котёл нужен только для отопления или ещё для горячей воды?"
                 ),
             )
         return SlotFillingResult(slots=slots)
@@ -353,6 +397,29 @@ class SlotFillingAgent:
                 needs_clarification=True,
                 question=(
                     "Подскажите для радиатора: " + "; ".join(missing[:3]) + "."
+                ),
+            )
+        return SlotFillingResult(slots=slots)
+
+    def _radiators(self, slots: dict) -> SlotFillingResult:
+        has_size = any(
+            slots.get(key)
+            for key in [
+                "radiator_size_mm",
+                "length_mm",
+                "sections",
+                "size_inch",
+                "radiator_type_code",
+            ]
+        )
+        if not has_size:
+            return SlotFillingResult(
+                slots=slots,
+                needs_clarification=True,
+                question=(
+                    "Уточните тип радиатора (панельный, биметаллический или "
+                    "алюминиевый) и размер: высоту/межосевое расстояние, длину "
+                    "или количество секций."
                 ),
             )
         return SlotFillingResult(slots=slots)

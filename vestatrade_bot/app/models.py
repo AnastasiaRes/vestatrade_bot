@@ -61,6 +61,7 @@ class ChatProductSummary(BaseModel):
     currency: str
     stock_status: str
     url: str
+    image_url: str | None = None
 
 
 class ChatResponse(BaseModel):

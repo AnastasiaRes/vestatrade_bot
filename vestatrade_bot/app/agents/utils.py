@@ -10,6 +10,10 @@ def normalize_text(text: str | None) -> str:
         return ""
     text = unicodedata.normalize("NFKC", text).lower().replace("ё", "е")
     text = text.replace("&quot;", '"').replace("&amp;", "&")
+    # Покупатели могут называть канализацию «канашкой». Приводим разговорное
+    # слово и его падежные формы к каноническому термину до классификации,
+    # извлечения слотов и поиска по ассортименту.
+    text = re.sub(r"\bканашк(?:а|и|у|е|ой|ою)?\b", "канализация", text)
     text = re.sub(r"[^a-zа-я0-9./,\-+² ]+", " ", text)
     return re.sub(r"\s+", " ", text).strip()
 
@@ -44,4 +48,3 @@ def merge_slots(base: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
         if value not in (None, "", [], {}):
             merged[key] = value
     return merged
-

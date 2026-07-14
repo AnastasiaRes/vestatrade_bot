@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import logging
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -21,26 +22,38 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Vesta Trading AI Consultant", version="0.1.0")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+settings = get_settings()
 orchestrator = ChatOrchestrator()
-chat_logger = ChatLogger(get_settings().chat_logs_dir)
+chat_logger = ChatLogger(settings.chat_logs_dir)
 STATIC_DIR = Path(__file__).resolve().parent / "static"
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
-@app.on_event("startup")
 def startup_load_feed() -> None:
     try:
         count, source = orchestrator.reload_products(refresh=True)
         logger.info("Loaded %s products from %s on startup", count, source)
     except Exception as exc:
         logger.warning("Startup feed load failed, bot will try cache on demand: %s", exc)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    startup_load_feed()
+    yield
+
+
+app = FastAPI(
+    title="Vesta Trading AI Consultant",
+    version="0.1.0",
+    lifespan=lifespan,
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.allowed_origins,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 @app.get("/health")
@@ -68,6 +81,19 @@ def root_script() -> FileResponse:
     return FileResponse(STATIC_DIR / "app.js")
 
 
+@app.get("/widget-loader.js")
+def widget_loader() -> FileResponse:
+    return FileResponse(
+        STATIC_DIR / "widget-loader.js",
+        media_type="application/javascript",
+    )
+
+
+@app.get("/widget-demo")
+def widget_demo() -> FileResponse:
+    return FileResponse(STATIC_DIR / "widget-demo.html")
+
+
 @app.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest) -> ChatResponse:
     if not request.message.strip():
@@ -78,7 +104,11 @@ def chat(request: ChatRequest) -> ChatResponse:
 
 
 @app.post("/reload-feed")
-def reload_feed() -> dict[str, Any]:
+def reload_feed(
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+) -> dict[str, Any]:
+    if settings.reload_feed_token and x_admin_token != settings.reload_feed_token:
+        raise HTTPException(status_code=403, detail="invalid reload token")
     try:
         count, source = orchestrator.reload_products(refresh=True)
     except Exception as exc:

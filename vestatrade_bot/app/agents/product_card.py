@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import logging
 
 from app.models import Product, ProductCard, SearchQuery
@@ -12,9 +13,17 @@ RELEVANT_ATTRS: dict[str, list[str]] = {
     "pipes": ["назначение", "материал", "диаметр (мм)", "длина", "армирование"],
     "sewer": ["тип товара", "диаметр (мм)", "длина", "материал"],
     "pumps": ["тип товара", "напор", "монтажная длина", "присоединение", "мощность"],
-    "boilers": ["мощность", "тип котла", "количество контуров", "площадь"],
+    "boilers": [
+        "мощность",
+        "диапазон мощности отопления по паспорту",
+        "тип котла",
+        "количество контуров",
+        "площадь",
+    ],
     "valves": ["назначение", "диаметр", "тип присоединения", "тип конструкции"],
     "radiator_fittings": ["тип товара", "диаметр", "подключение", "комплектация"],
+    "radiators": ["тип", "межосевое расстояние", "количество секций", "теплоотдача", "площадь обогрева", "диаметр подключения"],
+    "fittings": ["тип товара", "диаметр", "присоединительная резьба", "угол", "тип присоединения"],
 }
 
 
@@ -38,7 +47,7 @@ class ProductCardAgent:
             return None
         return ProductCard(
             sku=product.sku,
-            name=product.name,
+            name=html.unescape(product.name),
             brand=product.brand,
             price=product.price,
             currency=product.currency,
@@ -55,20 +64,20 @@ class ProductCardAgent:
             return {}
 
         preferred = RELEVANT_ATTRS.get(query.category, [])
+        max_attributes = 4 if query.category == "boilers" else 3
         picked: dict[str, str] = {}
         for key in preferred:
             for attr_key, value in attrs.items():
                 if key in attr_key and value:
                     picked[attr_key] = value
                     break
-            if len(picked) >= 3:
+            if len(picked) >= max_attributes:
                 return picked
 
         for key, value in attrs.items():
             if key in picked or not value:
                 continue
             picked[key] = value
-            if len(picked) >= 3:
+            if len(picked) >= max_attributes:
                 break
         return picked
-

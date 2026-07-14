@@ -31,8 +31,12 @@ DOMAIN_SYSTEM_PROMPT = (
     "- Отопление — это система, а не один котёл: котёл, циркуляционные насосы, трубы, "
     "радиаторы, арматура, группа безопасности, расширительный бак, иногда бойлер "
     "косвенного нагрева и коллекторы.\n"
-    "- Мощность котла: ориентир ~1 кВт на 10 м² плюс запас 20–30%. Для 200–240 м² это "
-    "примерно 24–32 кВт. Это прикидка, не точный расчёт.\n"
+    "- Мощность котла: ориентир ~1 кВт на 10 м² плюс запас 20–30%. Диапазон каждый раз "
+    "считай только из площади, которую назвал клиент; не подставляй площадь из примеров "
+    "или прошлых диалогов. Это прикидка, не точный расчёт. Если минимальная модель из "
+    "выдержки заметно мощнее этого диапазона, называй её только ближайшей позицией из "
+    "выдержки, а не подходящей или оптимальной: избыточную мощность нужно проверить по "
+    "теплопотерям и диапазону модуляции.\n"
     "- Настенный котёл обычно уже со встроенным насосом и расширительным баком. На "
     "большой дом добавляют отдельные насосы на контуры: тёплый пол, этажи, бойлер, "
     "рециркуляцию ГВС.\n"
@@ -44,8 +48,11 @@ DOMAIN_SYSTEM_PROMPT = (
     "КОМБИНИРОВАННУЮ котельную: газовый котёл как основной, электрический как резерв.\n"
     "- Водоснабжение: насос (если скважина/колодец), трубы, краны, фильтры, фитинги. "
     "Канализация: трубы, отводы, тройники, муфты (внутренняя серая HT, наружная рыжая KG).\n"
-    "- Трубы: PN20 обычная — холодная вода; армированные PP-FIBER (стекловолокно) и "
-    "PP-ALUX (алюминий) — горячая вода, отопление, тёплый пол.\n"
+    "- Трубы: допустимость PPR для холодной/горячей воды и отопления проверяют по паспорту "
+    "конкретной трубы; армирование снижает температурное удлинение. PPR можно применять "
+    "на подводящих магистралях, но НЕ выдавай жёсткую PPR за трубу петли тёплого пола. "
+    "Для контура водяного пола обычно нужна предназначенная для него гибкая труба PEX, "
+    "PE-RT или металлопластик.\n"
     "\n"
     "КАК ВЕСТИ ДИАЛОГ (от общего к частному):\n"
     "1. На общий запрос («нужно отопление», «помоги выбрать всё», «строю дом») коротко "
@@ -73,13 +80,18 @@ DOMAIN_SYSTEM_PROMPT = (
     "газовый/электрический, диаметр, длина, материал, бюджет и наличие. Если точного "
     "совпадения нет, не выдавай альтернативу как подходящую: сначала назови, какой "
     "параметр не совпал.\n"
-    "- Если подходящего по мощности/типу товара в выдержке нет (например, нужен мощный "
-    "электрокотёл на 240 м², а есть только маломощные) — честно скажи об этом, предложи "
+    "- Если подходящего по мощности/типу товара в выдержке нет, честно скажи об этом, предложи "
     "ближайшее из наличия и передачу менеджеру. Не выдавай маломощный за основной и не "
     "выдумывай товар.\n"
+    "- Не называй существенно более мощный котёл подходящим только потому, что слабее в "
+    "выдержке нет. Сначала назови ориентировочный диапазон для площади и явно предупреди "
+    "об отличии мощности.\n"
     "- Блок «Каталог» — это выдержка под текущий вопрос, а не весь магазин. НЕ заявляй, "
     "что «в каталоге только газовые» или «категории нет», если её просто нет в этой "
     "выдержке. Отвечай по тому, что относится к вопросу.\n"
+    "- Клиенту не нужно знать про фид, выдержку или внутренний каталог. В ответе говори "
+    "«в ассортименте», «из найденных моделей», «по карточке товара» или «по техническому "
+    "паспорту».\n"
     "- Отвечай строго на заданный вопрос, без повторов и противоречий с прошлыми "
     "репликами. Коротко: 2–6 предложений или короткий список. Без markdown-таблиц.\n"
     "- Не извиняйся и не пиши «исправляюсь» без причины. Если клиент раздражён из-за "
@@ -102,6 +114,11 @@ PRICE_RE = re.compile(r"(\d[\d  .,]{2,})\s*(?:₽|руб|р\.|rub)", re.IGNOREC
 ARTICLE_RE = re.compile(
     r"арт(?:икул)?[\s.:№]*([A-Za-zА-Яа-я0-9][A-Za-zА-Яа-я0-9._/\-]{2,})",
     re.IGNORECASE,
+)
+PRODUCT_BRAND_RE = re.compile(
+    r"\b(?:[Кк]от[её]л(?:ы|а|ов)?|[Нн]асос(?:ы|а|ов)?|[Тт]руб(?:а|ы|у)|"
+    r"[Кк]ран(?:ы|а|ов)?|[Рр]адиатор(?:ы|а|ов)?)\s+"
+    r"(?:[а-яё-]+\s+){0,3}([A-ZА-Я][A-Za-zА-Яа-я0-9.&-]{2,})"
 )
 
 
@@ -223,13 +240,16 @@ class ConsultantAgent:
             if product.stock_qty is not None:
                 stock = f"в наличии {product.stock_qty} шт" if product.stock_qty > 0 else "нет в наличии"
             power = ""
+            passport_power_range = ""
             for key, value in product.attributes_normalized.items():
-                if "мощность" in normalize_text(key):
+                key_norm = normalize_text(key)
+                if "мощность" in key_norm and not power:
                     power = f" | {value} кВт" if "квт" not in normalize_text(value) else f" | {value}"
-                    break
+                if "диапазон мощности отопления по паспорту" in key_norm:
+                    passport_power_range = f" | по техпаспорту отопление: {value}"
             name = html.unescape(product.name)
             lines.append(
-                f"[{index}] {name}{power} | арт. {product.sku} | "
+                f"[{index}] {name}{power}{passport_power_range} | арт. {product.sku} | "
                 f"{product.price:g} ₽ | {stock} | {product.url}"
             )
         return "\n".join(lines), by_sku
@@ -265,6 +285,8 @@ class ConsultantAgent:
     def _grounding_violations(self, answer: str, by_sku: dict[str, Product]) -> list[str]:
         issues: list[str] = []
         allowed_prices = {round(p.price) for p in by_sku.values() if p.price is not None}
+        allowed_urls = {p.url.rstrip("/.,)") for p in by_sku.values() if p.url}
+        allowed_stock = {p.stock_qty for p in by_sku.values() if p.stock_qty is not None}
 
         # Выдуманные артикулы: всё, что названо «артикулом», должно быть в каталоге.
         for match in ARTICLE_RE.finditer(answer):
@@ -291,26 +313,109 @@ class ConsultantAgent:
             if not any(abs(value - price) <= 10 for price in allowed_prices):
                 issues.append(f"цена {raw} не из каталога")
 
+        for url in re.findall(r"https?://[^\s)>]+", answer):
+            if url.rstrip("/.,)") not in allowed_urls:
+                issues.append("ссылка не из каталога")
+
+        for match in re.finditer(r"(\d+)\s*шт\.?", normalize_text(answer)):
+            if int(match.group(1)) not in allowed_stock:
+                issues.append(f"остаток {match.group(1)} шт. не из каталога")
+
+        allowed_product_text = normalize_text(
+            " ".join(f"{product.brand} {product.name}" for product in by_sku.values())
+        )
+        for match in PRODUCT_BRAND_RE.finditer(answer):
+            candidate = normalize_text(match.group(1))
+            if candidate and candidate not in allowed_product_text:
+                issues.append(f"бренд/модель {match.group(1)} не из каталога")
+
+        # A real product can still be described with the wrong energy source.  Tie
+        # explicit "gas/electric boiler" claims to a unique brand/model mentioned
+        # in the same short answer segment and compare the claim with feed fields.
+        answer_segments = [
+            normalize_text(segment)
+            for segment in re.split(r"[\n.!?]+", answer)
+            if segment.strip()
+        ]
+        brand_owners: dict[str, set[str]] = {}
+        for sku, product in by_sku.items():
+            brand = normalize_text(product.brand or "")
+            if brand:
+                brand_owners.setdefault(brand, set()).add(sku)
+        for sku, product in by_sku.items():
+            product_text = normalize_text(
+                " ".join(
+                    [
+                        product.category_path or "",
+                        product.name or "",
+                        *[
+                            f"{key} {value}"
+                            for key, value in (product.attributes_normalized or {}).items()
+                        ],
+                    ]
+                )
+            )
+            expected = None
+            if "газов" in product_text:
+                expected = "газовый"
+                wrong_pattern = r"(?:электрическ\w*\s+кот\w*|кот\w*\s+электрическ\w*)"
+            elif "электр" in product_text:
+                expected = "электрический"
+                wrong_pattern = r"(?:газов\w*\s+кот\w*|кот\w*\s+газов\w*)"
+            if not expected:
+                continue
+            anchors = set(self._model_tokens(product.name))
+            brand = normalize_text(product.brand or "")
+            if brand and brand_owners.get(brand) == {sku}:
+                anchors.add(brand)
+            sku_text = normalize_text(product.sku or "")
+            if sku_text:
+                anchors.add(sku_text)
+            if any(
+                any(anchor in segment for anchor in anchors)
+                and re.search(wrong_pattern, segment)
+                for segment in answer_segments
+            ):
+                issues.append(f"тип котла {product.sku} противоречит фиду: ожидается {expected}")
+
         return issues[:4]
 
     def _cited_cards(self, answer: str, by_sku: dict[str, Product]) -> list[ProductCard]:
         norm_answer = normalize_sku(answer)
+        answer_text = normalize_text(answer)
         cards: list[ProductCard] = []
         seen: set[str] = set()
+        token_owners: dict[str, set[str]] = {}
+        for product in by_sku.values():
+            for token in self._model_tokens(product.name):
+                token_owners.setdefault(token, set()).add(product.sku)
         for sku_norm, product in by_sku.items():
-            if sku_norm and sku_norm in norm_answer and product.sku not in seen:
-                seen.add(product.sku)
-                cards.append(
-                    ProductCard(
-                        sku=product.sku,
-                        name=product.name,
-                        brand=product.brand,
-                        price=product.price or 0.0,
-                        currency=product.currency,
-                        stock_status=product.stock_status,
-                        stock_qty=product.stock_qty,
-                        url=product.url or "",
-                        image_url=product.image_url,
-                    )
+            mentions_sku = bool(sku_norm and sku_norm in norm_answer)
+            mentions_unique_model = any(
+                token in answer_text and token_owners.get(token) == {product.sku}
+                for token in self._model_tokens(product.name)
+            )
+            if not (mentions_sku or mentions_unique_model) or product.sku in seen:
+                continue
+            seen.add(product.sku)
+            cards.append(
+                ProductCard(
+                    sku=product.sku,
+                    name=html.unescape(product.name),
+                    brand=product.brand,
+                    price=product.price or 0.0,
+                    currency=product.currency,
+                    stock_status=product.stock_status,
+                    stock_qty=product.stock_qty,
+                    url=product.url or "",
+                    image_url=product.image_url,
                 )
+            )
         return cards
+
+    def _model_tokens(self, name: str) -> set[str]:
+        return {
+            token
+            for token in re.findall(r"[a-zа-я0-9./\-]+", normalize_text(name))
+            if len(token) >= 2 and re.search(r"[a-zа-я]", token) and re.search(r"\d", token)
+        }

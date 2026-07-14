@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from app.models import ProductCard, SearchQuery
@@ -25,6 +26,9 @@ PURE_GREETINGS = {
     "доброго дня",
     "хай",
     "ку",
+    "здаров",
+    "здарова",
+    "здорово",
 }
 
 
@@ -37,7 +41,8 @@ MANAGER_PERSONA = (
     "мощность котла — примерно 1 кВт на 10 м² плюс запас на утепление и горячую воду; "
     "двухконтурный котёл даёт отопление и горячую воду, одноконтурный — только отопление; "
     "монтажная длина циркуляционного насоса обычно 130 или 180 мм, типовой насос отопления — "
-    "25/6 на 180 мм; для горячей воды и отопления берут PN20 или армированные трубы; "
+    "25/6 на 180 мм; применимость PPR для горячей воды и отопления проверяют по паспорту, "
+    "а жёсткая PPR не является трубой петли тёплого пола; "
     "закрытая камера сгорания берёт воздух с улицы через коаксиальный дымоход; "
     "американка — разъёмное соединение, с ним узел снимается без разборки трубы.\n"
     "Манера: уважительная, вежливая, дружелюбная и профессиональная — представитель "
@@ -128,7 +133,12 @@ class ResponseComposerAgent:
         return "\n".join(lines)
 
     def compose_small_talk(self, message: str) -> str:
-        fallback = GREETING_REPLY if self._is_pure_greeting(message) else self._small_talk_fallback(message)
+        if self._is_pure_greeting(message):
+            # Для чистого приветствия вариативность не нужна: слабая модель иногда
+            # превращала одну строку в длинную рекламную речь или технический опрос.
+            self.last_draft = GREETING_REPLY
+            return GREETING_REPLY
+        fallback = self._small_talk_fallback(message)
         return self._llm_smart_reply(
             agent="ResponseComposerAgent.small_talk",
             user_message=message,
@@ -267,7 +277,7 @@ class ResponseComposerAgent:
         normalized = (message or "").lower().replace("ё", "е").strip()
         if "зовут" in normalized or "кто ты" in normalized or "ты кто" in normalized or "как обращ" in normalized:
             return (
-                "Я AI-консультант Vesta Trading. Помогаю подобрать товары из фида: "
+                "Я AI-консультант Vesta Trading. Помогаю подобрать товары из ассортимента: "
                 "трубы, насосы, котлы, краны, канализацию и радиаторную арматуру. "
                 "Напишите, что нужно подобрать — уточню параметры и пришлю карточки."
             )
@@ -287,7 +297,7 @@ class ResponseComposerAgent:
                 "котёл, насос, трубы, краны, канализацию или радиаторную арматуру."
             )
         if "к делу" in normalized or "по делу" in normalized:
-            return "Конечно. Опишите, что нужно подобрать — я уточню параметры и предложу подходящие товары из фида."
+            return "Конечно. Опишите, что нужно подобрать — я уточню параметры и предложу подходящие товары из ассортимента."
         if "пока" == normalized or "до свидан" in normalized or "до встреч" in normalized:
             return "До свидания! Возвращайтесь, если понадобится подбор по ассортименту Vesta Trading."
         if any(
@@ -372,12 +382,12 @@ class ResponseComposerAgent:
         if cards:
             skus = ", ".join(card.sku for card in cards[:3])
             draft = (
-                "Более дешёвых подходящих вариантов в данных фида не вижу. "
+                "Более дешёвых подходящих вариантов в текущем ассортименте не вижу. "
                 f"Последний подходящий вариант: {skus}. Могу показать аналоги или передать вопрос менеджеру."
             )
         else:
             draft = (
-                "Более дешёвых подходящих вариантов в данных фида не вижу. "
+                "Более дешёвых подходящих вариантов в текущем ассортименте не вижу. "
                 "Могу показать аналоги или передать вопрос менеджеру."
             )
         return self._polish(
@@ -410,22 +420,43 @@ class ResponseComposerAgent:
             )
         else:
             alt_line = "Альтернатива: могу показать вариант дешевле или с запасом по характеристикам."
-        draft = "\n".join(
-            [
+        sizing_warning = self._boiler_sizing_warning([card], query) if query else None
+        first_line = (
+            f"Из найденных моделей ближе всего к вашим параметрам: {card.sku} — {card.name}. "
+            f"Цена {card.price:g} {card.currency}, наличие: {card.stock_status}."
+            if sizing_warning
+            else (
                 f"Рекомендую: {card.sku} — {card.name}. Цена {card.price:g} {card.currency}, "
-                f"наличие: {card.stock_status}.",
+                f"наличие: {card.stock_status}."
+            )
+        )
+        draft_lines = [first_line]
+        if sizing_warning:
+            draft_lines.append(sizing_warning)
+        draft_lines.extend(
+            [
                 f"Почему: {reason_text}.",
-                f"Когда не подойдёт: {self._choose_one_caveat(query)}",
+                f"Когда не подойдёт: {self._choose_one_caveat(query, card)}",
                 alt_line,
                 f"Ссылка: {card.url}",
             ]
         )
+        draft = "\n".join(draft_lines)
         self.last_draft = draft
         return draft
 
-    def _choose_one_caveat(self, query: SearchQuery | None) -> str:
+    def _choose_one_caveat(
+        self,
+        query: SearchQuery | None,
+        card: ProductCard | None = None,
+    ) -> str:
         category = query.category if query else "other"
         if category == "boilers":
+            if query and card and self._boiler_sizing_warning([card], query):
+                return (
+                    "мощность заметно выше ориентировочного диапазона для указанной площади — "
+                    "до покупки нужен расчёт теплопотерь и проверка минимальной мощности/модуляции."
+                )
             return (
                 "если площадь заметно больше или нужна горячая вода (двухконтурная схема) — "
                 "лучше взять модель мощнее, уточните детали."
@@ -439,6 +470,62 @@ class ResponseComposerAgent:
             return "если нужен другой диаметр или назначение — уточните, подберу заново."
         return "если параметры вашей задачи отличаются от указанных — сверьте характеристики в карточке."
 
+    def _boiler_sizing_warning(
+        self,
+        cards: list[ProductCard],
+        query: SearchQuery,
+    ) -> str | None:
+        if query.category != "boilers" or not query.slots.get("area_m2") or not cards:
+            return None
+        area = float(query.slots["area_m2"])
+        base_kw = area / 10.0
+        upper_kw = base_kw * 1.3
+        powers = [power for card in cards if (power := self._card_power_kw(card)) is not None]
+        if not powers or min(powers) <= upper_kw * 1.25:
+            return None
+        closest_card = min(
+            (card for card in cards if self._card_power_kw(card) is not None),
+            key=lambda card: self._card_power_kw(card) or float("inf"),
+        )
+        passport_range = self._card_passport_power_range(closest_card)
+        if passport_range:
+            minimum, maximum = passport_range
+            min_text = f"{minimum:g}".replace(".", ",")
+            max_text = f"{maximum:g}".replace(".", ",")
+            return (
+                f"Для {area:g} м² предварительный ориентир — примерно "
+                f"{base_kw:g}–{upper_kw:g} кВт. Самая маломощная найденная модель рассчитана "
+                f"на {min(powers):g} кВт, но по техническому паспорту может снижать "
+                f"теплопроизводительность примерно до {min_text} кВт "
+                f"(диапазон {min_text}–{max_text} кВт). Поэтому она не работает постоянно "
+                f"на максимуме, однако при теплопотреблении ниже {min_text} кВт возможны "
+                "более частые включения. Окончательный вывод зависит от теплопотерь здания."
+            )
+        return (
+            f"Для {area:g} м² предварительный ориентир — около {base_kw:g}–{upper_kw:g} кВт. "
+            f"Минимальная найденная модель имеет {min(powers):g} кВт, то есть заметно больше; "
+            "показываю её только как ближайший вариант, а не как автоматически оптимальный подбор."
+        )
+
+    def _card_passport_power_range(self, card: ProductCard) -> tuple[float, float] | None:
+        for key, value in card.characteristics.items():
+            if "диапазон мощности отопления по паспорту" not in normalize_text(key):
+                continue
+            numbers = [
+                float(raw.replace(",", "."))
+                for raw in re.findall(r"\d+(?:[,.]\d+)?", str(value))
+            ]
+            if len(numbers) >= 2 and 0 < numbers[0] <= numbers[1]:
+                return numbers[0], numbers[1]
+        return None
+
+    def _card_power_kw(self, card: ProductCard) -> float | None:
+        for value in [card.name, *card.characteristics.values()]:
+            match = re.search(r"(\d+(?:[,.]\d+)?)\s*квт", normalize_text(str(value)))
+            if match:
+                return float(match.group(1).replace(",", "."))
+        return None
+
     def compose_comparison(self, cards: list[ProductCard]) -> str:
         cards = cards[:3]
         seen_keys: list[str] = []
@@ -451,7 +538,7 @@ class ResponseComposerAgent:
             for key in seen_keys
             if len({card.characteristics.get(key) for card in cards}) > 1
         ]
-        lines = ["Сравниваю показанные варианты по данным фида:"]
+        lines = ["Сравниваю показанные варианты по карточкам товаров:"]
         for card in cards:
             parts = [f"цена {card.price:g} {card.currency}", f"наличие: {card.stock_status}"]
             for key in diff_keys[:2]:
@@ -477,7 +564,7 @@ class ResponseComposerAgent:
         slots = query.slots
         if query.category == "valves" and slots.get("diameter_mm"):
             draft = (
-                f"Не вижу точного совпадения по крану с диаметром {slots['diameter_mm']} мм в данных фида. "
+                f"Не вижу точного совпадения по крану с диаметром {slots['diameter_mm']} мм в текущем ассортименте. "
                 "Уточните размер в дюймах — 1/2, 3/4 или 1 — либо передам вопрос менеджеру."
             )
         elif query.category == "sewer":
@@ -492,19 +579,19 @@ class ResponseComposerAgent:
                 details.append(f"длина {slots['length_mm']} мм")
             requested = ", ".join(details) or query.original_text
             draft = (
-                f"Не вижу точного совпадения в фиде: {requested}. "
+                f"Не вижу точного совпадения в ассортименте: {requested}. "
                 "Не буду подбирать другую длину или наружную канализацию вместо нужной. "
                 "Можно уточнить параметры или передать вопрос менеджеру."
             )
         elif query.category == "boilers":
             requested = self._requested_summary(query) or query.original_text
             draft = (
-                f"Не вижу точного совпадения в фиде: {requested}. "
+                f"Не вижу точного совпадения в ассортименте: {requested}. "
                 "Не буду показывать котёл другого типа как подходящий без предупреждения. "
                 "Можно уточнить параметры, рассмотреть ближайшие альтернативы или передать вопрос менеджеру."
             )
         else:
-            draft = "Не нашёл подходящие товары в данных фида. Могу уточнить параметры или передать вопрос менеджеру."
+            draft = "Не нашёл подходящие товары в текущем ассортименте. Могу уточнить параметры или передать вопрос менеджеру."
         self.last_draft = draft
         return draft
 
@@ -524,18 +611,18 @@ class ResponseComposerAgent:
             boiler_type = query.slots.get("boiler_type")
             type_text = f" типа «{boiler_type}»" if boiler_type else ""
             return (
-                f"Точного двухконтурного котла{type_text} в фиде не вижу. "
-                "Ниже только ближайшие альтернативы из фида: если в характеристиках указан один "
+                f"Точного двухконтурного котла{type_text} в текущем ассортименте не вижу. "
+                "Ниже только ближайшие альтернативы: если в характеристиках указан один "
                 "контур, горячую воду нужно решать отдельно через бойлер или другую схему."
             )
         requested = self._requested_summary(query)
         if requested:
             return (
-                f"Точного совпадения в фиде не вижу: {requested}. "
-                "Показываю ближайшие альтернативы из фида — проверьте отличия в характеристиках."
+                f"Точного совпадения в ассортименте не вижу: {requested}. "
+                "Показываю ближайшие альтернативы — проверьте отличия в характеристиках."
             )
         return (
-            "Точного совпадения в фиде не вижу. Показываю ближайшие альтернативы из фида — "
+            "Точного совпадения в ассортименте не вижу. Показываю ближайшие альтернативы — "
             "проверьте отличия в характеристиках."
         )
 
@@ -555,11 +642,11 @@ class ResponseComposerAgent:
         if recognized:
             return (
                 f"По модели старого насоса {slots['old_model']} распознал ориентиры: {recognized}. "
-                "Показываю варианты из фида; совместимость и монтажную длину лучше сверить по карточке."
+                "Показываю варианты из ассортимента; совместимость и монтажную длину лучше сверить по карточке."
             )
         return (
             f"Использую модель старого насоса {slots['old_model']} как ориентир. "
-            "Показываю варианты из фида; совместимость лучше сверить по карточке."
+            "Показываю варианты из ассортимента; совместимость лучше сверить по карточке."
         )
 
     def compose_clarification(
@@ -578,6 +665,11 @@ class ResponseComposerAgent:
             elif "привет" in normalized:
                 prefix = "Здравствуйте. "
         draft = f"{prefix}{question}"
+        if "м²" in question and "примерно на" in question:
+            # The acknowledgement is part of conversational memory. A stylistic
+            # rewrite must not turn "котёл на 100" back into a context-free question.
+            self.last_draft = draft
+            return draft
         return self._polish(
             "ResponseComposerAgent.clarification",
             user_message or question,
@@ -592,7 +684,7 @@ class ResponseComposerAgent:
         note: str | None = None,
     ) -> str:
         if not cards:
-            draft = "Не нашёл подходящие товары в данных фида. Могу передать вопрос менеджеру."
+            draft = "Не нашёл подходящие товары в текущем ассортименте. Могу передать вопрос менеджеру."
             return self._polish(
                 "ResponseComposerAgent.no_products",
                 query.original_text,
@@ -605,9 +697,14 @@ class ResponseComposerAgent:
             lines.append(note)
         elif query.category == "boilers" and query.slots.get("area_m2"):
             area = query.slots["area_m2"]
-            lines.append(
-                f"Ориентир по мощности для {area:g} м² приблизительный, поэтому показываю варианты без инженерного расчёта."
-            )
+            sizing_warning = self._boiler_sizing_warning(cards, query)
+            if sizing_warning:
+                lines.append(sizing_warning)
+            else:
+                lines.append(
+                    f"Ориентир по мощности для {area:g} м² предварительный; точный подбор "
+                    "зависит от теплопотерь здания."
+                )
         else:
             lines.append("Нашёл подходящие варианты:")
 
@@ -622,8 +719,10 @@ class ResponseComposerAgent:
                 stock = f"{stock}, {card.stock_qty} шт."
             lines.append(f"   Наличие: {stock}")
             if card.characteristics:
+                characteristic_limit = 4 if query.category == "boilers" else 3
                 attrs = "; ".join(
-                    f"{key}: {value}" for key, value in list(card.characteristics.items())[:3]
+                    f"{key}: {value}"
+                    for key, value in list(card.characteristics.items())[:characteristic_limit]
                 )
                 lines.append(f"   Характеристики: {attrs}")
             lines.append(f"   Ссылка: {card.url}")
@@ -758,14 +857,14 @@ class ResponseComposerAgent:
         parts = ", ".join(requested_parts)
         if requested_parts == ["насос"]:
             draft = (
-                f"Да, по данным фида для {card.sku} насос указан в характеристиках этой модели. "
+                f"Да, в карточке {card.sku} насос указан в характеристиках этой модели. "
                 "Для стандартной схемы отдельный циркуляционный насос обычно не нужен, но если "
                 "есть тёплые полы, несколько контуров, бойлер или длинная трасса, может "
                 f"понадобиться дополнительный насосный узел. Карточка товара: {card.url}"
             )
         else:
             draft = (
-                f"Да, по данным фида для {card.sku} вижу подтверждение: {parts}. "
+                f"Да, в карточке {card.sku} вижу подтверждение: {parts}. "
                 f"Карточка товара: {card.url}"
             )
         self.last_draft = draft
@@ -773,10 +872,15 @@ class ResponseComposerAgent:
 
     def _next_action(self, query: SearchQuery, cards_count: int) -> str:
         if query.cheap:
-            return "Следующее действие: Показать аналоги."
+            return "Могу показать сопоставимые аналоги."
+        if query.category == "boilers" and cards_count == 1:
+            return (
+                "Чтобы проверить применимость точнее, уточните регион, утепление "
+                "и высоту потолков."
+            )
         if cards_count > 1:
-            return "Следующее действие: Сравнить."
-        return "Следующее действие: Показать аналоги."
+            return "Могу сравнить эти варианты по главным отличиям для вашей задачи."
+        return "Могу показать сопоставимые аналоги."
 
     def _requested_summary(self, query: SearchQuery) -> str:
         slots = query.slots
