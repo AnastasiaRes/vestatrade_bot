@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import re
 import unicodedata
 from typing import Any
@@ -8,8 +9,7 @@ from typing import Any
 def normalize_text(text: str | None) -> str:
     if not text:
         return ""
-    text = unicodedata.normalize("NFKC", text).lower().replace("ё", "е")
-    text = text.replace("&quot;", '"').replace("&amp;", "&")
+    text = html.unescape(unicodedata.normalize("NFKC", text)).lower().replace("ё", "е")
     # Покупатели могут называть канализацию «канашкой». Приводим разговорное
     # слово и его падежные формы к каноническому термину до классификации,
     # извлечения слотов и поиска по ассортименту.

@@ -4,7 +4,7 @@ import re
 
 from app.models import GuardrailsResult, Product, ProductCard, SearchQuery
 
-from .utils import normalize_text
+from .utils import normalize_sku, normalize_text
 
 
 CLARIFICATION_TERMS = [
@@ -272,19 +272,25 @@ class GuardrailsAgent:
     def _extract_power_kw(self, product: Product | None) -> float | None:
         if not product:
             return None
-        text = normalize_text(
-            " ".join(
-                [
-                    product.name,
-                    product.description or "",
-                    " ".join(product.attributes_normalized.values()),
-                ]
-            )
+        # Structured catalogue fields are authoritative.  Long marketing
+        # descriptions often enumerate every model in a series (for example a
+        # 3 kW boiler whose description also mentions 9 kW), so reading the
+        # first number from the description can silently approve an
+        # underpowered product.
+        for key, value in product.attributes_normalized.items():
+            key_text = normalize_text(str(key))
+            if "мощ" not in key_text or "квт" not in key_text:
+                continue
+            number = re.search(r"\d+(?:[,.]\d+)?", str(value))
+            if number:
+                return float(number.group(0).replace(",", "."))
+        trusted_text = normalize_text(
+            " ".join([product.name, *product.attributes_normalized.values()])
         )
-        match = re.search(r"(\d+(?:[,.]\d+)?)\s*квт", text)
-        if not match:
-            return None
-        return float(match.group(1).replace(",", "."))
+        match = re.search(r"(\d+(?:[,.]\d+)?)\s*квт", trusted_text)
+        if match:
+            return float(match.group(1).replace(",", "."))
+        return None
 
     def _missing_small_talk_anchors(self, draft: str, answer: str) -> list[str]:
         """Reject answers that LLM truncated below the safe minimum or that dropped key anchors."""
@@ -324,6 +330,15 @@ class GuardrailsAgent:
         ]
         if any(marker in answer_norm for marker in premature_tech_questions):
             issues.append("LLM rewrite started technical selection before the task")
+        if any(
+            marker in answer_norm
+            for marker in [
+                "вашего интернет-магазина",
+                "ваш интернет-магазин",
+                "вашему интернет-магазину",
+            ]
+        ):
+            issues.append("LLM rewrite called Vesta Trading the customer's store")
         return issues
 
     def _missing_clarification_terms(self, draft: str, answer: str) -> list[str]:
@@ -334,6 +349,13 @@ class GuardrailsAgent:
             for term in CLARIFICATION_TERMS
             if term in draft_norm and term not in answer_norm
         ]
+        # Numeric alternatives in a clarification are constraints, not style.
+        # For example, replacing "220 или 380 В?" with a generic question about
+        # the electrical network makes the customer guess which value is needed.
+        # Reject that rewrite and return the deterministic draft unchanged.
+        for number in sorted(set(re.findall(r"(?<!\d)\d+(?:[.,/]\d+)?(?!\d)", draft_norm))):
+            if not re.search(rf"(?<!\d){re.escape(number)}(?!\d)", answer_norm):
+                missing.append(f"LLM rewrite dropped clarification number: {number}")
         if "площад" in draft_norm and any(
             marker in answer_norm
             for marker in [
@@ -358,6 +380,32 @@ class GuardrailsAgent:
         ctx_compact = re.sub(r"\s+", "", ctx)
         ctx_numbers = set(re.findall(r"\d+", ctx))
         ans = normalize_text(answer)
+        context_skus: set[str] = set()
+        for line in context.splitlines():
+            sku_match = re.search(
+                r"\b(?:артикул|арт|sku)\b\.?\s*[:№#-]?\s*([^;)\n]+)",
+                line,
+                flags=re.IGNORECASE,
+            )
+            if not sku_match:
+                continue
+            raw_sku = sku_match.group(1).strip().rstrip(".,;:!?")
+            normalized = normalize_sku(raw_sku)
+            if normalized:
+                context_skus.add(normalized)
+        # A card name or description may legitimately mention another model,
+        # for example «адаптер (для VTc.589)».  It is safe to repeat that exact
+        # reference in prose, but it must not be presented as the card's own
+        # article (the explicitly labelled check below remains stricter).
+        context_reference_skus = {
+            normalize_sku(token)
+            for token in re.findall(
+                r"\b[a-zа-я]{2,}[.\-][a-zа-я0-9.\-]*[a-zа-я0-9]\b",
+                ctx,
+            )
+            if re.search(r"\d", token)
+        }
+        context_reference_skus.update(context_skus)
 
         for match in re.finditer(r"(\d[\d\s]*)\s*(?:руб|rub|₽)", ans):
             if re.sub(r"\s+", "", match.group(1)) not in ctx_compact:
@@ -365,16 +413,47 @@ class GuardrailsAgent:
         for match in re.finditer(r"(\d+)\s*шт", ans):
             if match.group(1) not in ctx_numbers:
                 issues.append(f"invented stock qty: {match.group(0).strip()}")
-        # артикулы вида VT.227.N.04 / VRS.256.18.0 / 2201375
-        for token in re.findall(r"\b[a-zа-я]{2,}[.\-][a-zа-я0-9.\-]{2,}\b", ans):
+        # Артикулы вида VT.227.N.04 / VRS.256.18.0.
+        for token in re.findall(
+            r"\b[a-zа-я]{2,}[.\-][a-zа-я0-9.\-]*[a-zа-я0-9]\b",
+            ans,
+        ):
             if not re.search(r"\d", token):
                 continue
-            if token not in ctx and token.replace(".", "").replace("-", "") not in ctx_compact:
+            if normalize_sku(token) not in context_reference_skus:
+                issues.append(f"invented sku: {token}")
+        # Compact/numeric articles are safest to recognise after an explicit
+        # label.  This covers values such as CMSR02CA28 and 2201375 without
+        # treating every ordinary alphanumeric model word as an SKU.
+        for token in re.findall(
+            r"\b(?:артикул|арт|sku)\b\.?\s*[:№#-]?\s*"
+            r"([a-zа-я0-9][a-zа-я0-9._/\-]{2,})",
+            ans,
+        ):
+            token = token.rstrip(".,;:!?")
+            compact_token = normalize_sku(token)
+            if compact_token and compact_token not in context_skus:
                 issues.append(f"invented sku: {token}")
         issues.extend(self._invented_context_measurements(ans, ctx, ctx_numbers))
         for term in ["шланг"]:
             if term in ans and term not in ctx:
                 issues.append(f"invented context term: {term}")
+
+        # Electric boilers do not burn fuel.  A fluent answer can preserve all
+        # catalogue numbers yet still invent a combustion chamber, so protect
+        # this semantic invariant separately from numeric grounding.
+        if "электрическ" in ctx:
+            mentions_chamber = re.search(
+                r"(?:камер\w* сгоран|закрыт\w* камер|открыт\w* камер)",
+                ans,
+            )
+            denies_chamber = re.search(
+                r"(?:нет|не\s+имеет|не\s+оснащ\w*|без)[^.]{0,35}камер"
+                r"|камер[^.]{0,35}(?:нет|отсутств\w*|не\s+предусмотр\w*)",
+                ans,
+            )
+            if mentions_chamber and not denies_chamber:
+                issues.append("electric boiler was assigned a combustion chamber")
 
         return GuardrailsResult(ok=not issues, issues=issues, safe_message=None)
 

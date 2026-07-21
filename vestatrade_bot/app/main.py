@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 import logging
 from pathlib import Path
+from threading import RLock
 from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException
@@ -26,11 +27,15 @@ settings = get_settings()
 orchestrator = ChatOrchestrator()
 chat_logger = ChatLogger(settings.chat_logs_dir)
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+# Feed replacement is process-wide. ChatOrchestrator itself isolates mutable
+# request agents per worker thread and serializes only turns of the same session.
+_feed_reload_lock = RLock()
 
 
 def startup_load_feed() -> None:
     try:
-        count, source = orchestrator.reload_products(refresh=True)
+        with _feed_reload_lock:
+            count, source = orchestrator.reload_products(refresh=True)
         logger.info("Loaded %s products from %s on startup", count, source)
     except Exception as exc:
         logger.warning("Startup feed load failed, bot will try cache on demand: %s", exc)
@@ -110,7 +115,8 @@ def reload_feed(
     if settings.reload_feed_token and x_admin_token != settings.reload_feed_token:
         raise HTTPException(status_code=403, detail="invalid reload token")
     try:
-        count, source = orchestrator.reload_products(refresh=True)
+        with _feed_reload_lock:
+            count, source = orchestrator.reload_products(refresh=True)
     except Exception as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {"status": "ok", "products_count": count, "source": source}

@@ -6,7 +6,7 @@ import pytest
 
 from app.agents.orchestrator import ChatOrchestrator
 from app.config import get_settings
-from app.models import Product, ProductCard, SearchQuery
+from app.models import IntentResult, Product, ProductCard, SearchQuery
 from app.openrouter_client import LLMResult
 
 
@@ -30,6 +30,105 @@ class BadRewriteLLM:
         fallback: dict[str, Any],
     ) -> tuple[dict[str, Any], bool]:
         return fallback, False
+
+
+def test_replacement_pump_first_asks_for_old_model_and_size(orchestrator) -> None:
+    response = orchestrator.handle_chat(
+        "replacement-pump",
+        "старый насос есть, нужен на замену",
+    )
+
+    assert response.products == []
+    assert "модел" in response.answer.lower()
+    assert "размер" in response.answer.lower()
+    assert response.debug["slots"]["pump_replacement"] is True
+
+
+def test_unknown_boiler_flow_asks_voltage_after_no_gas(orchestrator) -> None:
+    first = orchestrator.handle_chat(
+        "unknown-boiler-voltage",
+        "нужен котёл, но я не знаю какой",
+    )
+    second = orchestrator.handle_chat(
+        "unknown-boiler-voltage",
+        "70 квадратов, газа нет",
+    )
+
+    assert "газ" in first.answer.lower() and "площад" in first.answer.lower()
+    assert second.products == []
+    assert "220" in second.answer and "380" in second.answer
+
+
+def test_voltage_followup_is_filtered_before_live_consultant() -> None:
+    products = [
+        Product(
+            sku=f"E-{voltage}",
+            name=f"Электрический котёл 12 кВт {voltage} В",
+            category_path="Котлы электрические",
+            url=f"https://example.test/e-{voltage}",
+            price=30000 + voltage,
+            stock_status="в наличии",
+            attributes_normalized={
+                "мощность, квт": "12",
+                "тип котла": "Электрический",
+                "напряжение": str(voltage),
+            },
+        )
+        for voltage in (220, 380)
+    ]
+    settings = get_settings().model_copy(
+        update={
+            "llm_provider": "ollama",
+            "ollama_base_url": "http://fake.test",
+            "ollama_model": "fake",
+        }
+    )
+    bot = ChatOrchestrator(
+        settings=settings,
+        products=products,
+        llm_client=BadRewriteLLM("Ошибочно игнорирую напряжение."),
+    )
+    bot.handle_chat("voltage-live", "электрический котёл на 100 м²")
+
+    response = bot.handle_chat("voltage-live", "380")
+
+    assert response.debug["slots"]["voltage_v"] == 380
+    assert "ConsultantAgent" not in response.debug["agents_used"]
+    assert response.products
+    assert {card.sku for card in response.products} == {"E-380"}
+
+
+def test_underpowered_warning_keeps_area_and_power_for_followup(orchestrator) -> None:
+    first = orchestrator.handle_chat(
+        "warning-context",
+        "6 кВт на 100 метров хватит?",
+    )
+    second = orchestrator.handle_chat(
+        "warning-context",
+        "но сосед говорит хватит",
+    )
+
+    assert "не хват" in first.answer.lower()
+    assert "6 кВт" in second.answer and "100 м²" in second.answer
+    assert "не хват" in second.answer.lower()
+
+
+def test_power_tradeoff_is_deterministic_before_catalog_consult(orchestrator) -> None:
+    first = orchestrator.handle_chat(
+        "power-tradeoff",
+        "12 кВт или 15 кВт на дом 100 м²?",
+    )
+    second = orchestrator.handle_chat(
+        "power-tradeoff",
+        "обычный дом, без суперутепления",
+    )
+
+    assert first.products == []
+    assert "утеп" in first.answer.lower()
+    assert "12" in second.answer and "15" in second.answer
+    assert "запас" in second.answer.lower()
+    assert "12 кВт работает" not in first.answer.lower()
+    assert "начать проверку с 12" in second.answer.lower()
 
 
 def test_pipe_starts_with_purpose_question(orchestrator) -> None:
@@ -1017,10 +1116,29 @@ def test_builtin_boiler_is_not_confirmed_from_indirect_boiler_mentions(orchestra
 
 
 def test_link_request_uses_last_product(orchestrator) -> None:
-    orchestrator.handle_chat("s6", "электрический котёл на 100 м²")
+    first = orchestrator.handle_chat("s6", "электрический котёл на 100 м²")
     response = orchestrator.handle_chat("s6", "дай ссылку")
 
     assert "https://example.test/arde9" in response.answer
+    assert response.products
+    assert {card.sku for card in response.products} == {
+        card.sku for card in first.products
+    }
+
+
+def test_link_summary_includes_name_sku_url_and_card(orchestrator) -> None:
+    first = orchestrator.handle_chat("s6-summary", "PUMP-25-60")
+    response = orchestrator.handle_chat(
+        "s6-summary",
+        "Дай итог: название, артикул и ссылку именно на этот товар.",
+    )
+
+    assert first.products and response.products
+    card = first.products[0]
+    assert card.name in response.answer
+    assert card.sku in response.answer
+    assert card.url in response.answer
+    assert response.products[0].sku == card.sku
 
 
 def test_confirmation_followup_repeats_same_last_product(orchestrator) -> None:
@@ -1228,10 +1346,10 @@ def test_americanka_filter_excludes_valves_without_union(orchestrator) -> None:
     orchestrator.handle_chat("am", "3/4")
     response = orchestrator.handle_chat("am", "с американкой")
 
-    assert response.products
-    for product in response.products:
-        name = product.name.lower()
-        assert "полусгон" in name or "американк" in name, product.name
+    # В тестовом каталоге американка есть только 1/2. Явные 3/4 нельзя
+    # ослаблять на alternatives-пути и подменять другим размером.
+    assert response.products == []
+    assert "не наш" in response.answer.lower() or "не виж" in response.answer.lower()
 
 
 def test_hot_water_followup_is_acknowledged_as_two_contour(orchestrator) -> None:
@@ -1738,6 +1856,47 @@ def test_context_agent_answers_followup_about_shown_products(sample_products) ->
     assert "ARD-E9" in llm.system_seen and "38000" in llm.system_seen
 
 
+def test_exact_sku_context_followup_keeps_card_and_category(sample_products) -> None:
+    llm = _CtxLLM(
+        "Артикул PUMP-25-60: циркуляционный насос, напор 6 м, монтажная длина 180 мм."
+    )
+    orchestrator = ChatOrchestrator(products=sample_products, llm_client=llm)
+
+    first = orchestrator.handle_chat("ctx-exact", "PUMP-25-60")
+    response = orchestrator.handle_chat(
+        "ctx-exact",
+        "Какие основные характеристики у показанного товара? Назови его артикул.",
+    )
+
+    assert first.products and first.products[0].sku == "PUMP-25-60"
+    assert response.products and response.products[0].sku == "PUMP-25-60"
+    assert "PUMP-25-60" in response.answer
+    assert "Для какой задачи нужен насос" not in response.answer
+    assert response.debug["response_llm_requested"] is False
+    assert "напор: 6 м" in response.answer.lower()
+    assert "монтажная длина: 180 мм" in response.answer.lower()
+
+
+def test_context_answer_that_omits_requested_sku_uses_grounded_fallback(
+    sample_products,
+) -> None:
+    llm = _CtxLLM("Это циркуляционный насос с напором 6 м.")
+    orchestrator = ChatOrchestrator(products=sample_products, llm_client=llm)
+    orchestrator.handle_chat("ctx-required-sku", "PUMP-25-60")
+
+    response = orchestrator.handle_chat(
+        "ctx-required-sku",
+        "Какой практический вывод можно сделать по этой карточке? Назови артикул.",
+    )
+
+    assert response.products and response.products[0].sku == "PUMP-25-60"
+    assert "Артикул: PUMP-25-60" in response.answer
+    assert response.debug["response_llm_output_accepted"] is False
+    assert "omitted requested SKU" in str(
+        response.debug["response_llm_rejection_reason"]
+    )
+
+
 def test_price_question_is_not_mistaken_for_repeated_boiler_filter(sample_products) -> None:
     llm = _CtxLLM("Самый дорогой из показанных — ARD-E9, он стоит 38000 RUB.")
     orchestrator = ChatOrchestrator(products=sample_products, llm_client=llm)
@@ -1747,6 +1906,43 @@ def test_price_question_is_not_mistaken_for_repeated_boiler_filter(sample_produc
 
     assert "38000" in response.answer
     assert "параметр уже учтён" not in response.answer.lower()
+
+
+def test_exact_sku_pronoun_price_followup_keeps_card(sample_products) -> None:
+    llm = _CtxLLM("unused")
+    orchestrator = ChatOrchestrator(products=sample_products, llm_client=llm)
+    first = orchestrator.handle_chat("ctx-pronoun-price", "PUMP-25-60")
+
+    response = orchestrator.handle_chat(
+        "ctx-pronoun-price",
+        "Сколько он стоит? Назови также артикул.",
+    )
+
+    assert first.products and first.products[0].sku == "PUMP-25-60"
+    assert response.products and response.products[0].sku == "PUMP-25-60"
+    assert "PUMP-25-60" in response.answer
+    assert "цена" in response.answer.lower()
+
+
+def test_explicit_card_followup_overrides_small_talk_intent(sample_products) -> None:
+    llm = _CtxLLM("Артикул PUMP-25-60. Проверьте данные карточки перед покупкой.")
+    orchestrator = ChatOrchestrator(products=sample_products, llm_client=llm)
+    orchestrator.handle_chat("ctx-card-small-talk", "PUMP-25-60")
+    orchestrator.intent_router.route = lambda _message, _session: IntentResult(
+        intent_type="small_talk",
+        category="other",
+        confidence=0.8,
+        is_topic_change=True,
+    )
+
+    response = orchestrator.handle_chat(
+        "ctx-card-small-talk",
+        "Дай осторожную рекомендацию по этой карточке и назови артикул.",
+    )
+
+    assert response.products and response.products[0].sku == "PUMP-25-60"
+    assert response.debug["response_llm_requested"] is True
+    assert "PUMP-25-60" in response.answer
 
 
 def test_what_is_better_from_shown_uses_deterministic_choice(orchestrator) -> None:
@@ -2516,3 +2712,413 @@ def test_guardrails_restore_product_answer_if_llm_drops_card_facts(sample_produc
     assert "https://example.test/arde9" in response.answer
     assert "38000 RUB" in response.answer
     assert response.products
+
+
+def test_water_leak_emergency_bypasses_catalog_and_keeps_safe_followup(orchestrator) -> None:
+    orchestrator.handle_chat("emergency", "нужна система отопления")
+
+    first = orchestrator.handle_chat(
+        "emergency",
+        "ПОМОГИТЕ прорвало трубу под мойкой, заливает всё и соседей снизу!",
+    )
+
+    assert first.products == []
+    assert first.debug["intent"] == "emergency"
+    assert first.debug["any_llm_used"] is False
+    assert "перекройте" in first.answer.lower()
+    assert "электр" in first.answer.lower()
+    assert "аварийн" in first.answer.lower()
+    assert "сосед" in first.answer.lower()
+
+    contained = orchestrator.handle_chat(
+        "emergency",
+        "воду перекрыл. теперь что нужно купить чтобы починить?",
+    )
+
+    assert contained.products == []
+    assert contained.debug["intent"] == "emergency"
+    assert "где именно" in contained.answer.lower()
+    assert "материал" in contained.answer.lower()
+    assert "диаметр" in contained.answer.lower() or "резьб" in contained.answer.lower()
+    assert "площад" not in contained.answer.lower()
+    assert "источник тепла" not in contained.answer.lower()
+
+
+def test_hot_radiator_rupture_uses_burn_safe_emergency_flow(orchestrator) -> None:
+    first = orchestrator.handle_chat(
+        "heating-emergency",
+        "Прорвало радиатор, льётся кипяток!",
+    )
+
+    assert first.products == []
+    assert first.debug["intent"] == "emergency"
+    assert first.debug["any_llm_used"] is False
+    assert "ожог" in first.answer.lower()
+    assert "не касайтесь" in first.answer.lower()
+    assert "аварийн" in first.answer.lower()
+
+    contained = orchestrator.handle_chat(
+        "heating-emergency",
+        "радиатор перекрыл, больше не течёт",
+    )
+    assert contained.products == []
+    assert "остын" in contained.answer.lower()
+    assert "модель" in contained.answer.lower()
+
+
+def test_vague_under_sink_request_keeps_drain_followup_out_of_valve_flow(orchestrator) -> None:
+    first = orchestrator.handle_chat(
+        "sink-flow",
+        "нужна эта фигня под раковину",
+    )
+    second = orchestrator.handle_chat("sink-flow", "слив")
+
+    first_answer = first.answer.lower()
+    second_answer = second.answer.lower()
+    assert first.products == []
+    assert "слив" in first_answer
+    assert "сифон" in first_answer
+    assert "кран" in first_answer
+    assert second.products == []
+    assert "слив" in second_answer or "сифон" in second_answer
+    assert "размер выпуска" in second_answer
+    assert "подключ" in second_answer
+    assert "кран" not in second_answer
+    assert "площад" not in second_answer
+
+
+def test_project_cart_rejects_accessories_misclassified_as_main_roles() -> None:
+    products = [
+        Product(
+            sku="24432",
+            name="Трос из нерж. стали для крепления скважинного насоса",
+            category_path="Насосное оборудование",
+            url="https://example.test/cable",
+            price=100,
+            stock_status="в наличии",
+            stock_qty=5,
+        ),
+        Product(
+            sku="SK-CASE",
+            name="Кожух для трубы 16 (диаметр 25) синий",
+            category_path="Трубы и кожухи",
+            url="https://example.test/casing",
+            price=20,
+            stock_status="в наличии",
+            stock_qty=20,
+            description="Не предназначен для транспортировки жидкости или газа.",
+        ),
+        Product(
+            sku="DECOR-CUP",
+            name="Чашка декоративная хромированная",
+            category_path="Краны и запорная арматура",
+            url="https://example.test/cup",
+            price=30,
+            stock_status="в наличии",
+            stock_qty=30,
+        ),
+        Product(
+            sku="WELL-PUMP",
+            name="Насос скважинный 3-40",
+            category_path="Насосы скважинные",
+            url="https://example.test/well-pump",
+            price=8000,
+            stock_status="в наличии",
+            stock_qty=2,
+            attributes_normalized={"тип товара": "Насос"},
+        ),
+    ]
+    bot = ChatOrchestrator(products=products)
+    bot.handle_chat("safe-cart", "собери водоснабжение для дома")
+
+    selected = bot.handle_chat(
+        "safe-cart",
+        "скважина, глубина 40 м, собери комплект",
+    )
+
+    assert {product.sku for product in selected.products} == {"WELL-PUMP"}
+    for bad_sku in ["24432", "SK-CASE", "DECOR-CUP"]:
+        assert bad_sku not in selected.answer
+    assert "не добавил артикулы" in selected.answer.lower()
+    assert "аксессуар вместо основного узла" in selected.answer.lower()
+
+    summary = bot.handle_chat("safe-cart", "собери корзину")
+    assert {product.sku for product in summary.products} == {"WELL-PUMP"}
+    assert all(bad_sku not in summary.answer for bad_sku in ["24432", "SK-CASE", "DECOR-CUP"])
+
+
+def test_handoff_keeps_original_boiler_requirement(sample_products, tmp_path) -> None:
+    settings = get_settings().model_copy(
+        update={"handoff_log_path": tmp_path / "handoff.jsonl"}
+    )
+    bot = ChatOrchestrator(products=sample_products, settings=settings)
+
+    bot.handle_chat("handoff-boiler", "нужен котел на большой коттедж 400 м2 с бойлером")
+    response = bot.handle_chat("handoff-boiler", "передай менеджеру")
+
+    log_text = (tmp_path / "handoff.jsonl").read_text(encoding="utf-8")
+    assert response.need_handoff is True
+    assert "с бойлером" in response.answer.lower()
+    assert "с бойлером" in log_text.lower()
+    assert "key_requirements" in log_text
+    assert "400" in log_text
+
+
+def test_complex_boiler_binding_clarifies_then_creates_grounded_handoff(
+    sample_products,
+    tmp_path,
+) -> None:
+    settings = get_settings().model_copy(
+        update={"handoff_log_path": tmp_path / "complex-handoff.jsonl"}
+    )
+    bot = ChatOrchestrator(products=sample_products, settings=settings)
+
+    first = bot.handle_chat(
+        "complex-handoff",
+        "подберите обвязку котла, бойлера и теплого пола, я вообще не разбираюсь",
+    )
+    second = bot.handle_chat(
+        "complex-handoff",
+        "дом 180 метров, котёл не выбран, нужен ещё бойлер",
+    )
+    third = bot.handle_chat(
+        "complex-handoff",
+        "бойлер 150 л, тёплый пол 60 м², 6 контуров",
+    )
+
+    first_answer = first.answer.lower()
+    assert first.need_handoff is False
+    assert first.products == []
+    assert "площад" in first_answer
+    assert "кот" in first_answer
+    assert "бойлер" in first_answer
+    assert second.need_handoff is False
+    assert second.products == []
+    assert "объём" in second.answer.lower() or "модел" in second.answer.lower()
+    assert "площадь тёплого пола" in second.answer.lower()
+    assert "число контуров" in second.answer.lower()
+    assert third.need_handoff is True
+    assert third.products == []
+    assert "менеджер" in third.answer.lower()
+    assert "с бойлером" in third.answer.lower()
+    assert third.debug["slots"]["area_m2"] == 180.0
+    assert third.debug["slots"]["boiler_volume_l"] == 150.0
+    assert third.debug["slots"]["warm_floor_area_m2"] == 60.0
+    assert third.debug["slots"]["warm_floor_contours"] == 6
+
+    log_text = (tmp_path / "complex-handoff.jsonl").read_text(encoding="utf-8").lower()
+    assert "180" in log_text
+    assert "150" in log_text
+    assert "60" in log_text
+    assert "6" in log_text
+    assert "обвяз" in log_text
+    assert "бойлер" in log_text
+    assert "тепл" in log_text
+
+
+def test_complex_handoff_does_not_treat_warm_floor_subarea_as_house_area(
+    sample_products,
+    tmp_path,
+) -> None:
+    settings = get_settings().model_copy(
+        update={"handoff_log_path": tmp_path / "complex-missing-house.jsonl"}
+    )
+    bot = ChatOrchestrator(products=sample_products, settings=settings)
+
+    bot.handle_chat(
+        "complex-missing-house",
+        "подберите обвязку котла, бойлера и теплого пола, я не разбираюсь",
+    )
+    response = bot.handle_chat(
+        "complex-missing-house",
+        "котёл не выбран, бойлер 150 л, тёплый пол 60 м², 6 контуров",
+    )
+
+    assert response.need_handoff is False
+    assert "площадь дома" in response.answer.lower()
+    assert response.debug["slots"].get("area_m2") is None
+    assert response.debug["slots"]["warm_floor_area_m2"] == 60.0
+
+
+def test_underpowered_boiler_question_is_answered_before_consultant(sample_products) -> None:
+    bot = ChatOrchestrator(
+        products=sample_products,
+        llm_client=BadRewriteLLM("Да, 6 кВт хватит с большим запасом."),
+    )
+
+    response = bot.handle_chat("underpowered", "Хватит ли 6 кВт на дом 100 м²?")
+
+    assert response.products == []
+    assert "не хватит" in response.answer.lower()
+    assert "около 10 квт" in response.answer.lower()
+    assert "большим запасом" not in response.answer.lower()
+    assert response.debug["consultant_llm_used"] is False
+
+
+def test_pump_stock_without_context_keeps_task_and_parameter_clarification(
+    sample_products,
+) -> None:
+    bot = ChatOrchestrator(
+        products=sample_products,
+        llm_client=BadRewriteLLM("Напишите артикул или модель."),
+    )
+
+    response = bot.handle_chat("pump-stock", "есть насос в наличии?")
+
+    answer = response.answer.lower()
+    assert response.products == []
+    assert "какой насос" in answer
+    assert "для какой задачи" in answer
+    assert "тип" in answer
+    assert "напор" in answer or "источник воды" in answer
+    assert response.debug["response_llm_requested"] is False
+
+
+def test_unresolved_builtin_boiler_question_survives_exact_sku(sample_products) -> None:
+    bot = ChatOrchestrator(products=sample_products)
+
+    def route(message: str, _session) -> IntentResult:
+        if "ARD" in message.upper():
+            return IntentResult(
+                intent_type="exact_sku",
+                category="boilers",
+                confidence=1.0,
+                slots={"sku": "ARD-E9"},
+            )
+        return IntentResult(
+            intent_type="broad_category",
+            category="boilers",
+            confidence=1.0,
+        )
+
+    bot.intent_router.route = route  # type: ignore[method-assign]
+    first = bot.handle_chat("pending-boiler", "у этого котла встроенный бойлер есть?")
+    response = bot.handle_chat("pending-boiler", "ARD-E9")
+
+    assert "модель" in first.answer.lower() or "артикул" in first.answer.lower()
+    assert response.need_handoff is True
+    assert response.products == []
+    assert "бойлер" in response.answer.lower()
+    assert "Не вижу подтверждения комплектации" in response.answer
+
+
+def test_unknown_boiler_binding_asks_model_and_system_before_consultant(
+    sample_products,
+) -> None:
+    bot = ChatOrchestrator(
+        products=sample_products,
+        llm_client=BadRewriteLLM("Уточните площадь дома и источник тепла."),
+    )
+
+    response = bot.handle_chat("unknown-binding", "чем его обвязать?")
+
+    answer = response.answer.lower()
+    assert response.products == []
+    assert "котл" in answer
+    assert "модель" in answer or "артикул" in answer
+    assert "систем" in answer
+    assert "площад" not in answer
+    assert response.debug["consultant_llm_used"] is False
+
+
+def test_explicit_confirmation_keeps_last_product_even_if_router_says_pumps(
+    orchestrator,
+) -> None:
+    first = orchestrator.handle_chat("confirm-category", "PUMP-25-60")
+    assert first.products and first.products[0].sku == "PUMP-25-60"
+
+    orchestrator.intent_router.route = lambda _message, _session: IntentResult(  # type: ignore[method-assign]
+        intent_type="unknown",
+        category="pumps",
+        confidence=0.5,
+    )
+    response = orchestrator.handle_chat("confirm-category", "это точно он?")
+
+    assert response.products
+    assert response.products[0].sku == "PUMP-25-60"
+    assert "PUMP-25-60" in response.answer
+    assert "https://example.test/pump2560" in response.answer
+
+
+def test_underpowered_filter_prefers_structured_sku_power_over_series_description() -> None:
+    weak = Product(
+        sku="SOLO-3",
+        name="Котел электрический ZOTA Solo 3",
+        description="Линейка Solo выпускается в вариантах до 9 кВт.",
+        category_path="Котлы электрические",
+        url="https://example.test/solo-3",
+        price=30000,
+        stock_status="в наличии",
+        attributes_normalized={"мощность, кВт": "3", "тип котла": "Электрический"},
+    )
+    adequate = Product(
+        sku="SOLO-12",
+        name="Котел электрический ZOTA Solo 12",
+        description="Линейка также включает модели 3 кВт.",
+        category_path="Котлы электрические",
+        url="https://example.test/solo-12",
+        price=40000,
+        stock_status="в наличии",
+        attributes_normalized={"мощность, кВт": "12", "тип котла": "Электрический"},
+    )
+    bot = ChatOrchestrator(products=[weak, adequate])
+    query = SearchQuery(
+        original_text="электрический котел на 100 м²",
+        category="boilers",
+        slots={"area_m2": 100.0},
+    )
+
+    assert bot.guardrails._extract_power_kw(weak) == 3.0
+    assert bot.ranking_agent._extract_power_kw(weak) == 3.0
+    assert [p.sku for p in bot._drop_underpowered_boilers([weak, adequate], query)] == [
+        "SOLO-12"
+    ]
+
+
+def test_inflected_pipe_request_keeps_context_for_water_followup(orchestrator) -> None:
+    first = orchestrator.handle_chat("pipe-inflection", "надо трубу, не знаю какую")
+    second = orchestrator.handle_chat("pipe-inflection", "в квартиру, для воды")
+
+    assert first.debug["category"] == "pipes"
+    assert "отоп" in first.answer.lower() and "канал" in first.answer.lower()
+    assert second.debug["category"] == "pipes"
+    assert "холод" in second.answer.lower()
+    assert "диаметр" in second.answer.lower()
+
+
+def test_compact_typo_pump_notation_256_130_is_parsed() -> None:
+    product = Product(
+        sku="PUMP-25-6-130",
+        name="Насос циркуляционный 25/6 130",
+        category_path="Насосы циркуляционные",
+        url="https://example.test/pump-25-6-130",
+        price=3000,
+        stock_status="в наличии",
+        attributes_normalized={
+            "тип товара": "Циркуляционный насос",
+            "присоединение": "25",
+            "максимальный напор, м": "6",
+            "монтажная длина, мм": "130",
+        },
+    )
+    bot = ChatOrchestrator(products=[product])
+
+    response = bot.handle_chat("compact-pump", "нсос 256 130")
+
+    assert response.debug["category"] == "pumps"
+    assert response.debug["slots"]["connection_size"] == 25
+    assert response.debug["slots"]["head_m"] == 6.0
+    assert response.debug["slots"]["mounting_length_mm"] == 130
+    assert response.products and response.products[0].sku == product.sku
+
+
+def test_boiler_power_challenge_reuses_previous_sizing_context() -> None:
+    bot = ChatOrchestrator(products=[])
+
+    first = bot.handle_chat("power-followup", "6 кВт на 100 метров хватит?")
+    second = bot.handle_chat("power-followup", "точно? а то ты раньше 12 советовал")
+
+    assert "не хват" in first.answer.lower()
+    assert all(marker in second.answer.lower() for marker in ["6", "100", "10", "12"])
+    assert "теплопотер" in second.answer.lower()
+    assert "недостаточно" in second.answer.lower()

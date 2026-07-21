@@ -5,6 +5,8 @@ import logging
 
 from app.models import Product, ProductCard, SearchQuery
 
+from .utils import normalize_sku, normalize_text
+
 
 logger = logging.getLogger(__name__)
 
@@ -68,16 +70,24 @@ class ProductCardAgent:
         picked: dict[str, str] = {}
         for key in preferred:
             for attr_key, value in attrs.items():
-                if key in attr_key and value:
+                if key in attr_key and value and self._safe_attribute(product, attr_key, value):
                     picked[attr_key] = value
                     break
             if len(picked) >= max_attributes:
                 return picked
 
         for key, value in attrs.items():
-            if key in picked or not value:
+            if key in picked or not value or not self._safe_attribute(product, key, value):
                 continue
             picked[key] = value
             if len(picked) >= max_attributes:
                 break
         return picked
+
+    def _safe_attribute(self, product: Product, key: str, value: str) -> bool:
+        # The feed has rows where vendorCode (the card identity) and a copied
+        # ``Артикул`` param point at different products.  Never render both as if
+        # they were one consistent card.
+        if "артикул" in normalize_text(key):
+            return normalize_sku(value) == normalize_sku(product.sku)
+        return True

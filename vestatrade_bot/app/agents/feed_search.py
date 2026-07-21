@@ -98,9 +98,11 @@ _PATH_CATEGORY_RULES: list[tuple[str, list[str]]] = [
 class FeedSearchAgent:
     def __init__(self, products: list[Product] | None = None) -> None:
         self.products = products or []
+        self._canonical_category_cache: dict[int, str] = {}
 
     def set_products(self, products: list[Product]) -> None:
         self.products = products
+        self._canonical_category_cache.clear()
 
     def search(self, query: SearchQuery) -> list[Product]:
         if not self.products:
@@ -110,35 +112,44 @@ class FeedSearchAgent:
             exact = self._search_sku(query.sku)
             if exact:
                 return exact[: query.limit]
+            # An exact article is an identity boundary.  Falling through to
+            # category scoring on a missing/ambiguous SKU can return an entirely
+            # different product, which is unsafe and especially confusing after
+            # conflicting feed identities have been quarantined.
+            return []
 
         candidates = self.products
         if query.category != "other":
-            category_filtered = [
+            candidates = [
                 product for product in candidates if self._category_matches(product, query.category)
             ]
-            if category_filtered:
-                candidates = category_filtered
+            # A requested category is a hard boundary. Falling back to the whole
+            # feed when that bucket is empty made a radiator/convector look like
+            # radiator fittings and accessories look like pumps or boilers.
+            if not candidates:
+                return []
 
         if query.brand:
             brand_norm = normalize_text(query.brand)
-            brand_filtered = [
+            candidates = [
                 product
                 for product in candidates
                 if brand_norm and brand_norm in normalize_text(product.brand)
             ]
-            if brand_filtered:
-                candidates = brand_filtered
+            if not candidates:
+                return []
 
-        slot_filtered = self._filter_by_slots(candidates, query)
+        effective_slots = self._effective_query_slots(query)
+        slot_filtered = self._filter_by_slots(candidates, query, effective_slots)
         if slot_filtered:
             candidates = slot_filtered
-        elif self._has_strict_slots(query):
+        elif self._has_strict_slots(query, effective_slots):
             return []
 
         if query.in_stock_only:
-            in_stock = [product for product in candidates if product.is_in_stock]
-            if in_stock:
-                candidates = in_stock
+            candidates = [product for product in candidates if product.is_in_stock]
+            if not candidates:
+                return []
 
         scored = [(self._score(product, query), product) for product in candidates]
         scored = [item for item in scored if item[0] > 0]
@@ -165,8 +176,23 @@ class FeedSearchAgent:
         ]
         if len(tokens) < 4:
             return []
+        effective_slots = self._effective_query_slots(query) if query else {}
         matches: list[tuple[float, int, Product]] = []
         for product in self.products:
+            if query and query.category != "other" and not self._category_matches(
+                product, query.category
+            ):
+                continue
+            if query and query.brand:
+                brand = normalize_text(query.brand)
+                if not brand or brand not in normalize_text(product.brand):
+                    continue
+            if query and query.in_stock_only and not product.is_in_stock:
+                continue
+            if query and self._has_strict_slots(query, effective_slots) and not self._slots_match(
+                product, effective_slots, query.category
+            ):
+                continue
             # Сопоставляем только с идентичностью товара (название/категория),
             # без длинного маркетингового описания — иначе общая лексика паспорта
             # даёт ложные совпадения.
@@ -190,8 +216,28 @@ class FeedSearchAgent:
         if not self.products or query.category == "other":
             return []
 
+        effective_slots = self._effective_query_slots(query)
+        alternative_slots = dict(effective_slots)
+        # A different contour count may be shown only through the explicit
+        # "nearest alternatives" path (and labelled as such by the composer).
+        # Boiler fuel/type remains non-negotiable.
+        if query.category == "boilers":
+            alternative_slots.pop("contours", None)
         candidates = [
-            product for product in self.products if self._category_matches(product, query.category)
+            product
+            for product in self.products
+            if self._category_matches(product, query.category)
+            and self._semantic_slots_match(product, query.category, alternative_slots)
+            and self._alternative_hard_slots_match(
+                product,
+                query,
+                alternative_slots,
+            )
+            and (
+                not query.brand
+                or normalize_text(query.brand) in normalize_text(product.brand)
+            )
+            and (not query.in_stock_only or product.is_in_stock)
         ]
         if not candidates:
             return []
@@ -213,15 +259,14 @@ class FeedSearchAgent:
 
     def _search_sku(self, sku: str) -> list[Product]:
         needle = normalize_sku(sku)
-        exact = [product for product in self.products if normalize_sku(product.sku) == needle]
-        if exact:
-            return exact
-        partial = [
+        # An article identifies exactly one catalog row.  Prefix/substring
+        # fallback made ``ABC-12345`` silently resolve to ``ABC-12345-X`` and
+        # is unsafe for both explicit SKU requests and compact feed articles.
+        return [
             product
             for product in self.products
-            if needle and needle in normalize_sku(product.sku)
+            if needle and normalize_sku(product.sku) == needle
         ]
-        return partial
 
     def _product_text(self, product: Product) -> str:
         attr_text = " ".join(f"{key} {value}" for key, value in product.attributes_normalized.items())
@@ -285,38 +330,172 @@ class FeedSearchAgent:
             " ".join([product.name, product.category_path, product.brand or "", type_attr])
         )
 
+    def _attribute_text(self, product: Product, key_markers: list[str]) -> str:
+        """Return values of explicitly relevant structured feed attributes."""
+        normalized_markers = [normalize_text(marker) for marker in key_markers]
+        values = [
+            str(value)
+            for key, value in product.attributes_normalized.items()
+            if any(marker in normalize_text(key) for marker in normalized_markers)
+        ]
+        return normalize_text(" ".join(values))
+
+    def _structured_text(self, product: Product) -> str:
+        """Product identity and feed attributes, deliberately without description."""
+        attributes = " ".join(
+            f"{key} {value}" for key, value in product.attributes_normalized.items()
+        )
+        return normalize_text(
+            " ".join([product.name, product.category_path, product.brand or "", attributes])
+        )
+
+    def _is_actual_boiler(self, product: Product) -> bool:
+        name = normalize_text(product.name)
+        type_text = self._attribute_text(product, ["тип товара"])
+        return bool(
+            re.search(r"\b(?:электро)?котел\b", name)
+            or re.search(r"\bкотел\b", type_text)
+        )
+
+    def _is_actual_pump(self, product: Product) -> bool:
+        name = normalize_text(product.name)
+        type_values = [
+            normalize_text(str(value))
+            for key, value in product.attributes_normalized.items()
+            if "тип товара" in normalize_text(key)
+        ]
+        if any(
+            value == "насос"
+            or "насосная станц" in value
+            or "насосная установ" in value
+            for value in type_values
+        ):
+            return True
+
+        accessory_markers = [
+            "без насоса",
+            "для насоса",
+            "насосная группа",
+            "насосно-смесительн",
+            "блок управления насос",
+            "блок насосной автоматик",
+            "реле защиты насос",
+        ]
+        if any(marker in name for marker in accessory_markers):
+            return False
+        if name.startswith(
+            (
+                "трос ",
+                "кабель ",
+                "адаптер ",
+                "оголовок ",
+                "шланг ",
+                "соединение ",
+                "фильтр ",
+                "клапан ",
+            )
+        ):
+            return False
+        return bool(
+            re.match(r"^(?:[a-zа-я0-9./+\-]+\s+){0,4}(?:насос|помпа)\b", name)
+            or "насосная станц" in name
+            or "насосная установ" in name
+        )
+
+    def _is_actual_radiator(self, product: Product) -> bool:
+        name = normalize_text(product.name)
+        type_text = self._attribute_text(product, ["тип товара"])
+        path = normalize_text(product.category_path)
+        return bool(
+            re.match(r"^(?:[a-zа-я0-9./+\-]+\s+){0,2}радиатор\b", name)
+            or "радиатор отопления" in type_text
+            or (name.startswith("конвектор ") and "радиатор" in path)
+        )
+
+    def _is_radiator_fitting(self, product: Product) -> bool:
+        if self._is_actual_radiator(product):
+            return False
+        path = normalize_text(product.category_path)
+        text = self._structured_text(product)
+        if "арматура для радиатор" in path or "радиаторная арматура" in path:
+            return True
+        if "радиатор" not in text and "для рад" not in text:
+            return False
+        return any(
+            marker in text
+            for marker in [
+                "клапан",
+                "кран",
+                "вентиль",
+                "термоголов",
+                "термостат",
+                "узел подкл",
+                "трубка для подкл",
+            ]
+        )
+
+    def _is_actual_valve(self, product: Product) -> bool:
+        name = normalize_text(product.name)
+        type_text = self._attribute_text(product, ["тип товара"])
+        return bool(
+            re.search(r"\b(?:кран|клапан|вентиль)\b", name)
+            or re.search(r"\b(?:кран|клапан|вентиль)\b", type_text)
+        )
+
+    def _is_actual_pipe(self, product: Product) -> bool:
+        name = normalize_text(product.name)
+        type_text = self._attribute_text(product, ["тип товара"])
+        if any(marker in name for marker in ["кожух", "защитная гофра"]):
+            return False
+        if any(marker in type_text for marker in ["дымоход", "кожух", "изоляц"]):
+            return False
+        return bool(re.search(r"\bтруба\b", name) or re.search(r"\bтруба\b", type_text))
+
     def _category_matches(self, product: Product, category: str) -> bool:
-        text = self._category_text(product)
-        needles = CATEGORY_NEEDLES.get(category, [])
-        canonical = self.canonical_category(product)
-        if category == "radiators":
-            return canonical == "radiators"
-        if category == "fittings":
-            return canonical == "fittings"
-        if category == "sewer" and canonical == "fittings":
-            return any(marker in text for marker in ["htea", "htu", "ht ", "kg "])
-        if category == "pipes" and "канализац" in text:
-            return False
-        # Фитинги (угольник/муфта/тройник) содержат «ppr» в названии — это не труба.
-        if category == "pipes" and self.canonical_category(product) == "fittings":
-            return False
-        return any(normalize_text(needle) in text for needle in needles)
+        return self.canonical_category(product) == category
 
     def canonical_category(self, product: Product) -> str:
+        cache_key = id(product)
+        cached = self._canonical_category_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        category = self._compute_canonical_category(product)
+        self._canonical_category_cache[cache_key] = category
+        return category
+
+    def _compute_canonical_category(self, product: Product) -> str:
         """Single canonical bucket for a product.
 
-        Name wins first (boilers/pumps live in promo category paths), then the
-        feed category path. Fittings (угольник/муфта/тройник) are kept separate
-        from pipes so a «труба» request never surfaces an угольник.
+        The feed's broad section paths contain both equipment and accessories.
+        Product kind therefore has to be confirmed by its name/type instead of
+        treating everything below ``Котельное/Насосное оборудование`` as a
+        boiler/pump. The same rule keeps protective sleeves and radiator
+        connection tubes out of the transport-pipe bucket.
         """
         name = normalize_text(product.name)
-        for category, needles in _NAME_CATEGORY_RULES:
-            if any(needle in name for needle in needles):
-                return category
         path = normalize_text(product.category_path)
-        for category, needles in _PATH_CATEGORY_RULES:
-            if any(needle in path for needle in needles):
-                return category
+
+        if self._is_actual_boiler(product):
+            return "boilers"
+        if self._is_actual_pump(product):
+            return "pumps"
+        if "канализац" in path or re.search(
+            r"\b(?:htu|htea|htb|htem|kgem|kgb)\b",
+            name,
+        ):
+            return "sewer"
+        if self._is_actual_radiator(product):
+            return "radiators"
+        if self._is_radiator_fitting(product):
+            return "radiator_fittings"
+        if self._is_actual_valve(product):
+            return "valves"
+        if any(needle in name for needle in ["угольник", "муфта", "тройник", "переходник"]):
+            return "fittings"
+        if "фитинг" in path:
+            return "fittings"
+        if self._is_actual_pipe(product):
+            return "pipes"
         return "other"
 
     def retrieve_for_consult(
@@ -371,33 +550,12 @@ class FeedSearchAgent:
         category: str,
         slots: dict,
     ) -> list[Product]:
+        products = [
+            product
+            for product in products
+            if self._semantic_slots_match(product, category, slots)
+        ]
         if category == "boilers":
-            boiler_types = slots.get("boiler_types") or []
-            if isinstance(boiler_types, str):
-                boiler_types = [boiler_types]
-            boiler_type = slots.get("boiler_type")
-            if boiler_types:
-                allowed = [normalize_text(str(value)) for value in boiler_types if value]
-                products = [
-                    product
-                    for product in products
-                    if any(value in self._product_text(product) for value in allowed)
-                ]
-            elif boiler_type:
-                typed = [
-                    product
-                    for product in products
-                    if normalize_text(str(boiler_type)) in self._product_text(product)
-                ]
-                products = typed
-            contours = slots.get("contours")
-            if contours:
-                contour_filtered = [
-                    product
-                    for product in products
-                    if normalize_text(str(contours)) in self._product_text(product)
-                ]
-                products = contour_filtered
             required_kw = None
             if slots.get("power_kw"):
                 required_kw = float(slots["power_kw"])
@@ -414,37 +572,18 @@ class FeedSearchAgent:
         if category == "pumps":
             pump_type = normalize_text(str(slots.get("pump_type") or ""))
             pump_use = normalize_text(str(slots.get("pump_use") or slots.get("project_note") or ""))
-            if pump_type:
-                if "скваж" in pump_type:
-                    products = [
-                        product
-                        for product in products
-                        if "скваж" in self._product_text(product)
-                    ]
-                elif "станц" in pump_type:
-                    products = [
-                        product
-                        for product in products
-                        if "насосная станц" in self._product_text(product)
-                    ]
-                else:
-                    products = [
-                        product
-                        for product in products
-                        if pump_type in self._product_text(product)
-                    ]
             if any(marker in pump_use for marker in ["отоплен", "тепл", "тёпл"]):
                 products = [
                     product
                     for product in products
-                    if "циркуляц" in self._product_text(product)
+                    if self._pump_type_matches(product, "циркуляционный")
                 ]
             elif "водоснаб" in pump_use:
                 water_supply = [
                     product
                     for product in products
                     if not any(
-                        stop in self._product_text(product)
+                        stop in self._structured_text(product)
                         for stop in ["дренаж", "циркуляц", "отопл"]
                     )
                 ]
@@ -455,7 +594,7 @@ class FeedSearchAgent:
                     product
                     for product in products
                     if not any(
-                        stop in self._product_text(product)
+                        stop in self._structured_text(product)
                         for stop in ["циркуляц", "отопл"]
                     )
                 ]
@@ -463,7 +602,7 @@ class FeedSearchAgent:
                     products = irrigation
                 if not pump_type:
                     def irrigation_priority(product: Product) -> tuple:
-                        text = self._product_text(product)
+                        text = self._structured_text(product)
                         if "дренаж" in text:
                             kind_priority = 0
                         elif any(marker in text for marker in ["скваж", "насосная станц", "поверхност"]):
@@ -513,18 +652,616 @@ class FeedSearchAgent:
         match = re.search(r"(\d+(?:[.,]\d+)?)\s*квт", text)
         if match:
             return float(match.group(1).replace(",", "."))
+        # Some feed rows (notably ZOTA Solo) store the unit in the attribute
+        # name and only a bare number in its value: ``мощность, кВт: 6``.
+        for key, value in product.attributes_normalized.items():
+            key_text = normalize_text(str(key))
+            if "мощ" not in key_text or "квт" not in key_text:
+                continue
+            number = re.search(r"\d+(?:[.,]\d+)?", str(value))
+            if number:
+                return float(number.group(0).replace(",", "."))
         return None
 
-    def _filter_by_slots(self, products: list[Product], query: SearchQuery) -> list[Product]:
+    def _boiler_type_matches(self, product: Product, requested: object) -> bool:
+        expected = normalize_text(str(requested))
+        trusted = normalize_text(
+            " ".join(
+                [
+                    product.name,
+                    self._attribute_text(
+                        product,
+                        ["тип котла", "вид котла", "тип товара"],
+                    ),
+                ]
+            )
+        )
+        if "газ" in expected:
+            return "газ" in trusted
+        if "электр" in expected:
+            return "электр" in trusted
+        if "тверд" in expected:
+            return "тверд" in trusted
+        return bool(expected and expected in trusted)
+
+    def _contours_match(self, product: Product, requested: object) -> bool:
+        expected = normalize_text(str(requested))
+        trusted = normalize_text(
+            " ".join(
+                [
+                    product.name,
+                    self._attribute_text(product, ["контур", "полное наименование"]),
+                ]
+            )
+        )
+        if "двух" in expected or expected in {"2", "two_contour"}:
+            return bool(
+                "двухконтур" in trusted
+                or re.search(r"\b2\s*(?:конт|-конт)", trusted)
+            )
+        if "одно" in expected or expected in {"1", "one_contour"}:
+            return bool(
+                "одноконтур" in trusted
+                or re.search(r"\b1\s*(?:конт|-конт)", trusted)
+            )
+        return bool(expected and expected in trusted)
+
+    def _pump_type_matches(self, product: Product, requested: object) -> bool:
+        expected = normalize_text(str(requested))
+        trusted = self._structured_text(product)
+        aliases: list[str]
+        if "скваж" in expected:
+            aliases = ["скваж"]
+        elif "цирк" in expected:
+            aliases = ["циркуляц", "цирк.", "цирк "]
+        elif "дренаж" in expected:
+            aliases = ["дренаж"]
+        elif "поверхн" in expected:
+            aliases = ["поверхн"]
+        elif "повыс" in expected:
+            aliases = ["повыс"]
+        elif "станц" in expected:
+            aliases = ["насосная станц", "станция водоснабж"]
+        else:
+            aliases = [expected]
+        return any(alias and alias in trusted for alias in aliases)
+
+    def _pipe_semantic_evidence(self, product: Product) -> str:
+        """Prefer name/structured purpose facts; use description only as fallback.
+
+        Descriptions are useful for sparse PPR cards, but some feed rows contain a
+        different SKU's marketing copy. Once the name or a dedicated attribute
+        states a purpose/temperature, that primary evidence wins.
+        """
+        explicit = self._attribute_text(
+            product,
+            ["назначен", "применен", "рабочая среда"],
+        )
+        primary = normalize_text(" ".join([product.name, explicit]))
+        purpose_markers = [
+            "отопл",
+            "теплый пол",
+            "водоснаб",
+            "горяч",
+            "холод",
+            "хол/",
+            "хвс",
+            "гвс",
+            "канализ",
+        ]
+        if explicit or any(marker in primary for marker in purpose_markers):
+            return primary
+        return normalize_text(" ".join([primary, product.description or ""]))
+
+    def _pipe_material_matches(self, product: Product, requested: object) -> bool:
+        expected = normalize_text(str(requested))
+        explicit = self._attribute_text(product, ["материал"])
+        primary = normalize_text(
+            " ".join([product.sku, product.name, product.category_path, explicit])
+        )
+        if any(marker in expected for marker in ["ppr", "ппр", "полипроп"]):
+            ppr_markers = [
+                "ppr",
+                "pprc",
+                "pp-r",
+                "pp fiber",
+                "pp-fiber",
+                "pp alux",
+                "pp-alux",
+                "ппр",
+                "полипроп",
+            ]
+            if any(marker in primary for marker in ppr_markers) or normalize_text(
+                product.sku
+            ).startswith("vtp.700"):
+                return True
+            other_materials = [
+                "pex",
+                "pe-x",
+                "pe-rt",
+                "pert",
+                "полиэтилен",
+                "металлопласт",
+                "нерж",
+                "сталь",
+                "медн",
+                "пнд",
+            ]
+            if explicit or any(marker in primary for marker in other_materials):
+                return False
+            description = normalize_text(product.description or "")
+            return any(marker in description for marker in ppr_markers)
+        return bool(expected and expected in primary)
+
+    def _pipe_purpose_matches(self, product: Product, requested: object) -> bool:
+        expected = normalize_text(str(requested))
+        if "канализ" in expected:
+            return self.canonical_category(product) == "sewer"
+        evidence = self._pipe_semantic_evidence(product)
+        if "отопл" in expected or "тепл" in expected:
+            return any(
+                marker in evidence
+                for marker in ["отопл", "теплый пол", "теплого пола", "теплоносител"]
+            )
+        if "вод" in expected:
+            return any(
+                marker in evidence
+                for marker in ["водоснаб", "питьев", "для воды", "хвс", "гвс"]
+            )
+        return bool(expected and expected in evidence)
+
+    def _maximum_temperature(self, product: Product) -> float | None:
+        values = []
+        for key, value in product.attributes_normalized.items():
+            key_norm = normalize_text(key)
+            if "температур" in key_norm and any(
+                marker in key_norm for marker in ["макс", "рабоч", "примен"]
+            ):
+                matches = re.findall(r"-?\d+(?:[.,]\d+)?", normalize_text(str(value)))
+                values.extend(float(match.replace(",", ".")) for match in matches)
+        return max(values) if values else None
+
+    def _water_temperature_matches(self, product: Product, requested: object) -> bool:
+        expected = normalize_text(str(requested))
+        evidence = self._pipe_semantic_evidence(product)
+        maximum_temperature = self._maximum_temperature(product)
+        if "горяч" in expected:
+            has_hot_evidence = any(marker in evidence for marker in ["горяч", "гвс"])
+            has_cold_evidence = any(
+                marker in evidence for marker in ["холод", "хол/водосн", "хвс"]
+            )
+            if has_cold_evidence and not has_hot_evidence:
+                return False
+            name = normalize_text(product.name)
+            hot_water_ppr = self._pipe_material_matches(product, "ppr") and bool(
+                re.search(r"\bpn\s*(?:20|25)\b", name)
+            )
+            return bool(
+                has_hot_evidence
+                or hot_water_ppr
+                or (maximum_temperature is not None and maximum_temperature >= 60)
+            )
+        if "холод" in expected:
+            return any(marker in evidence for marker in ["холод", "хвс"])
+        return bool(expected and expected in evidence)
+
+    def _effective_query_slots(self, query: SearchQuery | None) -> dict:
+        if query is None:
+            return {}
+        slots = dict(query.slots)
+        if query.category == "pipes" and not slots.get("pipe_material"):
+            declared = slots.get("material") or slots.get("fitting_system")
+            if declared:
+                slots["pipe_material"] = declared
+            else:
+                text = normalize_text(query.original_text)
+                if any(marker in text for marker in ["ppr", "ппр", "полипроп"]):
+                    slots["pipe_material"] = "ppr"
+        return slots
+
+    def _application_matches(self, product: Product, requested: object) -> bool:
+        expected = normalize_text(str(requested))
+        explicit = self._attribute_text(
+            product,
+            ["назначен", "область применен", "рабочая среда"],
+        )
+        evidence = explicit or normalize_text(
+            " ".join([product.name, product.category_path, product.description or ""])
+        )
+        if "радиатор" in expected:
+            return self.canonical_category(product) == "radiator_fittings" or any(
+                marker in evidence for marker in ["радиатор", "для рад"]
+            )
+        if "отопл" in expected:
+            return any(marker in evidence for marker in ["отопл", "теплоносител"])
+        if "вод" in expected:
+            return bool(
+                any(
+                    marker in evidence
+                    for marker in ["для воды", "водоснаб", "питьев", "хвс", "гвс"]
+                )
+                or re.search(r"\bвод(?:а|ы)\b", evidence)
+            )
+        return bool(expected and expected in evidence)
+
+    def _connection_form_matches(self, product: Product, requested: object) -> bool:
+        expected = normalize_text(str(requested))
+        evidence = normalize_text(
+            " ".join(
+                [
+                    product.name,
+                    self._attribute_text(
+                        product,
+                        ["форма корпуса", "тип конструкции", "подключен", "исполнение"],
+                    ),
+                ]
+            )
+        )
+        if "угл" in expected:
+            return "угл" in evidence
+        if "прям" in expected:
+            return "прям" in evidence
+        if "осев" in expected:
+            return "осев" in evidence
+        return bool(expected and expected in evidence)
+
+    def _union_matches(self, product: Product) -> bool:
+        evidence = normalize_text(
+            " ".join(
+                [
+                    product.name,
+                    self._attribute_text(
+                        product,
+                        ["тип конструкции", "тип присоединения", "наличие американки"],
+                    ),
+                ]
+            )
+        )
+        return any(marker in evidence for marker in ["полусгон", "американк", "накидн"])
+
+    def _pipe_color_matches(self, product: Product, requested: object) -> bool:
+        expected = normalize_text(str(requested))
+        evidence = normalize_text(
+            " ".join(
+                [
+                    product.name,
+                    self._attribute_text(product, ["цвет", "окраска"]),
+                ]
+            )
+        )
+        color_families = {
+            "бел": ["бел", "white"],
+            "сер": ["сер", "gray", "grey"],
+            "черн": ["черн", "black"],
+            "син": ["син", "blue"],
+            "красн": ["красн", "red"],
+            "рыж": ["рыж", "оранж", "orange"],
+            "зелен": ["зелен", "green"],
+        }
+        for prefix, aliases in color_families.items():
+            if prefix in expected:
+                return any(alias in evidence for alias in aliases)
+        return bool(expected and expected in evidence)
+
+    def _sewer_element_matches(self, product: Product, requested: object) -> bool:
+        expected = normalize_text(str(requested))
+        evidence = normalize_text(
+            " ".join(
+                [
+                    product.name,
+                    self._attribute_text(product, ["тип товара", "полное наименование"]),
+                ]
+            )
+        )
+        aliases = {
+            "труба": ["труба"],
+            "отвод": ["отвод"],
+            "тройник": ["тройник"],
+            "муфта": ["муфта"],
+        }
+        markers = next(
+            (values for key, values in aliases.items() if key in expected),
+            [expected],
+        )
+        return any(marker and marker in evidence for marker in markers)
+
+    def _coupling_type_matches(self, product: Product, requested: object) -> bool:
+        expected = normalize_text(str(requested))
+        evidence = normalize_text(
+            " ".join(
+                [
+                    product.name,
+                    self._attribute_text(
+                        product,
+                        ["тип товара", "тип муфты", "полное наименование"],
+                    ),
+                ]
+            )
+        )
+        if "муфт" not in evidence:
+            return False
+        if "соедин" in expected:
+            # A reducer or repair/slip coupling is not a plain socket coupling,
+            # even when one of its dimensions equals the requested DN.
+            excluded = [
+                "переход",
+                "редукц",
+                "ремонт",
+                "надвиж",
+                "компенсац",
+            ]
+            return not any(marker in evidence for marker in excluded)
+        if "переход" in expected:
+            return any(marker in evidence for marker in ["переход", "редукц"])
+        if "ремонт" in expected or "надвиж" in expected:
+            return any(marker in evidence for marker in ["ремонт", "надвиж"])
+        return bool(expected and expected in evidence)
+
+    def _valve_kind_matches(self, product: Product, requested: object) -> bool:
+        expected = normalize_text(str(requested))
+        evidence = normalize_text(
+            " ".join(
+                [
+                    product.name,
+                    self._attribute_text(product, ["тип товара", "полное наименование"]),
+                ]
+            )
+        )
+        if "шаров" in expected:
+            return (
+                "кран" in evidence
+                and "шаров" in evidence
+                and "дренаж" not in evidence
+                and "обратн" not in evidence
+            )
+        if "дренаж" in expected:
+            return "кран" in evidence and "дренаж" in evidence
+        if "обратн" in expected:
+            return "клапан" in evidence and "обратн" in evidence
+        if "вентил" in expected:
+            return "вентил" in evidence
+        if "клапан" in expected:
+            return "клапан" in evidence
+        if "кран" in expected:
+            return (
+                "кран" in evidence
+                and "дренаж" not in evidence
+                and "обратн" not in evidence
+            )
+        return bool(expected and expected in evidence)
+
+    def _product_angles(self, product: Product) -> list[float]:
+        values: list[float] = []
+        for key, value in product.attributes_normalized.items():
+            if "угол" not in normalize_text(key):
+                continue
+            values.extend(
+                float(raw.replace(",", "."))
+                for raw in re.findall(r"\d+(?:[,.]\d+)?", str(value))
+            )
+
+        raw_name = html.unescape(product.name).lower().replace("ё", "е")
+        values.extend(
+            float(raw.replace(",", "."))
+            for raw in re.findall(
+                r"(?<!\d)(\d{1,3}(?:[,.]\d+)?)\s*(?:°|град(?:ус\w*)?)",
+                raw_name,
+            )
+        )
+        # Sewer feeds also encode an angle as ``110*87`` / ``110x87`` and
+        # occasionally use a trailing asterisk instead of a degree sign.
+        for match in re.finditer(
+            r"(?<!\d)(\d{2,3})\s*[xх×*]\s*(\d{1,2}(?:[,.]\d+)?)(?!\d)",
+            raw_name,
+        ):
+            angle = float(match.group(2).replace(",", "."))
+            if 5 <= angle <= 90:
+                values.append(angle)
+        values.extend(
+            float(raw.replace(",", "."))
+            for raw in re.findall(
+                r"(?<!\d)(\d{1,2}(?:[,.]\d+)?)\s*\*(?!\s*\d)",
+                raw_name,
+            )
+        )
+        return values
+
+    def _angle_matches(self, product: Product, requested: object) -> bool:
+        expected = float(requested)
+        actual_values = self._product_angles(product)
+        if not actual_values:
+            return False
+        if abs(expected - 90.0) < 0.01:
+            # HT sewer systems normally market the right-angle bend as 87° or
+            # 87.5°.  Treat only that narrow standards-equivalent family as 90°.
+            return any(87.0 <= actual <= 90.0 for actual in actual_values)
+        return any(abs(actual - expected) <= 0.6 for actual in actual_values)
+
+    def _alternative_hard_slots_match(
+        self,
+        product: Product,
+        query: SearchQuery,
+        slots: dict,
+    ) -> bool:
+        """Keep safety/compatibility dimensions strict on the alternatives path."""
+        category = query.category
+        if category == "sewer":
+            element_type = normalize_text(str(slots.get("element_type") or ""))
+            is_pipe = "труб" in element_type
+            diameter = slots.get("diameter_mm")
+            if diameter and not is_pipe and not self._dimension_matches(
+                product,
+                int(diameter),
+                ["диаметр", "размер"],
+            ):
+                return False
+            secondary = slots.get("secondary_diameter_mm")
+            if secondary and not self._fitting_dimension_matches(product, int(secondary)):
+                return False
+        generic_analog_request = (
+            "аналог" in normalize_text(query.original_text)
+            and not query.cheap
+        )
+        if category == "pumps" and not generic_analog_request:
+            mounting = slots.get("mounting_length_mm")
+            if mounting and not self._dimension_matches(
+                product,
+                int(mounting),
+                ["монтажная длина", "длина"],
+            ):
+                return False
+            head = slots.get("head_m")
+            if head and not self._head_matches(product, float(head)):
+                return False
+            connection = slots.get("connection_size")
+            if connection and not self._connection_matches(product, int(connection)):
+                return False
+        if category == "boilers":
+            voltage = slots.get("voltage_v")
+            if voltage and not self._dimension_matches(
+                product,
+                int(voltage),
+                ["напряжение", "питание"],
+            ):
+                return False
+        if category in {"valves", "radiator_fittings"}:
+            size_inch = slots.get("size_inch")
+            if size_inch and not self._inch_size_matches(product, str(size_inch)):
+                return False
+            diameter = slots.get("diameter_mm")
+            if diameter and not self._dimension_matches(
+                product,
+                int(diameter),
+                ["диаметр", "размер"],
+            ):
+                return False
+            if slots.get("union") and not self._union_matches(product):
+                return False
+        return True
+
+    def _thermostatic_head_matches(self, product: Product, requested: object) -> bool:
+        if isinstance(requested, str):
+            wants_thermostatic = normalize_text(requested) not in {
+                "",
+                "0",
+                "false",
+                "no",
+                "нет",
+                "ложь",
+            }
+        else:
+            wants_thermostatic = bool(requested)
+        evidence = normalize_text(
+            " ".join(
+                [
+                    product.name,
+                    self._attribute_text(product, ["тип товара", "полное наименование"]),
+                ]
+            )
+        )
+        has_thermostatic = any(
+            marker in evidence for marker in ["термостат", "термоголов", "терморег"]
+        )
+        if wants_thermostatic:
+            return has_thermostatic
+        return not has_thermostatic and any(
+            marker in evidence
+            for marker in ["ручн", "запор", "шаров", "настроечн", "вентиль"]
+        )
+
+    def _semantic_slots_match(self, product: Product, category: str, slots: dict) -> bool:
+        """Enforce categorical/usage slots as non-negotiable constraints."""
+        if category == "boilers":
+            boiler_types = slots.get("boiler_types") or []
+            if isinstance(boiler_types, str):
+                boiler_types = [boiler_types]
+            if boiler_types and not any(
+                self._boiler_type_matches(product, value) for value in boiler_types if value
+            ):
+                return False
+            if slots.get("boiler_type") and not self._boiler_type_matches(
+                product, slots["boiler_type"]
+            ):
+                return False
+            if slots.get("contours") and not self._contours_match(product, slots["contours"]):
+                return False
+        if category == "pumps" and slots.get("pump_type") and not self._pump_type_matches(
+            product, slots["pump_type"]
+        ):
+            return False
+        if category in {"pipes", "sewer"}:
+            if slots.get("pipe_material") and not self._pipe_material_matches(
+                product, slots["pipe_material"]
+            ):
+                return False
+            if slots.get("pipe_purpose") and not self._pipe_purpose_matches(
+                product, slots["pipe_purpose"]
+            ):
+                return False
+            if slots.get("water_temperature") and not self._water_temperature_matches(
+                product, slots["water_temperature"]
+            ):
+                return False
+        if category == "pipes" and slots.get("pipe_color") and not self._pipe_color_matches(
+            product,
+            slots["pipe_color"],
+        ):
+            return False
+        if category == "sewer":
+            if slots.get("element_type") and not self._sewer_element_matches(
+                product,
+                slots["element_type"],
+            ):
+                return False
+            if slots.get("coupling_type") and not self._coupling_type_matches(
+                product,
+                slots["coupling_type"],
+            ):
+                return False
+            if slots.get("angle_deg") and not self._angle_matches(
+                product,
+                slots["angle_deg"],
+            ):
+                return False
+        if category in {"valves", "radiator_fittings"}:
+            if slots.get("application") and not self._application_matches(
+                product, slots["application"]
+            ):
+                return False
+        if category == "valves" and slots.get("valve_kind") and not self._valve_kind_matches(
+            product,
+            slots["valve_kind"],
+        ):
+            return False
+        if category == "radiator_fittings":
+            if slots.get("connection_form") and not self._connection_form_matches(
+                product, slots["connection_form"]
+            ):
+                return False
+            if "thermostatic_head" in slots and not self._thermostatic_head_matches(
+                product, slots["thermostatic_head"]
+            ):
+                return False
+            if slots.get("union") and not self._union_matches(product):
+                return False
+        return True
+
+    def _filter_by_slots(
+        self,
+        products: list[Product],
+        query: SearchQuery,
+        slots: dict | None = None,
+    ) -> list[Product]:
+        effective_slots = slots if slots is not None else self._effective_query_slots(query)
         result = []
         for product in products:
-            if self._slots_match(product, query.slots):
+            if self._slots_match(product, effective_slots, query.category):
                 result.append(product)
         return result
 
-    def _slots_match(self, product: Product, slots: dict) -> bool:
+    def _slots_match(self, product: Product, slots: dict, category: str = "other") -> bool:
         text = self._product_text(product)
-        checks: list[bool] = []
+        checks: list[bool] = [self._semantic_slots_match(product, category, slots)]
         diameter = slots.get("diameter_mm")
         if diameter:
             checks.append(self._dimension_matches(product, int(diameter), ["диаметр", "размер"]))
@@ -557,7 +1294,7 @@ class FeedSearchAgent:
 
         pump_type = slots.get("pump_type")
         if pump_type:
-            checks.append(normalize_text(str(pump_type)) in text)
+            checks.append(self._pump_type_matches(product, pump_type))
 
         mounting_length = slots.get("mounting_length_mm")
         if mounting_length:
@@ -567,21 +1304,26 @@ class FeedSearchAgent:
         if head:
             checks.append(self._head_matches(product, float(head)))
 
+        voltage = slots.get("voltage_v")
+        if voltage and category == "boilers":
+            checks.append(
+                self._dimension_matches(
+                    product,
+                    int(voltage),
+                    ["напряжение", "питание"],
+                )
+            )
+
         connection_size = slots.get("connection_size")
         if connection_size:
             checks.append(self._connection_matches(product, int(connection_size)))
 
-        boiler_type = slots.get("boiler_type")
-        if boiler_type:
-            checks.append(normalize_text(str(boiler_type)) in text)
-
-        contours = slots.get("contours")
-        if contours:
-            checks.append(normalize_text(str(contours)) in text)
-
         element_type = slots.get("element_type")
         if element_type:
-            checks.append(normalize_text(str(element_type)) in text)
+            if category == "sewer":
+                checks.append(self._sewer_element_matches(product, element_type))
+            else:
+                checks.append(normalize_text(str(element_type)) in text)
 
         sewer_scope = slots.get("sewer_scope")
         if sewer_scope:
@@ -596,35 +1338,57 @@ class FeedSearchAgent:
 
         if slots.get("union"):
             # «американка» = разъёмное соединение с полусгоном/накидной гайкой.
-            checks.append("полусгон" in text or "американк" in text or "накидн" in text)
-
-        application = slots.get("application")
-        if application and slots.get("category_strict_application"):
-            checks.append(normalize_text(str(application)) in text)
+            checks.append(self._union_matches(product))
 
         if not checks:
             return True
         return all(checks)
 
-    def _has_strict_slots(self, query: SearchQuery) -> bool:
+    def _has_strict_slots(self, query: SearchQuery, slots: dict | None = None) -> bool:
         strict_by_category = {
-            "pipes": {"diameter_mm", "element_type", "length_mm"},
+            "pipes": {
+                "diameter_mm",
+                "element_type",
+                "length_mm",
+                "pipe_purpose",
+                "water_temperature",
+                "pipe_material",
+                "pipe_color",
+            },
             "sewer": {
                 "sewer_scope",
                 "element_type",
+                "coupling_type",
+                "angle_deg",
                 "diameter_mm",
                 "secondary_diameter_mm",
                 "length_mm",
+                "pipe_purpose",
+                "water_temperature",
             },
             "pumps": {"pump_type", "mounting_length_mm", "head_m", "connection_size", "old_model"},
-            "valves": {"application", "diameter_mm", "body_form", "union", "size_inch"},
-            "radiator_fittings": {"application", "connection_form", "diameter_mm", "thermostatic_head"},
+            "valves": {
+                "application",
+                "diameter_mm",
+                "body_form",
+                "union",
+                "size_inch",
+                "valve_kind",
+            },
+            "radiator_fittings": {
+                "application",
+                "connection_form",
+                "diameter_mm",
+                "size_inch",
+                "union",
+                "thermostatic_head",
+            },
             "radiators": {"radiator_size_mm", "length_mm", "sections", "size_inch"},
             "fittings": {"diameter_mm", "secondary_diameter_mm", "size_inch", "element_type"},
-            "boilers": {"boiler_type", "contours"},
+            "boilers": {"boiler_type", "contours", "voltage_v"},
         }
         strict_keys = strict_by_category.get(query.category, set())
-        return bool(strict_keys.intersection(query.slots))
+        return bool(strict_keys.intersection(slots if slots is not None else query.slots))
 
     def _alternative_threshold(self, query: SearchQuery) -> int:
         if query.category == "sewer":
@@ -634,9 +1398,37 @@ class FeedSearchAgent:
         return 35
 
     def _alternative_score(self, product: Product, query: SearchQuery) -> int:
-        slots = query.slots
+        slots = self._effective_query_slots(query)
         text = self._product_text(product)
         score = 15
+
+        pipe_material = slots.get("pipe_material")
+        if pipe_material:
+            if self._pipe_material_matches(product, pipe_material):
+                score += 25
+            else:
+                return 0
+
+        pipe_purpose = slots.get("pipe_purpose")
+        if pipe_purpose:
+            if self._pipe_purpose_matches(product, pipe_purpose):
+                score += 20
+            else:
+                return 0
+
+        water_temperature = slots.get("water_temperature")
+        if water_temperature:
+            if self._water_temperature_matches(product, water_temperature):
+                score += 20
+            else:
+                return 0
+
+        pipe_color = slots.get("pipe_color")
+        if pipe_color:
+            if self._pipe_color_matches(product, pipe_color):
+                score += 15
+            else:
+                return 0
 
         element_type = slots.get("element_type")
         if element_type:
@@ -666,6 +1458,20 @@ class FeedSearchAgent:
         if secondary_diameter:
             score += 20 if self._fitting_dimension_matches(product, int(secondary_diameter)) else -12
 
+        angle = slots.get("angle_deg")
+        if angle:
+            if self._angle_matches(product, angle):
+                score += 25
+            else:
+                return 0
+
+        coupling_type = slots.get("coupling_type")
+        if coupling_type:
+            if self._coupling_type_matches(product, coupling_type):
+                score += 25
+            else:
+                return 0
+
         radiator_size = slots.get("radiator_size_mm")
         if radiator_size:
             score += 25 if self._dimension_matches(
@@ -680,7 +1486,7 @@ class FeedSearchAgent:
 
         pump_type = slots.get("pump_type")
         if pump_type:
-            score += 35 if normalize_text(str(pump_type)) in text else -20
+            score += 35 if self._pump_type_matches(product, pump_type) else -20
 
         connection_size = slots.get("connection_size")
         if connection_size:
@@ -690,28 +1496,64 @@ class FeedSearchAgent:
         if head:
             score += 25 if self._head_matches(product, float(head)) else -18
 
+        mounting_length = slots.get("mounting_length_mm")
+        if mounting_length:
+            score += 20 if self._dimension_matches(
+                product,
+                int(mounting_length),
+                ["монтажная длина", "длина"],
+            ) else -18
+
         boiler_type = slots.get("boiler_type")
         if boiler_type:
             # Чужой тип котла (газовый вместо электрического) — не альтернатива.
-            if normalize_text(str(boiler_type)) in text:
+            if self._boiler_type_matches(product, boiler_type):
                 score += 30
             else:
                 return 0
 
         contours = slots.get("contours")
         if contours:
-            score += 20 if normalize_text(str(contours)) in text else -10
+            if self._contours_match(product, contours):
+                score += 20
+            else:
+                score -= 10
 
         body_form = slots.get("body_form")
         if body_form:
             score += 20 if normalize_text(str(body_form)) in text else -8
 
+        size_inch = slots.get("size_inch")
+        if size_inch:
+            if self._inch_size_matches(product, str(size_inch)):
+                score += 20
+            elif query.category in {"valves", "radiator_fittings"}:
+                return 0
+
+        valve_kind = slots.get("valve_kind")
+        if valve_kind:
+            if self._valve_kind_matches(product, valve_kind):
+                score += 25
+            else:
+                return 0
+
         if slots.get("union"):
             score += 20 if ("полусгон" in text or "американк" in text or "накидн" in text) else -15
 
+        voltage = slots.get("voltage_v")
+        if voltage and query.category == "boilers":
+            if self._dimension_matches(product, int(voltage), ["напряжение", "питание"]):
+                score += 25
+            else:
+                return 0
+
         application = slots.get("application")
         if application:
-            score += 15 if normalize_text(str(application)) in text else -5
+            if query.category in {"valves", "radiator_fittings"} and not self._application_matches(
+                product, application
+            ):
+                return 0
+            score += 15
 
         if product.is_in_stock:
             score += 8
@@ -728,13 +1570,20 @@ class FeedSearchAgent:
             if "дюйм" not in key_norm and "резьб" not in key_norm:
                 continue
             value_norm = re.sub(r"\s+", "", normalize_text(str(value)))
-            match = re.fullmatch(r"(11/4|1/2|3/4|3/8|1/4|1|2)", value_norm)
+            match = re.fullmatch(
+                r"([1-4]\d?/(?:2|4|8)|[1-4])",
+                value_norm,
+            )
             if match:
                 candidates.add(match.group(1))
 
-        name = normalize_text(html.unescape(product.name))
+        # Keep the literal quote: ``normalize_text`` intentionally removes it,
+        # which made names such as ``1/2&quot;`` unsearchable when the feed did not
+        # also provide a dedicated inch attribute.
+        name = html.unescape(product.name).lower().replace("ё", "е")
+        name = re.sub(r"\s+", " ", name)
         for match in re.finditer(
-            r"(?<![\d/])(1\s+1\s*/\s*4|1\s*/\s*2|3\s*/\s*4|3\s*/\s*8|1\s*/\s*4|[12])\s*\"",
+            r"(?<![\d/])([1-4]\s+[1-3]\s*/\s*[248]|[1-4]\s*/\s*[248]|[1-4])\s*\"",
             name,
         ):
             candidates.add(re.sub(r"\s+", "", match.group(1)))
@@ -788,16 +1637,19 @@ class FeedSearchAgent:
         return self._number_matches(text, number)
 
     def _head_matches(self, product: Product, head_m: float) -> bool:
-        head = int(head_m) if head_m.is_integer() else head_m
         values = []
         for attr_key, attr_value in product.attributes_normalized.items():
             if "напор" in normalize_text(attr_key):
                 values.append(normalize_text(attr_value))
         if values:
             return any(
-                bool(re.search(rf"(^|[^0-9]){re.escape(str(head))}([^0-9]|$)", value))
+                any(
+                    abs(float(raw.replace(",", ".")) - head_m) < 0.01
+                    for raw in re.findall(r"\d+(?:[,.]\d+)?", value)
+                )
                 for value in values
             )
+        head = int(head_m) if head_m.is_integer() else head_m
         return bool(
             re.search(rf"(^|[^0-9]){re.escape(str(head))}([^0-9]|$)", normalize_text(product.name))
         )

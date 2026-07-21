@@ -33,8 +33,10 @@ PURE_GREETINGS = {
 
 
 MANAGER_PERSONA = (
-    "Ты — живой, опытный менеджер-консультант интернет-магазина инженерной сантехники "
-    "Vesta Trading. Ассортимент: трубы PPR (включая армированные), насосы (циркуляционные, "
+    "Ты — AI-консультант интернет-магазина инженерной сантехники Vesta Trading и ведёшь "
+    "диалог как опытный менеджер. Никогда не выдавай себя за человека: если клиент спрашивает, "
+    "человек ты или бот, прямо ответь, что ты AI-консультант. Ассортимент: трубы PPR "
+    "(включая армированные), насосы (циркуляционные, "
     "повысительные, дренажные, скважинные), котлы (газовые и электрические), краны и вентили, "
     "канализация (внутренняя и наружная), радиаторная арматура.\n"
     "Ориентиры, которыми можно делиться как общими правилами (это не инженерный расчёт): "
@@ -44,9 +46,13 @@ MANAGER_PERSONA = (
     "25/6 на 180 мм; применимость PPR для горячей воды и отопления проверяют по паспорту, "
     "а жёсткая PPR не является трубой петли тёплого пола; "
     "закрытая камера сгорания берёт воздух с улицы через коаксиальный дымоход; "
+    "у электрического котла нет камеры сгорания, поэтому никогда не приписывай ему открытую "
+    "или закрытую камеру; "
     "американка — разъёмное соединение, с ним узел снимается без разборки трубы.\n"
-    "Манера: уважительная, вежливая, дружелюбная и профессиональная — представитель "
-    "серьёзной компании. Обращайся к клиенту на «вы». Даже если клиент пишет резко, "
+    "Vesta Trading — наш магазин, а не магазин клиента: никогда не говори «ваш/вашего "
+    "интернет-магазин» применительно к Vesta Trading. Манера: уважительная, вежливая, "
+    "дружелюбная и профессиональная — представитель серьёзной компании. Обращайся к "
+    "клиенту на «вы». Даже если клиент пишет резко, "
     "раздражённо или неформально, отвечай спокойно и с уважением: без ответной грубости, "
     "осуждения, фамильярности, сленга, шуточек и панибратства. Короткие, ясные фразы, "
     "без канцелярита, без markdown и без эмодзи. Если вопрос вне твоей области — мягко "
@@ -67,6 +73,8 @@ class ResponseComposerAgent:
         self.llm_client = llm_client or OpenRouterClient()
         self.last_llm_used = False
         self.last_llm_requested = False
+        self.last_llm_output_accepted = False
+        self.last_llm_rejection_reason: str | None = None
         self.last_llm_fallback_reason: str | None = None
         self.last_draft: str | None = None
         self._history: list[dict[str, str]] = []
@@ -75,6 +83,8 @@ class ResponseComposerAgent:
     def reset_usage(self) -> None:
         self.last_llm_used = False
         self.last_llm_requested = False
+        self.last_llm_output_accepted = False
+        self.last_llm_rejection_reason = None
         self.last_llm_fallback_reason = None
         self.last_draft = None
 
@@ -138,6 +148,12 @@ class ResponseComposerAgent:
             # превращала одну строку в длинную рекламную речь или технический опрос.
             self.last_draft = GREETING_REPLY
             return GREETING_REPLY
+        # Идентичность и физические действия нельзя оставлять на усмотрение модели:
+        # в живом QA она уклонялась от ответа «бот или человек» и создавала впечатление,
+        # что может приехать на монтаж.
+        boundary_reply = self.compose_identity_or_service(message)
+        if boundary_reply:
+            return boundary_reply
         fallback = self._small_talk_fallback(message)
         return self._llm_smart_reply(
             agent="ResponseComposerAgent.small_talk",
@@ -156,6 +172,17 @@ class ResponseComposerAgent:
                 "персональные вопросы."
             ),
         )
+
+    def compose_identity_or_service(self, message: str) -> str | None:
+        """Return a deterministic capability/identity answer when applicable."""
+        if not (
+            self._is_identity_question(message)
+            or self._is_field_service_question(message)
+        ):
+            return None
+        fallback = self._small_talk_fallback(message)
+        self.last_draft = fallback
+        return fallback
 
     def compose_term_consult(self, user_message: str) -> str:
         fallback = (
@@ -213,10 +240,16 @@ class ResponseComposerAgent:
             self.last_llm_fallback_reason = result.fallback_reason
         if result.llm_used and result.content and result.content.strip():
             reply = result.content.strip()
-            if self._repeats_last_assistant(reply) or self._is_degenerate(reply):
+            if self._repeats_last_assistant(reply):
+                self.last_llm_rejection_reason = "repeated_previous_answer"
+                return fallback_draft
+            if self._is_degenerate(reply):
+                self.last_llm_rejection_reason = "degenerate_output"
                 return fallback_draft
             if self._contains_assortment_claims(reply):
+                self.last_llm_rejection_reason = "ungrounded_assortment_claim"
                 return fallback_draft
+            self.last_llm_output_accepted = True
             return reply
         return fallback_draft
 
@@ -238,6 +271,46 @@ class ResponseComposerAgent:
     def _is_pure_greeting(self, message: str) -> bool:
         text = normalize_text(message).strip(" .,!?-")
         return text in PURE_GREETINGS
+
+    def _is_identity_question(self, message: str) -> bool:
+        text = normalize_text(message)
+        return any(
+            marker in text
+            for marker in [
+                "ты бот",
+                "вы бот",
+                "бот или",
+                "человек или бот",
+                "живой человек",
+                "ты человек",
+                "вы человек",
+                "кто ты",
+                "кто вы",
+                "искусственный интеллект",
+                "ai консультант",
+            ]
+        )
+
+    def _is_field_service_question(self, message: str) -> bool:
+        text = normalize_text(message)
+        if any(marker in text for marker in ["выех", "приех", "приед", "выезд"]):
+            return True
+        onsite = any(
+            marker in text
+            for marker in ["ко мне", "у меня", "на объект", "на дом", "по адресу"]
+        )
+        installation = any(marker in text for marker in ["монтаж", "смонтир", "установ", "подключ"])
+        if onsite and installation:
+            return True
+        # Ask to perform the work, not merely to sell/select parts "для монтажа".
+        return bool(
+            re.search(
+                r"\b(?:можешь|можете|вы)\s+(?:сами\s+)?"
+                r"(?:смонтир\w*|установ\w*|подключ\w*|сдел\w*\s+монтаж|выполн\w*\s+монтаж)",
+                text,
+            )
+            or re.search(r"\b(?:можешь|можете)\b.{0,30}\bмонтаж\w*\s+(?:сдел|выполн)", text)
+        )
 
     def _is_degenerate(self, text: str) -> bool:
         """Detect a weak model looping (the same line/prefix over and over)."""
@@ -275,11 +348,33 @@ class ResponseComposerAgent:
     def _small_talk_fallback(self, message: str) -> str:
         """Deterministic fallback for small talk when LLM is unavailable."""
         normalized = (message or "").lower().replace("ё", "е").strip()
-        if "зовут" in normalized or "кто ты" in normalized or "ты кто" in normalized or "как обращ" in normalized:
+        if any(
+            marker in normalized
+            for marker in [
+                "зовут",
+                "кто ты",
+                "кто вы",
+                "ты кто",
+                "как обращ",
+                "ты бот",
+                "вы бот",
+                "бот или",
+                "живой человек",
+                "ты человек",
+                "вы человек",
+                "искусственный интеллект",
+            ]
+        ):
             return (
                 "Я AI-консультант Vesta Trading. Помогаю подобрать товары из ассортимента: "
                 "трубы, насосы, котлы, краны, канализацию и радиаторную арматуру. "
                 "Напишите, что нужно подобрать — уточню параметры и пришлю карточки."
+            )
+        if any(marker in normalized for marker in ["выех", "приех", "приед", "монтаж", "установ"]):
+            return (
+                "Я AI-консультант и не могу приехать или выполнить монтаж. Могу помочь "
+                "подобрать оборудование по каталогу, а возможность выезда и установки "
+                "уточнит менеджер."
             )
         if "что ты умеешь" in normalized or "что умеешь" in normalized or "помоги" in normalized or "у меня вопрос" in normalized:
             return (
@@ -390,12 +485,8 @@ class ResponseComposerAgent:
                 "Более дешёвых подходящих вариантов в текущем ассортименте не вижу. "
                 "Могу показать аналоги или передать вопрос менеджеру."
             )
-        return self._polish(
-            "ResponseComposerAgent.no_cheaper",
-            "",
-            draft,
-            "Честно сообщи, что более дешёвого подходящего товара нет. Не называй тот же товар более дешёвым.",
-        )
+        self.last_draft = draft
+        return draft
 
     def compose_choose_one(
         self,
@@ -422,7 +513,7 @@ class ResponseComposerAgent:
             alt_line = "Альтернатива: могу показать вариант дешевле или с запасом по характеристикам."
         sizing_warning = self._boiler_sizing_warning([card], query) if query else None
         first_line = (
-            f"Из найденных моделей ближе всего к вашим параметрам: {card.sku} — {card.name}. "
+            f"Рекомендую ближайшую к вашим параметрам модель: {card.sku} — {card.name}. "
             f"Цена {card.price:g} {card.currency}, наличие: {card.stock_status}."
             if sizing_warning
             else (
@@ -481,6 +572,13 @@ class ResponseComposerAgent:
         base_kw = area / 10.0
         upper_kw = base_kw * 1.3
         powers = [power for card in cards if (power := self._card_power_kw(card)) is not None]
+        if powers and min(powers) < base_kw:
+            return (
+                f"Для {area:g} м² предварительный ориентир — не меньше примерно "
+                f"{base_kw:g} кВт до поправок на теплопотери и ГВС. Позиции ниже этого "
+                "ориентира показываю только как пограничные: не считаю их достаточными "
+                "или имеющими запас без теплотехнического расчёта."
+            )
         if not powers or min(powers) <= upper_kw * 1.25:
             return None
         closest_card = min(
@@ -524,6 +622,13 @@ class ResponseComposerAgent:
             match = re.search(r"(\d+(?:[,.]\d+)?)\s*квт", normalize_text(str(value)))
             if match:
                 return float(match.group(1).replace(",", "."))
+        for key, value in card.characteristics.items():
+            key_text = normalize_text(str(key))
+            if "мощ" not in key_text or "квт" not in key_text:
+                continue
+            number = re.search(r"\d+(?:[,.]\d+)?", str(value))
+            if number:
+                return float(number.group(0).replace(",", "."))
         return None
 
     def compose_comparison(self, cards: list[ProductCard]) -> str:
@@ -785,8 +890,13 @@ class ResponseComposerAgent:
             self.last_llm_fallback_reason = result.fallback_reason
         if result.llm_used and result.content and result.content.strip():
             reply = result.content.strip()
-            if self._repeats_last_assistant(reply) or self._is_degenerate(reply):
+            if self._repeats_last_assistant(reply):
+                self.last_llm_rejection_reason = "repeated_previous_answer"
                 return fallback
+            if self._is_degenerate(reply):
+                self.last_llm_rejection_reason = "degenerate_output"
+                return fallback
+            self.last_llm_output_accepted = True
             return reply
         return fallback
 
@@ -815,43 +925,38 @@ class ResponseComposerAgent:
         self,
         cards: list[ProductCard],
         selected_index: int | None = None,
+        *,
+        include_name: bool = False,
     ) -> str:
         if not cards:
             draft = "Не вижу последнего показанного товара. Напишите артикул или что нужно подобрать."
-            return self._polish(
-                "ResponseComposerAgent.link",
-                "",
-                draft,
-                "Коротко попроси уточнить товар, потому что предыдущей карточки нет.",
-            )
+            self.last_draft = draft
+            return draft
         if selected_index is not None and 0 <= selected_index < len(cards):
             card = cards[selected_index]
-            draft = f"Ссылка на товар {card.sku}: {card.url}"
-            return self._polish(
-                "ResponseComposerAgent.link",
-                card.sku,
-                draft,
-                "Дай только прямую ссылку на уже показанный товар. Не добавляй новые ссылки.",
+            draft = (
+                f"{card.name}. Артикул: {card.sku}. Ссылка: {card.url}"
+                if include_name
+                else f"Ссылка на товар {card.sku}: {card.url}"
             )
+            self.last_draft = draft
+            return draft
         if len(cards) == 1:
             card = cards[0]
-            draft = f"Ссылка на товар {card.sku}: {card.url}"
-            return self._polish(
-                "ResponseComposerAgent.link",
-                card.sku,
-                draft,
-                "Дай только прямую ссылку на уже показанный товар. Не добавляй новые ссылки.",
+            draft = (
+                f"{card.name}. Артикул: {card.sku}. Ссылка: {card.url}"
+                if include_name
+                else f"Ссылка на товар {card.sku}: {card.url}"
             )
+            self.last_draft = draft
+            return draft
         lines = ["Вот ссылки на показанные товары:"]
         for index, card in enumerate(cards[:3], start=1):
-            lines.append(f"{index}. {card.sku}: {card.url}")
+            label = f"{card.name}. Артикул: {card.sku}" if include_name else card.sku
+            lines.append(f"{index}. {label}: {card.url}")
         draft = "\n".join(lines)
-        return self._polish(
-            "ResponseComposerAgent.link",
-            ", ".join(card.sku for card in cards[:3]),
-            draft,
-            "Перечисли только реальные ссылки на уже показанные товары без новых.",
-        )
+        self.last_draft = draft
+        return draft
 
     def compose_complectation_confirmed(self, card: ProductCard, requested_parts: list[str]) -> str:
         parts = ", ".join(requested_parts)
@@ -924,8 +1029,8 @@ class ResponseComposerAgent:
                 "content": (
                     MANAGER_PERSONA
                     + "\n\nСитуация: тебе дан готовый безопасный черновик ответа. Твоя задача — "
-                    "только улучшить его формулировку, чтобы он звучал как ответ живого "
-                    "менеджера: связно с диалогом, без повторения уже сказанного как будто "
+                    "только улучшить его формулировку, чтобы он звучал как ответ опытного "
+                    "AI-консультанта: связно с диалогом, без повторения уже сказанного как будто "
                     "впервые. Запрещено добавлять новые факты, товары, цены, остатки, "
                     "характеристики, URL, расчёты или обещания. Если в черновике есть карточки, "
                     "сохрани все цифры, SKU и ссылки без изменений. Отвечай кратко."
@@ -952,5 +1057,6 @@ class ResponseComposerAgent:
         if result.fallback_reason:
             self.last_llm_fallback_reason = result.fallback_reason
         if result.llm_used and result.content:
+            self.last_llm_output_accepted = True
             return result.content.strip()
         return draft

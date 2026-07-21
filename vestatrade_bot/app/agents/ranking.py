@@ -53,17 +53,19 @@ class RankingAgent:
         return None
 
     def _extract_power_kw(self, product: Product) -> float | None:
+        for key, value in product.attributes_normalized.items():
+            key_text = normalize_text(str(key))
+            if "мощ" not in key_text or "квт" not in key_text:
+                continue
+            number = re.search(r"\d+(?:[,.]\d+)?", str(value))
+            if number:
+                return float(number.group(0).replace(",", "."))
+        # Do not inspect the free-form description here: series descriptions
+        # commonly list powers of sibling models and are not SKU-specific.
         text = normalize_text(
-            " ".join(
-                [
-                    product.name,
-                    product.description or "",
-                    " ".join(product.attributes_normalized.values()),
-                ]
-            )
+            " ".join([product.name, *product.attributes_normalized.values()])
         )
         match = re.search(r"(\d+(?:[,.]\d+)?)\s*квт", text)
         if not match:
             return None
         return float(match.group(1).replace(",", "."))
-

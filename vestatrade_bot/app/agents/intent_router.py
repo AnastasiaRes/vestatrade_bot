@@ -3,12 +3,13 @@ from __future__ import annotations
 import json
 import logging
 import re
+from threading import RLock
 from typing import Any
 
 from app.models import IntentResult, SessionState
 from app.openrouter_client import OpenRouterClient
 
-from .utils import collapse_sku_spaces, normalize_text
+from .utils import collapse_sku_spaces, normalize_sku, normalize_text
 
 
 logger = logging.getLogger(__name__)
@@ -16,6 +17,15 @@ logger = logging.getLogger(__name__)
 
 SKU_RE = re.compile(r"\b[а-яa-z]{1,8}[а-яa-z0-9]*[.\-][а-яa-z0-9.\-]{2,}\b", re.IGNORECASE)
 NUMERIC_SKU_RE = re.compile(r"\b\d{5,}\b")
+# Some vendors publish compact SKUs without separators (for example,
+# ``CMSR02CA28``).  Requiring at least two letters and two digits keeps the
+# matcher from treating ordinary model/brand words such as ``Arderia9`` as an
+# exact article request.
+ALPHANUM_SKU_RE = re.compile(
+    r"\b(?=[a-z0-9]{8,}\b)(?=(?:[a-z0-9]*\d){2})(?=(?:[a-z0-9]*[a-z]){2})"
+    r"[a-z0-9]+\b",
+    re.IGNORECASE,
+)
 # Артикулы вида 68/2/8: минимум два слэша, чтобы не путать с размерами 1/2 и параметрами 25/6.
 SLASH_SKU_RE = re.compile(r"\b\d{1,4}/\d{1,4}/\d{1,4}\b")
 OLD_CIRCULATION_PUMP_RE = re.compile(
@@ -69,7 +79,8 @@ CATEGORY_KEYWORDS: dict[str, list[str]] = {
     "radiator_fittings": ["термоголов", "термостатическ", "термост-ий", "клапан термост", "радиаторный клапан", "для рад", "для батаре", "д/рад"],
     "radiators": ["радиатор", "радиаторы", "батаре", "биметалл", "алюминиевый радиатор"],
     "fittings": ["фитинг", "угольник ppr", "муфта ppr", "тройник ppr", "переходник ppr"],
-    "pipes": ["труба", "трубы", "ppr", "полипропилен"],
+    # Stem form also covers ordinary inflections: ``трубу``, ``трубой``.
+    "pipes": ["труб", "ppr", "полипропилен"],
 }
 
 SYMPTOM_KEYWORDS = [
@@ -189,33 +200,66 @@ class IntentRouterAgent:
     def __init__(self, llm_client: OpenRouterClient | None = None) -> None:
         self.llm_client = llm_client or OpenRouterClient()
         self._cache: dict[str, IntentResult] = {}
+        self._cache_lock = RLock()
 
     def route(self, message: str, session: SessionState | None = None) -> IntentResult:
         normalized_message = normalize_text(message)
         if session:
-            context_key = ":".join(
-                [
-                    session.category or "none",
-                    session.last_intent or "-",
-                    session.pending_intent_type or "-",
-                ]
+            # The LLM sees recent history and the rule router consumes pending
+            # state/slots.  All of that must be part of the key; a high-level
+            # category-only key reused a gas follow-up in an electric session.
+            context_key = json.dumps(
+                {
+                    "session_id": session.session_id,
+                    "category": session.category,
+                    "last_intent": session.last_intent,
+                    "pending_intent_type": session.pending_intent_type,
+                    "pending_question": session.pending_question,
+                    "pending_complectation_parts": session.pending_complectation_parts,
+                    "slots": session.slots,
+                    "last_product_skus": [card.sku for card in session.last_products],
+                    "history": session.history[-6:],
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
             )
         else:
             context_key = "none:-:-"
         cache_key = f"{context_key}:{normalized_message}"
-        if cache_key in self._cache:
-            cached = self._cache[cache_key]
+        with self._cache_lock:
+            cached = self._cache.get(cache_key)
+        if cached is not None:
             result = IntentResult(**self._as_dict(cached))
+            result.llm_used = False
+            result.raw = dict(result.raw or {})
+            result.raw.update(
+                {
+                    "llm_requested": False,
+                    "llm_transport_succeeded": False,
+                    "llm_output_accepted": False,
+                    "intent_source": "cache",
+                }
+            )
             result.is_topic_change = self._is_topic_change(result.category, message, session)
             return result
 
         result = self._rule_based(message, session)
+        llm_requested = False
         if result.confidence < 0.55:
+            llm_requested = True
             llm_result = self._llm_fallback(message, result, session)
             llm_result = self._sanity_check_llm_intent(llm_result, result, message)
             result = llm_result
         self._normalize_result(result, message, session)
-        self._cache[cache_key] = result
+        result.raw = dict(result.raw or {})
+        result.raw["llm_requested"] = llm_requested
+        result.raw["llm_transport_succeeded"] = bool(result.llm_used)
+        # Store a detached value: the orchestrator enriches ``intent.slots``
+        # later in the request, and retaining the same object leaked those
+        # session-specific mutations into another user's cached intent.
+        with self._cache_lock:
+            self._cache[cache_key] = IntentResult(**self._as_dict(result))
         return result
 
     def _rule_based(self, message: str, session: SessionState | None) -> IntentResult:
@@ -235,6 +279,7 @@ class IntentRouterAgent:
             SKU_RE.search(sku_text)
             or NUMERIC_SKU_RE.search(sku_text)
             or SLASH_SKU_RE.search(sku_text)
+            or ALPHANUM_SKU_RE.search(sku_text)
         )
         if sku_match and self._is_valid_sku_candidate(sku_match.group(0)):
             slots["sku"] = sku_match.group(0)
@@ -391,6 +436,8 @@ class IntentRouterAgent:
         rejects_electric = bool(re.search(r"\bне\s+электр", text))
         rejects_gas = bool(
             re.search(r"\bне\s+газ", text)
+            or re.search(r"\bгаз[ауы]?\s+н[еэ]+т\w*\b", text)
+            or re.search(r"\bн[еэ]+т\w*\s+газ[ауы]?\b", text)
             or "газа нет" in text
             or "без газ" in text
             or "нет газ" in text
@@ -408,6 +455,9 @@ class IntentRouterAgent:
             slots["contours"] = "двухконтурный"
         elif "одноконтурн" in text:
             slots["contours"] = "одноконтурный"
+
+        if category == "boilers" and "не знаю" in text and "кот" in text:
+            slots["needs_voltage_clarification"] = True
         elif category == "boilers" and ("гвс" in text or ("горяч" in text and "вод" in text)):
             slots["contours"] = "двухконтурный"
         elif category == "boilers" and "отоплен" in text:
@@ -441,11 +491,34 @@ class IntentRouterAgent:
             slots["application"] = "радиатор"
         if "дач" in text:
             slots["application"] = "дача"
+        if "скваж" in text:
+            # Covers common typos such as «скважны» as well as inflected forms.
+            slots["water_source"] = "скважина"
+        elif "колод" in text:
+            slots["water_source"] = "колодец"
+        elif "центральн" in text and any(
+            marker in text for marker in ["вод", "водопровод"]
+        ):
+            slots["water_source"] = "центральный водопровод"
+
+        well_depth_match = re.search(
+            r"(?:глубин\w*[^\d]{0,20}|скваж\w*[^\d]{0,30})(\d{1,3})"
+            r"(?:\s*(?:м\b|метр\w*))?",
+            text,
+        )
+        if well_depth_match and slots.get("water_source") == "скважина":
+            slots["well_depth_m"] = float(well_depth_match.group(1))
         if category == "pumps" and "насос" in text and "котл" in text:
             slots["pump_type"] = "циркуляционный"
             slots["pump_use"] = "отопление"
             slots["pump_context"] = "котел"
             slots["allow_basic_option"] = True
+        if category == "pumps" and (
+            "на замен" in text
+            or ("стар" in text and "насос" in text)
+            or "заменить насос" in text
+        ):
+            slots["pump_replacement"] = True
         if category == "pumps" and (
             "слабый напор" in text
             or "низкий напор" in text
@@ -711,6 +784,15 @@ class IntentRouterAgent:
         normalized = normalize_text(value)
         if normalized in {"что-нибудь", "что нибудь", "какой-нибудь", "какой нибудь"}:
             return False
+        if normalized.isalnum() and not normalized.isdigit():
+            # Compact SKUs need multiple letter/digit runs (CMSR|02|CA|28).
+            # Ordinary product phrases/models such as arderia|12 or ferroli|24
+            # have only two runs and must remain natural-language searches.
+            if not normalized.isascii():
+                return False
+            runs = re.findall(r"[a-z]+|\d+", normalized)
+            if len(runs) < 3:
+                return False
         return any(char.isdigit() for char in normalized)
 
     def _looks_like_attribute_followup(self, text: str) -> bool:
@@ -975,6 +1057,11 @@ class IntentRouterAgent:
         """
         text = normalize_text(message)
         sku_text = collapse_sku_spaces(text)
+        original_semantics = (
+            llm_result.intent_type,
+            llm_result.category,
+            json.dumps(llm_result.slots, ensure_ascii=False, sort_keys=True, default=str),
+        )
 
         # The model occasionally echoes the schema enum string verbatim
         # ("exact_sku|brand_category|…") or invents a label/category. Snap any
@@ -996,10 +1083,31 @@ class IntentRouterAgent:
                 SKU_RE.search(sku_text)
                 or NUMERIC_SKU_RE.search(sku_text)
                 or SLASH_SKU_RE.search(sku_text)
+                or ALPHANUM_SKU_RE.search(sku_text)
             )
             if not sku_match:
                 llm_result.intent_type = rule_result.intent_type
                 llm_result.slots.pop("sku", None)
+
+        # Recent history is deliberately present in the classification prompt, but
+        # it is context rather than evidence that the customer entered an article in
+        # this turn.  Some models copied the previous product's SKU into ``slots`` on
+        # replies such as "ну да".  Only accept an LLM-provided SKU when that exact
+        # candidate is visible in the current message; ordinary contextual follow-ups
+        # continue to work through ``session.last_products`` instead.
+        llm_sku = llm_result.slots.get("sku")
+        if llm_sku:
+            current_skus = {
+                normalize_sku(match.group(0))
+                for pattern in (SKU_RE, NUMERIC_SKU_RE, SLASH_SKU_RE, ALPHANUM_SKU_RE)
+                for match in pattern.finditer(sku_text)
+                if self._is_valid_sku_candidate(match.group(0))
+            }
+            if normalize_sku(str(llm_sku)) not in current_skus:
+                llm_result.slots.pop("sku", None)
+                if llm_result.intent_type == "exact_sku":
+                    llm_result.intent_type = rule_result.intent_type
+                    llm_result.category = rule_result.category
 
         if llm_result.intent_type == "stock_request" and not any(
             word in text for word in STOCK_WORDS
@@ -1021,6 +1129,15 @@ class IntentRouterAgent:
         ) and rule_result.category != "other":
             llm_result.intent_type = rule_result.intent_type
 
+        final_semantics = (
+            llm_result.intent_type,
+            llm_result.category,
+            json.dumps(llm_result.slots, ensure_ascii=False, sort_keys=True, default=str),
+        )
+        if final_semantics != original_semantics:
+            llm_result.raw = dict(llm_result.raw or {})
+            llm_result.raw["llm_output_accepted"] = False
+            llm_result.raw["llm_rejection_reason"] = "intent_sanity_check_override"
         return llm_result
 
     def _llm_fallback(
@@ -1077,13 +1194,20 @@ class IntentRouterAgent:
             },
         ]
         data, used = self.llm_client.complete_json("IntentRouterAgent", messages, fallback)
+        json_accepted = bool(
+            getattr(self.llm_client, "last_json_output_accepted", used)
+        )
         try:
             result = IntentResult(**data)
             result.llm_used = used
+            result.raw = dict(result.raw or {})
+            result.raw["llm_output_accepted"] = json_accepted
             return result
         except Exception as exc:
             logger.warning("Invalid LLM intent payload: %s", exc)
             fallback_result.llm_used = used
+            fallback_result.raw = dict(fallback_result.raw or {})
+            fallback_result.raw["llm_output_accepted"] = False
             return fallback_result
 
     def _as_dict(self, result: IntentResult) -> dict[str, Any]:

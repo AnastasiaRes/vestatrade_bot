@@ -39,6 +39,40 @@ def test_product_card_decodes_html_entities() -> None:
     assert '3/4"' in card.name
 
 
+def test_product_card_hides_conflicting_internal_sku() -> None:
+    product = Product(
+        sku="11096641001",
+        name="Труба полипропиленовая",
+        url="https://example.test/pipe",
+        price=100,
+        stock_status="в наличии",
+        attributes_normalized={"артикул": "12662421001", "диаметр (мм)": "25"},
+    )
+
+    card = ProductCardAgent().build_card(
+        product,
+        SearchQuery(original_text="труба 25", category="pipes"),
+    )
+
+    assert card is not None
+    assert "артикул" not in card.characteristics
+    assert card.characteristics["диаметр (мм)"] == "25"
+
+
+def test_guardrail_reads_boiler_power_from_unit_in_attribute_key() -> None:
+    product = Product(
+        sku="SOLO-3",
+        name="Котёл электрический ZOTA Solo - 3",
+        category_path="Котлы электрические",
+        url="https://example.test/solo3",
+        price=25000,
+        stock_status="в наличии",
+        attributes_normalized={"мощность, квт": "3"},
+    )
+
+    assert GuardrailsAgent()._extract_power_kw(product) == 3
+
+
 def test_guardrails_reject_invented_characteristic(sample_products: list[Product]) -> None:
     product = sample_products[0]
     card = ProductCard(
@@ -61,6 +95,35 @@ def test_guardrails_reject_invented_characteristic(sample_products: list[Product
 
     assert not result.ok
     assert any("invented characteristic" in issue for issue in result.issues)
+
+
+def test_context_guard_allows_model_reference_present_in_card() -> None:
+    context = (
+        "1. Адаптер для сервопривода (для VTc.589) (артикул VT.AC674.V.0)\n"
+        "   Цена: 100 RUB. Наличие: в наличии."
+    )
+
+    result = GuardrailsAgent().validate_context_answer(
+        "Артикул VT.AC674.V.0; адаптер предназначен для VTc.589.",
+        context,
+    )
+
+    assert result.ok
+
+
+def test_context_guard_rejects_reference_model_as_primary_article() -> None:
+    context = (
+        "1. Адаптер для сервопривода (для VTc.589) (артикул VT.AC674.V.0)\n"
+        "   Цена: 100 RUB. Наличие: в наличии."
+    )
+
+    result = GuardrailsAgent().validate_context_answer(
+        "Артикул: VTc.589.",
+        context,
+    )
+
+    assert not result.ok
+    assert "invented sku: vtc.589" in result.issues
 
 
 def test_guardrails_reject_unsorted_cheap(sample_products: list[Product]) -> None:
@@ -194,3 +257,82 @@ def test_consultant_rejects_wrong_boiler_type_for_real_product() -> None:
 
     assert any("тип котла" in issue for issue in wrong)
     assert not any("тип котла" in issue for issue in correct)
+
+
+def test_context_guard_rejects_compact_invented_sku() -> None:
+    result = GuardrailsAgent().validate_context_answer(
+        "Артикул CMSR99ZZ99, цена по запросу.",
+        "Котёл электрический. Артикул CMSR02CA28.",
+    )
+
+    assert not result.ok
+    assert any("invented sku" in issue for issue in result.issues)
+
+
+def test_context_guard_rejects_prefix_of_real_sku() -> None:
+    context = (
+        "1. Насос тестовый (артикул ABC-12345-X)\n"
+        "   Цена: 100 RUB. Наличие: в наличии, 1 шт."
+    )
+    guard = GuardrailsAgent()
+
+    hyphenated = guard.validate_context_answer(
+        "Артикул ABC-12345 — это показанный насос.",
+        context,
+    )
+    compact = guard.validate_context_answer(
+        "SKU: ABC12345.",
+        context,
+    )
+
+    assert not hyphenated.ok
+    assert not compact.ok
+    assert any("invented sku" in issue for issue in hyphenated.issues)
+    assert any("invented sku" in issue for issue in compact.issues)
+
+
+def test_context_guard_accepts_valid_sku_with_sentence_period_and_card_word() -> None:
+    context = (
+        "Карточка товара. Артикул: VT.217.N.04.\n"
+        "Цена: 100 RUB. Наличие: в наличии, 1 шт."
+    )
+
+    result = GuardrailsAgent().validate_context_answer(
+        "По карточке проверьте назначение. Артикул: VT.217.N.04.",
+        context,
+    )
+
+    assert result.ok, result.issues
+
+
+def test_clarification_rewrite_must_keep_numeric_voltage_options() -> None:
+    draft = "Какое питание доступно для котла: 220 или 380 В?"
+
+    result = GuardrailsAgent().validate_response_text(
+        draft,
+        "К какому типу электросети подключается котёл?",
+        mode="clarification",
+    )
+
+    assert not result.ok
+    assert result.safe_message == draft
+    assert any("220" in issue for issue in result.issues)
+    assert any("380" in issue for issue in result.issues)
+
+
+def test_context_guard_rejects_combustion_chamber_for_electric_boiler() -> None:
+    guard = GuardrailsAgent()
+    context = "Котёл электрический Arderia E12. Артикул ARD-E12."
+
+    wrong = guard.validate_context_answer(
+        "У Arderia E12 закрытая камера сгорания.",
+        context,
+    )
+    correct = guard.validate_context_answer(
+        "У электрического Arderia E12 нет камеры сгорания.",
+        context,
+    )
+
+    assert not wrong.ok
+    assert any("combustion chamber" in issue for issue in wrong.issues)
+    assert correct.ok

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from app.models import IntentResult, SessionState, SlotFillingResult
 
 from .utils import merge_slots, normalize_text
@@ -12,6 +14,7 @@ class SlotFillingAgent:
         intent: IntentResult,
         session: SessionState,
     ) -> SlotFillingResult:
+        previous_slots = dict(session.slots)
         slots = merge_slots(session.slots, intent.slots)
         category = intent.category
         text = normalize_text(message)
@@ -26,8 +29,17 @@ class SlotFillingAgent:
         if category == "pipes" and slots.get("pipe_purpose") == "канализация":
             category = "sewer"
 
+        if category == "pumps":
+            self._infer_plain_circulation_parameters(text, slots)
+            self._drop_parameter_shaped_sku(slots, intent)
+
         if category == "sewer":
-            self._infer_sewer_followup_slots(text, slots)
+            self._infer_sewer_followup_slots(
+                text,
+                slots,
+                previous_slots=previous_slots,
+                current_slots=intent.slots,
+            )
 
         if category == "pipes":
             return self._pipes(slots)
@@ -109,7 +121,42 @@ class SlotFillingAgent:
             return SlotFillingResult(slots=slots, needs_clarification=True, question=question)
         return SlotFillingResult(slots=slots)
 
-    def _infer_sewer_followup_slots(self, text: str, slots: dict) -> None:
+    def _infer_sewer_followup_slots(
+        self,
+        text: str,
+        slots: dict,
+        previous_slots: dict | None = None,
+        current_slots: dict | None = None,
+    ) -> None:
+        previous_slots = previous_slots or {}
+        current_slots = current_slots or {}
+        element_type = normalize_text(
+            str(slots.get("element_type") or previous_slots.get("element_type") or "")
+        )
+        if "муфт" in element_type:
+            if "соедин" in text:
+                slots["coupling_type"] = "соединительная"
+            elif "переход" in text or "редукц" in text:
+                slots["coupling_type"] = "переходная"
+            elif "ремонт" in text or "надвиж" in text:
+                slots["coupling_type"] = "ремонтная"
+
+        angle = self._extract_sewer_angle(text, element_type, previous_slots)
+        if angle is not None:
+            slots["angle_deg"] = angle
+            previous_diameter = previous_slots.get("diameter_mm")
+            current_diameter = current_slots.get("diameter_mm")
+            if (
+                previous_diameter
+                and current_diameter
+                and int(current_diameter) == int(angle)
+                and not self._explicitly_states_diameter(text, int(angle))
+            ):
+                # ``отвод 110`` → ``внутренняя, 90`` means DN110 at a
+                # right angle; the generic number extractor sees 90 as a new
+                # diameter, so restore the already confirmed DN.
+                slots["diameter_mm"] = previous_diameter
+
         if (
             not slots.get("element_type")
             and slots.get("sewer_scope")
@@ -129,6 +176,41 @@ class SlotFillingAgent:
             diameter = self._extract_mm_value(text, min_value=32, max_value=250)
             if diameter:
                 slots["diameter_mm"] = diameter
+
+    def _extract_sewer_angle(
+        self,
+        text: str,
+        element_type: str,
+        previous_slots: dict,
+    ) -> int | None:
+        if "отвод" not in element_type:
+            return None
+        explicit = re.search(
+            r"(?<!\d)(\d{1,3})\s*(?:градус\w*|град\b)",
+            text,
+        )
+        if explicit:
+            value = int(explicit.group(1))
+            return value if 5 <= value <= 90 else None
+
+        values = [int(value) for value in re.findall(r"(?<!\d)(\d{1,3})(?!\d)", text)]
+        standard_angles = {15, 22, 30, 45, 67, 87, 88, 90}
+        previous_diameter = previous_slots.get("diameter_mm")
+        if previous_diameter and len(values) == 1 and values[0] in standard_angles:
+            if not self._explicitly_states_diameter(text, values[0]):
+                return values[0]
+        if len(values) >= 2 and values[-1] in standard_angles:
+            return values[-1]
+        return None
+
+    def _explicitly_states_diameter(self, text: str, value: int) -> bool:
+        return bool(
+            re.search(
+                rf"(?:диаметр\w*|\bdn|\bd\s*|ø)\D{{0,8}}{value}\b|"
+                rf"\b{value}\s*мм\b",
+                text,
+            )
+        )
 
     def _extract_total_length_m(self, text: str) -> int | None:
         import re
@@ -200,11 +282,52 @@ class SlotFillingAgent:
         return "Уточните: " + "; ".join(missing) + "."
 
     def _mentions_number(self, text: str, number: int) -> bool:
-        import re
-
         return bool(re.search(rf"(?<!\d){number}(?!\d)", text))
 
+    def _drop_parameter_shaped_sku(self, slots: dict, intent: IntentResult) -> None:
+        if intent.intent_type == "exact_sku":
+            return
+        raw_sku = normalize_text(str(slots.get("sku") or ""))
+        if not raw_sku:
+            return
+        if re.fullmatch(
+            r"\d{2,3}\s*[/.-]\s*\d{1,2}(?:\s*[- ]\s*(?:130|180))?",
+            raw_sku,
+        ):
+            # A weak intent-model may copy the already known pump notation
+            # ``25/6-130`` into the SKU field on an ordinary follow-up.  It is a
+            # parameter tuple, not a catalog article, and must not turn the next
+            # search into a failed exact-SKU lookup.
+            slots.pop("sku", None)
+
+    def _infer_plain_circulation_parameters(self, text: str, slots: dict) -> None:
+        """Recognise common compact/space-separated circulation-pump shorthand."""
+        match = re.search(
+            r"(?<!\d)(25|32)\s+(4|6|8)\s+(130|180)(?!\d)",
+            text,
+        )
+        if not match:
+            # Customers frequently omit the slash while typing on a phone:
+            # ``нсос 256 130`` means 25/6 with a 130 mm mounting length.
+            match = re.search(
+                r"(?<!\d)(25|32)(4|6|8)\s+(130|180)(?!\d)",
+                text,
+            )
+        if not match:
+            return
+        connection, head, mounting = (int(value) for value in match.groups())
+        slots.setdefault("connection_size", connection)
+        slots.setdefault("head_m", float(head))
+        slots.setdefault("mounting_length_mm", mounting)
+        slots.setdefault("pump_type", "циркуляционный")
+
     def _pumps(self, slots: dict, text: str) -> SlotFillingResult:
+        if (
+            not slots.get("pump_type")
+            and slots.get("water_source") == "скважина"
+            and slots.get("well_depth_m")
+        ):
+            slots["pump_type"] = "скважинный"
         if not slots.get("pump_type") and (
             slots.get("mounting_length_mm")
             or slots.get("head_m")
@@ -213,6 +336,15 @@ class SlotFillingAgent:
         ):
             slots["pump_type"] = "циркуляционный"
         if not slots.get("pump_type"):
+            if slots.get("pump_replacement"):
+                return SlotFillingResult(
+                    slots=slots,
+                    needs_clarification=True,
+                    question=(
+                        "Для замены напишите модель или маркировку старого насоса и размер: "
+                        "монтажную длину 130/180 мм; если видно — также напор 25/4 или 25/6."
+                    ),
+                )
             if (
                 (slots.get("brand") or slots.get("reference_brand"))
                 and slots.get("cheap")
@@ -236,6 +368,25 @@ class SlotFillingAgent:
                     ),
                 )
             if slots.get("pump_use") == "водоснабжение":
+                if slots.get("water_source") == "скважина":
+                    return SlotFillingResult(
+                        slots=slots,
+                        needs_clarification=True,
+                        question=(
+                            "Понял, источник — скважина. Уточните её глубину в метрах; "
+                            "для точного расчёта затем понадобятся уровень воды, высота "
+                            "подъёма и нужный расход."
+                        ),
+                    )
+                if slots.get("water_source") == "колодец":
+                    return SlotFillingResult(
+                        slots=slots,
+                        needs_clarification=True,
+                        question=(
+                            "Понял, источник — колодец. Уточните глубину до воды, "
+                            "высоту подъёма и нужный расход."
+                        ),
+                    )
                 return SlotFillingResult(
                     slots=slots,
                     needs_clarification=True,
@@ -271,13 +422,15 @@ class SlotFillingAgent:
                 ),
             )
         if slots.get("pump_type") == "циркуляционный":
-            has_core_param = any(
-                slots.get(key)
-                for key in ["mounting_length_mm", "head_m", "connection_size", "old_model"]
-            )
-            if not has_core_param and slots.get("allow_basic_option"):
+            required = {
+                "head_m": "напор (например 4 или 6 м)",
+                "mounting_length_mm": "монтажную длину 130 или 180 мм",
+            }
+            missing = [label for key, label in required.items() if not slots.get(key)]
+            has_any_core_param = len(missing) < len(required)
+            if not has_any_core_param and slots.get("allow_basic_option"):
                 return SlotFillingResult(slots=slots)
-            if not has_core_param:
+            if missing:
                 if self._does_not_know_params(text):
                     if slots.get("pump_param_help_given"):
                         slots["allow_basic_option"] = True
@@ -295,12 +448,23 @@ class SlotFillingAgent:
                             "системы — отопление, тёплый пол или водоснабжение."
                         ),
                     )
+                if has_any_core_param:
+                    return SlotFillingResult(
+                        slots=slots,
+                        needs_clarification=True,
+                        question=(
+                            "Для точного подбора циркуляционного насоса ещё уточните: "
+                            + "; ".join(missing)
+                            + ". По возможности также укажите присоединение (обычно 25 или 32); "
+                            "либо просто пришлите полную маркировку старого насоса."
+                        ),
+                    )
                 return SlotFillingResult(
                     slots=slots,
                     needs_clarification=True,
                     question=(
-                        "Понял, нужен циркуляционный насос. Уточните монтажную длину и напор "
-                        "или модель старого насоса."
+                        "Понял, нужен циркуляционный насос. Уточните присоединение, монтажную "
+                        "длину и напор или пришлите полную маркировку старого насоса."
                     ),
                 )
         return SlotFillingResult(slots=slots)
@@ -331,7 +495,7 @@ class SlotFillingAgent:
                 question=(
                     prefix + "Газовый или электрический?"
                     if prefix
-                    else "Котёл нужен газовый или электрический?"
+                    else "Котёл нужен газовый или электрический и на какую площадь?"
                 ),
             )
         if not slots.get("area_m2") and not slots.get("power_kw"):
@@ -353,9 +517,32 @@ class SlotFillingAgent:
                     "Котёл нужен только для отопления или ещё для горячей воды?"
                 ),
             )
+        if (
+            slots.get("boiler_type") == "электрический"
+            and slots.get("needs_voltage_clarification")
+            and not slots.get("voltage_v")
+        ):
+            return SlotFillingResult(
+                slots=slots,
+                needs_clarification=True,
+                question="Какое питание доступно для котла: 220 или 380 В?",
+            )
         return SlotFillingResult(slots=slots)
 
     def _valves(self, slots: dict, text: str) -> SlotFillingResult:
+        if "дренаж" in text and "кран" in text:
+            slots["valve_kind"] = "дренажный кран"
+        elif "обратн" in text and "клапан" in text:
+            slots["valve_kind"] = "обратный клапан"
+        elif "шаров" in text or "кран" in text:
+            # In the product funnel an unqualified isolation ``кран`` means a
+            # ball valve.  Drain cocks and check valves require an explicit ask.
+            slots["valve_kind"] = "шаровый кран"
+        elif "вентил" in text:
+            slots["valve_kind"] = "вентиль"
+        elif "клапан" in text:
+            slots["valve_kind"] = "клапан"
+
         if "радиатор" in text:
             slots["application"] = "радиатор"
         elif "отоплен" in text:

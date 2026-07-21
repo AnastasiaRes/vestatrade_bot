@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from threading import Lock, local
+from time import monotonic
 from typing import Any
 
 import httpx
@@ -23,8 +25,28 @@ class LLMResult:
     cost_usd: float = 0.0
 
 
+@dataclass
+class _CircuitState:
+    open_until: float = 0.0
+    half_open_probe_in_flight: bool = False
+    last_error: str | None = None
+    generation: int = 0
+
+
+@dataclass(frozen=True)
+class _CircuitPermit:
+    generation: int
+    is_half_open_probe: bool = False
+
+
 class OpenRouterClient:
     openrouter_endpoint = "https://openrouter.ai/api/v1/chat/completions"
+    _ollama_circuit_open_seconds = 20.0
+    _connect_timeout_seconds = 3.0
+    _write_timeout_seconds = 5.0
+    _pool_timeout_seconds = 2.0
+    _circuit_lock = Lock()
+    _circuits: dict[str, _CircuitState] = {}
 
     def __init__(
         self,
@@ -33,6 +55,11 @@ class OpenRouterClient:
     ) -> None:
         self.settings = settings or get_settings()
         self.budget = budget_manager or BudgetManager(self.settings)
+        self._telemetry = local()
+
+    @property
+    def last_json_output_accepted(self) -> bool | None:
+        return getattr(self._telemetry, "json_output_accepted", None)
 
     def _fallback(self, reason: str) -> LLMResult:
         logger.info("LLM fallback: %s", reason)
@@ -64,6 +91,66 @@ class OpenRouterClient:
             )
         return headers
 
+    def _timeout(self) -> httpx.Timeout:
+        read_timeout = self.settings.llm_timeout_seconds
+        return httpx.Timeout(
+            connect=min(read_timeout, self._connect_timeout_seconds),
+            read=read_timeout,
+            write=min(read_timeout, self._write_timeout_seconds),
+            pool=min(read_timeout, self._pool_timeout_seconds),
+        )
+
+    def _acquire_circuit(
+        self, endpoint: str
+    ) -> tuple[bool, _CircuitPermit | None, str | None]:
+        if self.settings.llm_provider != "ollama":
+            return True, None, None
+
+        now = monotonic()
+        with self._circuit_lock:
+            state = self._circuits.setdefault(endpoint, _CircuitState())
+            if state.open_until <= 0.0:
+                return True, _CircuitPermit(state.generation), None
+            if now < state.open_until or state.half_open_probe_in_flight:
+                return False, None, state.last_error
+            state.half_open_probe_in_flight = True
+            return True, _CircuitPermit(state.generation, is_half_open_probe=True), None
+
+    def _open_circuit(
+        self, endpoint: str, error: Exception, permit: _CircuitPermit | None
+    ) -> None:
+        if self.settings.llm_provider != "ollama":
+            return
+        with self._circuit_lock:
+            state = self._circuits.setdefault(endpoint, _CircuitState())
+            if permit is not None and permit.generation != state.generation:
+                return
+            state.generation += 1
+            state.open_until = monotonic() + self._ollama_circuit_open_seconds
+            state.half_open_probe_in_flight = False
+            state.last_error = str(error)
+
+    def _close_half_open_circuit(
+        self, endpoint: str, permit: _CircuitPermit | None
+    ) -> None:
+        if (
+            self.settings.llm_provider != "ollama"
+            or permit is None
+            or not permit.is_half_open_probe
+        ):
+            return
+        with self._circuit_lock:
+            state = self._circuits.setdefault(endpoint, _CircuitState())
+            if (
+                permit.generation != state.generation
+                or not state.half_open_probe_in_flight
+            ):
+                return
+            state.generation += 1
+            state.open_until = 0.0
+            state.half_open_probe_in_flight = False
+            state.last_error = None
+
     def complete(
         self,
         agent: str,
@@ -82,6 +169,11 @@ class OpenRouterClient:
         if not endpoint or not headers:
             return self._fallback(f"LLM provider '{self.settings.llm_provider}' is not configured")
 
+        circuit_allowed, circuit_permit, circuit_error = self._acquire_circuit(endpoint)
+        if not circuit_allowed:
+            detail = f" after: {circuit_error}" if circuit_error else ""
+            return self._fallback(f"ollama request skipped: circuit is open{detail}")
+
         model_name = model or self.settings.llm_model
         payload = {
             "model": model_name,
@@ -94,10 +186,11 @@ class OpenRouterClient:
         last_error: Exception | None = None
         for attempt in range(self.settings.llm_max_retries + 1):
             try:
-                with httpx.Client(timeout=self.settings.llm_timeout_seconds) as client:
+                with httpx.Client(timeout=self._timeout()) as client:
                     response = client.post(endpoint, headers=headers, json=payload)
                     response.raise_for_status()
                     data = response.json()
+                    self._close_half_open_circuit(endpoint, circuit_permit)
                 content = (
                     data.get("choices", [{}])[0]
                     .get("message", {})
@@ -117,7 +210,7 @@ class OpenRouterClient:
                     usage=usage,
                     cost_usd=cost,
                 )
-            except (httpx.HTTPError, ValueError, KeyError) as exc:
+            except httpx.HTTPStatusError as exc:
                 last_error = exc
                 logger.warning(
                     "%s LLM call failed for agent=%s attempt=%s: %s",
@@ -126,6 +219,49 @@ class OpenRouterClient:
                     attempt + 1,
                     exc,
                 )
+                status_code = exc.response.status_code
+                if status_code == 429 or status_code >= 500:
+                    if self.settings.llm_provider == "ollama":
+                        self._open_circuit(endpoint, exc, circuit_permit)
+                        break
+                    continue
+                self._close_half_open_circuit(endpoint, circuit_permit)
+                break
+            except httpx.RequestError as exc:
+                last_error = exc
+                logger.warning(
+                    "%s LLM call failed for agent=%s attempt=%s: %s",
+                    self.settings.llm_provider,
+                    agent,
+                    attempt + 1,
+                    exc,
+                )
+                if self.settings.llm_provider == "ollama":
+                    self._open_circuit(endpoint, exc, circuit_permit)
+                    break
+            except httpx.HTTPError as exc:
+                last_error = exc
+                logger.warning(
+                    "%s LLM call failed for agent=%s attempt=%s: %s",
+                    self.settings.llm_provider,
+                    agent,
+                    attempt + 1,
+                    exc,
+                )
+                if self.settings.llm_provider == "ollama":
+                    self._open_circuit(endpoint, exc, circuit_permit)
+                    break
+            except (ValueError, KeyError) as exc:
+                last_error = exc
+                logger.warning(
+                    "%s LLM call failed for agent=%s attempt=%s: %s",
+                    self.settings.llm_provider,
+                    agent,
+                    attempt + 1,
+                    exc,
+                )
+        if isinstance(last_error, (ValueError, KeyError)):
+            self._close_half_open_circuit(endpoint, circuit_permit)
         return self._fallback(f"{self.settings.llm_provider} request failed: {last_error}")
 
     def complete_json(
@@ -135,6 +271,7 @@ class OpenRouterClient:
         fallback: dict[str, Any],
         model: str | None = None,
     ) -> tuple[dict[str, Any], bool]:
+        self._telemetry.json_output_accepted = False
         result = self.complete(
             agent=agent, messages=messages, temperature=0.0, max_tokens=600, model=model
         )
@@ -145,7 +282,9 @@ class OpenRouterClient:
             content = content.strip("`")
             content = content.replace("json\n", "", 1).replace("JSON\n", "", 1)
         try:
-            return json.loads(content), True
+            parsed = json.loads(content)
+            self._telemetry.json_output_accepted = True
+            return parsed, True
         except json.JSONDecodeError:
             logger.warning("LLM JSON parse failed for %s: %s", agent, content[:500])
             return fallback, True
