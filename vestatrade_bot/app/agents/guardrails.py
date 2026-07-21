@@ -170,7 +170,7 @@ class GuardrailsAgent:
             return any(marker in text for marker in positive_markers)
         patterns: dict[str, list[str]] = {
             "насос": [
-                r"встроенн\w*\s+(?:циркуляционн\w*\s+)?насос",
+                r"встроен\w*\s+(?:циркуляционн\w*\s+)?насос",
                 r"насос.{0,45}встроен",
                 r"в комплект.{0,160}насос",
                 r"комплект поставки.{0,500}насос",

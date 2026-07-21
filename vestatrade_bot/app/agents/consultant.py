@@ -120,6 +120,7 @@ class ConsultResult:
 
 
 PRICE_RE = re.compile(r"(\d[\d  .,]{2,})\s*(?:₽|руб|р\.|rub)", re.IGNORECASE)
+POWER_RE = re.compile(r"(?<!\d)(\d+(?:[.,]\d+)?)\s*квт\b", re.IGNORECASE)
 ARTICLE_RE = re.compile(
     r"\b(?:артикул|арт)\b\.?[\s:№]*"
     r"([A-Za-zА-Яа-я0-9][A-Za-zА-Яа-я0-9._/\-]{2,})",
@@ -389,6 +390,23 @@ class ConsultantAgent:
                     f"остаток {match.group(1)} шт. не соответствует товару {product.sku}"
                 )
 
+        # Prices and stock were already tied to the concrete product, but power
+        # was not.  A live model therefore managed to call the real E9/E12 cards
+        # "24 kW" models.  Treat every product-owned kW value as a grounded fact
+        # and compare it with all power/range values actually present in that
+        # product's name and structured feed fields.
+        for match in POWER_RE.finditer(answer):
+            owner = self._fact_owner(answer, match.span(), product_mentions, by_sku)
+            if owner is None:
+                continue
+            claimed = float(match.group(1).replace(",", "."))
+            product = by_sku[owner]
+            allowed = self._product_power_values(product)
+            if allowed and not any(abs(claimed - value) <= 0.05 for value in allowed):
+                issues.append(
+                    f"мощность {claimed:g} кВт не соответствует товару {product.sku}"
+                )
+
         allowed_product_text = normalize_text(
             " ".join(f"{product.brand} {product.name}" for product in by_sku.values())
         )
@@ -479,10 +497,12 @@ class ConsultantAgent:
                 area_m2 = None
         if area_m2:
             required_kw = area_m2 / 10.0
+            underpowered: list[Product] = []
             for product in by_sku.values():
                 power_kw = self._product_power_kw(product)
                 if not power_kw or power_kw + 0.4 >= required_kw:
                     continue
+                underpowered.append(product)
                 anchors = set(self._model_tokens(product.name))
                 sku_text = normalize_text(product.sku or "")
                 if sku_text:
@@ -500,11 +520,35 @@ class ConsultantAgent:
                             "есть запас",
                             "имеет запас",
                             "с запасом",
+                            "приемлем",
+                            "подходящ",
+                            "подойдет",
+                            "подойдёт",
+                            "оптимальн",
+                            "рекоменд",
+                            "совет",
+                            "лучший вариант",
+                            "лучше взять",
+                            "выберите",
+                            "выбирайте",
                         ]
                     )
                     negative = any(
                         marker in window
-                        for marker in ["не хват", "недостаточ", "без запас", "впритык"]
+                        for marker in [
+                            "не хват",
+                            "недостаточ",
+                            "без запас",
+                            "впритык",
+                            "не подойдет",
+                            "не подойдёт",
+                            "не рекоменд",
+                            "не могу рекоменд",
+                            "не как основн",
+                            "только как резерв",
+                            "не закрывает",
+                            "маломощ",
+                        ]
                     )
                     if positive and not negative:
                         issues.append(
@@ -512,7 +556,41 @@ class ConsultantAgent:
                         )
                         break
 
+            # Models often refer back to a list collectively ("эти модели"),
+            # without repeating the SKU/model anchor.  Validate that claim too;
+            # otherwise the per-product check above cannot assign an owner.
+            collective_positive = re.search(
+                r"\b(?:эти|обе|оба|все\s+(?:эти\s+)?)\s+"
+                r"(?:модел\w*|вариант\w*|котл\w*)[^.!?]{0,100}"
+                r"(?:достаточ\w*|подход\w*|хват\w*|с\s+запас\w*)",
+                normalize_text(answer),
+            )
+            if collective_positive:
+                for product in underpowered:
+                    issues.append(
+                        f"коллективная рекомендация включает недостаточный котёл "
+                        f"{product.sku} для {area_m2:g} м²"
+                    )
+
         return issues[:4]
+
+    @staticmethod
+    def _product_power_values(product: Product) -> set[float]:
+        """Return every authoritative kW value/range endpoint for a product."""
+        values: set[float] = set()
+        sources = [product.name]
+        sources.extend(
+            str(value)
+            for key, value in (product.attributes_normalized or {}).items()
+            if "мощност" in normalize_text(str(key))
+        )
+        for source in sources:
+            for raw in re.findall(r"\d+(?:[.,]\d+)?", source):
+                try:
+                    values.add(float(raw.replace(",", ".")))
+                except ValueError:
+                    continue
+        return values
 
     def _product_mentions(
         self,

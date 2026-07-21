@@ -958,6 +958,129 @@ def test_guardrails_restore_clarification_if_llm_drops_options(sample_products) 
     assert response.debug["response_llm_used"] is True
 
 
+def test_pump_funnel_accepts_water_pumping_without_repeating_question(sample_products) -> None:
+    drainage = Product(
+        sku="68/2/8",
+        name="Дренажный насос Вихрь ДН-350",
+        category_path="Насосы дренажные",
+        brand="Вихрь",
+        url="https://example.test/drainage",
+        price=2814,
+        stock_status="в наличии",
+        stock_qty=3,
+        attributes_normalized={
+            "артикул": "68/2/8",
+            "тип товара": "Дренажный насос",
+            "высота напора, м": "5",
+            "мощность, вт": "350",
+        },
+        description=(
+            "Дренажный насос используется, когда нужно откачать воду из затопленных "
+            "подвалов, резервуаров или водоёмов. Подходит для грязной воды с частицами до 35 мм."
+        ),
+        docs_text=(
+            "7. Комплект поставки. В комплект поставки входят: "
+            "1. Насос. 2. Поплавковый выключатель. 3. Руководство по эксплуатации."
+        ),
+    )
+    orchestrator = ChatOrchestrator(products=[*sample_products, drainage])
+
+    first = orchestrator.handle_chat("drainage-purpose", "помоги выбрать насос")
+    second = orchestrator.handle_chat("drainage-purpose", "откачка воды")
+
+    assert "Для какой задачи нужен насос" in first.answer
+    assert "Для какой задачи нужен насос" not in second.answer
+    assert second.debug["slots"]["pump_type"] == "дренажный"
+    assert second.debug["slots"]["pump_use"] == "откачка воды"
+    assert [product.sku for product in second.products] == ["68/2/8"]
+    assert "не сливая систему" not in second.answer
+
+
+def test_drainage_pump_purpose_and_package_do_not_use_boiler_template(sample_products) -> None:
+    drainage = Product(
+        sku="68/2/8",
+        name="Дренажный насос Вихрь ДН-350",
+        category_path="Насосы дренажные",
+        brand="Вихрь",
+        url="https://example.test/drainage",
+        price=2814,
+        stock_status="в наличии",
+        stock_qty=3,
+        attributes_normalized={"тип товара": "Дренажный насос"},
+        description=(
+            "Дренажный насос используется, когда нужно откачать воду из затопленных "
+            "подвалов или резервуаров. Подходит для грязной воды с частицами до 35 мм."
+        ),
+        docs_text=(
+            "7. Комплект поставки. В комплект поставки входят: "
+            "1. Насос. 2. Поплавковый выключатель. 3. Руководство по эксплуатации."
+        ),
+    )
+    orchestrator = ChatOrchestrator(products=[*sample_products, drainage])
+    orchestrator.handle_chat("drainage-package", "дренажный насос 68/2/8")
+
+    response = orchestrator.handle_chat(
+        "drainage-package", "а для чего этот насос и что в него входит?"
+    )
+    answer = response.answer.lower()
+
+    assert "откачать воду" in answer
+    assert "поплавковый выключатель" in answer
+    assert "руководство по эксплуатации" in answer
+    assert "в котёл" not in answer
+    assert "циркуляционный насос" not in answer
+    assert [product.sku for product in response.products] == ["68/2/8"]
+
+
+def test_product_purpose_and_package_handler_is_not_limited_to_pumps(sample_products) -> None:
+    products = [product.model_copy(deep=True) for product in sample_products]
+    pipe = next(product for product in products if product.sku == "VTp.700.0.020")
+    pipe.docs_text = (
+        "7. Комплект поставки. В комплект поставки входят: "
+        "1. Труба PPR. 2. Защитная упаковка."
+    )
+    orchestrator = ChatOrchestrator(products=products)
+    orchestrator.handle_chat("pipe-purpose-package", "артикул VTp.700.0.020")
+
+    response = orchestrator.handle_chat(
+        "pipe-purpose-package", "для чего эта труба и что входит в комплект?"
+    )
+    answer = response.answer.lower()
+
+    assert "назначение" in answer
+    assert "водоснабжение" in answer
+    assert "отопление" in answer
+    assert "защитная упаковка" in answer
+    assert "в котёл" not in answer
+    assert [product.sku for product in response.products] == ["VTp.700.0.020"]
+
+
+def test_shown_valve_purpose_uses_feed_attribute(sample_products) -> None:
+    orchestrator = ChatOrchestrator(products=sample_products)
+    orchestrator.handle_chat("valve-purpose", "артикул VT.228.N.04")
+
+    response = orchestrator.handle_chat("valve-purpose", "какое назначение у этого крана?")
+
+    assert "Вода, отопление" in response.answer
+    assert "не буду додумывать" not in response.answer.lower()
+    assert [product.sku for product in response.products] == ["VT.228.N.04"]
+
+
+def test_confirmed_component_answer_has_no_boiler_only_advice(sample_products) -> None:
+    products = [product.model_copy(deep=True) for product in sample_products]
+    boiler = next(product for product in products if product.sku == "ARD-E9")
+    boiler.docs_text = "В котёл встроен циркуляционный насос."
+    orchestrator = ChatOrchestrator(products=products)
+    orchestrator.handle_chat("neutral-component", "артикул ARD-E9")
+
+    response = orchestrator.handle_chat("neutral-component", "есть ли в нём насос?")
+    answer = response.answer.lower()
+
+    assert "подтверждение: насос" in answer
+    assert "стандартной схемы" not in answer
+    assert "тёплые полы" not in answer
+
+
 def test_guardrails_restore_greeting_if_llm_changes_it(sample_products) -> None:
     orchestrator = ChatOrchestrator(
         products=sample_products,

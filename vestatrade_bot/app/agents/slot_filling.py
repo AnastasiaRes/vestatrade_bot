@@ -322,6 +322,14 @@ class SlotFillingAgent:
         slots.setdefault("pump_type", "циркуляционный")
 
     def _pumps(self, slots: dict, text: str) -> SlotFillingResult:
+        # The purpose answer offered by this very funnel must be actionable.
+        # Previously ``откачка воды`` was stored only as ``pump_use`` while the
+        # next branch required ``pump_type`` and repeated the same question.
+        # Keep this defensive conversion here as well as in IntentRouter: it
+        # also protects sessions restored from an older version of the app.
+        pump_use = normalize_text(str(slots.get("pump_use") or ""))
+        if not slots.get("pump_type") and ("откач" in pump_use or "дренаж" in pump_use):
+            slots["pump_type"] = "дренажный"
         if (
             not slots.get("pump_type")
             and slots.get("water_source") == "скважина"

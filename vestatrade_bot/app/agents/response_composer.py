@@ -960,18 +960,12 @@ class ResponseComposerAgent:
 
     def compose_complectation_confirmed(self, card: ProductCard, requested_parts: list[str]) -> str:
         parts = ", ".join(requested_parts)
-        if requested_parts == ["насос"]:
-            draft = (
-                f"Да, в карточке {card.sku} насос указан в характеристиках этой модели. "
-                "Для стандартной схемы отдельный циркуляционный насос обычно не нужен, но если "
-                "есть тёплые полы, несколько контуров, бойлер или длинная трасса, может "
-                f"понадобиться дополнительный насосный узел. Карточка товара: {card.url}"
-            )
-        else:
-            draft = (
-                f"Да, в карточке {card.sku} вижу подтверждение: {parts}. "
-                f"Карточка товара: {card.url}"
-            )
+        draft = (
+            f"Да, в карточке {card.sku} вижу подтверждение: {parts}. "
+            "Это подтверждает только указанный элемент товара или комплекта; необходимость "
+            "дополнительных узлов зависит от конкретной системы. "
+            f"Карточка товара: {card.url}"
+        )
         self.last_draft = draft
         return draft
 

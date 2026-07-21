@@ -63,7 +63,16 @@ BRANDS = [
 
 CATEGORY_KEYWORDS: dict[str, list[str]] = {
     "sewer": ["канализац", "канализация", "htem", "ostendorf", "отвод", "тройник", "муфта", "ревизия"],
-    "pumps": ["насос", "помпа", "циркуляц", "повысит", "дренаж", "скважин", "нсос"],
+    "pumps": [
+        "насос",
+        "помпа",
+        "циркуляц",
+        "повысит",
+        "дренаж",
+        "откач",
+        "скважин",
+        "нсос",
+    ],
     "boilers": [
         "котел",
         "котёл",
@@ -328,7 +337,19 @@ class IntentRouterAgent:
 
         intent_type = "unknown"
         confidence = category_score
-        if slots.get("sku"):
+        if (
+            slots.get("sku")
+            and any(word in text for word in COMPLECTATION_WORDS)
+            and not self._is_bare_pump_assortment_question(text)
+        ):
+            # «В котле VT.033 есть встроенный насос?» names a SKU but asks about
+            # complectation, not a plain lookup — exact_sku would search that SKU
+            # inside whatever category won the tie-break (e.g. pumps) and miss
+            # the boiler entirely. Complectation resolves the SKU directly,
+            # regardless of category, so it must win here.
+            intent_type = "complectation"
+            confidence = max(confidence, 0.9)
+        elif slots.get("sku"):
             intent_type = "exact_sku"
             confidence = max(confidence, 0.95)
         elif any(word in text for word in LINK_WORDS):
@@ -393,6 +414,11 @@ class IntentRouterAgent:
                     "крут",
                     "перекры",
                     "регулир",
+                    # "трубы ... подключение радиаторов" называет трубу, а не
+                    # радиатор — радиатор здесь только цель подключения.
+                    "труб",
+                    "подключение радиатор",
+                    "подключение батаре",
                 ]
             )
         ):
@@ -404,7 +430,11 @@ class IntentRouterAgent:
         best_category = "other"
         best_score = 0.0
         for category, keywords in CATEGORY_KEYWORDS.items():
-            hits = sum(1 for keyword in keywords if normalize_text(keyword) in text)
+            hits = sum(
+                1
+                for keyword in keywords
+                if normalize_text(keyword) in text and not self._is_negated(text, normalize_text(keyword))
+            )
             if hits:
                 score = min(0.95, 0.55 + hits * 0.15)
                 if score > best_score:
@@ -413,6 +443,32 @@ class IntentRouterAgent:
         if best_category == "sewer" and "труба" in text:
             best_score = max(best_score, 0.9)
         return best_category, best_score
+
+    @staticmethod
+    def _is_negated(text: str, keyword: str) -> bool:
+        """True when ``keyword`` is explicitly rejected, e.g. "не насосы",
+        "а не насос", "не нужен насос". Prevents a corrected topic ("трубы, а
+        не насосы") from still being scored as the rejected category.
+
+        ``\\b`` before "не" is required: without it the pattern also matches
+        the "не" tail of ordinary words like "мне" (as in "мне нужен котёл"),
+        which zeroed out unrelated category hits entirely.
+        """
+        word = rf"{re.escape(keyword)}\w*"
+        before = re.search(
+            rf"\b(?:без|кроме|не(?!\s+только)(?:\s+(?:нужен|нужна|нужны|надо|хочу|"
+            rf"интересует|предлагай|показывай))?|не\s+хочу)\s+(?:\w+\s+){{0,2}}{word}",
+            text,
+        )
+        # Natural corrections are often post-positive: "котёл мне не нужен".
+        # Only a rejection verb after "не" counts, so "котёл мне нужен не
+        # электрический" does not accidentally reject the boiler category.
+        after = re.search(
+            rf"\b{word}(?:\s+\w+){{0,3}}\s+не\s+"
+            rf"(?:нужен|нужна|нужны|надо|интересует|предлагай|показывай|хочу)\b",
+            text,
+        )
+        return bool(before or after)
 
     def _extract_slots(self, text: str, category: str, slots: dict[str, Any]) -> None:
         if category == "fittings" and "ppr" in text:
@@ -426,7 +482,7 @@ class IntentRouterAgent:
                 slots["pump_use"] = "отопление"
         elif "повысит" in text:
             slots["pump_type"] = "повысительный"
-        elif "дренаж" in text:
+        elif "дренаж" in text or "откач" in text:
             slots["pump_type"] = "дренажный"
         elif "скважин" in text:
             slots["pump_type"] = "скважинный"
@@ -456,9 +512,18 @@ class IntentRouterAgent:
         elif "одноконтурн" in text:
             slots["contours"] = "одноконтурный"
 
+        # "На отопление и на воду сразу" names both needs without the literal
+        # word "горячая" — that combination still means двухконтурный, not
+        # just отопление.
+        wants_heat_and_water = bool(
+            re.search(r"отоплен\w*[^.!?]{0,25}\bи\s+(?:на\s+)?(?:горяч\w*\s+)?вод", text)
+            or re.search(r"\bвод\w*[^.!?]{0,25}\bи\s+(?:на\s+)?отоплен", text)
+        )
         if category == "boilers" and "не знаю" in text and "кот" in text:
             slots["needs_voltage_clarification"] = True
-        elif category == "boilers" and ("гвс" in text or ("горяч" in text and "вод" in text)):
+        elif category == "boilers" and (
+            "гвс" in text or ("горяч" in text and "вод" in text) or wants_heat_and_water
+        ):
             slots["contours"] = "двухконтурный"
         elif category == "boilers" and "отоплен" in text:
             # The customer answers in terms of the need, not boiler jargon:

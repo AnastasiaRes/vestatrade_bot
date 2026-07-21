@@ -414,6 +414,92 @@ def test_consultant_rejects_underpowered_boiler_called_sufficient() -> None:
     assert any("недостаточна" in issue for issue in issues)
 
 
+def test_consultant_rejects_power_borrowed_from_another_boiler() -> None:
+    e9 = Product(
+        sku="2202210",
+        name="Котел электрический Arderia E9, 9 кВт",
+        category_path="Котлы электрические",
+        brand="Arderia",
+        url="https://example.test/e9",
+        price=35365,
+        stock_status="в наличии",
+        stock_qty=5,
+        attributes_normalized={"мощность, кВт": "9", "отапливаемая площадь, м²": "90"},
+    )
+    e12 = Product(
+        sku="2202211",
+        name="Котел электрический Arderia E12, 12 кВт",
+        category_path="Котлы электрические",
+        brand="Arderia",
+        url="https://example.test/e12",
+        price=36534,
+        stock_status="в наличии",
+        stock_qty=2,
+        attributes_normalized={"мощность, кВт": "12", "отапливаемая площадь, м²": "120"},
+    )
+    by_sku = {normalize_sku(product.sku): product for product in [e9, e12]}
+
+    issues = ConsultantAgent()._grounding_violations(
+        "1. Arderia E9 (24 кВт), артикул 2202210.\n"
+        "2. Arderia E12 (24 кВт), артикул 2202211.",
+        by_sku,
+    )
+
+    assert any("9 кВт" not in issue and "2202210" in issue for issue in issues)
+    assert any("2202211" in issue for issue in issues)
+
+
+def test_consultant_rejects_collective_suitability_for_underpowered_models() -> None:
+    products = [
+        Product(
+            sku="E9",
+            name="Котел Arderia E9, 9 кВт",
+            url="https://example.test/e9",
+            price=35000,
+            stock_status="в наличии",
+            attributes_normalized={"мощность, кВт": "9"},
+        ),
+        Product(
+            sku="E12",
+            name="Котел Arderia E12, 12 кВт",
+            url="https://example.test/e12",
+            price=36000,
+            stock_status="в наличии",
+            attributes_normalized={"мощность, кВт": "12"},
+        ),
+    ]
+    session = SessionState(session_id="collective", slots={"area_m2": 140.0})
+
+    issues = ConsultantAgent()._grounding_violations(
+        "Arderia E9, артикул E9, и Arderia E12, артикул E12. "
+        "Эти модели имеют достаточную мощность для вашего дома.",
+        {normalize_sku(product.sku): product for product in products},
+        session=session,
+    )
+
+    assert any("коллективная рекомендация" in issue for issue in issues)
+
+
+def test_consultant_rejects_underpowered_boiler_called_acceptable_or_recommended() -> None:
+    product = Product(
+        sku="E9",
+        name="Котел Arderia E9, 9 кВт",
+        url="https://example.test/e9",
+        price=35000,
+        stock_status="в наличии",
+        attributes_normalized={"мощность, кВт": "9"},
+    )
+    session = SessionState(session_id="acceptable", slots={"area_m2": 140.0})
+
+    issues = ConsultantAgent()._grounding_violations(
+        "Котел Arderia E9, артикул E9 — вполне приемлемый вариант; рекомендую его.",
+        {normalize_sku(product.sku): product},
+        session=session,
+    )
+
+    assert any("недостаточна" in issue for issue in issues)
+
+
 def test_consultant_article_parser_does_not_match_inside_card_word() -> None:
     product = Product(
         sku="VT.217.N.04",
