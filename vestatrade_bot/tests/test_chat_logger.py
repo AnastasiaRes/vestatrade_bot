@@ -4,6 +4,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
+from app import chat_logger as chat_logger_module
 from app.chat_logger import ChatLogger
 from app.models import ChatResponse
 
@@ -47,3 +48,25 @@ def test_concurrent_turns_append_once_without_interleaving_or_duplicate_header(t
     assert content.count("---") == total
     for index in range(total):
         assert content.count(f"turn-{index:02d}") == 1
+
+
+def test_windows_lock_backend_does_not_require_fcntl(monkeypatch, tmp_path) -> None:
+    class FakeMsvcrt:
+        LK_NBLCK = 1
+        LK_UNLCK = 2
+
+        def __init__(self) -> None:
+            self.calls: list[tuple[int, int]] = []
+
+        def locking(self, _fd: int, mode: int, size: int) -> None:
+            self.calls.append((mode, size))
+
+    backend = FakeMsvcrt()
+    monkeypatch.setattr(chat_logger_module, "_fcntl", None)
+    monkeypatch.setattr(chat_logger_module, "_msvcrt", backend)
+
+    transcript = tmp_path / "windows-session.md"
+    with chat_logger_module._interprocess_file_lock(transcript):
+        assert transcript.with_suffix(".md.lock").read_bytes() == b"\0"
+
+    assert backend.calls == [(backend.LK_NBLCK, 1), (backend.LK_UNLCK, 1)]
