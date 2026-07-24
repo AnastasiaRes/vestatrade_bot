@@ -79,11 +79,20 @@ class FeedLoader:
         self.settings = settings or get_settings()
 
     def fetch_feed(self) -> bytes:
+        if self.settings.feed_file_path is not None:
+            path = self.settings.feed_file_path
+            logger.info("Loading Vesta Trade feed from local file %s", path)
+            return path.read_bytes()
+
         logger.info("Downloading Vesta Trade feed from %s", self.settings.feed_url)
         with httpx.Client(timeout=60.0, follow_redirects=True) as client:
             response = client.get(self.settings.feed_url)
             response.raise_for_status()
             return response.content
+
+    @property
+    def feed_source(self) -> str:
+        return "file" if self.settings.feed_file_path is not None else "feed"
 
     def parse_xml(self, xml_bytes: bytes) -> list[Product]:
         products: list[Product] = []
@@ -307,6 +316,8 @@ class FeedLoader:
 
     def save_cache(self, products: list[Product], path: Path | None = None) -> None:
         products = self._sanitize_products(products)
+        if not products:
+            raise ValueError("Refusing to overwrite products cache with an empty feed")
         target = path or self.settings.products_cache_path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(
@@ -327,7 +338,7 @@ class FeedLoader:
             try:
                 products = self.parse_xml(self.fetch_feed())
                 self.save_cache(products)
-                return products, "feed"
+                return products, self.feed_source
             except Exception as exc:
                 logger.exception("Could not refresh feed, trying cache: %s", exc)
 
@@ -338,7 +349,7 @@ class FeedLoader:
                 try:
                     products = self.parse_xml(self.fetch_feed())
                     self.save_cache(products)
-                    return products, "feed"
+                    return products, self.feed_source
                 except Exception as feed_exc:
                     logger.exception("Could not load feed or cache: %s / %s", cache_exc, feed_exc)
                     raise RuntimeError("Feed is unavailable and no products cache exists") from feed_exc

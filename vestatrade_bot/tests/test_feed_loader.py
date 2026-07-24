@@ -1,6 +1,29 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
+from app.config import PROJECT_ROOT, get_settings
 from app.feed_loader import FeedLoader
+
+
+def _single_product_xml() -> bytes:
+    return """<?xml version="1.0" encoding="UTF-8"?>
+    <yml_catalog date="2026-05-26 18:19">
+      <shop>
+        <offers>
+          <offer id="212">
+            <name>Термоголовка</name>
+            <url>https://example.test/product</url>
+            <vendorCode>VT.1500.0.0</vendorCode>
+            <price>1044</price>
+            <quantity>26</quantity>
+          </offer>
+        </offers>
+      </shop>
+    </yml_catalog>
+    """.encode("utf-8")
 
 
 def test_parse_unixml_offer_fields() -> None:
@@ -114,3 +137,74 @@ def test_parse_removes_conflicting_internal_article_and_foreign_description() ->
     assert "артикул" not in products[0].attributes_normalized
     assert products[0].attributes_normalized["количество контуров"] == "Двухконтурный"
     assert products[0].description is None
+
+
+def test_load_products_prefers_configured_local_feed(tmp_path: Path) -> None:
+    feed_path = tmp_path / "products_all.xml"
+    feed_path.write_bytes(_single_product_xml())
+    settings = get_settings().model_copy(
+        update={
+            "feed_file_path": feed_path,
+            "feed_url": "https://invalid.example.test/should-not-be-used",
+            "products_cache_path": tmp_path / "products_cache.json",
+        }
+    )
+
+    products, source = FeedLoader(settings).load_products(refresh=True)
+
+    assert source == "file"
+    assert [product.sku for product in products] == ["VT.1500.0.0"]
+    assert settings.products_cache_path.exists()
+
+
+def test_feed_file_path_is_resolved_from_project_root(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FEED_FILE_PATH", "data/custom-products.xml")
+    get_settings.cache_clear()
+    try:
+        assert get_settings().feed_file_path == PROJECT_ROOT / "data/custom-products.xml"
+    finally:
+        get_settings.cache_clear()
+
+
+def test_empty_local_feed_does_not_replace_existing_cache(tmp_path: Path) -> None:
+    feed_path = tmp_path / "products_all.xml"
+    cache_path = tmp_path / "products_cache.json"
+    settings = get_settings().model_copy(
+        update={
+            "feed_file_path": feed_path,
+            "products_cache_path": cache_path,
+        }
+    )
+    loader = FeedLoader(settings)
+
+    feed_path.write_bytes(_single_product_xml())
+    initial_products, source = loader.load_products(refresh=True)
+    original_cache = cache_path.read_bytes()
+
+    feed_path.write_text(
+        '<Ads formatVersion="3" target="Avito.ru"><Ad><Id>1</Id></Ad></Ads>',
+        encoding="utf-8",
+    )
+    products, fallback_source = loader.load_products(refresh=True)
+
+    assert source == "file"
+    assert fallback_source == "cache"
+    assert [product.sku for product in products] == [
+        product.sku for product in initial_products
+    ]
+    assert cache_path.read_bytes() == original_cache
+
+
+def test_save_cache_refuses_empty_products_without_touching_file(
+    tmp_path: Path,
+) -> None:
+    cache_path = tmp_path / "products_cache.json"
+    cache_path.write_bytes(b"existing-cache")
+    settings = get_settings().model_copy(
+        update={"products_cache_path": cache_path}
+    )
+
+    with pytest.raises(ValueError, match="empty feed"):
+        FeedLoader(settings).save_cache([])
+
+    assert cache_path.read_bytes() == b"existing-cache"

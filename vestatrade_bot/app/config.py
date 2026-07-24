@@ -19,6 +19,15 @@ def _resolve_project_path(value: str | None, default: str) -> Path:
     return PROJECT_ROOT / raw
 
 
+def _resolve_optional_project_path(value: str | None) -> Path | None:
+    if not value or not value.strip():
+        return None
+    raw = Path(value.strip())
+    if raw.is_absolute():
+        return raw
+    return PROJECT_ROOT / raw
+
+
 def _split_csv(value: str | None, default: str) -> list[str]:
     raw = value if value is not None else default
     return [item.strip() for item in raw.split(",") if item.strip()]
@@ -26,6 +35,7 @@ def _split_csv(value: str | None, default: str) -> list[str]:
 
 class Settings(BaseModel):
     feed_url: str
+    feed_file_path: Path | None
     llm_provider: str
     ollama_base_url: str | None
     ollama_model: str
@@ -80,6 +90,7 @@ def get_settings() -> Settings:
             "FEED_URL",
             "https://www.vestatrade.ru/index.php?route=extension/feed/unixml/all_products",
         ),
+        feed_file_path=_resolve_optional_project_path(os.getenv("FEED_FILE_PATH")),
         llm_provider=llm_provider,
         ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
         ollama_model=ollama_model,
