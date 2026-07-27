@@ -391,10 +391,12 @@ def test_project_cart_pump_followup_answers_pump_not_whole_cart_again() -> None:
         ),
     ]
     bot = ChatOrchestrator(products=products)
-    first = bot.handle_chat(
-        "cart-followup-fix", "подберите газовый котел двухконтурный для дома 120 кв.м"
-    )
-    bot.handle_chat("cart-followup-fix", "хорошо, беру ваш вариант")
+    # The cart must be established through a genuine whole-system request —
+    # "подберите котёл для дома 120 м²" deliberately no longer builds one.
+    bot.handle_chat("cart-followup-fix", "нужно отопление под ключ")
+    first = bot.handle_chat("cart-followup-fix", "120 м2, газ есть")
+    assert first.debug["slots"]["project_cart"]["pumps"] == ["PUMP-25-40"]
+
     response = bot.handle_chat("cart-followup-fix", "теперь подберите насос к нему")
 
     assert response.answer != first.answer

@@ -753,6 +753,15 @@ class ChatOrchestrator:
             self.sessions.save(session)
             return response
 
+        context_parts = self._part_question_about_shown_products(message, session)
+        if context_parts:
+            intent.intent_type = "complectation"
+            intent.is_topic_change = False
+            session.pending_complectation_parts = context_parts
+            response = self._handle_complectation(message, session, intent, agents_used)
+            self.sessions.save(session)
+            return response
+
         hot_water_answer = self._maybe_one_contour_hot_water_answer(message, intent, session)
         if hot_water_answer:
             agents_used.append("ResponseComposerAgent")
@@ -1377,6 +1386,27 @@ class ChatOrchestrator:
         if sku_from_message:
             target_product = self._find_product_by_sku(sku_from_message)
         if not target_product and session.last_products:
+            # «Какие из предложенных имеют встроенный насос?» — вопрос про ВСЕ
+            # показанные товары. Просить выбрать одну модель здесь неуместно:
+            # клиент как раз и хочет сравнить их по этому узлу.
+            if len(session.last_products) > 1 and self._asks_about_all_shown(message):
+                answer = self._compose_builtin_part_overview(
+                    session.last_products, requested_parts
+                )
+                agents_used.extend(["GuardrailsAgent", "ResponseComposerAgent"])
+                session.pending_question = None
+                session.pending_intent_type = None
+                session.pending_complectation_parts = []
+                self._append_history(session, message, answer)
+                return self._response(
+                    session.session_id,
+                    answer,
+                    session.last_products,
+                    False,
+                    intent,
+                    session,
+                    agents_used,
+                )
             target_card, ambiguous = self._resolve_shown_product_card(message, session)
             if ambiguous:
                 question = self._complectation_target_question(session.last_products)
@@ -2181,6 +2211,12 @@ class ChatOrchestrator:
     ) -> tuple[str, list[ProductCard]] | None:
         if not session.last_products:
             return None
+        # Пользователь отвечает на наш же вопрос «по какой модели проверить
+        # комплектацию?», и в ответе он цитирует название товара. Разбирать эту
+        # реплику как новый вопрос про тип котла нельзя: вопрос про насос
+        # терялся, а в ответ приходило «Да, это электрический котёл».
+        if session.pending_intent_type == "complectation":
+            return None
         text = normalize_text(message)
         refers_to_shown = bool(
             re.search(r"\b(он|этот|эта|это|модель)\b", text)
@@ -2198,7 +2234,13 @@ class ChatOrchestrator:
                 for card in session.last_products
             )
         )
-        asks_known_type = "электр" in text or "газ" in text
+        # «электрический»/«газовый» внутри процитированного названия товара — это
+        # не вопрос о типе. Считаем вопросом только то слово, которого нет в
+        # названиях показанных карточек.
+        shown_names = " ".join(normalize_text(card.name) for card in session.last_products)
+        asks_known_type = any(
+            marker in text and marker not in shown_names for marker in ("электр", "газ")
+        )
         asks_open_type = any(
             marker in text
             for marker in ["какой он", "какого он типа", "какой тип котла", "какой это котел", "какой это котёл"]
@@ -3274,6 +3316,30 @@ class ChatOrchestrator:
                 self._append_history(session, message, answer)
                 return self._response(session_id, answer, cards, False, intent, session, agents_used)
 
+        # «Подберите насос к нему» про уже собранную корзину — точечный вопрос об
+        # одном узле. Проверяем до разрешения scope: сама фраза не является
+        # проектным follow-up (и не должна им быть), поэтому scope из сообщения
+        # не выводится, и раньше эта ветка была недостижима.
+        component_category = self._wants_specific_cart_component(text, intent)
+        if component_category and session.slots.get("project_cart"):
+            existing_skus = (session.slots.get("project_cart") or {}).get(component_category) or []
+            all_cards = self._project_cart_cards(session)
+            focus_cards = [card for card in all_cards if card.sku in existing_skus]
+            if focus_cards:
+                cart_scope = str(
+                    session.slots.get("project_scope")
+                    or session.slots.get("scope_funnel")
+                    or "general"
+                )
+                answer = self._compose_project_component_focus(
+                    component_category, cart_scope, focus_cards, session
+                )
+                agents_used.append("ResponseComposerAgent")
+                session.last_products = focus_cards
+                session.last_intent = "project_cart"
+                self._append_history(session, message, answer)
+                return self._response(session_id, answer, focus_cards, False, intent, session, agents_used)
+
         scope = explicit_scope or self._project_scope_from_message(text, session)
         if not scope:
             return None
@@ -3285,18 +3351,6 @@ class ChatOrchestrator:
             session.last_intent = "project_cart"
             self._append_history(session, message, answer)
             return self._response(session_id, answer, cards, False, intent, session, agents_used)
-        component_category = self._wants_specific_cart_component(text, intent)
-        if component_category and session.slots.get("project_cart"):
-            existing_skus = (session.slots.get("project_cart") or {}).get(component_category) or []
-            all_cards = self._project_cart_cards(session)
-            focus_cards = [card for card in all_cards if card.sku in existing_skus]
-            if focus_cards:
-                answer = self._compose_project_component_focus(component_category, scope, focus_cards, session)
-                agents_used.append("ResponseComposerAgent")
-                session.last_products = focus_cards
-                session.last_intent = "project_cart"
-                self._append_history(session, message, answer)
-                return self._response(session_id, answer, focus_cards, False, intent, session, agents_used)
         if not self._should_handle_project_cart(text, intent, session):
             intro = self._project_intro_for_scope(scope, text)
             concrete_warm_floor_pipe = bool(
@@ -3387,7 +3441,12 @@ class ChatOrchestrator:
             return "water"
         if "канализац" in text:
             return "sewer"
-        if any(marker in text for marker in ["сантехник", "инженерн", "для дома", "в дом"]):
+        # «для дома»/«в дом» здесь намеренно НЕ маркеры проекта: «котёл для дома
+        # 100 м²» — обычный запрос одного товара, а не заявка на инженерию всего
+        # дома. Общий scope включают только явные признаки комплексной задачи.
+        # «под ключ» здесь тоже не маркер: это степень работ, применимая к любому
+        # scope, и она должна продолжать уже выбранный («отопление» → «под ключ»).
+        if any(marker in text for marker in ["сантехник", "инженерн", "весь дом"]):
             return "general"
         return None
 
@@ -3505,9 +3564,6 @@ class ChatOrchestrator:
             "что ещё нужно",
             "собери",
             "собрать",
-            "подбери",
-            "подберите",
-            "подборк",
             "комплект",
             "корзин",
             "по артикул",
@@ -3521,6 +3577,14 @@ class ChatOrchestrator:
         ]
         if any(marker in text for marker in markers):
             return True
+        # «Подберите котёл на 100 м²» — обычная вежливая просьба про ОДИН товар,
+        # а не заявка на мультикатегорийный комплект. Считаем эти глаголы
+        # проектными только когда конкретный товар не назван («подберите всё
+        # для отопления»). Иначе флагманский запрос про котёл уходил в сборку
+        # корзины с канализацией и трубой для тёплого пола.
+        polite_request_verbs = ["подбери", "подберите", "подборк"]
+        if any(verb in text for verb in polite_request_verbs):
+            return not any(word in text for word in SPECIFIC_PRODUCT_WORDS)
         return text.strip(" .,!?:;") in {"все", "всё", "комплектом", "полностью"}
 
     def _wants_project_cart_summary(self, text: str) -> bool:
@@ -3596,6 +3660,14 @@ class ChatOrchestrator:
     ) -> bool:
         if not (session.slots.get("project_scope") or session.slots.get("scope_funnel")):
             return False
+        # Настоящий ответ на проектный вопрос выглядит как «50 м2» или «водяной
+        # от котла»: он может упоминать котёл как источник тепла, но ничего не
+        # просит. Если пользователь именно ЗАПРАШИВАЕТ товар («нужен котёл на
+        # 40 м2»), это новый однокатегорийный запрос, а не продолжение проекта —
+        # иначе однажды включённый project_scope залипал и любое следующее
+        # сообщение с площадью снова уходило в сборку комплекта.
+        if self._is_new_product_request(text):
+            return False
         if intent.slots.get("area_m2"):
             return True
         if self._is_project_source_followup(text):
@@ -3605,6 +3677,31 @@ class ChatOrchestrator:
         ):
             return True
         return bool(re.search(r"\d{2,4}\s*(?:м2|м²|квадрат|кв\.?\s*м|кв\b)", text))
+
+    @staticmethod
+    def _is_new_product_request(text: str) -> bool:
+        """True when the message asks for a concrete product, not just mentions one.
+
+        «нужен котёл на 40 м2» requests a boiler; «водяной от котла» only names
+        the boiler as the heat source while answering a project question. Only
+        the gendered forms «нужен/нужна/нужны» are used — neuter «нужно» belongs
+        to project phrasings like «что нужно?».
+        """
+        request_markers = [
+            "нужен",
+            "нужна",
+            "нужны",
+            "подбери",
+            "подберите",
+            "хочу",
+            "дайте",
+            "покажи",
+            "ищу",
+            "интересует",
+        ]
+        if not any(marker in text for marker in request_markers):
+            return False
+        return any(word in text for word in SPECIFIC_PRODUCT_WORDS)
 
     def _is_project_component_turn(self, intent: IntentResult, session: SessionState) -> bool:
         if not (session.slots.get("project_cart") or session.slots.get("project_scope")):
@@ -3699,6 +3796,56 @@ class ChatOrchestrator:
             )
             if cards:
                 result[category] = cards
+        return self._drop_components_already_included(result, session)
+
+    def _card_confirms_builtin_part(self, card: ProductCard, part: str) -> bool:
+        product = self._find_product_by_sku(card.sku)
+        if not product:
+            return False
+        return any(
+            part in component
+            for component in self.guardrails.list_builtin_components(product)
+        )
+
+    def _drop_components_already_included(
+        self,
+        cards_by_category: dict[str, list[ProductCard]],
+        session: SessionState,
+    ) -> dict[str, list[ProductCard]]:
+        """Не продавать узел, который уже встроен в другую позицию подборки.
+
+        Комплект собирается по категориям независимо, поэтому котёл со штатным
+        циркуляционным насосом попадал в подборку рядом с отдельным насосом —
+        клиент купил бы то, что у него уже есть.
+
+        Хост не зашит в котёл: проверяется любая другая категория подборки.
+        Обязательное условие ``host != candidate`` — иначе сработала бы
+        самореференция (у 222 насосов в фиде «встроенный насос» это они сами).
+        Позиция снимается только если узел подтверждён карточкой/паспортом
+        (GuardrailsAgent намеренно консервативен) у ВСЕХ товаров категории-хоста:
+        если второй предложенный вариант штатного узла не имеет, узел ещё нужен.
+
+        В карте намеренно только насос: это единственная связь, подтверждённая
+        данными фида (103 котла). Отображать, например, «3-ходовой клапан»
+        котла на категорию valves нельзя — в подборке это запорные краны, и
+        встроенный смесительный клапан их не заменяет.
+        """
+        session.slots.pop("cart_builtin_skipped", None)
+        candidate_parts = {"pumps": "насос"}
+        skipped: list[str] = []
+        result = dict(cards_by_category)
+        for candidate, part in candidate_parts.items():
+            if not result.get(candidate):
+                continue
+            for host, host_cards in cards_by_category.items():
+                if host == candidate or not host_cards:
+                    continue
+                if all(self._card_confirms_builtin_part(card, part) for card in host_cards):
+                    result.pop(candidate, None)
+                    skipped.append(part)
+                    break
+        if skipped:
+            session.slots["cart_builtin_skipped"] = skipped
         return result
 
     def _project_role_is_confirmed(self, product: Product, category: str) -> bool:
@@ -3960,10 +4107,14 @@ class ChatOrchestrator:
                     f"{card.price:g} {card.currency}, {self._card_stock_text(card)}. Почему: {reason}."
                 )
 
+        # Позиция, снятая из-за штатного узла котла, не «не найдена» — у неё
+        # своя причина ниже, иначе объяснение получится ложным.
+        skipped_builtin = session.slots.get("cart_builtin_skipped") or []
         missing_categories = [
             PROJECT_CATEGORY_LABELS.get(category, category).lower()
             for category in PROJECT_SCOPE_CATEGORIES.get(scope, [])
             if not cards_by_category.get(category)
+            and not (category == "pumps" and skipped_builtin)
         ]
         if missing_categories:
             lines.append(
@@ -3972,6 +4123,12 @@ class ChatOrchestrator:
                 + ". В текущем ассортименте не нашёл позицию, чья роль однозначно "
                 "подтверждена названием или типом товара; аксессуар вместо основного узла "
                 "подставлять не буду."
+            )
+        if skipped_builtin:
+            lines.append(
+                "Отдельный циркуляционный насос не добавляю: по описанию карточки он уже "
+                "встроен в выбранный котёл. Если нужен насос на отдельный контур "
+                "(например, тёплый пол) или для замены штатного — скажите, подберу."
             )
 
         note = self._project_missing_note(scope)
@@ -6025,6 +6182,59 @@ class ChatOrchestrator:
         ) or bool(re.search(r"\b(?:его|ее|её)\b", text))
         return product_reference and any(marker in text for marker in presence_markers)
 
+    def _part_question_about_shown_products(
+        self,
+        message: str,
+        session: SessionState,
+    ) -> list[str]:
+        """Resolve «а тут в каких он добавлен?» against our own previous reply.
+
+        After a companion hint («у настенных котлов насос часто уже встроен»)
+        the customer refers to that узел by a pronoun. Nothing linked the
+        pronoun to the part, so a substantive question about the shown products
+        fell through to the small-talk reply («Я на связи…»). We resolve the
+        part from the last assistant message and answer it as a complectation
+        question, strictly from the cards.
+
+        Returns the parts to check, or [] when this is not such a question.
+        """
+        if not session.last_products:
+            return []
+        text = normalize_text(message)
+        # Наличие на складе и цена — не про комплектацию.
+        if any(marker in text for marker in ["налич", "цена", "цену", "стоит", "сколько"]):
+            return []
+        presence_markers = [
+            "есть",
+            "входит",
+            "идет",
+            "идёт",
+            "имеется",
+            "включен",
+            "включён",
+            "встроен",
+            "добавлен",
+            "комплектац",
+            "в комплект",
+        ]
+        if not any(marker in text for marker in presence_markers):
+            return []
+        # Если узел назван прямо («что в него входит», «есть ли насос») — этим уже
+        # занимаются существующие обработчики, и они отвечают полнее (например,
+        # заодно объясняют назначение товара). Здесь закрываем только пробел:
+        # узел назван местоимением и берётся из предыдущей реплики.
+        if self._requested_parts(message):
+            return []
+        if not re.search(r"\b(?:он|его|она|ее|её|оно|они|их)\b", text):
+            return []
+        for entry in reversed(session.history):
+            if entry.get("role") != "assistant":
+                continue
+            # Только непосредственно предыдущая реплика: местоимение ссылается
+            # на неё, а не на произвольный узел из середины диалога.
+            return self._requested_parts(entry.get("content", ""))[:1]
+        return []
+
     def _is_new_pump_selection_question(self, text: str) -> bool:
         pump_markers = ["насос", "дренаж", "циркуляц", "скваж", "повысит", "помпа"]
         if not any(marker in text for marker in pump_markers):
@@ -6099,6 +6309,56 @@ class ChatOrchestrator:
         """
         haystack = normalize_text(f"{product.name} {product.category_path}")
         return [part for part in requested_parts if normalize_text(part) not in haystack]
+
+    @staticmethod
+    def _asks_about_all_shown(message: str) -> bool:
+        """«какие из них», «у всех ли», «в каких есть» — вопрос обо всех карточках."""
+        text = normalize_text(message)
+        return any(
+            marker in text
+            for marker in [
+                "какие",
+                "в каких",
+                "у каких",
+                "у всех",
+                "во всех",
+                "все ли",
+                "каждый",
+                "у обоих",
+                "из предложенных",
+                "из показанных",
+            ]
+        )
+
+    def _compose_builtin_part_overview(
+        self,
+        cards: list[ProductCard],
+        requested_parts: list[str],
+    ) -> str:
+        """Per-card verdict for a part, strictly from what the cards confirm."""
+        parts = [part for part in requested_parts if part != "комплектация"] or ["комплектация"]
+        part_label = ", ".join(parts)
+        lines = [f"Проверил по карточкам показанных моделей ({part_label}):"]
+        for card in cards:
+            product = self._find_product_by_sku(card.sku)
+            components = self.guardrails.list_builtin_components(product) if product else []
+            confirmed = [
+                part
+                for part in parts
+                if any(part in component for component in components)
+            ]
+            if confirmed:
+                lines.append(f"- {card.sku} — {card.name}: да, подтверждено — {', '.join(confirmed)}.")
+            else:
+                lines.append(
+                    f"- {card.sku} — {card.name}: в карточке подтверждения нет; "
+                    "не утверждаю ни наличие, ни отсутствие."
+                )
+        lines.append(
+            "Это данные карточек и привязанных паспортов. Где подтверждения нет, "
+            "точную комплектацию уточнит менеджер."
+        )
+        return "\n".join(lines)
 
     def _compose_complectation_question(self, message: str, requested_parts: list[str]) -> str:
         text = normalize_text(message)

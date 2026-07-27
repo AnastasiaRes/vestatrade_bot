@@ -445,6 +445,55 @@ class IntentRouterAgent:
         return best_category, best_score
 
     @staticmethod
+    def _thread_type_from_text(text: str) -> str | None:
+        """Canonical thread pairing asked for: ff (ВР/ВР), fm (ВР/НР), mm (НР/НР).
+
+        ВР/ВН = внутренняя (female), НР/НАР = наружная (male). Customers write
+        this a dozen ways, and until now it was dropped entirely — so «кран
+        1/2" ВР/ВР» ranked a ВН/НР valve first just because it was cheaper.
+        """
+        female = r"(?:вр|вн)\.?"
+        male = r"(?:нр|нар)\.?"
+        if re.search(rf"\b{female}\s*[-/х]\s*{female}", text) or "ff" in text.split():
+            return "ff"
+        if re.search(rf"\b{female}\s*[-/х]\s*{male}", text) or re.search(
+            rf"\b{male}\s*[-/х]\s*{female}", text
+        ):
+            return "fm"
+        if re.search(rf"\b{male}\s*[-/х]\s*{male}", text) or "mm" in text.split():
+            return "mm"
+        return None
+
+    @staticmethod
+    def _name_tokens_from_text(text: str) -> list[str]:
+        """Latin model/series words from the query, e.g. BASE, MINI, GOST.
+
+        Units and measurement words are excluded; brands are matched separately
+        and would only duplicate the signal.
+        """
+        stop = {
+            "ppr",
+            "pex",
+            "pvc",
+            "pn",
+            "dn",
+            "sdr",
+            "mm",
+            "ff",
+            "fm",
+            "gost",
+            "din",
+            "max",
+            "min",
+        }
+        tokens = [
+            token
+            for token in re.findall(r"\b[a-z][a-z0-9]{2,}\b", text)
+            if token not in stop and token not in {brand.lower() for brand in BRANDS}
+        ]
+        return list(dict.fromkeys(tokens))[:3]
+
+    @staticmethod
     def _is_negated(text: str, keyword: str) -> bool:
         """True when ``keyword`` is explicitly rejected, e.g. "не насосы",
         "а не насос", "не нужен насос". Prevents a corrected topic ("трубы, а
@@ -724,6 +773,16 @@ class IntentRouterAgent:
             inch_match = INCH_SIZE_RE.search(text) or INTEGER_INCH_RE.search(text)
             if inch_match:
                 slots["size_inch"] = re.sub(r"\s+", "", inch_match.group(1))
+            thread_type = self._thread_type_from_text(text)
+            if thread_type:
+                slots["thread_type"] = thread_type
+
+        # Серия/модельное имя («BASE», «MINI») живёт в названии товара, а в
+        # атрибутах фида её почти нет, поэтому запоминаем токен и учитываем его
+        # при ранжировании как совпадение с названием.
+        name_tokens = self._name_tokens_from_text(text)
+        if name_tokens:
+            slots["name_tokens"] = name_tokens
 
         if category in {"pipes", "sewer", "radiators"}:
             explicit_length = re.search(

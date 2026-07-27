@@ -22,7 +22,18 @@ RELEVANT_ATTRS: dict[str, list[str]] = {
         "количество контуров",
         "площадь",
     ],
-    "valves": ["назначение", "диаметр", "тип присоединения", "тип конструкции"],
+    # «тип резьбы» и «тип ручки» стоят выше «типа присоединения»: у кранов
+    # одного диаметра присоединение почти всегда «Резьбовой», и сравнение
+    # «чем отличаются» показывало только цену, хотя товары различались именно
+    # резьбой (ВР/ВР против ВР/НР) и рукояткой.
+    "valves": [
+        "диаметр",
+        "тип резьбы",
+        "тип ручки",
+        "назначение",
+        "тип присоединения",
+        "тип конструкции",
+    ],
     "radiator_fittings": ["тип товара", "диаметр", "подключение", "комплектация"],
     "radiators": ["тип", "межосевое расстояние", "количество секций", "теплоотдача", "площадь обогрева", "диаметр подключения"],
     "fittings": ["тип товара", "диаметр", "присоединительная резьба", "угол", "тип присоединения"],
@@ -60,8 +71,22 @@ class ProductCardAgent:
             characteristics=self._pick_characteristics(product, query),
         )
 
+    # Идентификаторы, а не характеристики: «полное наименование» дублирует имя
+    # карточки, «артикул»/«штрихкод» — её же артикул. Для 31% фида (категория
+    # «other», где нет карты RELEVANT_ATTRS) именно они занимали все три слота,
+    # и сравнение «чем отличаются» сопоставляло названия вместо параметров.
+    IDENTITY_ATTRS = ("полное наименование", "штрихкод", "артикул")
+
+    def _is_identity_attribute(self, key: str) -> bool:
+        key_text = normalize_text(str(key))
+        return any(marker in key_text for marker in self.IDENTITY_ATTRS)
+
     def _pick_characteristics(self, product: Product, query: SearchQuery) -> dict[str, str]:
-        attrs = product.attributes_normalized
+        attrs = {
+            key: value
+            for key, value in product.attributes_normalized.items()
+            if not self._is_identity_attribute(key)
+        }
         if not attrs:
             return {}
 

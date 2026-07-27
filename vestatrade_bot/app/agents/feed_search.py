@@ -63,6 +63,38 @@ NAME_QUERY_STOPWORDS = {
     "пожалуйста",
 }
 
+# Слова категории и назначения: они есть у сотен товаров и сами по себе не
+# опознают конкретную позицию. Поиск по названию требует хотя бы одного слова
+# вне этого набора, иначе общий запрос вида «кран шаровой 1/2 для воды»
+# срабатывал как точный поиск по названию и подменял весь ранжированный поиск.
+GENERIC_NAME_TOKENS = {
+    "кран",
+    "краны",
+    "шаровой",
+    "шаровый",
+    "шаровая",
+    "вентиль",
+    "клапан",
+    "труба",
+    "трубы",
+    "трубу",
+    "насос",
+    "котел",
+    "котёл",
+    "радиатор",
+    "вода",
+    "воды",
+    "водоснабжение",
+    "отопление",
+    "отопления",
+    "канализация",
+    "канализации",
+    "горячей",
+    "холодной",
+    "горячая",
+    "холодная",
+}
+
 CATEGORY_NEEDLES: dict[str, list[str]] = {
     "pipes": ["труба", "трубы", "ppr", "полипропилен"],
     "sewer": ["канализац", "ostendorf", "htem", "htee", "htr"],
@@ -198,19 +230,39 @@ class FeedSearchAgent:
             # даёт ложные совпадения.
             identity = self._identity_text(product)
             identity_tokens = set(identity.split())
-            matched = sum(
-                1
+            matched_tokens = [
+                token
                 for token in tokens
                 if self._name_token_matches(token, identity, identity_tokens)
-            )
+            ]
+            matched = len(matched_tokens)
             ratio = matched / len(tokens)
-            if ratio >= 0.8 and matched >= 4:
+            # Требуем хотя бы одно отличительное слово. «кран шаровой 1/2 для
+            # воды» состоит только из категории и параметров, и слово «воды»
+            # добиралось из чужого category_path («Системы контроля протечки
+            # воды») — ratio выходил 1.0, и этот единственный товар подменял
+            # весь ранжированный поиск. У настоящего названия товара всегда есть
+            # что-то отличительное: бренд, серия, модель, типоразмер.
+            distinctive = any(self._is_distinctive_token(token) for token in matched_tokens)
+            if ratio >= 0.8 and matched >= 4 and distinctive:
                 name_score = int(fuzz.partial_ratio(text, normalize_text(product.name)))
                 matches.append((ratio, name_score, product))
         if not matches:
             return []
         matches.sort(key=lambda item: (-item[0], -item[1], not item[2].is_in_stock))
         return [product for _, _, product in matches[:limit]]
+
+    @staticmethod
+    def _is_distinctive_token(token: str) -> bool:
+        """Does this token identify a particular product rather than a class of them?
+
+        Category words («кран», «труба») and bare measurements («1/2», «50x500»,
+        «20мм») are shared by hundreds of positions. A real product name always
+        carries something else — a brand, series or model.
+        """
+        if token in GENERIC_NAME_TOKENS:
+            return False
+        return not re.fullmatch(r"\d+(?:[/.,x×х]\d+)*(?:мм|м|см|dn|дн)?", token)
 
     def search_alternatives(self, query: SearchQuery) -> list[Product]:
         if not self.products or query.category == "other":
