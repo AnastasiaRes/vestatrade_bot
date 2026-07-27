@@ -149,6 +149,7 @@ STOCK_WORDS = [
 ]
 CHOOSE_ONE_WORDS = [
     "выбери один",
+    "назови один",
     "выбери сама",
     "выбери сам",
     "что взять",
@@ -175,7 +176,6 @@ COMPLECTATION_WORDS = [
     "групп безопас",
     "группу безопас",
     "группа безопас",
-    "безопасн",
 ]
 LINK_WORDS = ["дай ссылку", "ссылку", "ссылка"]
 TOPIC_CHANGE_WORDS = ["теперь", "а теперь", "еще нужен", "ещё нужен", "другой", "нужен"]
@@ -283,6 +283,7 @@ class IntentRouterAgent:
         slots: dict[str, Any] = {}
         if flags["choose_one"]:
             slots["choose_one"] = True
+            slots["result_limit"] = 1
 
         sku_match = (
             SKU_RE.search(sku_text)
@@ -363,7 +364,7 @@ class IntentRouterAgent:
             if session and session.category:
                 category = session.category
             confidence = max(confidence, 0.85)
-        elif flags["cheap"]:
+        elif flags["cheap"] or slots.get("max_price") is not None:
             intent_type = "cheap_request"
             confidence = max(confidence, 0.75)
         elif flags.get("symptom"):
@@ -520,6 +521,40 @@ class IntentRouterAgent:
         return bool(before or after)
 
     def _extract_slots(self, text: str, category: str, slots: dict[str, Any]) -> None:
+        max_price = self._extract_price_bound(text, upper=True)
+        if max_price is not None:
+            slots["max_price"] = max_price
+            slots["allow_alternatives"] = False
+        min_price = self._extract_price_bound(text, upper=False)
+        if min_price is not None:
+            slots["min_price"] = min_price
+            slots["allow_alternatives"] = False
+
+        wifi_term = r"(?:wi[- ]?fi|вай[- ]?фа(?:й|я|ем))"
+        excludes_wifi = bool(
+            re.search(
+                rf"\bбез\s+(?:(?:встроенного\s+)?модуля\s+|поддержки\s+)?{wifi_term}\b",
+                text,
+            )
+            or re.search(
+                rf"\b{wifi_term}\b(?:\s+\w+){{0,2}}\s+не\s+(?:нужен|нужна|нужно|требуется)\b",
+                text,
+            )
+        )
+        requires_wifi = bool(
+            re.search(
+                rf"\bс\s+(?:поддержкой\s+|(?:встроенным\s+)?модулем\s+)?{wifi_term}\b",
+                text,
+            )
+            or re.search(rf"\b(?:нужен|нужна|нужно)\s+{wifi_term}\b", text)
+        )
+        if excludes_wifi:
+            slots["excluded_features"] = ["wifi"]
+            slots["allow_alternatives"] = False
+        elif requires_wifi:
+            slots["required_features"] = ["wifi"]
+            slots["allow_alternatives"] = False
+
         if category == "fittings" and "ppr" in text:
             slots["fitting_system"] = "ppr"
 
@@ -558,8 +593,10 @@ class IntentRouterAgent:
 
         if "двухконтурн" in text:
             slots["contours"] = "двухконтурный"
+            slots["allow_alternatives"] = False
         elif "одноконтурн" in text:
             slots["contours"] = "одноконтурный"
+            slots["allow_alternatives"] = False
 
         # "На отопление и на воду сразу" names both needs without the literal
         # word "горячая" — that combination still means двухконтурный, not
@@ -622,7 +659,38 @@ class IntentRouterAgent:
         )
         if well_depth_match and slots.get("water_source") == "скважина":
             slots["well_depth_m"] = float(well_depth_match.group(1))
-        if category == "pumps" and "насос" in text and "котл" in text:
+        boiler_pump_relation = any(
+            marker in text
+            for marker in [
+                "насос для котл",
+                "насос к котл",
+                "к котл",
+                "для котл",
+                "система отоплен",
+                "контур отоплен",
+                "циркуляц",
+            ]
+        )
+        explicit_other_pump_use = any(
+            marker in text
+            for marker in [
+                "водоснаб",
+                "скваж",
+                "колод",
+                "полив",
+                "давлен",
+                "напор",
+                "дренаж",
+                "откач",
+            ]
+        )
+        if (
+            category == "pumps"
+            and "насос" in text
+            and "котл" in text
+            and boiler_pump_relation
+            and not explicit_other_pump_use
+        ):
             slots["pump_type"] = "циркуляционный"
             slots["pump_use"] = "отопление"
             slots["pump_context"] = "котел"
@@ -659,8 +727,13 @@ class IntentRouterAgent:
         elif category == "pumps" and ("откач" in text or "дренаж" in text):
             slots["pump_use"] = "откачка воды"
 
-        for element in ["труба", "отвод", "тройник", "муфта"]:
-            if element in text:
+        for marker, element in [
+            ("труба", "труба"),
+            ("отвод", "отвод"),
+            ("тройник", "тройник"),
+            ("муфт", "муфта"),
+        ]:
+            if marker in text:
                 slots["element_type"] = element
                 break
 
@@ -845,11 +918,88 @@ class IntentRouterAgent:
 
         if any(word in text for word in CHEAP_WORDS):
             slots["cheap"] = True
+        if "самый дешев" in text or "самого дешев" in text or "дешевле всех" in text:
+            slots["sort_mode"] = "price_asc"
+        if any(
+            marker in text
+            for marker in [
+                "покажи дешевле",
+                "есть дешевле",
+                "аналог подешевле",
+                "вариант подешевле",
+                "дешевле предыдущ",
+            ]
+        ):
+            slots["relative_cheaper"] = True
         if any(word in text for word in STOCK_WORDS):
             slots["in_stock"] = True
 
         if category == "pumps" and "насос" in text and "pump_type" not in slots:
             slots["product_kind"] = "насос"
+
+    @staticmethod
+    def _extract_price_bound(text: str, *, upper: bool) -> float | None:
+        """Extract an explicit monetary bound without confusing area/power with price."""
+        unit_pattern = (
+            r"(тыс(?:яч\w*)?|т\s*\.?\s*р\.?|к\b|руб\w*|р\b)"
+        )
+        value_pattern = r"(\d(?:[\d ]*\d)?(?:[,.]\d+)?)"
+        if upper:
+            patterns = [
+                r"(?:не\s+дороже(?:\s+чем)?|максимум(?:\s+по\s+цене)?|"
+                r"бюджет(?:ом)?(?:\s+до)?|в\s+пределах)\s*"
+                + value_pattern
+                + r"\s*"
+                + unit_pattern
+                + r"?",
+                r"(?:по\s+цене\s+)?до\s*"
+                + value_pattern
+                + r"\s*"
+                + unit_pattern,
+            ]
+        else:
+            patterns = [
+                r"(?:не\s+дешевле(?:\s+чем)?|минимум(?:\s+по\s+цене)?|"
+                r"по\s+цене\s+от)\s*"
+                + value_pattern
+                + r"\s*"
+                + unit_pattern
+                + r"?",
+            ]
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if not match:
+                continue
+            raw_value = re.sub(r"\s+", "", match.group(1)).replace(",", ".")
+            try:
+                value = float(raw_value)
+            except ValueError:
+                continue
+            unit = normalize_text(match.group(2) or "") if match.lastindex and match.lastindex >= 2 else ""
+            if unit.startswith("тыс") or unit == "к" or re.match(r"т\s*\.?\s*р", unit):
+                value *= 1000
+            if value > 0:
+                return value
+        if upper:
+            # A bare four-plus-digit «до …» is normally a budget after
+            # normalization removes the ₽ sign. Reject engineering units
+            # explicitly and require a digit boundary to prevent 12000→1200
+            # regex backtracking.
+            match = re.search(
+                r"\bдо\s*(\d(?: ?\d){3,7})(?!\d)",
+                text,
+            )
+            if match:
+                tail = text[match.end() :].lstrip()
+                if re.match(
+                    r"(?:м(?:2|²)?\b|мм\b|квт\b|вт\b|вольт\w*\b|в\b|л\b|бар\b)",
+                    tail,
+                ):
+                    return None
+                value = float(match.group(1).replace(" ", ""))
+                if value > 0:
+                    return value
+        return None
 
     def _extract_standalone_pump_params(self, text: str, slots: dict[str, Any]) -> None:
         """Recognise plain `25/6 130` / `25-6 180` parameter shorthand without brand/series."""
@@ -931,6 +1081,13 @@ class IntentRouterAgent:
             "покажи дешевле",
             "дешевле",
             "подешевле",
+            "не дороже",
+            "бюджет",
+            "по цене",
+            "руб",
+            "wi-fi",
+            "wifi",
+            "вай-фай",
             "в наличии",
             "для воды",
             "воды",
@@ -1163,6 +1320,8 @@ class IntentRouterAgent:
             return False
         text = normalize_text(message)
         explicit_change = any(word in text for word in TOPIC_CHANGE_WORDS)
+        if session.pending_category == "pumps" and not explicit_change:
+            return False
         if {category, session.category}.issubset({"pipes", "sewer", "fittings"}) and not explicit_change:
             return False
         return explicit_change or category != session.category

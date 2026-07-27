@@ -69,6 +69,8 @@ class ChatResponse(BaseModel):
     answer: str
     products: list[ChatProductSummary] = Field(default_factory=list)
     need_handoff: bool = False
+    handoff_status: str = "none"
+    handoff_ticket_id: str | None = None
     debug: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -117,8 +119,15 @@ class SessionState(BaseModel):
     topic_changed: bool = False
     pending_question: str | None = None
     pending_intent_type: str | None = None
+    pending_category: str | None = None
+    pending_slot_keys: list[str] = Field(default_factory=list)
     pending_complectation_parts: list[str] = Field(default_factory=list)
     question_repeats: int = 0
+    handoff_status: str = "none"
+    pending_handoff: dict[str, Any] | None = None
+    handoff_ticket_id: str | None = None
+    handoff_fingerprint: str | None = None
+    handoff_opt_out: bool = False
 
 
 class HandoffSummary(BaseModel):
@@ -126,3 +135,4 @@ class HandoffSummary(BaseModel):
     known_slots: dict[str, Any] = Field(default_factory=dict)
     missing: list[str] = Field(default_factory=list)
     products_considered: list[str] = Field(default_factory=list)
+    contact: str | None = None

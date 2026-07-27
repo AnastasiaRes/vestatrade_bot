@@ -34,10 +34,17 @@ from app.models import ChatResponse
 logger = logging.getLogger(__name__)
 
 _SAFE_SESSION_RE = re.compile(r"[^a-zA-Z0-9_-]")
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}")
+_PHONE_RE = re.compile(r"(?:\+?\d[\s().-]*){10,}")
 _FILE_LOCKS: dict[Path, Lock] = {}
 _FILE_LOCKS_GUARD = Lock()
 _WINDOWS_LOCK_TIMEOUT_SECONDS = 5.0
 _WINDOWS_LOCK_POLL_SECONDS = 0.01
+
+
+def _redact_pii(text: str) -> str:
+    text = _EMAIL_RE.sub("[email скрыт]", text)
+    return _PHONE_RE.sub("[телефон скрыт]", text)
 
 
 def _file_lock(path: Path) -> Lock:
@@ -110,15 +117,28 @@ class ChatLogger:
             path = self._session_file(session_id, now)
             path.parent.mkdir(parents=True, exist_ok=True)
             stamp = now.strftime("%H:%M:%S")
+            safe_user_message = _redact_pii(user_message.strip())
+            safe_answer = _redact_pii(response.answer.strip())
             turn = (
-                f"**[{stamp}] Клиент:** {user_message.strip()}\n\n"
-                f"**[{stamp}] Бот:** {response.answer.strip()}\n\n"
+                f"**[{stamp}] Клиент:** {safe_user_message}\n\n"
+                f"**[{stamp}] Бот:** {safe_answer}\n\n"
             )
             if response.products:
                 skus = ", ".join(product.sku for product in response.products)
                 turn += f"_Показанные товары: {skus}_\n\n"
-            if response.need_handoff:
-                turn += "_Передано менеджеру._\n\n"
+            handoff_agent_used = "HandoffAgent" in (response.debug.get("agents_used") or [])
+            if (
+                response.need_handoff
+                and handoff_agent_used
+                and response.handoff_status == "locally_recorded"
+                and response.handoff_ticket_id
+            ):
+                turn += (
+                    f"_Локальный черновик обращения сохранён: "
+                    f"{response.handoff_ticket_id}._\n\n"
+                )
+            elif response.need_handoff:
+                turn += "_Рекомендуется или ожидается передача менеджеру._\n\n"
             turn += "---\n\n"
 
             # Header detection and the whole turn append are one critical

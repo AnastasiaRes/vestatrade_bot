@@ -70,3 +70,23 @@ def test_windows_lock_backend_does_not_require_fcntl(monkeypatch, tmp_path) -> N
         assert transcript.with_suffix(".md.lock").read_bytes() == b"\0"
 
     assert backend.calls == [(backend.LK_NBLCK, 1), (backend.LK_UNLCK, 1)]
+
+
+def test_transcript_redacts_phone_and_email(tmp_path) -> None:
+    logger = ChatLogger(tmp_path)
+    response = ChatResponse(
+        session_id="pii",
+        answer="Контакт client@example.test и +7 999 123-45-67 принят.",
+    )
+
+    logger.log_turn(
+        "pii",
+        "Мой email client@example.test, телефон +7 999 123-45-67",
+        response,
+    )
+
+    content = next(tmp_path.rglob("*.md")).read_text(encoding="utf-8")
+    assert "client@example.test" not in content
+    assert "+7 999 123-45-67" not in content
+    assert "[email скрыт]" in content
+    assert "[телефон скрыт]" in content

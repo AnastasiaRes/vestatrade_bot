@@ -3,6 +3,9 @@ from __future__ import annotations
 import html
 import logging
 import re
+from collections.abc import Iterable, Mapping
+from numbers import Real
+from typing import Any
 
 from app.models import Product, SearchQuery
 
@@ -127,6 +130,198 @@ _PATH_CATEGORY_RULES: list[tuple[str, list[str]]] = [
 ]
 
 
+_FALSE_VALUES = {
+    "",
+    "0",
+    "false",
+    "no",
+    "off",
+    "нет",
+    "отсутствует",
+    "не предусмотрено",
+    "не поддерживается",
+}
+_TRUE_VALUES = {
+    "1",
+    "true",
+    "yes",
+    "on",
+    "да",
+    "есть",
+    "имеется",
+    "предусмотрено",
+    "поддерживается",
+}
+_FEATURE_ALIASES: dict[str, tuple[str, ...]] = {
+    "wifi": ("wifi", "wi-fi", "wi fi", "вайфай", "вай-фай", "вай фай"),
+}
+
+
+def _constraint_number(value: Any) -> float | None:
+    """Read a numeric query constraint, including ``37 000`` / ``37 тыс``."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, Real):
+        return float(value)
+    text = str(value).strip().lower().replace("\xa0", " ")
+    match = re.search(r"-?\d[\d ]*(?:[,.]\d+)?", text)
+    if not match:
+        return None
+    compact = match.group(0).replace(" ", "").replace(",", ".")
+    try:
+        number = float(compact)
+    except ValueError:
+        return None
+    if re.search(r"(?:тыс(?:яч\w*)?|\bk\b|к\b)", text[match.end() :]):
+        number *= 1000
+    return number
+
+
+def _constraint_features(value: Any) -> list[str]:
+    """Normalize scalar/list/mapping feature constraints to canonical names."""
+    raw_features: list[Any] = []
+    if value is None:
+        return []
+    if isinstance(value, Mapping):
+        raw_features.extend(
+            key
+            for key, enabled in value.items()
+            if normalize_text(str(enabled)) not in _FALSE_VALUES
+        )
+    elif isinstance(value, str):
+        raw_features.extend(part for part in re.split(r"[,;]", value) if part.strip())
+    elif isinstance(value, Iterable):
+        raw_features.extend(value)
+    else:
+        raw_features.append(value)
+
+    normalized: list[str] = []
+    for raw in raw_features:
+        feature = normalize_text(str(raw))
+        if not feature:
+            continue
+        compact = re.sub(r"[^a-zа-я0-9]", "", feature)
+        if compact in {"wifi", "вайфай"}:
+            feature = "wifi"
+        if feature not in normalized:
+            normalized.append(feature)
+    return normalized
+
+
+def _feature_aliases(feature: str) -> tuple[str, ...]:
+    return _FEATURE_ALIASES.get(feature, (feature,))
+
+
+def _text_mentions_feature(text: str, feature: str) -> bool:
+    normalized = normalize_text(text)
+    if feature == "wifi":
+        compact = re.sub(r"[^a-zа-я0-9]", "", normalized)
+        return "wifi" in compact or "вайфай" in compact
+    return any(alias in normalized for alias in _feature_aliases(feature))
+
+
+def _text_negates_feature(text: str, feature: str) -> bool:
+    normalized = normalize_text(text)
+    for alias in _feature_aliases(feature):
+        escaped = re.escape(normalize_text(alias))
+        if re.search(
+            rf"(?:\bбез\b|\bнет\b|\bне\s+(?:имеет|поддерживает|предусмотрен\w*)\b|"
+            rf"\bотсутств\w*\b)(?:\s+\w+){{0,3}}\s+{escaped}",
+            normalized,
+        ):
+            return True
+        if re.search(
+            rf"{escaped}(?:\s+\w+){{0,3}}\s+(?:нет|отсутств\w*|не\s+предусмотрен\w*|"
+            rf"не\s+поддерживается)",
+            normalized,
+        ):
+            return True
+    return False
+
+
+def _feature_state(product: Product, feature: str) -> bool | None:
+    """Return True/False only when the feed gives evidence for the feature."""
+    identity = " ".join(
+        [
+            product.name,
+            product.category_path,
+            product.brand or "",
+        ]
+    )
+    explicit_false = False
+    for key, value in product.attributes_normalized.items():
+        key_text = normalize_text(str(key))
+        value_text = normalize_text(str(value))
+        key_mentions = _text_mentions_feature(key_text, feature)
+        value_mentions = _text_mentions_feature(value_text, feature)
+
+        if key_mentions:
+            if value_text in _FALSE_VALUES or any(
+                marker in value_text
+                for marker in ["отсутств", "не предусмотр", "не поддерж", "без "]
+            ):
+                explicit_false = True
+                continue
+            if value_text in _TRUE_VALUES or any(
+                marker in value_text
+                for marker in ["встроен", "включен", "поддерж", "имеется"]
+            ):
+                return True
+            if value_mentions and not _text_negates_feature(value_text, feature):
+                return True
+        elif value_mentions:
+            if _text_negates_feature(value_text, feature):
+                explicit_false = True
+            else:
+                return True
+    if explicit_false:
+        return False
+    if _text_mentions_feature(identity, feature):
+        return not _text_negates_feature(identity, feature)
+    for grounded_text in [product.description or "", product.docs_text or ""]:
+        if _text_mentions_feature(grounded_text, feature):
+            return not _text_negates_feature(grounded_text, feature)
+    return None
+
+
+def _product_matches_hard_constraints(product: Product, slots: Mapping[str, Any]) -> bool:
+    max_price = _constraint_number(slots.get("max_price"))
+    min_price = _constraint_number(slots.get("min_price"))
+    if max_price is not None or min_price is not None:
+        if product.price is None:
+            return False
+        if max_price is not None and product.price > max_price:
+            return False
+        if min_price is not None and product.price < min_price:
+            return False
+
+    for feature in _constraint_features(slots.get("required_features")):
+        if _feature_state(product, feature) is not True:
+            return False
+    for feature in _constraint_features(slots.get("excluded_features")):
+        # «Без Wi‑Fi» is a hard statement.  Missing feed data is unknown, not
+        # evidence that the feature is absent.
+        if _feature_state(product, feature) is not False:
+            return False
+    return True
+
+
+def _explicitly_disallows_alternatives(slots: Mapping[str, Any]) -> bool:
+    if "allow_alternatives" not in slots:
+        return False
+    value = slots.get("allow_alternatives")
+    if isinstance(value, bool):
+        return not value
+    return normalize_text(str(value)) in _FALSE_VALUES
+
+
+def _requested_result_limit(slots: Mapping[str, Any]) -> int | None:
+    value = _constraint_number(slots.get("result_limit"))
+    if value is None:
+        return None
+    return max(0, int(value))
+
+
 class FeedSearchAgent:
     def __init__(self, products: list[Product] | None = None) -> None:
         self.products = products or []
@@ -136,14 +331,31 @@ class FeedSearchAgent:
         self.products = products
         self._canonical_category_cache.clear()
 
+    def matches_constraints(
+        self,
+        product: Product,
+        category: str,
+        slots: Mapping[str, Any],
+    ) -> bool:
+        """Shared final-card predicate for search and consultant paths."""
+        return _product_matches_hard_constraints(
+            product,
+            slots,
+        ) and self._semantic_slots_match(product, category, dict(slots))
+
     def search(self, query: SearchQuery) -> list[Product]:
         if not self.products:
             return []
 
         if query.sku:
             exact = self._search_sku(query.sku)
+            exact = [
+                product
+                for product in exact
+                if _product_matches_hard_constraints(product, query.slots)
+            ]
             if exact:
-                return exact[: query.limit]
+                return exact[: self._query_result_limit(query, query.limit)]
             # An exact article is an identity boundary.  Falling through to
             # category scoring on a missing/ambiguous SKU can return an entirely
             # different product, which is unsafe and especially confusing after
@@ -172,6 +384,13 @@ class FeedSearchAgent:
                 return []
 
         effective_slots = self._effective_query_slots(query)
+        candidates = [
+            product
+            for product in candidates
+            if _product_matches_hard_constraints(product, effective_slots)
+        ]
+        if not candidates:
+            return []
         slot_filtered = self._filter_by_slots(candidates, query, effective_slots)
         if slot_filtered:
             candidates = slot_filtered
@@ -185,8 +404,21 @@ class FeedSearchAgent:
 
         scored = [(self._score(product, query), product) for product in candidates]
         scored = [item for item in scored if item[0] > 0]
-        scored.sort(key=lambda item: item[0], reverse=True)
-        return [product for _, product in scored[: query.limit]]
+        if query.cheap or query.slots.get("sort_mode") == "price_asc":
+            # Price sorting must happen before the top-N cut; otherwise the
+            # globally cheapest valid product can be discarded by fuzzy score.
+            scored.sort(
+                key=lambda item: (
+                    not item[1].is_in_stock,
+                    item[1].price is None,
+                    item[1].price or float("inf"),
+                    -item[0],
+                )
+            )
+        else:
+            scored.sort(key=lambda item: item[0], reverse=True)
+        result_limit = self._query_result_limit(query, query.limit)
+        return [product for _, product in scored[:result_limit]]
 
     def search_by_name(
         self,
@@ -209,6 +441,11 @@ class FeedSearchAgent:
         if len(tokens) < 4:
             return []
         effective_slots = self._effective_query_slots(query) if query else {}
+        effective_limit = (
+            self._query_result_limit(query, limit)
+            if query is not None
+            else limit
+        )
         matches: list[tuple[float, int, Product]] = []
         for product in self.products:
             if query and query.category != "other" and not self._category_matches(
@@ -220,6 +457,8 @@ class FeedSearchAgent:
                 if not brand or brand not in normalize_text(product.brand):
                     continue
             if query and query.in_stock_only and not product.is_in_stock:
+                continue
+            if query and not _product_matches_hard_constraints(product, effective_slots):
                 continue
             if query and self._has_strict_slots(query, effective_slots) and not self._slots_match(
                 product, effective_slots, query.category
@@ -250,7 +489,7 @@ class FeedSearchAgent:
         if not matches:
             return []
         matches.sort(key=lambda item: (-item[0], -item[1], not item[2].is_in_stock))
-        return [product for _, _, product in matches[:limit]]
+        return [product for _, _, product in matches[:effective_limit]]
 
     @staticmethod
     def _is_distinctive_token(token: str) -> bool:
@@ -269,6 +508,8 @@ class FeedSearchAgent:
             return []
 
         effective_slots = self._effective_query_slots(query)
+        if _explicitly_disallows_alternatives(effective_slots):
+            return []
         alternative_slots = dict(effective_slots)
         # A different contour count may be shown only through the explicit
         # "nearest alternatives" path (and labelled as such by the composer).
@@ -279,6 +520,7 @@ class FeedSearchAgent:
             product
             for product in self.products
             if self._category_matches(product, query.category)
+            and _product_matches_hard_constraints(product, effective_slots)
             and self._semantic_slots_match(product, query.category, alternative_slots)
             and self._alternative_hard_slots_match(
                 product,
@@ -307,7 +549,8 @@ class FeedSearchAgent:
                 item[1].price or float("inf"),
             )
         )
-        return [product for _, product in scored[: min(query.limit, 6)]]
+        result_limit = self._query_result_limit(query, min(query.limit, 6))
+        return [product for _, product in scored[:result_limit]]
 
     def _search_sku(self, sku: str) -> list[Product]:
         needle = normalize_sku(sku)
@@ -581,7 +824,8 @@ class FeedSearchAgent:
             items = grouped.get(category, [])
             items = self._sort_for_consult(items, category, slots)
             result.extend(items[:per_category])
-        return result
+        result_limit = _requested_result_limit(slots)
+        return result if result_limit is None else result[:result_limit]
 
     def _canon_alias(self, category: str) -> str:
         aliases = {
@@ -605,7 +849,8 @@ class FeedSearchAgent:
         products = [
             product
             for product in products
-            if self._semantic_slots_match(product, category, slots)
+            if _product_matches_hard_constraints(product, slots)
+            and self._semantic_slots_match(product, category, slots)
         ]
         if category == "boilers":
             required_kw = None
@@ -1313,7 +1558,10 @@ class FeedSearchAgent:
 
     def _slots_match(self, product: Product, slots: dict, category: str = "other") -> bool:
         text = self._product_text(product)
-        checks: list[bool] = [self._semantic_slots_match(product, category, slots)]
+        checks: list[bool] = [
+            _product_matches_hard_constraints(product, slots),
+            self._semantic_slots_match(product, category, slots),
+        ]
         diameter = slots.get("diameter_mm")
         if diameter:
             checks.append(self._dimension_matches(product, int(diameter), ["диаметр", "размер"]))
@@ -1397,6 +1645,14 @@ class FeedSearchAgent:
         return all(checks)
 
     def _has_strict_slots(self, query: SearchQuery, slots: dict | None = None) -> bool:
+        effective_slots = slots if slots is not None else query.slots
+        if (
+            _constraint_number(effective_slots.get("max_price")) is not None
+            or _constraint_number(effective_slots.get("min_price")) is not None
+            or _constraint_features(effective_slots.get("required_features"))
+            or _constraint_features(effective_slots.get("excluded_features"))
+        ):
+            return True
         strict_by_category = {
             "pipes": {
                 "diameter_mm",
@@ -1440,7 +1696,13 @@ class FeedSearchAgent:
             "boilers": {"boiler_type", "contours", "voltage_v"},
         }
         strict_keys = strict_by_category.get(query.category, set())
-        return bool(strict_keys.intersection(slots if slots is not None else query.slots))
+        return bool(strict_keys.intersection(effective_slots))
+
+    def _query_result_limit(self, query: SearchQuery, default: int) -> int:
+        requested = _requested_result_limit(query.slots)
+        if requested is None:
+            return default
+        return min(default, requested)
 
     def _alternative_threshold(self, query: SearchQuery) -> int:
         if query.category == "sewer":

@@ -4,6 +4,13 @@ import re
 
 from app.models import GuardrailsResult, Product, ProductCard, SearchQuery
 
+from .feed_search import (
+    FeedSearchAgent,
+    _constraint_features,
+    _constraint_number,
+    _feature_state,
+    _requested_result_limit,
+)
 from .utils import normalize_sku, normalize_text
 
 
@@ -57,6 +64,17 @@ class GuardrailsAgent:
     ) -> GuardrailsResult:
         issues: list[str] = []
         by_sku = {product.sku: product for product in source_products}
+        max_price = _constraint_number(query.slots.get("max_price"))
+        min_price = _constraint_number(query.slots.get("min_price"))
+        required_features = _constraint_features(query.slots.get("required_features"))
+        excluded_features = _constraint_features(query.slots.get("excluded_features"))
+        result_limit = _requested_result_limit(query.slots)
+        semantic_matcher = FeedSearchAgent()
+
+        if result_limit is not None and len(cards) > result_limit:
+            issues.append(
+                f"response has {len(cards)} cards but result_limit is {result_limit}"
+            )
 
         for card in cards:
             product = by_sku.get(card.sku)
@@ -69,6 +87,43 @@ class GuardrailsAgent:
                 issues.append(f"card {card.sku} has invented price")
             if card.stock_status != product.stock_status:
                 issues.append(f"card {card.sku} has invented stock status")
+            if max_price is not None and card.price > max_price:
+                issues.append(
+                    f"card {card.sku} price {card.price:g} exceeds max_price {max_price:g}"
+                )
+            if min_price is not None and card.price < min_price:
+                issues.append(
+                    f"card {card.sku} price {card.price:g} is below min_price {min_price:g}"
+                )
+            for feature in required_features:
+                if _feature_state(product, feature) is not True:
+                    issues.append(
+                        f"card {card.sku} does not confirm required feature {feature}"
+                    )
+            for feature in excluded_features:
+                feature_state = _feature_state(product, feature)
+                if feature_state is True:
+                    issues.append(
+                        f"card {card.sku} contains excluded feature {feature}"
+                    )
+                elif feature_state is None:
+                    issues.append(
+                        f"card {card.sku} does not confirm absence of excluded feature {feature}"
+                    )
+            if not semantic_matcher._semantic_slots_match(
+                product,
+                query.category,
+                query.slots,
+            ):
+                if query.slots.get("contours"):
+                    issues.append(
+                        f"card {card.sku} does not match requested contours "
+                        f"{query.slots['contours']}"
+                    )
+                else:
+                    issues.append(
+                        f"card {card.sku} violates mandatory category characteristics"
+                    )
             normalized_attrs = {
                 normalize_text(source_key): source_value
                 for source_key, source_value in product.attributes_normalized.items()
@@ -78,7 +133,7 @@ class GuardrailsAgent:
                 if source_value != value:
                     issues.append(f"card {card.sku} has invented characteristic {key}")
 
-        if query.cheap and not self._prices_sorted(cards):
+        if query.cheap and not self._cheap_ordered(cards):
             issues.append("cheap request was not sorted by ascending price")
         if query.in_stock_only and not self._stock_first(cards):
             issues.append("stock request did not prioritize available products")
@@ -235,9 +290,15 @@ class GuardrailsAgent:
             safe_message=draft if issues else None,
         )
 
-    def _prices_sorted(self, cards: list[ProductCard]) -> bool:
-        prices = [card.price for card in cards]
-        return prices == sorted(prices)
+    def _cheap_ordered(self, cards: list[ProductCard]) -> bool:
+        def key(card: ProductCard) -> tuple[bool, float]:
+            in_stock = (card.stock_qty or 0) > 0 or (
+                "налич" in card.stock_status.lower()
+                and "нет" not in card.stock_status.lower()
+            )
+            return (not in_stock, card.price)
+
+        return cards == sorted(cards, key=key)
 
     def _stock_first(self, cards: list[ProductCard]) -> bool:
         seen_unavailable = False

@@ -725,7 +725,7 @@ def test_choose_one_in_current_search_returns_single_main_product(orchestrator) 
     assert "Рекомендую" in response.answer
     assert "Почему" in response.answer
     assert "Когда не подойдёт" in response.answer
-    assert "Альтернатива" in response.answer
+    assert "Альтернатива" not in response.answer
     assert "https://example.test/pump2560" in response.answer
 
 
@@ -1719,15 +1719,27 @@ def test_manager_handoff_is_recorded_and_confirmed(sample_products, tmp_path) ->
     orchestrator = ChatOrchestrator(products=sample_products, settings=settings)
 
     orchestrator.handle_chat("h1", "электрический котёл на 100 м²")
-    response = orchestrator.handle_chat("h1", "передай менеджеру")
+    preview = orchestrator.handle_chat("h1", "передай менеджеру")
 
-    assert response.need_handoff is True
-    assert "менеджер" in response.answer.lower()
-    assert "Более дешёвых" not in response.answer
+    assert preview.need_handoff is True
+    assert preview.handoff_status == "awaiting_contact"
+    assert "менеджер" in preview.answer.lower()
+    assert "Более дешёвых" not in preview.answer
+    assert not (tmp_path / "handoff.jsonl").exists()
 
+    consent = orchestrator.handle_chat("h1", "+7 999 123-45-67")
+    assert consent.handoff_status == "awaiting_consent"
+    assert "подтверд" in consent.answer.lower()
+    assert not (tmp_path / "handoff.jsonl").exists()
+
+    response = orchestrator.handle_chat("h1", "подтверждаю передачу")
+    assert response.handoff_status == "locally_recorded"
+    assert response.handoff_ticket_id
+    assert response.handoff_ticket_id in response.answer
     log_text = (tmp_path / "handoff.jsonl").read_text(encoding="utf-8")
     assert '"session_id": "h1"' in log_text
     assert "ARD-E9" in log_text
+    assert response.handoff_ticket_id in log_text
 
 
 def test_manager_contact_question_does_not_create_handoff(sample_products, tmp_path) -> None:
@@ -1837,9 +1849,7 @@ def test_human_transfer_synonyms_create_handoff_without_callback_promise(
         assert "оставьте телефон" in response.answer.lower()
         assert "свяжется с вами" not in response.answer.lower()
 
-    log_text = (tmp_path / "handoff.jsonl").read_text(encoding="utf-8")
-    assert "позови консультанта" in log_text
-    assert "хочу реального человека" in log_text
+    assert not (tmp_path / "handoff.jsonl").exists()
 
 
 def test_human_transfer_typos_create_handoff_without_callback_promise(
@@ -1867,9 +1877,7 @@ def test_human_transfer_typos_create_handoff_without_callback_promise(
         assert "оставьте телефон" in response.answer.lower()
         assert "свяжется с вами" not in response.answer.lower()
 
-    log_text = (tmp_path / "handoff.jsonl").read_text(encoding="utf-8")
-    assert "пазови кансультанта" in log_text
-    assert "хачу реального челавека" in log_text
+    assert not (tmp_path / "handoff.jsonl").exists()
 
 
 def test_handoff_process_challenge_is_answered_transparently(orchestrator) -> None:
@@ -2360,7 +2368,7 @@ def test_difference_question_wins_over_card_comparison_for_concept(orchestrator)
     assert "Главное отличие — мощность" not in response.answer
 
 
-def test_two_contour_boiler_filter_marks_one_contour_alternatives(sample_products) -> None:
+def test_two_contour_boiler_filter_does_not_relax_contours_implicitly(sample_products) -> None:
     products = [
         *sample_products,
         Product(
@@ -2385,11 +2393,9 @@ def test_two_contour_boiler_filter_marks_one_contour_alternatives(sample_product
 
     response = orchestrator.handle_chat("dual", "газовый двухконтурный котёл на 100 м²")
 
-    assert response.products
-    assert response.products[0].sku == "GAS-ONE-24"
-    answer = response.answer.lower()
-    assert "двухконтур" in answer
-    assert "горячую воду" in answer or "гвс" in answer
+    assert response.products == []
+    assert "не вижу точного совпадения" in response.answer.lower()
+    assert "GAS-ONE-24" not in response.answer
 
 
 def test_one_contour_boiler_hot_water_is_not_presented_as_direct_gvs(orchestrator) -> None:
@@ -2476,9 +2482,12 @@ def test_pending_boiler_area_followup_bypasses_consultant_llm(sample_products, m
     bot.handle_chat("egvs", "и чтобы горячую воду грел")
     response = bot.handle_chat("egvs", "на 90 м2")
 
-    assert response.products
+    # The fixture has no product whose card confirms two circuits. Do not
+    # silently show an unconfirmed model merely to satisfy the old funnel.
+    assert response.products == []
     assert response.debug["slots"]["area_m2"] == 90.0
     assert "На какую площадь" not in response.answer
+    assert "точного совпадения" in response.answer
     assert response.debug["consultant_llm_used"] is False
 
 
@@ -2498,10 +2507,10 @@ def test_english_llm_boiler_slots_are_normalized_before_search(sample_products) 
 
     response = bot.handle_chat("slot-normalize", "на 90 м2")
 
-    assert response.products
-    assert response.products[0].sku == "ARD-E9"
+    assert response.products == []
     assert "electric" not in response.answer.lower()
-    assert "Электрического двухконтурного" in response.answer
+    assert "электрический" in response.answer.lower()
+    assert "двухконтурный" in response.answer.lower()
 
 
 def test_exact_product_name_returns_product_without_interrogation(orchestrator) -> None:
@@ -2977,11 +2986,15 @@ def test_handoff_keeps_original_boiler_requirement(sample_products, tmp_path) ->
     bot = ChatOrchestrator(products=sample_products, settings=settings)
 
     bot.handle_chat("handoff-boiler", "нужен котел на большой коттедж 400 м2 с бойлером")
-    response = bot.handle_chat("handoff-boiler", "передай менеджеру")
+    preview = bot.handle_chat("handoff-boiler", "передай менеджеру")
+    assert preview.need_handoff is True
+    assert "с бойлером" in preview.answer.lower()
+    assert not (tmp_path / "handoff.jsonl").exists()
 
+    bot.handle_chat("handoff-boiler", "client@example.test")
+    response = bot.handle_chat("handoff-boiler", "подтверждаю передачу")
     log_text = (tmp_path / "handoff.jsonl").read_text(encoding="utf-8")
-    assert response.need_handoff is True
-    assert "с бойлером" in response.answer.lower()
+    assert response.handoff_status == "locally_recorded"
     assert "с бойлером" in log_text.lower()
     assert "key_requirements" in log_text
     assert "400" in log_text
@@ -3028,7 +3041,12 @@ def test_complex_boiler_binding_clarifies_then_creates_grounded_handoff(
     assert third.debug["slots"]["boiler_volume_l"] == 150.0
     assert third.debug["slots"]["warm_floor_area_m2"] == 60.0
     assert third.debug["slots"]["warm_floor_contours"] == 6
+    assert not (tmp_path / "complex-handoff.jsonl").exists()
 
+    bot.handle_chat("complex-handoff", "+7 999 555-44-33")
+    submitted = bot.handle_chat("complex-handoff", "подтверждаю передачу")
+    assert submitted.handoff_status == "locally_recorded"
+    assert submitted.handoff_ticket_id
     log_text = (tmp_path / "complex-handoff.jsonl").read_text(encoding="utf-8").lower()
     assert "180" in log_text
     assert "150" in log_text

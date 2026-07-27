@@ -504,7 +504,16 @@ class ResponseComposerAgent:
             if slot_reasons:
                 reasons.append(f"совпадает с параметрами: {slot_reasons}")
         reason_text = "; ".join(reasons) or "он лучше всего совпадает с текущим подбором"
-        if alternative:
+        strict_single = bool(
+            query
+            and (
+                query.slots.get("choose_one")
+                or query.slots.get("result_limit") == 1
+            )
+        )
+        if strict_single:
+            alt_line = None
+        elif alternative:
             alt_line = (
                 f"Альтернатива: {alternative.sku} — {alternative.name}, "
                 f"{alternative.price:g} {alternative.currency}."
@@ -528,10 +537,11 @@ class ResponseComposerAgent:
             [
                 f"Почему: {reason_text}.",
                 f"Когда не подойдёт: {self._choose_one_caveat(query, card)}",
-                alt_line,
-                f"Ссылка: {card.url}",
             ]
         )
+        if alt_line:
+            draft_lines.append(alt_line)
+        draft_lines.append(f"Ссылка: {card.url}")
         draft = "\n".join(draft_lines)
         self.last_draft = draft
         return draft
@@ -690,10 +700,18 @@ class ResponseComposerAgent:
             )
         elif query.category == "boilers":
             requested = self._requested_summary(query) or query.original_text
+            hot_water_note = (
+                " Для электрического отопления с ГВС может понадобиться отдельный "
+                "бойлер, но его нужно подбирать как отдельный узел."
+                if slots.get("boiler_type") == "электрический"
+                and slots.get("contours") == "двухконтурный"
+                else ""
+            )
             draft = (
                 f"Не вижу точного совпадения в ассортименте: {requested}. "
-                "Не буду показывать котёл другого типа как подходящий без предупреждения. "
-                "Можно уточнить параметры, рассмотреть ближайшие альтернативы или передать вопрос менеджеру."
+                "Не буду показывать котёл, нарушающий бюджет или обязательные характеристики. "
+                "Если захотите, можно отдельно разрешить ослабить одно из условий."
+                f"{hot_water_note}"
             )
         else:
             draft = "Не нашёл подходящие товары в текущем ассортименте. Могу уточнить параметры или передать вопрос менеджеру."
@@ -1008,6 +1026,18 @@ class ResponseComposerAgent:
             details.append(str(slots["contours"]))
         if slots.get("area_m2"):
             details.append(f"{slots['area_m2']:g} м²")
+        if slots.get("max_price") is not None:
+            details.append(f"до {float(slots['max_price']):g} RUB")
+        if slots.get("min_price") is not None:
+            details.append(f"от {float(slots['min_price']):g} RUB")
+        if slots.get("required_features"):
+            details.append(
+                "обязательно: " + ", ".join(str(item) for item in slots["required_features"])
+            )
+        if slots.get("excluded_features"):
+            details.append(
+                "без: " + ", ".join(str(item) for item in slots["excluded_features"])
+            )
         return ", ".join(details)
 
     def _polish(self, agent: str, user_message: str, draft: str, instruction: str) -> str:

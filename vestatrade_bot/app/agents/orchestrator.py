@@ -28,6 +28,7 @@ from app.feed_loader import FeedLoader
 from app.models import (
     ChatProductSummary,
     ChatResponse,
+    HandoffSummary,
     IntentResult,
     Product,
     ProductCard,
@@ -136,6 +137,13 @@ TRANSFER_INTENT_MARKERS = [
     "хочу",
     "можно",
 ]
+
+TRANSIENT_QUERY_SLOTS = {
+    "choose_one",
+    "result_limit",
+    "sort_mode",
+    "relative_cheaper",
+}
 
 
 COMPANION_HINTS: dict[str, str] = {
@@ -505,6 +513,26 @@ class ChatOrchestrator:
                 agents_used,
             )
 
+        electrical_safety = self._maybe_electrical_safety_answer(message, session)
+        if electrical_safety:
+            intent = IntentResult(
+                intent_type="electrical_safety",
+                category="boilers",
+                confidence=1.0,
+            )
+            agents_used.append("GuardrailsAgent")
+            self._append_history(session, message, electrical_safety)
+            self.sessions.save(session)
+            return self._response(
+                session_id,
+                electrical_safety,
+                [],
+                False,
+                intent,
+                session,
+                agents_used,
+            )
+
         sink_flow_answer = self._maybe_sink_flow_answer(message, session)
         if sink_flow_answer:
             intent = IntentResult(
@@ -553,9 +581,114 @@ class ChatOrchestrator:
                 agents_used,
             )
 
+        # Contact details, consent and refusal are deterministic control turns.
+        # Handle them before the intent router so PII and consent phrases are
+        # neither sent to an external model nor incorporated into its cache key.
+        if session.pending_handoff:
+            handoff_intent = IntentResult(
+                intent_type="handoff_control",
+                category=session.category or "other",
+                confidence=1.0,
+            )
+            if self._is_handoff_opt_out(message) or self._is_handoff_refusal(message):
+                response = self._handle_handoff_opt_out(
+                    message,
+                    handoff_intent,
+                    session,
+                    agents_used,
+                )
+                self.sessions.save(session)
+                return response
+            if (
+                self.handoff.extract_contact(message)
+                or self._is_handoff_confirmation(message)
+                or self._wants_manager_handoff(message)
+            ):
+                response = self._maybe_continue_handoff(
+                    message,
+                    handoff_intent,
+                    session,
+                    agents_used,
+                )
+                if response is not None:
+                    self.sessions.save(session)
+                    return response
+
+        pre_handoff_command = self._wants_manager_handoff(message)
+        if pre_handoff_command or session.slots.get("financial_context"):
+            boundary_intent = IntentResult(
+                intent_type="handoff_control",
+                category="other",
+                confidence=1.0,
+            )
+            financial_answer = self._maybe_financial_stocks_answer(
+                message,
+                boundary_intent,
+                session,
+            )
+            if financial_answer:
+                agents_used.append("ResponseComposerAgent")
+                self._append_history(session, message, financial_answer)
+                self.sessions.save(session)
+                return self._response(
+                    session_id,
+                    financial_answer,
+                    [],
+                    False,
+                    boundary_intent,
+                    session,
+                    agents_used,
+                )
+
+        if self._is_handoff_opt_out(message):
+            boundary_intent = IntentResult(
+                intent_type="handoff_control",
+                category=session.category or "other",
+                confidence=1.0,
+            )
+            response = self._handle_handoff_opt_out(
+                message,
+                boundary_intent,
+                session,
+                agents_used,
+            )
+            self.sessions.save(session)
+            return response
+
+        if pre_handoff_command:
+            handoff_intent = IntentResult(
+                intent_type="handoff_request",
+                category=session.category or "other",
+                confidence=1.0,
+            )
+            summary = self.handoff.build_summary(message, session)
+            session.handoff_opt_out = False
+            session.pending_handoff = self.handoff.summary_to_dict(summary)
+            needs_contact = not bool(summary.contact)
+            session.handoff_status = (
+                "awaiting_contact" if needs_contact else "awaiting_consent"
+            )
+            answer = self.handoff.compose_consent_request(
+                summary,
+                needs_contact=needs_contact,
+            )
+            agents_used.append("HandoffAgent")
+            self._append_history(session, message, answer)
+            self.sessions.save(session)
+            return self._response(
+                session_id,
+                answer,
+                [],
+                True,
+                handoff_intent,
+                session,
+                agents_used,
+            )
+
         intent = self.intent_router.route(message, session)
         self._enrich_brand_from_feed(message, intent)
         agents_used.append("IntentRouterAgent")
+        self._stabilize_active_goal(message, intent, session)
 
         if self._is_pending_continuation(intent, session, message):
             self._restore_pending_intent(intent, session)
@@ -602,8 +735,13 @@ class ChatOrchestrator:
             session.topic_changed = True
             session.pending_question = None
             session.pending_intent_type = None
+            session.pending_category = None
+            session.pending_slot_keys = []
             session.pending_complectation_parts = []
             session.question_repeats = 0
+            if session.handoff_status in {"awaiting_contact", "awaiting_consent", "failed"}:
+                session.pending_handoff = None
+                session.handoff_status = "none"
 
         if self._should_restart_category_context(message, intent, session):
             session.slots = {}
@@ -614,6 +752,26 @@ class ChatOrchestrator:
             intent.slots.setdefault("pump_use", "отопление")
             intent.slots.setdefault("pump_context", "котел")
             intent.slots.setdefault("allow_basic_option", True)
+
+        financial_answer = self._maybe_financial_stocks_answer(message, intent, session)
+        if financial_answer:
+            agents_used.append("ResponseComposerAgent")
+            self._append_history(session, message, financial_answer)
+            self.sessions.save(session)
+            return self._response(
+                session_id,
+                financial_answer,
+                [],
+                False,
+                intent,
+                session,
+                agents_used,
+            )
+
+        pending_handoff = self._maybe_continue_handoff(message, intent, session, agents_used)
+        if pending_handoff is not None:
+            self.sessions.save(session)
+            return pending_handoff
 
         manager_contact_answer = self._maybe_manager_contact_question(message)
         if manager_contact_answer:
@@ -644,15 +802,6 @@ class ChatOrchestrator:
                 session,
                 agents_used,
             )
-
-        if self._wants_manager_handoff(message):
-            summary = self.handoff.build_summary(message, session)
-            recorded = self.handoff.record(summary, session.session_id, self.settings.handoff_log_path)
-            answer = self.handoff.compose_user_confirmation(summary, recorded)
-            agents_used.append("HandoffAgent")
-            self._append_history(session, message, answer)
-            self.sessions.save(session)
-            return self._response(session_id, answer, [], True, intent, session, agents_used)
 
         meta_answer = self._maybe_meta_question(message)
         if meta_answer:
@@ -880,6 +1029,11 @@ class ChatOrchestrator:
         # отвечаем прямо из привязанного документа. Модель не должна пересказывать
         # паспорт: в живых диалогах она могла отрицать раздел, который был в контексте.
         if session.last_products and self._is_open_complectation_question(message):
+            # A product-card/passport question supersedes any unfinished
+            # category-selection clarification (for example a pending pump
+            # purpose). Keep only complectation state from this point on.
+            session.pending_category = None
+            session.pending_slot_keys = []
             target_card, ambiguous = self._resolve_shown_product_card(message, session)
             if ambiguous:
                 answer = self._complectation_target_question(session.last_products)
@@ -917,6 +1071,25 @@ class ChatOrchestrator:
             self.sessions.save(session)
             return self._response(
                 session_id, answer, cards, False, intent, session, agents_used
+            )
+
+        choose_result = self._maybe_choose_one_answer(message, session, intent)
+        if choose_result:
+            choose_answer, chosen_card = choose_result
+            agents_used.append("ResponseComposerAgent")
+            answer = self._guard_composed_answer(choose_answer, "link", agents_used)
+            chosen_cards = [chosen_card]
+            session.last_products = chosen_cards
+            self._append_history(session, message, answer)
+            self.sessions.save(session)
+            return self._response(
+                session_id,
+                answer,
+                chosen_cards,
+                False,
+                intent,
+                session,
+                agents_used,
             )
 
         focused_price = self._maybe_shown_category_price_answer(message, intent, session)
@@ -957,16 +1130,6 @@ class ChatOrchestrator:
         if analogs_response is not None:
             self.sessions.save(session)
             return analogs_response
-
-        choose_answer = self._maybe_choose_one_answer(message, session)
-        if choose_answer:
-            agents_used.append("ResponseComposerAgent")
-            answer = self._guard_composed_answer(choose_answer, "link", agents_used)
-            chosen_cards = session.last_products[:1]
-            session.last_products = chosen_cards
-            self._append_history(session, message, answer)
-            self.sessions.save(session)
-            return self._response(session_id, answer, chosen_cards, False, intent, session, agents_used)
 
         why_answer = self._maybe_why_explanation(message, session)
         if why_answer:
@@ -1169,7 +1332,11 @@ class ChatOrchestrator:
 
         slot_result = self.slot_filling.fill(message, intent, session)
         agents_used.append("SlotFillingAgent")
-        session.slots = merge_slots(session.slots, slot_result.slots)
+        self._merge_persistent_slots(
+            session,
+            slot_result.slots,
+            explicit_slots=intent.slots,
+        )
         session.category = intent.category if intent.category != "other" else session.category
         session.last_intent = intent.intent_type
 
@@ -1205,11 +1372,36 @@ class ChatOrchestrator:
                 answer = self._guard_composed_answer(answer, "clarification", agents_used)
             session.pending_question = question
             session.pending_intent_type = intent.intent_type
+            session.pending_category = (
+                intent.category if intent.category != "other" else session.category
+            )
+            session.pending_slot_keys = self._pending_slot_keys_for_question(
+                question,
+                session.pending_category,
+            )
             self._append_history(session, message, answer)
             self.sessions.save(session)
             return self._response(session_id, answer, [], False, intent, session, agents_used)
 
-        if slot_result.needs_clarification and slot_result.question and not direct_products:
+        hard_refinement_on_shown = bool(
+            session.last_products
+            and any(
+                key in intent.slots
+                for key in [
+                    "max_price",
+                    "min_price",
+                    "required_features",
+                    "excluded_features",
+                    "in_stock",
+                ]
+            )
+        )
+        if (
+            slot_result.needs_clarification
+            and slot_result.question
+            and not direct_products
+            and not hard_refinement_on_shown
+        ):
             if session.pending_question == slot_result.question:
                 session.question_repeats += 1
             else:
@@ -1224,6 +1416,13 @@ class ChatOrchestrator:
                 answer = self._guard_composed_answer(answer, "clarification", agents_used)
                 session.pending_question = slot_result.question
                 session.pending_intent_type = intent.intent_type
+                session.pending_category = (
+                    intent.category if intent.category != "other" else session.category
+                )
+                session.pending_slot_keys = self._pending_slot_keys_for_question(
+                    slot_result.question,
+                    session.pending_category,
+                )
                 self._append_history(session, message, answer)
                 self.sessions.save(session)
                 return self._response(session_id, answer, [], False, intent, session, agents_used)
@@ -1247,6 +1446,8 @@ class ChatOrchestrator:
 
         session.pending_question = None
         session.pending_intent_type = None
+        session.pending_category = None
+        session.pending_slot_keys = []
         session.question_repeats = 0
 
         agents_used.append("FeedSearchAgent")
@@ -1255,7 +1456,11 @@ class ChatOrchestrator:
             query,
         )
         if not products:
-            alternatives = self.search_agent.search_alternatives(query)
+            alternatives = (
+                self.search_agent.search_alternatives(query)
+                if query.slots.get("allow_alternatives", True)
+                else []
+            )
             alternatives = self._drop_underpowered_boilers(alternatives, query)
             if alternatives:
                 ranked_alternatives = alternatives
@@ -1281,7 +1486,6 @@ class ChatOrchestrator:
                         answer = self.composer.compose_choose_one(
                             cards[0],
                             query,
-                            alternative=cards[1] if len(cards) > 1 else None,
                         )
                         cards = cards[:1]
                     else:
@@ -1308,7 +1512,12 @@ class ChatOrchestrator:
 
         agents_used.append("RankingAgent")
         ranked = self.ranking_agent.rank(products, query)
-        if query.cheap and session.last_products:
+        if (
+            query.cheap
+            and session.last_products
+            and query.slots.get("relative_cheaper")
+            and not query.slots.get("choose_one")
+        ):
             min_previous_price = min(card.price for card in session.last_products)
             cheaper_ranked = [
                 product
@@ -1351,7 +1560,6 @@ class ChatOrchestrator:
             answer = self.composer.compose_choose_one(
                 cards[0],
                 query,
-                alternative=cards[1] if len(cards) > 1 else None,
             )
             cards = cards[:1]
         else:
@@ -1376,11 +1584,25 @@ class ChatOrchestrator:
         intent: IntentResult,
         agents_used: list[str],
     ) -> ChatResponse:
+        # Complectation has its own continuation state. A stale selection goal
+        # must not be restored after the passport answer is complete.
+        session.pending_category = None
+        session.pending_slot_keys = []
         requested_parts = self._requested_parts(message) or session.pending_complectation_parts
         if not requested_parts:
             requested_parts = ["комплектация"]
 
-        sku_from_message = intent.slots.get("sku") or session.slots.get("sku")
+        message_text = normalize_text(message)
+        safety_context_sku = (
+            session.slots.get("electrical_safety_sku")
+            if "котл" in message_text
+            else None
+        )
+        sku_from_message = (
+            intent.slots.get("sku")
+            or session.slots.get("sku")
+            or safety_context_sku
+        )
         target_product: Product | None = None
         target_card: ProductCard | None = None
         if sku_from_message:
@@ -1436,8 +1658,9 @@ class ChatOrchestrator:
                 )
                 answer = (
                     "Без артикула или модели котла не подтвержу обвязку или комплектацию. "
-                    "Не буду угадывать узлы системы — лучше передам менеджеру краткую "
-                    "сводкой.\n" + self.handoff.compose_answer(summary)
+                    "Не буду угадывать узлы системы. Можно подготовить менеджеру краткую "
+                    "сводку, но без контакта и вашего подтверждения ничего не отправляю.\n"
+                    + self.handoff.compose_answer(summary)
                 )
                 agents_used.append("HandoffAgent")
                 session.pending_question = None
@@ -1455,6 +1678,10 @@ class ChatOrchestrator:
             agents_used.append("ResponseComposerAgent")
             self._append_history(session, message, answer)
             return self._response(session.session_id, answer, [], False, intent, session, agents_used)
+
+        resolved_category = self.search_agent.canonical_category(target_product)
+        if resolved_category and resolved_category != "other":
+            session.category = resolved_category
 
         if not target_card:
             target_card = self.card_agent.build_card(
@@ -1533,7 +1760,11 @@ class ChatOrchestrator:
         return self.search_agent.search(query)
 
     def _build_query(self, message: str, intent: IntentResult, session: SessionState) -> SearchQuery:
-        slots = self._normalized_query_slots(session.slots)
+        # Current-turn slots include transient presentation instructions, while
+        # the durable session intentionally does not.
+        slots = self._normalized_query_slots(
+            merge_slots(session.slots, intent.slots)
+        )
         return SearchQuery(
             original_text=message,
             category=intent.category if intent.category != "other" else session.category or "other",
@@ -1543,6 +1774,56 @@ class ChatOrchestrator:
             cheap=bool(slots.get("cheap") or intent.flags.get("cheap")),
             in_stock_only=bool(slots.get("in_stock") or intent.flags.get("in_stock")),
         )
+
+    def _merge_persistent_slots(
+        self,
+        session: SessionState,
+        new_slots: dict[str, Any],
+        *,
+        explicit_slots: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Merge one turn, replacing mutually exclusive hard constraints."""
+        base = dict(session.slots)
+        incoming = dict(new_slots)
+        explicit = explicit_slots if explicit_slots is not None else new_slots
+        if "excluded_features" in explicit:
+            incoming.pop("required_features", None)
+            excluded = set(
+                str(value) for value in explicit.get("excluded_features") or []
+            )
+            required = [
+                value
+                for value in base.get("required_features", [])
+                if str(value) not in excluded
+            ]
+            if required:
+                base["required_features"] = required
+            else:
+                base.pop("required_features", None)
+        if "required_features" in explicit:
+            incoming.pop("excluded_features", None)
+            required = set(
+                str(value) for value in explicit.get("required_features") or []
+            )
+            excluded = [
+                value
+                for value in base.get("excluded_features", [])
+                if str(value) not in required
+            ]
+            if excluded:
+                base["excluded_features"] = excluded
+            else:
+                base.pop("excluded_features", None)
+        merged_slots = merge_slots(base, incoming)
+        # Presentation commands apply to one answer only. Persisting
+        # ``result_limit=1`` after «назови один» silently restricted every
+        # later catalogue request in the same session.
+        session.slots = {
+            key: value
+            for key, value in merged_slots.items()
+            if key not in TRANSIENT_QUERY_SLOTS
+        }
+        return merged_slots
 
     def _card_query_for_products(
         self,
@@ -2421,17 +2702,74 @@ class ChatOrchestrator:
             return "В карточке мало параметров, поэтому точность лучше проверить по напору и расходу."
         return "По карточке: " + "; ".join(details[:4]) + "."
 
-    def _maybe_choose_one_answer(self, message: str, session: SessionState) -> str | None:
+    def _maybe_choose_one_answer(
+        self,
+        message: str,
+        session: SessionState,
+        intent: IntentResult,
+    ) -> tuple[str, ProductCard] | None:
         if not session.last_products or not self._wants_choose_one(message):
             return None
-        return self.composer.compose_choose_one(
-            session.last_products[0],
-            SearchQuery(
-                original_text=message,
-                category=session.category or "other",
-                slots=session.slots,
+        refinement_keys = {
+            "max_price",
+            "min_price",
+            "required_features",
+            "excluded_features",
+            "diameter_mm",
+            "size_inch",
+            "head_m",
+            "mounting_length_mm",
+            "connection_size",
+            "power_kw",
+            "area_m2",
+            "boiler_type",
+            "contours",
+            "voltage_v",
+            "pump_type",
+            "pump_use",
+        }
+        if any(
+            key in intent.slots
+            and intent.slots.get(key) != session.slots.get(key)
+            for key in refinement_keys
+        ):
+            # Apply a newly stated constraint to the full candidate set first;
+            # choosing directly from stale cards would ignore the refinement.
+            return None
+        text = normalize_text(message)
+        if any(
+            marker in text
+            for marker in ["самый дешев", "самого дешев", "дешевле всех"]
+        ):
+            # Search the whole constrained catalogue; the cheapest suitable
+            # item may not be present in the last three displayed cards.
+            return None
+        wants_in_stock = bool(
+            intent.flags.get("in_stock")
+            or intent.slots.get("in_stock")
+            or "в наличии" in text
+        )
+        candidates = session.last_products
+        if wants_in_stock:
+            candidates = [
+                card for card in candidates if self._card_is_in_stock(card)
+            ]
+            if not candidates:
+                # Let the normal catalogue path search beyond the stale cards.
+                return None
+        card = candidates[0]
+        query = SearchQuery(
+            original_text=message,
+            category=session.category or "other",
+            slots={**session.slots, "choose_one": True, "result_limit": 1},
+            cheap="дешев" in text,
+        )
+        return (
+            self.composer.compose_choose_one(
+                card,
+                query,
             ),
-            alternative=session.last_products[1] if len(session.last_products) > 1 else None,
+            card,
         )
 
     def _maybe_redundant_filter_confirmation(
@@ -2596,6 +2934,7 @@ class ChatOrchestrator:
         if not self._should_consult(message, intent, session):
             return None
 
+        self._merge_persistent_slots(session, intent.slots)
         self._update_project_state(message, intent, session)
         categories, retrieval_slots = self._consult_plan(message, intent, session)
         retrieved: list[Product] = []
@@ -2608,7 +2947,21 @@ class ChatOrchestrator:
         seen = {normalize_sku_token(p.sku) for p in retrieved}
         for card in session.last_products[:3]:
             product = self._find_product_by_sku(card.sku)
-            if product and normalize_sku_token(product.sku) not in seen:
+            category = (
+                self.search_agent.canonical_category(product)
+                if product
+                else "other"
+            )
+            if (
+                product
+                and (not categories or category in categories)
+                and self.search_agent.matches_constraints(
+                    product,
+                    category,
+                    retrieval_slots,
+                )
+                and normalize_sku_token(product.sku) not in seen
+            ):
                 retrieved.insert(0, product)
                 seen.add(normalize_sku_token(product.sku))
 
@@ -2632,6 +2985,53 @@ class ChatOrchestrator:
             if fallback_cards:
                 answer = self._plain_catalog_answer(fallback_cards)
                 cards = fallback_cards
+
+        # Apply the same deterministic constraints to LLM-selected cards as to
+        # ordinary catalogue search. If any card is removed, also replace the
+        # prose so it cannot keep recommending the rejected item.
+        checked_cards: list[ProductCard] = []
+        for card in cards:
+            product = self._find_product_by_sku(card.sku)
+            if not product:
+                continue
+            category = self.search_agent.canonical_category(product)
+            if not self.search_agent.matches_constraints(
+                product,
+                category,
+                retrieval_slots,
+            ):
+                continue
+            card_query = SearchQuery(
+                original_text=message,
+                category=category,
+                slots=retrieval_slots,
+                cheap=bool(
+                    retrieval_slots.get("cheap")
+                    or intent.flags.get("cheap")
+                ),
+                in_stock_only=bool(
+                    retrieval_slots.get("in_stock")
+                    or intent.flags.get("in_stock")
+                ),
+            )
+            guard = self.guardrails.validate_cards([card], [product], card_query)
+            if guard.ok:
+                checked_cards.append(card)
+        if len(checked_cards) != len(cards):
+            cards = checked_cards
+            answer = (
+                self._plain_catalog_answer(cards)
+                if cards
+                else (
+                    "По указанным ограничениям не нашёл подтверждённого товара. "
+                    "Измените бюджет или обязательные характеристики."
+                )
+            )
+            agents_used.append("GuardrailsAgent")
+            self.consultant.last_llm_output_accepted = False
+            self.consultant.last_llm_rejection_reason = (
+                "replaced_by_hard_constraint_guard"
+            )
 
         cards = self._limit_oversized_boiler_cards(
             cards,
@@ -3007,7 +3407,7 @@ class ChatOrchestrator:
         session: SessionState,
     ) -> tuple[list[str], dict]:
         text = normalize_text(message)
-        slots = dict(session.slots)
+        slots = merge_slots(session.slots, intent.slots)
         # boiler_type берём из intent_router — там отрицание («газа нет») уже учтено.
         # НЕ выводим тип из подстроки «газ» (иначе «газа нет» → газовый, баг из логов).
         if intent.slots.get("boiler_type"):
@@ -3213,11 +3613,23 @@ class ChatOrchestrator:
 
         if missing_details:
             missing_text = "; ".join(missing_details)
+            next_step = (
+                "После ответа продолжим здесь; менеджеру ничего не передаю."
+                if session.handoff_opt_out
+                else (
+                    "После ответа сохраню все три подсистемы в краткой сводке и попрошу "
+                    "контакт и подтверждение передачи менеджеру."
+                )
+            )
+            clarification_goal = (
+                "Для безопасного продолжения"
+                if session.handoff_opt_out
+                else "Чтобы передать специалисту не пустую заявку"
+            )
             answer = (
                 "Обвязка котла, бойлера и тёплого пола — комплексная инженерная схема; "
-                "случайную корзину по ней собирать небезопасно. Чтобы передать специалисту "
-                f"не пустую заявку, осталось уточнить: {missing_text}. После ответа сохраню "
-                "все три подсистемы и передам задачу менеджеру."
+                f"случайную корзину по ней собирать небезопасно. {clarification_goal}, "
+                f"осталось уточнить: {missing_text}. {next_step}"
             )
             session.pending_question = answer
             session.pending_intent_type = "engineering_handoff"
@@ -3226,18 +3638,48 @@ class ChatOrchestrator:
             self._append_history(session, message, answer)
             return self._response(session_id, answer, [], False, intent, session, agents_used)
 
+        if session.handoff_opt_out:
+            answer = (
+                "Исходные параметры собраны, но по вашему запрету менеджеру ничего не передаю "
+                "и заявку не создаю. Могу продолжить консультацию здесь; инженерную схему "
+                "без специалиста не утверждаю."
+            )
+            session.pending_question = None
+            session.pending_intent_type = None
+            session.pending_category = None
+            session.pending_slot_keys = []
+            session.last_intent = "engineering_handoff"
+            agents_used.extend(["GuardrailsAgent", "ResponseComposerAgent"])
+            self._append_history(session, message, answer)
+            return self._response(
+                session_id,
+                answer,
+                [],
+                False,
+                intent,
+                session,
+                agents_used,
+            )
+
         summary = self.handoff.build_summary(
             message,
             session,
             missing=["инженерная схема и проверка совместимости узлов"],
         )
-        recorded = self.handoff.record(summary, session.session_id, self.settings.handoff_log_path)
+        session.pending_handoff = self.handoff.summary_to_dict(summary)
+        needs_contact = not bool(summary.contact)
+        session.handoff_status = "awaiting_contact" if needs_contact else "awaiting_consent"
         answer = (
-            "Спасибо, исходные данные для инженерной заявки зафиксировал. "
-            + self.handoff.compose_user_confirmation(summary, recorded)
+            "Спасибо, исходные данные для инженерной заявки собраны. "
+            + self.handoff.compose_consent_request(
+                summary,
+                needs_contact=needs_contact,
+            )
         )
         session.pending_question = None
         session.pending_intent_type = None
+        session.pending_category = None
+        session.pending_slot_keys = []
         session.last_intent = "engineering_handoff"
         agents_used.extend(["GuardrailsAgent", "HandoffAgent"])
         self._append_history(session, message, answer)
@@ -4248,6 +4690,13 @@ class ChatOrchestrator:
             return f"в наличии {card.stock_qty} шт"
         return card.stock_status
 
+    @staticmethod
+    def _card_is_in_stock(card: ProductCard) -> bool:
+        if card.stock_qty is not None:
+            return card.stock_qty > 0
+        status = normalize_text(card.stock_status)
+        return "налич" in status and "нет" not in status
+
     def _maybe_scope_funnel(
         self,
         message: str,
@@ -4537,9 +4986,88 @@ class ChatOrchestrator:
             return None
         return (
             f"По вопросам про {matched} у меня нет данных в каталоге — это уточнит менеджер. "
-            "Напишите «передай менеджеру», и я зафиксирую заявку. А с подбором товара, ценой и "
+            "Если хотите подготовить обращение, напишите «передай менеджеру»: я сначала покажу "
+            "краткое содержание, запрошу контакт и подтверждение. А с подбором товара, ценой и "
             "наличием по каталогу помогу прямо сейчас."
         )
+
+    def _maybe_financial_stocks_answer(
+        self,
+        message: str,
+        intent: IntentResult,
+        session: SessionState,
+    ) -> str | None:
+        """Distinguish explicit investments from ordinary store promotions."""
+        text = normalize_text(message)
+        finance_markers = [
+            "купить акции",
+            "продать акции",
+            "акции компан",
+            "ценные бумаги",
+            "инвестиц",
+            "инвестировать",
+            "бирж",
+            "брокер",
+            "дивиденд",
+            "портфел",
+            "доходност",
+            "гарантированно заработать",
+        ]
+        product_promo_context = any(
+            marker in text
+            for marker in [
+                "скидк",
+                "распродаж",
+                "промокод",
+                "акционный товар",
+                "акции на товар",
+                "акции на кот",
+                "акции на насос",
+                "акции на труб",
+                "магазин",
+            ]
+        )
+        stock_market_context = "акци" in text and any(
+            marker in text
+            for marker in [
+                "газпром",
+                "сбер",
+                "лукойл",
+                "яндекс",
+                "тесла",
+                "tesla",
+                "apple",
+                "котиров",
+                "тикер",
+                "фондов",
+                "рост акци",
+                "паден",
+                "влож",
+            ]
+        )
+        explicit_finance = any(marker in text for marker in finance_markers) or (
+            stock_market_context and not product_promo_context
+        )
+        if explicit_finance:
+            session.slots["financial_context"] = True
+            return (
+                "Это финансовый и инвестиционный вопрос, он вне моей компетенции: "
+                "я не консультирую по акциям и ценным бумагам. Помогу только с товарами "
+                "и условиями магазина Vesta Trading."
+            )
+        # В контексте магазина голое «какие есть акции?» однозначно означает
+        # скидки/промо, как и ожидает пользователь.
+        if "акци" in text:
+            session.slots.pop("financial_context", None)
+            return None
+        if session.slots.get("financial_context") and self._wants_manager_handoff(message):
+            return (
+                "Менеджеру магазина финансовый запрос не передаю: подбор ценных бумаг "
+                "не относится к Vesta Trading. Могу помочь с товарами магазина."
+            )
+        if intent.category != "other":
+            session.slots.pop("financial_context", None)
+        return None
 
     def _maybe_manager_contact_question(self, message: str) -> str | None:
         text = normalize_text(message)
@@ -4548,9 +5076,9 @@ class ChatOrchestrator:
         if not has_generic_contact and (not has_contact_intent or not self._mentions_human_role(text)):
             return None
         return (
-            "Чтобы менеджер смог связаться с вами, оставьте телефон, email или другой удобный контакт "
-            "и кратко напишите вопрос. Я сохраню обращение вместе с историей диалога. "
-            "Если хотите продолжить здесь, я могу сразу помочь с подбором по каталогу."
+            "Чтобы подготовить обращение менеджеру, кратко напишите вопрос и оставьте телефон "
+            "или email. Перед отправкой я покажу, какие данные будут переданы, и попрошу "
+            "подтверждение. Без него заявку не создаю."
         )
 
     def _maybe_handoff_process_question(self, message: str) -> str | None:
@@ -4578,12 +5106,20 @@ class ChatOrchestrator:
         if not mentions_handoff or not challenges_contact:
             return None
         return (
-            "Вы правы: без телефона, email или другого контакта я не должен обещать, что менеджер "
-            "свяжется с вами. Я могу сохранить историю обращения для менеджера, но для обратной связи "
-            "нужен контакт. Оставьте его здесь вместе с вопросом, либо продолжим подбор прямо в чате."
+            "Вы правы: без контакта и явного подтверждения я не должен говорить, что заявка "
+            "передана. Для обратной связи нужен контакт; успешную передачу подтверждаю только "
+            "номером заявки. Сейчас можно "
+            "оставить телефон/email и подтвердить краткое обращение либо продолжить подбор здесь."
         )
 
     def _mentions_human_role(self, text: str) -> bool:
+        # «Нужна консультация» names a service, not necessarily a request to
+        # transfer the chat to a human. Avoid the fuzzy consultant/consultation
+        # collision while still accepting an explicitly named role.
+        if "консультац" in text and not any(
+            marker in text for marker in HUMAN_ROLE_MARKERS
+        ):
+            return False
         return self._has_marker(text, HUMAN_ROLE_MARKERS, fuzzy_threshold=76)
 
     def _has_marker(self, text: str, markers: list[str], fuzzy_threshold: int = 82) -> bool:
@@ -4635,6 +5171,11 @@ class ChatOrchestrator:
             "не надо менеджер",
             "без менеджера",
             "не нужен менеджер",
+            "не передава",
+            "не передайте",
+            "не сохраня",
+            "не создава",
+            "не отправля",
             "не надо человек",
             "без человека",
             "сам разберусь",
@@ -4645,6 +5186,221 @@ class ChatOrchestrator:
             text,
             TRANSFER_INTENT_MARKERS,
             fuzzy_threshold=75,
+        )
+
+    @staticmethod
+    def _is_handoff_opt_out(message: str) -> bool:
+        text = normalize_text(message)
+        return any(
+            marker in text
+            for marker in [
+                "не передава",
+                "не передайте",
+                "не отправля",
+                "не сохраня",
+                "не создава",
+                "без менеджера",
+                "менеджер не нужен",
+                "не нужен менеджер",
+            ]
+        )
+
+    @staticmethod
+    def _is_handoff_refusal(message: str) -> bool:
+        text = normalize_text(message).strip(" .,!?:;")
+        return (
+            text in {"нет", "не согласен", "не согласна", "отказываюсь", "передумал", "передумала"}
+            or any(
+                marker in text
+                for marker in [
+                    "не согласен на передач",
+                    "не согласна на передач",
+                    "не подтверждаю",
+                    "отказываюсь от передач",
+                    "не даю соглас",
+                ]
+            )
+        )
+
+    @staticmethod
+    def _is_handoff_confirmation(message: str) -> bool:
+        text = normalize_text(message).strip(" .,!?:;")
+        if (
+            text.startswith("нет")
+            or "не соглас" in text
+            or "не подтвержда" in text
+            or "отказыва" in text
+        ):
+            return False
+        return text in {
+            "подтверждаю",
+            "подтверждаю передачу",
+            "согласен",
+            "согласна",
+            "да подтверждаю",
+            "да передавайте",
+            "да передай",
+        } or any(
+            marker in text
+            for marker in [
+                "согласен на передач",
+                "согласна на передач",
+                "подтверждаю передач",
+            ]
+        )
+
+    def _handle_handoff_opt_out(
+        self,
+        message: str,
+        intent: IntentResult,
+        session: SessionState,
+        agents_used: list[str],
+    ) -> ChatResponse:
+        if "HandoffAgent" not in agents_used:
+            agents_used.append("HandoffAgent")
+        if session.handoff_status == "locally_recorded" and session.handoff_ticket_id:
+            answer = (
+                f"Локальный черновик уже сохранён, номер: "
+                f"{session.handoff_ticket_id}. Он не подтверждает передачу менеджеру. "
+                "Я не могу автоматически удалить эту запись; повторный черновик "
+                "не формирую."
+            )
+            session.pending_handoff = None
+            self._append_history(session, message, answer)
+            return self._response(
+                session.session_id,
+                answer,
+                [],
+                True,
+                intent,
+                session,
+                agents_used,
+            )
+
+        session.handoff_status = "opted_out"
+        session.handoff_opt_out = True
+        session.pending_handoff = None
+        session.handoff_ticket_id = None
+        session.handoff_fingerprint = None
+        answer = (
+            "Понял: менеджеру ничего не передаю и заявку не создаю. "
+            "Продолжим подбор здесь."
+        )
+        self._append_history(session, message, answer)
+        return self._response(
+            session.session_id,
+            answer,
+            [],
+            False,
+            intent,
+            session,
+            agents_used,
+        )
+
+    def _maybe_continue_handoff(
+        self,
+        message: str,
+        intent: IntentResult,
+        session: SessionState,
+        agents_used: list[str],
+    ) -> ChatResponse | None:
+        if not session.pending_handoff:
+            return None
+        status = session.handoff_status
+        contact = self.handoff.extract_contact(message)
+        confirmation = self._is_handoff_confirmation(message)
+        handoff_command = self._wants_manager_handoff(message)
+        if not (contact or confirmation or handoff_command):
+            return None
+
+        try:
+            summary = HandoffSummary(**session.pending_handoff)
+        except (TypeError, ValueError):
+            session.pending_handoff = None
+            session.handoff_status = "failed"
+            return None
+
+        if status == "locally_recorded" and session.handoff_ticket_id:
+            answer = (
+                f"Этот локальный черновик уже сохранён, номер: "
+                f"{session.handoff_ticket_id}. Повторную запись не создаю."
+            )
+            if "HandoffAgent" not in agents_used:
+                agents_used.append("HandoffAgent")
+            self._append_history(session, message, answer)
+            return self._response(
+                session.session_id,
+                answer,
+                [],
+                True,
+                intent,
+                session,
+                agents_used,
+            )
+
+        if contact:
+            summary.contact = contact
+            session.pending_handoff = self.handoff.summary_to_dict(summary)
+            session.handoff_status = "awaiting_consent"
+            if not confirmation:
+                answer = self.handoff.compose_consent_request(
+                    summary,
+                    needs_contact=False,
+                )
+                if "HandoffAgent" not in agents_used:
+                    agents_used.append("HandoffAgent")
+                self._append_history(session, message, answer)
+                return self._response(
+                    session.session_id,
+                    answer,
+                    [],
+                    True,
+                    intent,
+                    session,
+                    agents_used,
+                )
+
+        if status == "awaiting_contact" and not summary.contact:
+            answer = (
+                "Заявку пока не отправляю: для неё нужен телефон или email. "
+                "После получения контакта покажу итог и попрошу подтверждение."
+            )
+            if "HandoffAgent" not in agents_used:
+                agents_used.append("HandoffAgent")
+            self._append_history(session, message, answer)
+            return self._response(
+                session.session_id,
+                answer,
+                [],
+                True,
+                intent,
+                session,
+                agents_used,
+            )
+
+        if not confirmation:
+            return None
+
+        result = self.handoff.record(
+            summary,
+            session.session_id,
+            self.settings.handoff_log_path,
+        )
+        session.handoff_status = "locally_recorded" if result.success else "failed"
+        session.handoff_ticket_id = result.ticket_id
+        session.handoff_fingerprint = result.idempotency_key
+        answer = self.handoff.compose_user_confirmation(summary, result)
+        if "HandoffAgent" not in agents_used:
+            agents_used.append("HandoffAgent")
+        self._append_history(session, message, answer)
+        return self._response(
+            session.session_id,
+            answer,
+            [],
+            True,
+            intent,
+            session,
+            agents_used,
         )
 
     def _is_contextual_followup(
@@ -4675,10 +5431,17 @@ class ChatOrchestrator:
         # (если только нет явной ссылки на ранее показанное).
         if intent.category not in {"other", session.category} and not references:
             return False
+        if self._wants_choose_one(message):
+            return False
         # Уточнения и команды, которые умеет детерминированный конвейер.
         refine_signals = [
             "дешевле",
             "подешевле",
+            "не дороже",
+            "бюджет",
+            "без wi-fi",
+            "без wifi",
+            "без вай-фай",
             "аналог",
             "ссылк",
             "выбери один",
@@ -4690,6 +5453,8 @@ class ChatOrchestrator:
             return False
         # Новый числовой параметр (мм/квт/площадь) — это рефайн поиска.
         if re.search(r"\d+\s*(?:мм|кв|м2|м²|квт|метр|контур)", text):
+            return False
+        if re.search(r"\d[\d ]*\s*(?:руб|тыс|₽)", text):
             return False
         # Маркеры именно товарного вопроса/ссылки на показанное — чтобы не перехватывать
         # отвлечённый small talk вроде «какие у тебя планы?».
@@ -5078,6 +5843,8 @@ class ChatOrchestrator:
         agents_used: list[str],
     ) -> ChatResponse | None:
         text = normalize_text(message)
+        if self._wants_choose_one(message):
+            return None
         asks_more = any(
             marker in text
             for marker in [
@@ -5105,17 +5872,36 @@ class ChatOrchestrator:
         if intent.category not in {"other", session.category}:
             return None
         shown_skus = {normalize_sku_token(card.sku) for card in session.last_products}
+        transient_slots = {
+            "cheap",
+            "choose_one",
+            "result_limit",
+            "sort_mode",
+            "relative_cheaper",
+        }
+        current_slots = self._merge_persistent_slots(session, intent.slots)
         query = SearchQuery(
             original_text=message,
             category=session.category or "other",
-            slots={key: value for key, value in session.slots.items() if key != "cheap"},
+            slots={
+                key: value
+                for key, value in current_slots.items()
+                if key not in transient_slots
+            },
         )
         if wants_cheaper:
             query.cheap = True
         agents_used.append("FeedSearchAgent")
+        if query.slots.get("allow_alternatives") is False:
+            # The user explicitly asked for more options, but previously stated
+            # hard constraints still apply. Search peers that satisfy them;
+            # do not use the relaxation path that can drop contour/type filters.
+            alternative_pool = self.search_agent.search(query)
+        else:
+            alternative_pool = self.search_agent.search_alternatives(query)
         alternatives = [
             product
-            for product in self.search_agent.search_alternatives(query)
+            for product in alternative_pool
             if normalize_sku_token(product.sku) not in shown_skus
         ]
         alternatives = self._drop_underpowered_boilers(alternatives, query)
@@ -5174,6 +5960,7 @@ class ChatOrchestrator:
         text = normalize_text(message)
         markers = [
             "выбери один",
+            "назови один",
             "выбери сама",
             "выбери сам",
             "что взять",
@@ -5321,6 +6108,200 @@ class ChatOrchestrator:
             "или схему обвязки. Могу помочь подобрать товары из ассортимента по известным "
             "параметрам, а для расчёта лучше передать задачу специалисту."
         )
+
+    def _maybe_electrical_safety_answer(
+        self,
+        message: str,
+        session: SessionState,
+    ) -> str | None:
+        """Stop unsafe electrical-installation advice before catalogue routing."""
+        text = normalize_text(message)
+        safety_expires_at = session.slots.get("electrical_safety_expires_at")
+        safety_active = bool(session.slots.get("electrical_safety_active"))
+        if (
+            safety_active
+            and isinstance(safety_expires_at, int)
+            and len(session.history) > safety_expires_at
+        ):
+            safety_active = False
+            session.slots.pop("electrical_safety_active", None)
+            session.slots.pop("electrical_safety_sku", None)
+            session.slots.pop("electrical_safety_expires_at", None)
+        product = self._resolve_electrical_safety_product(text, session)
+        boiler_context = bool(
+            any(marker in text for marker in ["котел", "котёл", "электрокот", "квт"])
+            or (
+                product is not None
+                and self.search_agent.canonical_category(product) == "boilers"
+            )
+            or session.category == "boilers"
+            or safety_active
+        )
+        electrical_action = any(
+            marker in text
+            for marker in [
+                "подключ",
+                "розет",
+                "удлинител",
+                "переходник",
+                "кабел",
+                "провод",
+                "автомат",
+                "узо",
+                "фаз",
+                "линия",
+                "сечен",
+                "питан",
+            ]
+        )
+        installation_question = any(
+            marker in text
+            for marker in [
+                "можно ли",
+                "как подключ",
+                "подключить",
+                "подключу",
+                "подойдет розет",
+                "подойдёт розет",
+                "обычн",
+                "через переходник",
+                "через удлинител",
+                "отдельн лини",
+                "какое сечен",
+            ]
+        )
+        if not (
+            boiler_context
+            and electrical_action
+            and (installation_question or safety_active)
+        ):
+            return None
+
+        voltage, three_phase, requires_specialist = (
+            self._electrical_supply_facts(product)
+            if product
+            else (None, False, False)
+        )
+
+        session.category = "boilers"
+        session.slots["electrical_safety_active"] = True
+        session.slots["electrical_safety_expires_at"] = len(session.history) + 6
+        if product:
+            session.slots["electrical_safety_sku"] = product.sku
+
+        if voltage == 380 or three_phase:
+            model = f" {product.sku} — {product.name}" if product else ""
+            qualification = (
+                " Карточка также требует квалифицированного подключения."
+                if requires_specialist
+                else ""
+            )
+            return (
+                f"Нет, не подключайте{model} к обычной розетке 220 В. "
+                "По карточке требуется трёхфазное питание 380 В; обычная розетка, "
+                "удлинитель или переходник для такого подключения не подходят."
+                f"{qualification} Не включайте оборудование до проверки "
+                "квалифицированным электриком."
+            )
+        return (
+            "Не подключайте мощный электрический котёл к обычной розетке только на основании "
+            "того, что указано 220 В. Нужно сверить паспорт, выделенную мощность, схему питания "
+            "и защиту; кабель и автоматику должен проверить квалифицированный электрик. "
+            "До проверки оборудование не включайте."
+        )
+
+    def _resolve_electrical_safety_product(
+        self,
+        text: str,
+        session: SessionState,
+    ) -> Product | None:
+        for product in self.search_agent.products:
+            if normalize_sku_token(product.sku) in normalize_sku_token(text):
+                return product
+        # Resolve an explicitly named model before falling back to the previous
+        # safety target. This prevents «а Arderia E9?» from inheriting E12 facts.
+        explicit_matches: list[Product] = []
+        text_tokens = set(_WORD_RE.findall(text))
+        for product in self.search_agent.products:
+            product_text = normalize_text(product.name)
+            model_tokens = {
+                token
+                for token in _WORD_RE.findall(product_text)
+                if re.fullmatch(r"[a-zа-я]+-?\d+[a-z0-9.-]*", token)
+            }
+            if model_tokens.intersection(text_tokens):
+                explicit_matches.append(product)
+        if len(explicit_matches) == 1:
+            return explicit_matches[0]
+        if session.slots.get("electrical_safety_sku"):
+            product = self._find_product_by_sku(
+                str(session.slots["electrical_safety_sku"])
+            )
+            if product:
+                return product
+        if session.last_products:
+            product = self._find_product_by_sku(session.last_products[0].sku)
+            if product:
+                return product
+        boiler_products = [
+            product
+            for product in self.search_agent.products
+            if self.search_agent.canonical_category(product) == "boilers"
+        ]
+        if len(boiler_products) == 1:
+            return boiler_products[0]
+        return None
+
+    @staticmethod
+    def _electrical_supply_facts(
+        product: Product,
+    ) -> tuple[int | None, bool, bool]:
+        """Read model-specific supply facts without first-match leakage.
+
+        Structured attributes win. Description and passport are only used when
+        each source contains one unambiguous voltage value.
+        """
+        attribute_text = normalize_text(
+            " ".join(
+                f"{key} {value}"
+                for key, value in product.attributes_normalized.items()
+                if any(
+                    marker in normalize_text(key)
+                    for marker in ["напряж", "питан", "фаз", "подключ"]
+                )
+            )
+        )
+        sources = [
+            attribute_text,
+            normalize_text(product.description or ""),
+            normalize_text(product.docs_text or ""),
+        ]
+        voltage: int | None = None
+        phase_text = ""
+        for source in sources:
+            values = {
+                int(value)
+                for value in re.findall(r"\b(220|230|380|400)\s*в?\b", source)
+            }
+            normalized_values = {
+                220 if value in {220, 230} else 380
+                for value in values
+            }
+            if len(normalized_values) == 1:
+                voltage = normalized_values.pop()
+                phase_text = source
+                break
+        all_model_text = normalize_text(
+            " ".join([attribute_text, product.description or "", product.docs_text or ""])
+        )
+        three_phase = bool(
+            re.search(r"(?:3|трех)[- ]?фаз", phase_text or all_model_text)
+        )
+        requires_specialist = any(
+            marker in all_model_text
+            for marker in ["квалифицирован", "специалист", "электрик"]
+        )
+        return voltage, three_phase, requires_specialist
 
     def _maybe_sink_question(self, message: str) -> str | None:
         text = normalize_text(message)
@@ -5660,6 +6641,189 @@ class ChatOrchestrator:
             return True
         return text.strip() in {"точно", "уверен", "правильно?"}
 
+    def _stabilize_active_goal(
+        self,
+        message: str,
+        intent: IntentResult,
+        session: SessionState,
+    ) -> None:
+        """Keep answers attached to the pending product goal.
+
+        Words such as «котёл» and «радиаторы» often describe the heating system
+        while the customer is answering a pump question.  They are context, not
+        an implicit request to abandon the pump selection.
+        """
+        text = normalize_text(message)
+        explicit_pump = self._is_explicit_pump_selection_or_correction(text)
+        if explicit_pump:
+            previous_category = session.category
+            intent.category = "pumps"
+            intent.intent_type = (
+                "attribute_request"
+                if any(marker in text for marker in ["циркуляц", "отоплен"])
+                else "broad_category"
+            )
+            intent.is_topic_change = bool(
+                previous_category and previous_category != "pumps"
+            )
+            if "циркуляц" in text or "отоплен" in text:
+                intent.slots["pump_type"] = "циркуляционный"
+                intent.slots["pump_use"] = "отопление"
+            elif "дренаж" in text or "откач" in text:
+                intent.slots.pop("pump_type", None)
+                intent.slots["pump_use"] = "откачка воды"
+            elif "давлен" in text or "напор" in text:
+                intent.slots.pop("pump_type", None)
+                intent.slots["pump_use"] = "повышение давления"
+            elif any(marker in text for marker in ["водоснаб", "скваж", "колод"]):
+                intent.slots.pop("pump_type", None)
+                intent.slots["pump_use"] = "водоснабжение"
+            elif "полив" in text:
+                intent.slots.pop("pump_type", None)
+                intent.slots["pump_use"] = "полив"
+            for boiler_only in [
+                "boiler_type",
+                "contours",
+                "needs_voltage_clarification",
+                "voltage_v",
+            ]:
+                intent.slots.pop(boiler_only, None)
+            return
+
+        pending_category = session.pending_category
+        if pending_category != "pumps":
+            return
+        if self._is_explicit_non_pump_topic_change(text):
+            if "труб" in text:
+                intent.slots.setdefault("element_type", "труба")
+            intent.is_topic_change = True
+            return
+        answers_pump_question = any(
+            marker in text
+            for marker in [
+                "отоплен",
+                "радиатор",
+                "тепл",
+                "скваж",
+                "колод",
+                "полив",
+                "дренаж",
+                "откач",
+                "водоснаб",
+                "давлен",
+                "труба",
+            ]
+        )
+        if not answers_pump_question:
+            return
+        intent.category = "pumps"
+        intent.intent_type = "attribute_request"
+        intent.is_topic_change = False
+        if any(marker in text for marker in ["отоплен", "радиатор", "тепл"]):
+            intent.slots["pump_type"] = "циркуляционный"
+            intent.slots["pump_use"] = "отопление"
+        elif any(marker in text for marker in ["дренаж", "откач"]):
+            intent.slots["pump_type"] = "дренажный"
+            intent.slots["pump_use"] = "откачка воды"
+        elif any(marker in text for marker in ["скваж", "колод", "водоснаб"]):
+            intent.slots["pump_use"] = "водоснабжение"
+        elif "полив" in text:
+            intent.slots["pump_use"] = "полив"
+        for boiler_only in [
+            "boiler_type",
+            "contours",
+            "needs_voltage_clarification",
+            "voltage_v",
+        ]:
+            intent.slots.pop(boiler_only, None)
+
+    @staticmethod
+    def _is_explicit_pump_selection_or_correction(text: str) -> bool:
+        if not any(marker in text for marker in ["насос", "циркуляц", "помпа"]):
+            return False
+        if any(
+            marker in text
+            for marker in [
+                "не котел а насос",
+                "не котел, а насос",
+                "спрашивал про насос",
+                "спрашивала про насос",
+                "нужен насос",
+                "нужен циркуляционный",
+                "нужна помпа",
+                "подбери насос",
+                "подберите насос",
+                "ищу насос",
+            ]
+        ):
+            return True
+        return bool(
+            "циркуляционный насос" in text
+            and not any(
+                marker in text
+                for marker in [
+                    "есть ли",
+                    "входит",
+                    "встроен",
+                    "в комплект",
+                    "у этого котла",
+                    "в этом котле",
+                ]
+            )
+        )
+
+    @staticmethod
+    def _is_explicit_non_pump_topic_change(text: str) -> bool:
+        target = any(
+            marker in text
+            for marker in [
+                "котел",
+                "труб",
+                "радиатор",
+                "кран",
+                "канализац",
+                "фитинг",
+                "арматур",
+            ]
+        )
+        explicit_switch = any(
+            marker in text
+            for marker in [
+                "теперь",
+                "перейдем",
+                "больше не нужен",
+                "нужен ",
+                "нужна ",
+                "нужно ",
+                "подбери",
+                "подберите",
+                "ищу ",
+                "спрашиваю про",
+                "спрашивал про",
+                "спрашивала про",
+                "не насос",
+            ]
+        )
+        return bool(target and explicit_switch)
+
+    @staticmethod
+    def _pending_slot_keys_for_question(
+        question: str,
+        category: str | None,
+    ) -> list[str]:
+        text = normalize_text(question)
+        keys: list[str] = []
+        if category == "pumps":
+            if any(marker in text for marker in ["для какой задач", "назначен", "отоплен"]):
+                keys.extend(["pump_use", "pump_type"])
+            if "монтажн" in text:
+                keys.append("mounting_length_mm")
+            if "напор" in text:
+                keys.append("head_m")
+            if "присоедин" in text:
+                keys.append("connection_size")
+        return list(dict.fromkeys(keys))
+
     def _is_pending_continuation(
         self,
         intent: IntentResult,
@@ -5669,6 +6833,8 @@ class ChatOrchestrator:
         if not session.pending_question and not session.pending_complectation_parts:
             return False
         text = normalize_text(message)
+        if session.pending_category == "pumps" and not intent.is_topic_change:
+            return True
         if intent.intent_type in {"small_talk", "unknown", "out_of_scope"} and intent.category == "other":
             return True
         if intent.intent_type == "exact_sku" and session.pending_complectation_parts:
@@ -5684,7 +6850,9 @@ class ChatOrchestrator:
         intent: IntentResult,
         session: SessionState,
     ) -> None:
-        if session.category and intent.category == "other":
+        if session.pending_category == "pumps" and not intent.is_topic_change:
+            intent.category = session.pending_category
+        elif session.category and intent.category == "other":
             intent.category = session.category
         if session.pending_complectation_parts:
             intent.intent_type = "complectation"
@@ -5702,6 +6870,10 @@ class ChatOrchestrator:
         if intent.intent_type != "stock_request" or not session.last_products:
             return None
         text = normalize_text(message)
+        if self._wants_choose_one(message) and "в наличии" in text:
+            # This is a selection constraint, not a question about the stock of
+            # the currently displayed (possibly unavailable) card.
+            return None
         selected: ProductCard | None = None
         if any(marker in text for marker in ["самого дешев", "самый дешев", "дешевле всех"]):
             selected = min(session.last_products, key=lambda card: card.price)
@@ -5741,6 +6913,8 @@ class ChatOrchestrator:
     ) -> tuple[str, list[ProductCard]] | None:
         """Price a previously selected project component without fresh LLM retrieval."""
         if not session.last_products or intent.category == "other":
+            return None
+        if self._wants_choose_one(message):
             return None
         text = normalize_text(message)
         if not any(
@@ -6102,6 +7276,8 @@ class ChatOrchestrator:
         if not session.last_products:
             return False
         text = normalize_text(message)
+        if self._is_explicit_pump_selection_or_correction(text):
+            return False
         markers = [
             "что входит",
             "что в комплект",
@@ -6161,6 +7337,8 @@ class ChatOrchestrator:
         if session.last_products:
             return False
         text = normalize_text(message)
+        if self._is_explicit_pump_selection_or_correction(text):
+            return False
         if not self._requested_parts(message):
             return False
         presence_markers = [
@@ -6280,7 +7458,7 @@ class ChatOrchestrator:
             parts.append("клапан")
         if "манометр" in text:
             parts.append("манометр")
-        if ("групп" in text and "безопас" in text) or "безопасн" in text:
+        if "групп" in text and "безопас" in text:
             parts.append("группа безопасности")
         if "обвяз" in text:
             parts.append("обвязка")
@@ -6444,6 +7622,8 @@ class ChatOrchestrator:
                 for card in cards
             ],
             need_handoff=need_handoff,
+            handoff_status=session.handoff_status,
+            handoff_ticket_id=session.handoff_ticket_id,
             debug={
                 "intent": intent.intent_type,
                 "category": intent.category,
@@ -6483,6 +7663,8 @@ class ChatOrchestrator:
                 "consultant_llm_fallback_reason": self.consultant.last_fallback_reason,
                 "any_llm_used": transport_succeeded,
                 "topic_changed": session.topic_changed,
+                "handoff_status": session.handoff_status,
+                "handoff_ticket_id": session.handoff_ticket_id,
                 "products_loaded_from": self.products_loaded_from,
             },
         )
