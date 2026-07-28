@@ -77,28 +77,134 @@ class SlotFillingAgent:
             if slots.get("diameter_mm"):
                 question = (
                     f"Понял, труба {slots['diameter_mm']} мм. Для чего она: "
-                    "для холодной или горячей воды, для отопления или для канализации?"
+                    "для холодной или горячей воды, для отопления или для канализации? "
+                    "Где именно она будет проложена?"
                 )
             else:
                 question = (
                     "Труба для чего: для холодной или горячей воды, для отопления "
-                    "или для канализации? И какой диаметр в мм?"
+                    "или для канализации? Уточните участок системы и диаметр; если "
+                    "диаметр нужно рассчитать — расход и длину трассы."
                 )
             return SlotFillingResult(
                 slots=slots,
                 needs_clarification=True,
                 question=question,
             )
-        missing = []
-        if slots.get("pipe_purpose") == "водоснабжение" and not slots.get("water_temperature"):
-            missing.append("холодная или горячая вода")
-        if not slots.get("diameter_mm"):
-            missing.append("диаметр в мм")
-        if missing:
+
+        purpose = normalize_text(str(slots.get("pipe_purpose") or ""))
+        service = normalize_text(str(slots.get("pipe_service") or ""))
+        if "отоплен" in purpose and not service:
             return SlotFillingResult(
                 slots=slots,
                 needs_clarification=True,
-                question="Уточните " + " и ".join(missing[:2]) + ".",
+                question=(
+                    "Для какого участка отопления нужна труба: петля тёплого пола, "
+                    "радиаторная разводка/магистраль или обвязка котла? Также укажите "
+                    "максимальную температуру и рабочее давление системы."
+                ),
+            )
+
+        if "водоснаб" in purpose and not slots.get("water_temperature"):
+            return SlotFillingResult(
+                slots=slots,
+                needs_clarification=True,
+                question=(
+                    "Это холодная или горячая вода? Уточните участок: внутри дома, "
+                    "подземный ввод от скважины/колодца или рециркуляция ГВС, "
+                    "и укажите расчётный диаметр."
+                ),
+            )
+
+        hot_or_heating = bool(
+            "отоплен" in purpose
+            or normalize_text(str(slots.get("water_temperature") or "")) == "горячая"
+        )
+        if (
+            normalize_text(str(slots.get("water_temperature") or "")) == "горячая"
+            and not service
+        ):
+            return SlotFillingResult(
+                slots=slots,
+                needs_clarification=True,
+                question=(
+                    "Для какого участка ГВС нужна труба: обычная разводка внутри дома, "
+                    "рециркуляция или ввод? Укажите максимальную температуру, рабочее "
+                    "давление и расчётный диаметр."
+                ),
+            )
+        if hot_or_heating and (
+            not slots.get("operating_temperature_c")
+            or not slots.get("operating_pressure_bar")
+        ):
+            known = []
+            if slots.get("operating_temperature_c"):
+                known.append(
+                    f"температура {float(slots['operating_temperature_c']):g} °C"
+                )
+            if slots.get("operating_pressure_bar"):
+                known.append(
+                    f"давление {float(slots['operating_pressure_bar']):g} бар"
+                )
+            prefix = f"Понял: {', '.join(known)}. " if known else ""
+            return SlotFillingResult(
+                slots=slots,
+                needs_clarification=True,
+                question=(
+                    prefix
+                    + "Укажите недостающие расчётные параметры: максимальную температуру "
+                    "теплоносителя/воды и рабочее давление. По одному слову «горячая» или "
+                    "«отопление» безопасно выбрать конкретную трубу нельзя."
+                    + (
+                        " Также нужен расчётный диаметр."
+                        if not slots.get("diameter_mm")
+                        else ""
+                    )
+                ),
+            )
+
+        cold_water = bool(
+            "водоснаб" in purpose
+            and normalize_text(str(slots.get("water_temperature") or "")) == "холодная"
+        )
+        if cold_water and not service:
+            return SlotFillingResult(
+                slots=slots,
+                needs_clarification=True,
+                question=(
+                    "Где пойдёт холодная вода: внутри дома или под землёй от "
+                    "скважины/колодца? Для подземного ввода укажите длину трассы, "
+                    "требуемый расход и рабочее давление."
+                ),
+            )
+
+        if not slots.get("diameter_mm"):
+            if slots.get("required_flow_m3_h") and slots.get("horizontal_run_m"):
+                question = (
+                    "Диаметр ещё не задан. Для его расчёта дополнительно нужны допустимые "
+                    "потери давления и схема трассы; без гидравлического расчёта диаметр "
+                    "угадывать не буду. Если он уже рассчитан, напишите размер в мм."
+                )
+            else:
+                question = (
+                    "Какой расчётный диаметр нужен? Если его ещё нет, укажите расход, "
+                    "длину и схему трассы — по одному назначению диаметр не выбирают."
+                )
+            return SlotFillingResult(
+                slots=slots,
+                needs_clarification=True,
+                question=question,
+            )
+
+        if hot_or_heating and not slots.get("pipe_material"):
+            return SlotFillingResult(
+                slots=slots,
+                needs_clarification=True,
+                question=(
+                    "Какой материал/система соединения уже заложены: PPR, PEX/PE-RT, "
+                    "металлопластик, сталь или другое? Если материал не выбран, укажите "
+                    "способ прокладки — открытая, скрытая или петля тёплого пола."
+                ),
             )
         return SlotFillingResult(slots=slots)
 
@@ -443,20 +549,46 @@ class SlotFillingAgent:
                 ),
             )
         if slots.get("pump_type") == "циркуляционный":
-            required = {
-                "head_m": "напор (например 4 или 6 м)",
-                "mounting_length_mm": "монтажную длину 130 или 180 мм",
-            }
-            missing = [label for key, label in required.items() if not slots.get(key)]
-            has_any_core_param = len(missing) < len(required)
-            if not has_any_core_param and slots.get("allow_basic_option"):
-                return SlotFillingResult(slots=slots)
+            has_explicit_duty = bool(
+                slots.get("head_m")
+                and slots.get("mounting_length_mm")
+                and slots.get("connection_size")
+            )
+            if slots.get("old_model") or slots.get("pump_replacement"):
+                slots.setdefault("pump_selection_mode", "замена")
+            elif has_explicit_duty:
+                # The customer supplied a concrete pump notation/dimensions.
+                # Treat them as an explicit specification, not as a hydraulic
+                # calculation performed by the bot.
+                if (
+                    slots.get("pump_selection_mode") != "замена"
+                    and not slots.get("pump_selection_mode_explicit")
+                ):
+                    slots["pump_selection_mode"] = "по заданным параметрам"
+            else:
+                slots.setdefault("pump_selection_mode", "новый подбор")
+
+            missing = []
+            if not (slots.get("head_m") or slots.get("required_head_m")):
+                missing.append("напор (например 4 или 6 м)")
+            if not slots.get("mounting_length_mm"):
+                missing.append("монтажную длину 130 или 180 мм")
+            if not slots.get("connection_size"):
+                missing.append("присоединение (например 25 или 32)")
+            has_any_core_param = len(missing) < 2
             if missing:
                 if self._does_not_know_params(text):
                     if slots.get("pump_param_help_given"):
-                        slots["allow_basic_option"] = True
-                        slots["fallback_after_repeat"] = True
-                        return SlotFillingResult(slots=slots)
+                        return SlotFillingResult(
+                            slots=slots,
+                            needs_clarification=True,
+                            question=(
+                                "Без расчётного расхода и напора не буду предлагать "
+                                "случайный насос. Можно прислать маркировку старого насоса "
+                                "для замены либо расчёт системы/фото шильдика; монтажную "
+                                "длину измеряют между плоскостями подключений."
+                            ),
+                        )
                     slots["pump_param_help_given"] = True
                     return SlotFillingResult(
                         slots=slots,
@@ -465,8 +597,9 @@ class SlotFillingAgent:
                             "Не страшно, монтажную длину можно посмотреть на старом насосе "
                             "или измерить расстояние между гайками подключения — часто бывает "
                             "130 или 180 мм. Напор обычно пишется в маркировке насоса: например "
-                            "25-40 или 25-60. Если старого насоса нет, напишите площадь и задачу "
-                            "системы — отопление, тёплый пол или водоснабжение."
+                            "25-40 или 25-60. Если старого насоса нет, для нового подбора "
+                            "нужны расчётный расход (м³/ч), напор (м) и схема: радиаторы, "
+                            "тёплый пол или комбинированная система."
                         ),
                     )
                 if has_any_core_param:
@@ -477,15 +610,125 @@ class SlotFillingAgent:
                             "Для точного подбора циркуляционного насоса ещё уточните: "
                             + "; ".join(missing)
                             + ". По возможности также укажите присоединение (обычно 25 или 32); "
-                            "либо просто пришлите полную маркировку старого насоса."
+                            "для новой системы — расчётный расход; для замены можно просто "
+                            "прислать полную маркировку старого насоса."
                         ),
                     )
                 return SlotFillingResult(
                     slots=slots,
                     needs_clarification=True,
                     question=(
-                        "Понял, нужен циркуляционный насос. Уточните присоединение, монтажную "
-                        "длину и напор или пришлите полную маркировку старого насоса."
+                        "Понял, нужен циркуляционный насос. Это замена старого или новый "
+                        "подбор? Для замены пришлите маркировку, присоединение и монтажную "
+                        "длину. Для нового подбора нужны расчётный расход (м³/ч), напор (м) "
+                        "и схема системы; монтажный размер всё равно нужно сверить."
+                    ),
+                )
+            if (
+                slots.get("pump_selection_mode") == "новый подбор"
+                and (
+                    not slots.get("required_flow_m3_h")
+                    or not slots.get("system_type")
+                )
+            ):
+                missing_duty = []
+                if not slots.get("required_flow_m3_h"):
+                    missing_duty.append("расчётный расход в м³/ч")
+                if not slots.get("system_type"):
+                    missing_duty.append(
+                        "схема системы: радиаторы, тёплый пол или оба контура"
+                    )
+                return SlotFillingResult(
+                    slots=slots,
+                    needs_clarification=True,
+                    question=(
+                        "Монтажные параметры понял. Для нового подбора ещё уточните: "
+                        + "; ".join(missing_duty)
+                        + ". Если это замена по уже заданной маркировке, так и напишите — "
+                        "тогда подберу по ней."
+                    ),
+                )
+            return SlotFillingResult(slots=slots)
+
+        if slots.get("pump_type") == "скважинный":
+            missing = []
+            if not (
+                slots.get("dynamic_water_level_m")
+                or slots.get("static_water_level_m")
+            ):
+                missing.append("динамический уровень воды")
+            if not slots.get("lift_height_m"):
+                missing.append("высоту от уровня воды до верхней точки")
+            if not slots.get("horizontal_run_m"):
+                missing.append("длину горизонтальной трассы")
+            if not slots.get("required_pressure_bar"):
+                missing.append("нужное давление в доме")
+            if not slots.get("required_flow_m3_h"):
+                missing.append("требуемый расход")
+            if not slots.get("required_head_m"):
+                missing.append(
+                    "расчётный напор с учётом подъёма, давления и потерь в трубе"
+                )
+            if missing:
+                return SlotFillingResult(
+                    slots=slots,
+                    needs_clarification=True,
+                    question=(
+                        "Глубины скважины недостаточно для выбора насоса. Уточните: "
+                        + "; ".join(missing[:3])
+                        + (
+                            ". Затем проверим остальные данные и рабочую точку насоса."
+                            if len(missing) > 3
+                            else "."
+                        )
+                    ),
+                )
+            return SlotFillingResult(slots=slots)
+
+        if slots.get("pump_type") == "дренажный":
+            missing = []
+            if not slots.get("water_quality"):
+                missing.append("какая вода: чистая, грязная или фекальная")
+            if not slots.get("required_head_m"):
+                missing.append(
+                    "требуемый напор с учётом подъёма и потерь в отводе"
+                )
+            if not slots.get("horizontal_run_m"):
+                missing.append("длину горизонтального отвода")
+            if not slots.get("required_flow_m3_h"):
+                missing.append("нужную производительность")
+            if missing:
+                return SlotFillingResult(
+                    slots=slots,
+                    needs_clarification=True,
+                    question=(
+                        "Для дренажного насоса уточните: "
+                        + "; ".join(missing[:3])
+                        + (
+                            ". Для грязной воды также важен размер частиц."
+                            if not slots.get("solids_mm")
+                            else "."
+                        )
+                    ),
+                )
+            return SlotFillingResult(slots=slots)
+
+        if slots.get("pump_type") == "повысительный":
+            missing = []
+            if not slots.get("inlet_pressure_bar"):
+                missing.append("давление на входе")
+            if not slots.get("required_pressure_bar"):
+                missing.append("нужное давление после насоса")
+            if not slots.get("required_flow_m3_h"):
+                missing.append("расход при одновременном водоразборе")
+            if missing:
+                return SlotFillingResult(
+                    slots=slots,
+                    needs_clarification=True,
+                    question=(
+                        "Для повышения давления уточните: "
+                        + "; ".join(missing)
+                        + ". Также укажите источник воды и размер подключения."
                     ),
                 )
         return SlotFillingResult(slots=slots)
@@ -734,20 +977,35 @@ class SlotFillingAgent:
         has_size = bool(
             slots.get("diameter_mm") or slots.get("size_inch") or slots.get("connection_size")
         )
-        has_form = bool(slots.get("body_form") or slots.get("union"))
 
         missing = []
         if not slots.get("application"):
             missing.append("для чего нужен кран: вода (холодная/горячая), отопление или радиатор")
         if not has_size:
             missing.append("размер: 1/2, 3/4 или диаметр в мм")
-        if not missing and not has_form:
-            return SlotFillingResult(slots=slots)
         if missing:
             return SlotFillingResult(
                 slots=slots,
                 needs_clarification=True,
                 question="Уточните " + " и ".join(missing[:2]) + ".",
+            )
+        hot_or_heating = bool(
+            normalize_text(str(slots.get("application") or "")) == "отопление"
+            or normalize_text(str(slots.get("water_temperature") or ""))
+            == "горячая"
+        )
+        if hot_or_heating and (
+            not slots.get("operating_temperature_c")
+            or not slots.get("operating_pressure_bar")
+        ):
+            return SlotFillingResult(
+                slots=slots,
+                needs_clarification=True,
+                question=(
+                    "Для крана на отопление/горячую воду укажите максимальную "
+                    "рабочую температуру и давление — размер резьбы сам по себе "
+                    "не подтверждает применимость."
+                ),
             )
         return SlotFillingResult(slots=slots)
 

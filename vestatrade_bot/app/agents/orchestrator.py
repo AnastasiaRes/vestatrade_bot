@@ -39,6 +39,7 @@ from app.openrouter_client import OpenRouterClient
 from app.session_store import InMemorySessionStore
 
 from .consultant import ConsultantAgent
+from .engineering_requirements import EngineeringRequirementsAgent
 from .feed_search import FeedSearchAgent
 from .guardrails import GuardrailsAgent
 from .handoff import HandoffAgent
@@ -417,6 +418,9 @@ class ChatOrchestrator:
         self.sessions = session_store or InMemorySessionStore()
         self.intent_router = IntentRouterAgent(self.llm_client)
         self.slot_filling = SlotFillingAgent()
+        self.engineering_requirements = EngineeringRequirementsAgent(
+            self.slot_filling
+        )
         self.search_agent = FeedSearchAgent(products or [])
         self.ranking_agent = RankingAgent()
         self.card_agent = ProductCardAgent()
@@ -863,7 +867,6 @@ class ChatOrchestrator:
             intent.slots.setdefault("pump_type", "циркуляционный")
             intent.slots.setdefault("pump_use", "отопление")
             intent.slots.setdefault("pump_context", "котел")
-            intent.slots.setdefault("allow_basic_option", True)
 
         direct_comparison = self._maybe_direct_sku_comparison_response(
             session_id,
@@ -1469,6 +1472,62 @@ class ChatOrchestrator:
             self.sessions.save(session)
             return project_response
 
+        # Engineering selection readiness is deterministic and runs before the
+        # free-form consultant.  Otherwise a polished LLM answer can bypass the
+        # missing hydraulic/temperature inputs and recommend a plausible but
+        # wrong pipe or pump.
+        requirements_result: Any | None = None
+        if self._should_preflight_engineering_requirements(message, intent, session):
+            requirements_result = self.engineering_requirements.assess(
+                message,
+                intent,
+                session,
+            )
+            self._merge_persistent_slots(
+                session,
+                requirements_result.slots,
+                explicit_slots=intent.slots,
+            )
+            if intent.category != "other":
+                session.category = intent.category
+            if requirements_result.needs_clarification and requirements_result.question:
+                question = requirements_result.question
+                if intent.flags.get("small_talk"):
+                    normalized_message = normalize_text(message)
+                    prefix = (
+                        "Дела хорошо, спасибо. "
+                        if "как дела" in normalized_message
+                        else "Здравствуйте. "
+                    )
+                    question = prefix + question
+                agents_used.extend(
+                    ["EngineeringRequirementsAgent", "ResponseComposerAgent"]
+                )
+                if session.pending_question == question:
+                    session.question_repeats += 1
+                else:
+                    session.question_repeats = 0
+                session.pending_question = question
+                session.pending_intent_type = intent.intent_type
+                session.pending_category = (
+                    intent.category if intent.category != "other" else session.category
+                )
+                session.pending_slot_keys = self._pending_slot_keys_for_question(
+                    question,
+                    session.pending_category,
+                )
+                self._append_history(session, message, question)
+                self.sessions.save(session)
+                return self._response(
+                    session_id,
+                    question,
+                    [],
+                    False,
+                    intent,
+                    session,
+                    agents_used,
+                )
+
         # Консультативный/проектный разговор («дом построить», «240 м², газ и
         # электричество», «есть другие котлы?», «что ещё нужно?», «в котле встроенный
         # насос?») ведёт ConsultantAgent: LLM рассуждает по предметной области и
@@ -1555,8 +1614,12 @@ class ChatOrchestrator:
             self.sessions.save(session)
             return self._response(session_id, answer, [], False, intent, session, agents_used)
 
-        slot_result = self.slot_filling.fill(message, intent, session)
-        agents_used.append("SlotFillingAgent")
+        slot_result = requirements_result or self.engineering_requirements.assess(
+            message,
+            intent,
+            session,
+        )
+        agents_used.append("EngineeringRequirementsAgent")
         self._merge_persistent_slots(
             session,
             slot_result.slots,
@@ -2254,6 +2317,61 @@ class ChatOrchestrator:
             key in meaningful_slots and value not in (None, "", [], {})
             for key, value in query.slots.items()
         )
+
+    def _should_preflight_engineering_requirements(
+        self,
+        message: str,
+        intent: IntentResult,
+        session: SessionState,
+    ) -> bool:
+        category = intent.category if intent.category != "other" else session.category
+        if category not in self.engineering_requirements.CATEGORIES:
+            return False
+        if intent.intent_type in {
+            "exact_sku",
+            "link_request",
+            "complectation",
+            "small_talk",
+            "out_of_scope",
+        }:
+            return False
+        if session.pending_complectation_parts:
+            return False
+        text = normalize_text(message)
+        if session.last_products and {
+            "max_price",
+            "min_price",
+            "required_features",
+            "excluded_features",
+            "required_builtin_parts",
+            "excluded_builtin_parts",
+            "in_stock",
+        }.intersection(intent.slots):
+            # This is a correction/refinement of an already grounded candidate
+            # set. The ordinary hard-constraint path must re-filter it before a
+            # new discovery questionnaire can start.
+            return False
+        if any(
+            text == normalize_text(html.unescape(product.name))
+            for product in self.search_agent.products
+        ):
+            # A full catalogue name is an identity lookup, even when it contains
+            # spaces and therefore is not shaped like an SKU.
+            return False
+        if (
+            category == "pipes"
+            and re.search(r"\bpn\s*\d{1,2}\b", text)
+            and re.search(
+                r"\b(?:ppr|ппр|полипроп|pex|pe-x|pe-rt|pert|металлопласт|пнд|пэ100)\b",
+                text,
+            )
+            and re.search(r"(?<!\d)\d{2,3}\s*(?:мм)?\b", text)
+        ):
+            # This is a concrete catalogue specification, not a request for the
+            # bot to design a pipe. The normal direct-name lookup still checks
+            # that the exact product exists.
+            return False
+        return True
 
     def _is_non_product_message(self, intent: IntentResult) -> bool:
         if intent.intent_type != "unknown" or intent.category != "other":
@@ -8461,11 +8579,49 @@ class ChatOrchestrator:
 
     def _compose_query_note(self, query: SearchQuery) -> str | None:
         notes: list[str] = []
+        if query.category == "pipes" and (
+            query.slots.get("operating_temperature_c") is not None
+            or query.slots.get("operating_pressure_bar") is not None
+        ):
+            checks = []
+            if query.slots.get("operating_temperature_c") is not None:
+                checks.append(
+                    f"до {float(query.slots['operating_temperature_c']):g} °C"
+                )
+            if query.slots.get("operating_pressure_bar") is not None:
+                checks.append(
+                    f"при {float(query.slots['operating_pressure_bar']):g} бар"
+                )
+            notes.append(
+                "Оставил только трубы, у которых карточка подтверждает работу "
+                + " ".join(checks)
+                + ". Перед монтажом всё равно сверьте сочетание температуры и "
+                "давления по диаграмме/паспорту конкретной трубы."
+            )
         if query.category == "pipes" and query.slots.get("total_length_m"):
             notes.append(
                 f"Общий метраж {float(query.slots['total_length_m']):g} м учёл как требуемое количество, "
                 "а не как диаметр. В карточке не указаны длина одного отрезка и единица цены, "
                 "поэтому стоимость всего метража не умножаю без уточнения."
+            )
+        if query.category == "pumps" and (
+            query.slots.get("required_flow_m3_h") is not None
+            or query.slots.get("required_head_m") is not None
+        ):
+            duty = []
+            if query.slots.get("required_flow_m3_h") is not None:
+                duty.append(
+                    f"расход {float(query.slots['required_flow_m3_h']):g} м³/ч"
+                )
+            if query.slots.get("required_head_m") is not None:
+                duty.append(
+                    f"напор {float(query.slots['required_head_m']):g} м"
+                )
+            notes.append(
+                "Предварительный фильтр по рабочей точке: "
+                + ", ".join(duty)
+                + ". Максимальный напор и максимальная подача не достигаются "
+                "одновременно; окончательно модель нужно проверить по насосной кривой."
             )
         if query.slots.get("fallback_after_repeat"):
             if query.category == "pumps" and normalize_text(str(query.slots.get("pump_type") or "")) == "циркуляционный":
@@ -8618,6 +8774,54 @@ class ChatOrchestrator:
                 intent.slots.pop(boiler_only, None)
             return
         pending_category = session.pending_category
+        if pending_category == "pipes":
+            pipe_answer_markers = [
+                "радиатор",
+                "магистрал",
+                "обвяз",
+                "тепл",
+                "тёпл",
+                "горяч",
+                "холод",
+                "гвс",
+                "ppr",
+                "ппр",
+                "pex",
+                "pe-rt",
+                "металлопласт",
+                "пнд",
+                "пэ100",
+                "давлен",
+                "бар",
+                "градус",
+                "°",
+                "скрыт",
+                "открыт",
+                "под земл",
+                "скваж",
+                "колод",
+            ]
+            explicit_other_product = any(
+                re.search(
+                    rf"\b(?:нужен|нужна|нужны|подбери|ищу)\b[^.!?]{{0,20}}\b{noun}",
+                    text,
+                )
+                for noun in [
+                    "насос",
+                    "кот[её]л",
+                    "бойлер",
+                    "радиатор(?:ы)?",
+                    "кран",
+                ]
+            )
+            if (
+                any(marker in text for marker in pipe_answer_markers)
+                and not explicit_other_product
+            ):
+                intent.category = "pipes"
+                intent.intent_type = "attribute_request"
+                intent.is_topic_change = False
+                return
         if pending_category != "pumps":
             return
         if self._is_explicit_non_pump_topic_change(text):
@@ -8865,6 +9069,10 @@ class ChatOrchestrator:
                 "спрашивал про",
                 "спрашивала про",
                 "не насос",
+                "вернемся",
+                "вернёмся",
+                "как обсуждали",
+                "к предыдущ",
             ]
         )
         return bool(target and explicit_switch)
@@ -8882,9 +9090,34 @@ class ChatOrchestrator:
             if "монтажн" in text:
                 keys.append("mounting_length_mm")
             if "напор" in text:
-                keys.append("head_m")
+                keys.extend(["head_m", "required_head_m"])
+            if "расход" in text or "производительност" in text:
+                keys.append("required_flow_m3_h")
             if "присоедин" in text:
                 keys.append("connection_size")
+            if "динамическ" in text:
+                keys.append("dynamic_water_level_m")
+            if "статическ" in text:
+                keys.append("static_water_level_m")
+            if "давлен" in text:
+                keys.extend(["inlet_pressure_bar", "required_pressure_bar"])
+            if "горизонтальн" in text or "трасс" in text:
+                keys.append("horizontal_run_m")
+        if category == "pipes":
+            if "для чего" in text or "назначен" in text:
+                keys.append("pipe_purpose")
+            if any(marker in text for marker in ["участ", "петл", "магистрал", "обвяз"]):
+                keys.append("pipe_service")
+            if "холодн" in text and "горяч" in text:
+                keys.append("water_temperature")
+            if "температур" in text:
+                keys.append("operating_temperature_c")
+            if "давлен" in text:
+                keys.append("operating_pressure_bar")
+            if "диаметр" in text:
+                keys.append("diameter_mm")
+            if "материал" in text or "ppr" in text or "pex" in text:
+                keys.append("pipe_material")
         if category == "boilers":
             if "газов" in text and "электр" in text:
                 keys.append("boiler_type")
@@ -8915,6 +9148,12 @@ class ChatOrchestrator:
             return False
         text = normalize_text(message)
         if session.pending_category == "pumps" and not intent.is_topic_change:
+            return True
+        if (
+            session.pending_category == "pipes"
+            and intent.category in {"pipes", "other"}
+            and not intent.is_topic_change
+        ):
             return True
         if (
             session.pending_category == "boilers"
@@ -8958,6 +9197,12 @@ class ChatOrchestrator:
         session: SessionState,
     ) -> None:
         if session.pending_category == "pumps" and not intent.is_topic_change:
+            intent.category = session.pending_category
+        elif (
+            session.pending_category == "pipes"
+            and intent.category in {"pipes", "other"}
+            and not intent.is_topic_change
+        ):
             intent.category = session.pending_category
         elif session.pending_category == "boilers" and not intent.is_topic_change:
             intent.category = session.pending_category
@@ -9851,6 +10096,7 @@ class ChatOrchestrator:
                 "intent": intent.intent_type,
                 "category": intent.category,
                 "slots": session.slots,
+                "project_context": session.project_context,
                 "agents_used": agents_used,
                 "llm_used": transport_succeeded,
                 "llm_requested": intent_requested

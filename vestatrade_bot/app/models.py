@@ -114,6 +114,11 @@ class SessionState(BaseModel):
     last_intent: str | None = None
     category: str | None = None
     slots: dict[str, Any] = Field(default_factory=dict)
+    # Long-lived, structured engineering memory. ``slots`` describe the active
+    # product selection and are intentionally reset on an explicit topic
+    # change; this map keeps the already discussed project/category facts so a
+    # later "вернёмся к трубам" does not require starting from zero.
+    project_context: dict[str, Any] = Field(default_factory=dict)
     last_products: list[ProductCard] = Field(default_factory=list)
     history: list[dict[str, str]] = Field(default_factory=list)
     topic_changed: bool = False

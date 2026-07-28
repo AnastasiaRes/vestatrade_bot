@@ -50,8 +50,10 @@ def test_postpositive_negation_keeps_concrete_pipe_request(orchestrator) -> None
     )
 
     assert response.debug["category"] == "pipes"
-    assert response.products
-    assert all("труб" in product.name.lower() for product in response.products)
+    assert response.products == []
+    assert "участ" in response.answer.lower()
+    assert "температур" in response.answer.lower()
+    assert "давлен" in response.answer.lower()
     assert "площад" not in response.answer.lower()
 
 
@@ -78,11 +80,13 @@ def test_repeat_fallback_generic_pump_does_not_claim_circulation_specifics(orche
     orchestrator.handle_chat("fallback-fix", "не знаю какой")
     response = orchestrator.handle_chat("fallback-fix", "любой")
 
-    # The note itself must not assert circulation-specific facts (mounting
-    # length 130/180mm) when pump_type was never established, even if the
-    # catalogue's only available fallback happens to be a circulation pump.
+    # The assistant must keep clarifying the use case instead of showing an
+    # unrelated catalog fallback.
+    assert response.products == []
     assert "монтажную длину 130/180" not in response.answer.lower()
-    assert "тип насоса не уточнён" in response.answer.lower()
+    assert "для какой задачи" in response.answer.lower()
+    assert "отопление" in response.answer.lower()
+    assert "откачка воды" in response.answer.lower()
 
 
 def test_repeat_fallback_circulation_pump_keeps_circulation_note(orchestrator) -> None:

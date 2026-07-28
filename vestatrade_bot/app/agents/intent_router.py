@@ -233,6 +233,7 @@ class IntentRouterAgent:
                     "pending_question": session.pending_question,
                     "pending_complectation_parts": session.pending_complectation_parts,
                     "slots": session.slots,
+                    "project_context": session.project_context,
                     "last_product_skus": [card.sku for card in session.last_products],
                     "history": session.history[-6:],
                 },
@@ -381,7 +382,6 @@ class IntentRouterAgent:
             slots["pump_type"] = "циркуляционный"
             slots["pump_use"] = "отопление"
             slots["pump_context"] = "котел"
-            slots["allow_basic_option"] = True
 
         complectation_request = bool(
             any(word in text for word in COMPLECTATION_WORDS)
@@ -857,6 +857,63 @@ class IntentRouterAgent:
                 slots["water_temperature"] = "холодная"
             if "бел" in text:
                 slots["pipe_color"] = "белая"
+            if any(marker in text for marker in ["ppr", "ппр", "полипроп"]):
+                slots["pipe_material"] = "ppr"
+            elif any(marker in text for marker in ["pe-rt", "pert", "пе-рт"]):
+                slots["pipe_material"] = "pe-rt"
+            elif any(marker in text for marker in ["pex", "pe-x", "сшит"]):
+                slots["pipe_material"] = "pex"
+            elif "металлопласт" in text or "м/п" in text:
+                slots["pipe_material"] = "металлопластик"
+            elif any(marker in text for marker in ["пнд", "pe100", "пэ100"]):
+                slots["pipe_material"] = "пэ100"
+            elif "нержав" in text or "нерж" in text:
+                slots["pipe_material"] = "нержавеющая сталь"
+
+            if (
+                ("тепл" in text or "тёпл" in text)
+                and re.search(r"\bпол(?:а|у|ом|е)?\b", text)
+            ):
+                slots["pipe_service"] = "петля тёплого пола"
+            elif any(
+                marker in text
+                for marker in [
+                    "подключение радиатор",
+                    "подключить радиатор",
+                    "радиаторн",
+                    "к батаре",
+                    "до батаре",
+                ]
+            ):
+                slots["pipe_service"] = "радиаторная разводка"
+            elif any(marker in text for marker in ["магистрал", "стояк отоплен"]):
+                slots["pipe_service"] = "магистраль отопления"
+            elif any(
+                marker in text
+                for marker in ["обвязк", "от котл", "к котл", "котельн"]
+            ):
+                slots["pipe_service"] = "обвязка котла"
+            elif (
+                ("скваж" in text or "колод" in text)
+                and any(marker in text for marker in ["до дом", "в дом", "от дом"])
+            ):
+                slots["pipe_service"] = "подземный ввод от источника"
+            elif "рециркуляц" in text and ("гвс" in text or "горяч" in text):
+                slots["pipe_service"] = "рециркуляция гвс"
+            elif any(marker in text for marker in ["внутри дом", "по дому", "разводк вод"]):
+                slots["pipe_service"] = "разводка внутри дома"
+
+            if any(marker in text for marker in ["под земл", "в грунт", "подзем"]):
+                slots["installation_method"] = "подземная"
+            elif any(marker in text for marker in ["скрыт", "в стяжк", "в стен"]):
+                slots["installation_method"] = "скрытая"
+            elif any(marker in text for marker in ["открыт", "снаружи стен"]):
+                slots["installation_method"] = "открытая"
+        elif category in {"valves", "radiator_fittings"}:
+            if "горяч" in text:
+                slots["water_temperature"] = "горячая"
+            elif "холод" in text:
+                slots["water_temperature"] = "холодная"
 
         if "батаре" in text:
             slots["application"] = "радиатор"
@@ -914,7 +971,6 @@ class IntentRouterAgent:
             slots["pump_type"] = "циркуляционный"
             slots["pump_use"] = "отопление"
             slots["pump_context"] = "котел"
-            slots["allow_basic_option"] = True
         if category == "pumps" and (
             "на замен" in text
             or ("стар" in text and "насос" in text)
@@ -995,6 +1051,87 @@ class IntentRouterAgent:
                 if short_area_match and int(short_area_match.group(1)) >= 30:
                     slots["area_m2"] = float(short_area_match.group(1))
 
+        floors_match = re.search(r"(\d{1,2})\s*(?:этаж|этажа|этажей)\b", text)
+        if floors_match:
+            slots["floors"] = int(floors_match.group(1))
+        else:
+            word_floor_match = re.search(
+                r"\b(один|одно|два|две|три|четыре|пять)\s+"
+                r"(?:этаж|этажа|этажей)\b",
+                text,
+            )
+            if word_floor_match:
+                slots["floors"] = {
+                    "один": 1,
+                    "одно": 1,
+                    "два": 2,
+                    "две": 2,
+                    "три": 3,
+                    "четыре": 4,
+                    "пять": 5,
+                }[word_floor_match.group(1)]
+
+        temperature_match = re.search(
+            r"(?:температур\w*|до|max\.?|максим\w*)[^\d-]{0,18}"
+            r"(-?\d{1,3}(?:[,.]\d+)?)\s*(?:°?\s*c|°с|градус)",
+            text,
+        )
+        if not temperature_match:
+            temperature_match = re.search(
+                r"(?<!\d)(\d{1,3}(?:[,.]\d+)?)\s*(?:°?\s*c|°с|градус)",
+                text,
+            )
+        if temperature_match and category in {
+            "pipes",
+            "valves",
+            "radiator_fittings",
+        }:
+            slots["operating_temperature_c"] = float(
+                temperature_match.group(1).replace(",", ".")
+            )
+
+        pressure_match = re.search(
+            r"(?:рабоч\w*\s+)?давлен\w*[^\d]{0,18}"
+            r"(\d+(?:[,.]\d+)?)\s*(?:бар|bar)\b",
+            text,
+        )
+        if not pressure_match:
+            pressure_match = re.search(
+                r"(?<!\d)(\d+(?:[,.]\d+)?)\s*(?:бар|bar)\b",
+                text,
+            )
+        if category == "pumps":
+            inlet_pressure_match = re.search(
+                r"(?:давлен\w*[^\d]{0,15})?"
+                r"(?:на вход\w*|входн\w*\s+давлен\w*|исходн\w*\s+давлен\w*)"
+                r"[^\d]{0,12}(\d+(?:[,.]\d+)?)\s*(?:бар|bar)\b",
+                text,
+            )
+            required_pressure_match = re.search(
+                r"(?:нужн\w*|требуем\w*|целев\w*|после насос\w*|на выход\w*)"
+                r"[^\d]{0,18}(\d+(?:[,.]\d+)?)\s*(?:бар|bar)\b",
+                text,
+            )
+            if inlet_pressure_match:
+                slots["inlet_pressure_bar"] = float(
+                    inlet_pressure_match.group(1).replace(",", ".")
+                )
+            if required_pressure_match:
+                slots["required_pressure_bar"] = float(
+                    required_pressure_match.group(1).replace(",", ".")
+                )
+            elif pressure_match and not inlet_pressure_match:
+                slots["required_pressure_bar"] = float(
+                    pressure_match.group(1).replace(",", ".")
+                )
+        elif pressure_match and category in {
+            "pipes",
+            "valves",
+            "radiator_fittings",
+        }:
+            pressure_value = float(pressure_match.group(1).replace(",", "."))
+            slots["operating_pressure_bar"] = pressure_value
+
         if category in {"pipes", "sewer"}:
             total_length_match = re.search(
                 r"(?<!\d)(\d+(?:[,.]\d+)?)\s*(?:м\b|метр(?:а|ов)?)(?!\s*(?:2|²|м))",
@@ -1043,6 +1180,108 @@ class IntentRouterAgent:
             if bare_number_match and "mounting_length_mm" not in slots:
                 slots["mounting_length_mm"] = int(bare_number_match.group(1))
 
+            flow_match = re.search(
+                r"(?:расход\w*|производительност\w*|подач\w*)[^\d]{0,18}"
+                r"(\d+(?:[,.]\d+)?)\s*"
+                r"(м3/ч|м³/ч|куб(?:а|ов)?(?:\s+в\s+час)?|л/мин|л/ч)",
+                text,
+            )
+            if flow_match:
+                flow_value = float(flow_match.group(1).replace(",", "."))
+                unit = normalize_text(flow_match.group(2))
+                if "л/мин" in unit:
+                    flow_value = flow_value * 60.0 / 1000.0
+                elif "л/ч" in unit:
+                    flow_value = flow_value / 1000.0
+                slots["required_flow_m3_h"] = round(flow_value, 4)
+
+            required_head_match = re.search(
+                r"(?:расчетн\w*|расчётн\w*|рабоч\w*|требуем\w*)\s+"
+                r"напор\w*[^\d]{0,12}(\d+(?:[,.]\d+)?)\s*(?:м|метр)",
+                text,
+            )
+            if required_head_match:
+                slots["required_head_m"] = float(
+                    required_head_match.group(1).replace(",", ".")
+                )
+                # ``head_m`` means an exact pump marking (25/6); a calculated
+                # duty head is a minimum capability and must not be compared as
+                # exact equality with the product's maximum head.
+                slots.pop("head_m", None)
+
+            for key, pattern in [
+                (
+                    "static_water_level_m",
+                    r"статическ\w*\s+уровен\w*[^\d]{0,15}"
+                    r"(\d+(?:[,.]\d+)?)\s*(?:м|метр)",
+                ),
+                (
+                    "dynamic_water_level_m",
+                    r"динамическ\w*\s+уровен\w*[^\d]{0,15}"
+                    r"(\d+(?:[,.]\d+)?)\s*(?:м|метр)",
+                ),
+                (
+                    "lift_height_m",
+                    r"(?:высот\w*\s+подъем\w*|высот\w*\s+подъём\w*|"
+                    r"поднять|подъем|подъём)[^\d]{0,18}"
+                    r"(\d+(?:[,.]\d+)?)\s*(?:м|метр)",
+                ),
+                (
+                    "horizontal_run_m",
+                    r"(?:горизонтальн\w*\s+(?:трасс|участ|длин)|"
+                    r"длин\w*\s+трасс\w*)[^\d]{0,18}"
+                    r"(\d+(?:[,.]\d+)?)\s*(?:м|метр)",
+                ),
+            ]:
+                match = re.search(pattern, text)
+                if match:
+                    slots[key] = float(match.group(1).replace(",", "."))
+
+            if "фекал" in text:
+                slots["water_quality"] = "фекальная"
+            elif any(marker in text for marker in ["грязн", "ил", "песок"]):
+                slots["water_quality"] = "грязная"
+            elif "чист" in text:
+                slots["water_quality"] = "чистая"
+            solids_match = re.search(
+                r"(?:частиц\w*|включен\w*)[^\d]{0,16}(\d+(?:[,.]\d+)?)\s*мм",
+                text,
+            )
+            if solids_match:
+                slots["solids_mm"] = float(
+                    solids_match.group(1).replace(",", ".")
+                )
+
+            if any(marker in text for marker in ["старый насос", "замена", "на замен"]):
+                slots["pump_selection_mode"] = "замена"
+                slots["pump_selection_mode_explicit"] = True
+            elif any(
+                marker in text
+                for marker in [
+                    "новая система",
+                    "с нуля",
+                    "новый подбор",
+                    "новый насос",
+                    "новый циркуляцион",
+                ]
+            ):
+                slots["pump_selection_mode"] = "новый подбор"
+                slots["pump_selection_mode_explicit"] = True
+
+            if (
+                "радиатор" in text
+                and ("тепл" in text or "тёпл" in text)
+                and re.search(r"\bпол(?:а|у|ом|е)?\b", text)
+            ):
+                slots["system_type"] = "радиаторы и тёплый пол"
+            elif "радиатор" in text:
+                slots["system_type"] = "радиаторы"
+            elif (
+                ("тепл" in text or "тёпл" in text)
+                and re.search(r"\bпол(?:а|у|ом|е)?\b", text)
+            ):
+                slots["system_type"] = "тёплый пол"
+
         if category in {"pipes", "sewer", "fittings", "valves", "radiator_fittings"} or any(
             marker in text for marker in ["диаметр", "ø"]
         ):
@@ -1054,7 +1293,7 @@ class IntentRouterAgent:
                 # Число с единицей не-размера (угол, температура, объём, секции)
                 # не должно превращаться в диаметр — идём к следующему кандидату.
                 if re.match(
-                    r"\s*(?:м\b|метр|м2|м²|кв|квадрат|градус|°|литр|л\b|секц)",
+                    r"\s*(?:м\b|метр|м2|м²|кв|квадрат|градус|°|[cс]\b|литр|л\b|секц)",
                     tail,
                 ):
                     continue
@@ -2156,7 +2395,7 @@ class IntentRouterAgent:
             "confidence": 0.0,
         }
         context_part = ""
-        if session and session.history:
+        if session and (session.history or session.project_context):
             context_lines = []
             for entry in session.history[-6:]:
                 content = (entry.get("content") or "").strip()
@@ -2168,6 +2407,17 @@ class IntentRouterAgent:
                 context_lines.append(f"{speaker}: {content}")
             if context_lines:
                 context_part = "Недавний диалог:\n" + "\n".join(context_lines) + "\n"
+            if session.project_context:
+                context_part += (
+                    "Структурированный контекст проекта: "
+                    + json.dumps(
+                        session.project_context,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        default=str,
+                    )
+                    + "\n"
+                )
         messages = [
             {
                 "role": "system",

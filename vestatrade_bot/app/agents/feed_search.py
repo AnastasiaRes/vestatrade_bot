@@ -1793,6 +1793,96 @@ class FeedSearchAgent:
                 values.extend(float(match.replace(",", ".")) for match in matches)
         return max(values) if values else None
 
+    def _maximum_pressure_bar(self, product: Product) -> float | None:
+        values: list[float] = []
+        for key, value in product.attributes_normalized.items():
+            key_norm = normalize_text(key)
+            if "давлен" not in key_norm or not any(
+                marker in key_norm for marker in ["макс", "рабоч", "pn"]
+            ):
+                continue
+            numbers = re.findall(r"\d+(?:[.,]\d+)?", normalize_text(str(value)))
+            values.extend(float(number.replace(",", ".")) for number in numbers)
+        if values:
+            return max(values)
+        name = normalize_text(product.name)
+        pn_match = re.search(r"\bpn\s*(\d+(?:[.,]\d+)?)\b", name)
+        if pn_match:
+            return float(pn_match.group(1).replace(",", "."))
+        return None
+
+    def _maximum_flow_m3_h(self, product: Product) -> float | None:
+        values: list[float] = []
+        for key, value in product.attributes_normalized.items():
+            key_norm = normalize_text(key)
+            if not any(
+                marker in key_norm
+                for marker in ["производительност", "расход", "подача"]
+            ):
+                continue
+            number_match = re.search(r"\d+(?:[.,]\d+)?", str(value))
+            if not number_match:
+                continue
+            number = float(number_match.group(0).replace(",", "."))
+            combined = normalize_text(f"{key} {value}")
+            if "л/мин" in combined:
+                number = number * 60.0 / 1000.0
+            elif "л/ч" in combined:
+                number = number / 1000.0
+            elif not any(
+                marker in combined
+                for marker in ["м3/ч", "м³/ч", "куб"]
+            ):
+                # Feed fields named simply ``производительность, л/мин`` are
+                # covered above. An unlabeled number is not safe to convert.
+                continue
+            values.append(number)
+        return max(values) if values else None
+
+    def _maximum_head_m(self, product: Product) -> float | None:
+        values: list[float] = []
+        for key, value in product.attributes_normalized.items():
+            key_norm = normalize_text(key)
+            if not any(
+                marker in key_norm
+                for marker in ["напор", "высота подъема", "высота подъёма", "подъем"]
+            ):
+                continue
+            numbers = re.findall(r"\d+(?:[.,]\d+)?", normalize_text(str(value)))
+            values.extend(float(number.replace(",", ".")) for number in numbers)
+        return max(values) if values else None
+
+    def _pipe_service_matches(self, product: Product, requested: object) -> bool:
+        expected = normalize_text(str(requested))
+        evidence = self._pipe_semantic_evidence(product)
+        primary = normalize_text(
+            " ".join([product.name, product.category_path, *product.attributes_normalized.values()])
+        )
+        if "петл" in expected and "тепл" in expected:
+            return any(
+                marker in evidence
+                for marker in ["теплый пол", "теплого пола", "напольн", "underfloor"]
+            )
+        if "подзем" in expected or "источник" in expected:
+            pressure_water_pipe = any(
+                marker in primary
+                for marker in ["пэ100", "pe100", "пнд", "напорн", "водоподъем"]
+            )
+            heating_only = any(
+                marker in primary
+                for marker in ["отопит", "радиатор", "теплый пол", "теплого пола"]
+            ) and not any(
+                marker in primary for marker in ["водоснаб", "холод", "хвс"]
+            )
+            return pressure_water_pipe and not heating_only
+        if any(marker in expected for marker in ["радиатор", "магистрал", "обвяз"]):
+            return self._pipe_purpose_matches(product, "отопление")
+        if "рециркуляц" in expected:
+            return self._water_temperature_matches(product, "горячая")
+        if "внутри" in expected or "разводк" in expected:
+            return self._pipe_purpose_matches(product, "водоснабжение")
+        return bool(expected and expected in evidence)
+
     def _water_temperature_matches(self, product: Product, requested: object) -> bool:
         expected = normalize_text(str(requested))
         evidence = self._pipe_semantic_evidence(product)
@@ -2193,6 +2283,31 @@ class FeedSearchAgent:
             product, slots["pump_type"]
         ):
             return False
+        if category == "pumps":
+            required_head = slots.get("required_head_m")
+            if required_head is not None:
+                maximum_head = self._maximum_head_m(product)
+                if maximum_head is None or maximum_head < float(required_head):
+                    return False
+            if (
+                normalize_text(str(slots.get("pump_type") or ""))
+                == "повысительный"
+                and slots.get("required_pressure_bar") is not None
+                and slots.get("inlet_pressure_bar") is not None
+            ):
+                required_boost_head = max(
+                    float(slots["required_pressure_bar"])
+                    - float(slots["inlet_pressure_bar"]),
+                    0.0,
+                ) * 10.2
+                maximum_head = self._maximum_head_m(product)
+                if maximum_head is None or maximum_head < required_boost_head:
+                    return False
+            required_flow = slots.get("required_flow_m3_h")
+            if required_flow is not None:
+                maximum_flow = self._maximum_flow_m3_h(product)
+                if maximum_flow is None or maximum_flow < float(required_flow):
+                    return False
         if category in {"pipes", "sewer"}:
             if slots.get("pipe_material") and not self._pipe_material_matches(
                 product, slots["pipe_material"]
@@ -2206,6 +2321,45 @@ class FeedSearchAgent:
                 product, slots["water_temperature"]
             ):
                 return False
+        if category == "pipes":
+            if slots.get("pipe_service") and not self._pipe_service_matches(
+                product,
+                slots["pipe_service"],
+            ):
+                return False
+            requested_temperature = slots.get("operating_temperature_c")
+            if requested_temperature is not None:
+                maximum_temperature = self._maximum_temperature(product)
+                if (
+                    maximum_temperature is None
+                    or maximum_temperature < float(requested_temperature)
+                ):
+                    return False
+            requested_pressure = slots.get("operating_pressure_bar")
+            if requested_pressure is not None:
+                maximum_pressure = self._maximum_pressure_bar(product)
+                if (
+                    maximum_pressure is None
+                    or maximum_pressure < float(requested_pressure)
+                ):
+                    return False
+        if category in {"valves", "radiator_fittings"}:
+            requested_temperature = slots.get("operating_temperature_c")
+            if requested_temperature is not None:
+                maximum_temperature = self._maximum_temperature(product)
+                if (
+                    maximum_temperature is None
+                    or maximum_temperature < float(requested_temperature)
+                ):
+                    return False
+            requested_pressure = slots.get("operating_pressure_bar")
+            if requested_pressure is not None:
+                maximum_pressure = self._maximum_pressure_bar(product)
+                if (
+                    maximum_pressure is None
+                    or maximum_pressure < float(requested_pressure)
+                ):
+                    return False
         if category == "pipes" and slots.get("pipe_color") and not self._pipe_color_matches(
             product,
             slots["pipe_color"],
@@ -2311,6 +2465,40 @@ class FeedSearchAgent:
         if head:
             checks.append(self._head_matches(product, float(head)))
 
+        required_head = slots.get("required_head_m")
+        if required_head is not None and category == "pumps":
+            maximum_head = self._maximum_head_m(product)
+            checks.append(
+                maximum_head is not None
+                and maximum_head >= float(required_head)
+            )
+
+        if (
+            category == "pumps"
+            and normalize_text(str(slots.get("pump_type") or ""))
+            == "повысительный"
+            and slots.get("required_pressure_bar") is not None
+            and slots.get("inlet_pressure_bar") is not None
+        ):
+            required_boost_head = max(
+                float(slots["required_pressure_bar"])
+                - float(slots["inlet_pressure_bar"]),
+                0.0,
+            ) * 10.2
+            maximum_head = self._maximum_head_m(product)
+            checks.append(
+                maximum_head is not None
+                and maximum_head >= required_boost_head
+            )
+
+        required_flow = slots.get("required_flow_m3_h")
+        if required_flow is not None and category == "pumps":
+            maximum_flow = self._maximum_flow_m3_h(product)
+            checks.append(
+                maximum_flow is not None
+                and maximum_flow >= float(required_flow)
+            )
+
         voltage = slots.get("voltage_v")
         if voltage and category == "boilers":
             checks.append(
@@ -2368,9 +2556,12 @@ class FeedSearchAgent:
                 "element_type",
                 "length_mm",
                 "pipe_purpose",
+                "pipe_service",
                 "water_temperature",
                 "pipe_material",
                 "pipe_color",
+                "operating_temperature_c",
+                "operating_pressure_bar",
             },
             "sewer": {
                 "sewer_scope",
@@ -2383,7 +2574,15 @@ class FeedSearchAgent:
                 "pipe_purpose",
                 "water_temperature",
             },
-            "pumps": {"pump_type", "mounting_length_mm", "head_m", "connection_size", "old_model"},
+            "pumps": {
+                "pump_type",
+                "mounting_length_mm",
+                "head_m",
+                "required_head_m",
+                "required_flow_m3_h",
+                "connection_size",
+                "old_model",
+            },
             "valves": {
                 "application",
                 "diameter_mm",
@@ -2391,6 +2590,8 @@ class FeedSearchAgent:
                 "union",
                 "size_inch",
                 "valve_kind",
+                "operating_temperature_c",
+                "operating_pressure_bar",
             },
             "radiator_fittings": {
                 "application",
@@ -2399,6 +2600,8 @@ class FeedSearchAgent:
                 "size_inch",
                 "union",
                 "thermostatic_head",
+                "operating_temperature_c",
+                "operating_pressure_bar",
             },
             "radiators": {"radiator_size_mm", "length_mm", "sections", "size_inch"},
             "fittings": {"diameter_mm", "secondary_diameter_mm", "size_inch", "element_type"},

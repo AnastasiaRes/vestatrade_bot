@@ -471,10 +471,11 @@ def test_boiler_context_pump_request_skips_drainage_pumps(sample_products) -> No
 
     response = bot.handle_chat("pump-boiler-context", "а насос к нему")
 
-    assert response.products
-    assert "DRAIN-350" not in {product.sku for product in response.products}
+    assert response.products == []
     assert "Дренажный" not in response.answer
     assert "циркуляц" in response.answer.lower()
+    assert "расчётный расход" in response.answer.lower()
+    assert "напор" in response.answer.lower()
 
 
 def test_scope_followup_is_generic_for_heating(orchestrator) -> None:
@@ -666,15 +667,14 @@ def test_circulation_pump_cheap_asks_relevant_params(orchestrator) -> None:
     assert "монтажную длину" in response.answer
 
 
-def test_circulation_pump_followup_uses_mounting_length_and_head(orchestrator) -> None:
+def test_circulation_pump_followup_keeps_mounting_length_and_head(orchestrator) -> None:
     orchestrator.handle_chat("s3b", "циркуляционный насос, подешевле")
     response = orchestrator.handle_chat("s3b", "180 мм, напор 4 метра")
 
-    assert response.products
-    assert response.products[0].sku == "PUMP-25-40"
+    assert response.products == []
     assert response.debug["slots"]["mounting_length_mm"] == 180
     assert response.debug["slots"]["head_m"] == 4.0
-    assert "монтажную длину" not in response.answer
+    assert "присоединение" in response.answer.lower()
 
 
 def test_why_followup_explains_last_pump_selection(orchestrator) -> None:
@@ -747,17 +747,17 @@ def test_term_explanation_is_simple(orchestrator) -> None:
     assert "180" in response.answer
 
 
-def test_pump_for_boiler_after_boiler_selection_shows_basic_circulation_option(orchestrator) -> None:
+def test_pump_for_boiler_after_boiler_selection_asks_for_duty_point(orchestrator) -> None:
     orchestrator.handle_chat("boiler-pump", "электрический котёл на 100 м²")
     response = orchestrator.handle_chat("boiler-pump", "насос к котлу")
 
     assert response.debug["category"] == "pumps"
     assert response.debug["slots"]["pump_type"] == "циркуляционный"
-    assert response.debug["slots"]["allow_basic_option"] is True
-    assert len(response.products) == 1
-    assert response.products[0].sku == "PUMP-25-40"
-    assert "базовый вариант" in response.answer.lower()
-    assert "монтажная длина" in response.answer.lower()
+    assert "allow_basic_option" not in response.debug["slots"]
+    assert response.products == []
+    assert "расчётный расход" in response.answer.lower()
+    assert "напор" in response.answer.lower()
+    assert "замена" in response.answer.lower()
 
 
 def _pump_domain_products(sample_products: list[Product]) -> list[Product]:
@@ -830,7 +830,7 @@ def test_pump_irrigation_followup_explains_source_options(orchestrator) -> None:
 
 def test_drainage_pump_irrigation_followup_answers_suitability(sample_products) -> None:
     bot = ChatOrchestrator(products=_pump_domain_products(sample_products))
-    first = bot.handle_chat("pump-fit-irrigation", "дренажный насос")
+    first = bot.handle_chat("pump-fit-irrigation", "дренажный насос DRAIN-350")
     response = bot.handle_chat("pump-fit-irrigation", "Он для полива пойдет?")
 
     assert first.products[0].sku == "DRAIN-350"
@@ -850,8 +850,10 @@ def test_well_pump_request_after_drainage_context_starts_new_search(sample_produ
     assert response.debug["category"] == "pumps"
     assert response.debug["slots"]["pump_type"] == "скважинный"
     assert response.debug["slots"]["pump_use"] == "водоснабжение"
-    assert response.products
-    assert response.products[0].sku == "WELL-550"
+    assert response.products == []
+    assert "динамическ" in response.answer.lower()
+    assert "высот" in response.answer.lower()
+    assert "трасс" in response.answer.lower()
     assert "комплектац" not in response.answer.lower()
     assert "котл" not in response.answer.lower()
 
@@ -955,7 +957,8 @@ def test_guardrails_restore_clarification_if_llm_drops_options(sample_products) 
     assert "водоснабжение/полив" in response.answer
     assert "повышение давления" in response.answer
     assert "откачка воды" in response.answer
-    assert response.debug["response_llm_used"] is True
+    assert response.debug["response_llm_used"] is False
+    assert response.debug["final_answer_source"] == "deterministic"
 
 
 def test_pump_funnel_accepts_water_pumping_without_repeating_question(sample_products) -> None:
@@ -992,7 +995,10 @@ def test_pump_funnel_accepts_water_pumping_without_repeating_question(sample_pro
     assert "Для какой задачи нужен насос" not in second.answer
     assert second.debug["slots"]["pump_type"] == "дренажный"
     assert second.debug["slots"]["pump_use"] == "откачка воды"
-    assert [product.sku for product in second.products] == ["68/2/8"]
+    assert second.products == []
+    assert "какая вода" in second.answer.lower()
+    assert "напор" in second.answer.lower()
+    assert "подъём" in second.answer.lower()
     assert "не сливая систему" not in second.answer
 
 
@@ -1535,8 +1541,10 @@ def test_pump_anaphora_to_boiler_is_treated_as_circulation_pump(orchestrator) ->
 
     assert response.debug["category"] == "pumps"
     assert response.debug["slots"]["pump_type"] == "циркуляционный"
-    assert response.debug["slots"]["allow_basic_option"] is True
-    assert response.products
+    assert "allow_basic_option" not in response.debug["slots"]
+    assert response.products == []
+    assert "расчётный расход" in response.answer.lower()
+    assert "напор" in response.answer.lower()
 
 
 def test_same_question_is_not_asked_three_times(orchestrator) -> None:
@@ -1550,9 +1558,9 @@ def test_same_question_is_not_asked_three_times(orchestrator) -> None:
     assert second.products == []
 
     third = orchestrator.handle_chat("repeat1", "ну не знаю я")
-    assert third.products
-    assert "по кругу" in third.answer
-    assert "180 мм" in third.answer
+    assert third.products == []
+    assert "случайный насос" in third.answer.lower()
+    assert "маркировку старого насоса" in third.answer.lower()
     assert "чаще смотрят насосы 25/6" not in third.answer
 
 
@@ -2524,7 +2532,10 @@ def test_exact_product_name_returns_product_without_interrogation(orchestrator) 
 def test_pipe_meters_are_quantity_not_diameter(orchestrator) -> None:
     session_id = "pipe-total-meters"
     orchestrator.handle_chat(session_id, "Нужна труба")
-    orchestrator.handle_chat(session_id, "для горячей воды")
+    orchestrator.handle_chat(
+        session_id,
+        "для горячей воды внутри дома, PPR, температура 70 °C, давление 6 бар",
+    )
     meters = orchestrator.handle_chat(session_id, "20 метров")
 
     assert meters.debug["slots"]["total_length_m"] == 20.0
@@ -2569,8 +2580,8 @@ def test_circulation_pump_bare_meters_followup_is_head(orchestrator) -> None:
 
     assert response.debug["slots"]["mounting_length_mm"] == 180
     assert response.debug["slots"]["head_m"] == 4.0
-    assert response.products
-    assert {product.sku for product in response.products} == {"PUMP-25-40"}
+    assert response.products == []
+    assert "присоединение" in response.answer.lower()
 
 
 def test_circulation_pump_bare_meters_in_full_request_are_head(orchestrator) -> None:
@@ -2581,8 +2592,8 @@ def test_circulation_pump_bare_meters_in_full_request_are_head(orchestrator) -> 
 
     assert response.debug["slots"]["mounting_length_mm"] == 180
     assert response.debug["slots"]["head_m"] == 4.0
-    assert response.products
-    assert {product.sku for product in response.products} == {"PUMP-25-40"}
+    assert response.products == []
+    assert "присоединение" in response.answer.lower()
 
 
 def test_direct_boiler_meters_are_area(orchestrator) -> None:
@@ -2722,23 +2733,19 @@ def test_product_docs_loader_supports_series_map_and_brand_rules(tmp_path, sampl
     assert by_sku["ECA-6"].docs_text is None
 
 
-def test_missing_diameter_pipe_does_not_show_fittings_or_sewer(orchestrator) -> None:
+def test_incomplete_hot_water_pipe_request_does_not_show_products(orchestrator) -> None:
     orchestrator.handle_chat("nf", "нужна труба")
     orchestrator.handle_chat("nf", "горячая вода")
     response = orchestrator.handle_chat("nf", "16 мм")
 
-    # 16 мм трубы PPR в фиде нет — честно показываем ближайшие PPR-трубы, не фитинги/канализацию
-    assert "Точного совпадения" in response.answer
-    for product in response.products:
-        assert "труба" in product.name.lower()
-        assert "канализац" not in product.name.lower()
-        assert "угольник" not in product.name.lower()
-        assert "муфта" not in product.name.lower()
+    assert response.products == []
+    assert "участ" in response.answer.lower()
+    assert "температур" in response.answer.lower()
+    assert "давлен" in response.answer.lower()
 
     followup = orchestrator.handle_chat("nf", "Мне нужна труба диаметром 16 мм а не фитинги")
-    for product in followup.products:
-        assert "канализац" not in product.name.lower()
-        assert "110" not in product.name
+    assert followup.products == []
+    assert "участ" in followup.answer.lower()
 
 
 def test_search_by_name_rejects_constraint_violating_match(orchestrator) -> None:
