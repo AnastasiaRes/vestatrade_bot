@@ -6,6 +6,9 @@ from app.models import GuardrailsResult, Product, ProductCard, SearchQuery
 
 from .feed_search import (
     FeedSearchAgent,
+    _builtin_part_confirmed,
+    _builtin_part_state,
+    _builtin_part_state_from_text,
     _constraint_features,
     _constraint_number,
     _feature_state,
@@ -68,6 +71,12 @@ class GuardrailsAgent:
         min_price = _constraint_number(query.slots.get("min_price"))
         required_features = _constraint_features(query.slots.get("required_features"))
         excluded_features = _constraint_features(query.slots.get("excluded_features"))
+        required_builtin_parts = _constraint_features(
+            query.slots.get("required_builtin_parts")
+        )
+        excluded_builtin_parts = _constraint_features(
+            query.slots.get("excluded_builtin_parts")
+        )
         result_limit = _requested_result_limit(query.slots)
         semantic_matcher = FeedSearchAgent()
 
@@ -87,6 +96,10 @@ class GuardrailsAgent:
                 issues.append(f"card {card.sku} has invented price")
             if card.stock_status != product.stock_status:
                 issues.append(f"card {card.sku} has invented stock status")
+            if query.in_stock_only and not product.is_in_stock:
+                issues.append(
+                    f"card {card.sku} is unavailable for an in-stock-only request"
+                )
             if max_price is not None and card.price > max_price:
                 issues.append(
                     f"card {card.sku} price {card.price:g} exceeds max_price {max_price:g}"
@@ -109,6 +122,21 @@ class GuardrailsAgent:
                 elif feature_state is None:
                     issues.append(
                         f"card {card.sku} does not confirm absence of excluded feature {feature}"
+                    )
+            for part in required_builtin_parts:
+                if not _builtin_part_confirmed(product, part):
+                    issues.append(
+                        f"card {card.sku} does not confirm required built-in part {part}"
+                    )
+            for part in excluded_builtin_parts:
+                part_state = _builtin_part_state(product, part)
+                if part_state is True:
+                    issues.append(
+                        f"card {card.sku} contains excluded built-in part {part}"
+                    )
+                elif part_state is None:
+                    issues.append(
+                        f"card {card.sku} does not confirm absence of built-in part {part}"
                     )
             if not semantic_matcher._semantic_slots_match(
                 product,
@@ -181,6 +209,33 @@ class GuardrailsAgent:
             )
         return GuardrailsResult(ok=True)
 
+    def builtin_part_states(
+        self,
+        product: Product,
+        requested_parts: list[str],
+    ) -> dict[str, bool | None]:
+        """Return grounded inclusion states for known built-in components.
+
+        ``False`` is reserved for explicit evidence such as «не встроен» or
+        «приобретается отдельно».  A mere absence of a component in the card
+        remains ``None`` so callers cannot turn missing data into a confident
+        negative answer.
+        """
+        return {
+            part: _builtin_part_state(product, part)
+            for part in requested_parts
+            if normalize_text(part)
+            in {
+                "насос",
+                "бак",
+                "3-ходовой клапан",
+                "манометр",
+                "камера",
+                "бойлер",
+                "группа безопасности",
+            }
+        }
+
     def list_builtin_components(self, product: Product) -> list[str]:
         """Read the card (name + description + docs + attrs) and list components the
         feed actually states are built in / included. No guessing — a component is
@@ -202,60 +257,29 @@ class GuardrailsAgent:
         catalogue = [
             ("циркуляционный насос", "насос"),
             ("расширительный бак", "бак"),
-            ("3-ходовой клапан", "клапан"),
+            ("3-ходовой клапан", "3-ходовой клапан"),
             ("манометр", "манометр"),
             ("закрытая камера сгорания", "камера"),
             ("бойлер", "бойлер"),
             ("группа безопасности", "группа безопасности"),
         ]
         for label, part in catalogue:
-            if self._part_confirmed(text, part):
+            if _builtin_part_confirmed(product, part):
                 found.append(label)
         return found
 
     def _part_confirmed(self, text: str, part: str) -> bool:
-        if part == "бойлер":
-            positive_markers = [
-                "встроенный бойлер",
-                "встроен бойлер",
-                "со встроенным бойлером",
-                "встроенным бойлером",
-                "накопительный бойлер",
-            ]
-            return any(marker in text for marker in positive_markers)
-        patterns: dict[str, list[str]] = {
-            "насос": [
-                r"встроен\w*\s+(?:циркуляционн\w*\s+)?насос",
-                r"насос.{0,45}встроен",
-                r"в комплект.{0,160}насос",
-                r"комплект поставки.{0,500}насос",
-            ],
-            "бак": [
-                r"встроенн\w*.{0,35}(?:расширительн\w*\s+)?бак",
-                r"расширительн\w*\s+бак.{0,45}встроен",
-                r"в комплект.{0,160}(?:расширительн\w*\s+)?бак",
-                r"комплект поставки.{0,500}(?:расширительн\w*\s+)?бак",
-            ],
-            "клапан": [
-                r"встроенн\w*.{0,35}(?:трех|3)[- ]?ходов\w*\s+клапан",
-                r"(?:трех|3х|3)[- .]?ход\w*.{0,12}клапан",
-                r"в комплект.{0,160}клапан",
-                r"комплект поставки.{0,500}клапан",
-            ],
-            "манометр": [
-                r"встроенн\w*.{0,45}манометр",
-                r"в комплект.{0,160}манометр",
-                r"комплект поставки.{0,500}манометр",
-            ],
-            "камера": [r"закрыт\w*\s+камер\w*\s+сгоран"],
-            "группа безопасности": [
-                r"встроенн\w*.{0,45}групп\w*\s+безопасн",
-                r"в комплект.{0,160}групп\w*\s+безопасн",
-            ],
-            "обвязка": [r"в комплект.{0,160}обвяз"],
-        }
-        if part in patterns:
-            return any(re.search(pattern, text) for pattern in patterns[part])
+        canonical = normalize_text(part)
+        if canonical in {
+            "насос",
+            "бак",
+            "3-ходовой клапан",
+            "манометр",
+            "камера",
+            "бойлер",
+            "группа безопасности",
+        }:
+            return _builtin_part_state_from_text(text, canonical) is True
         return bool(
             re.search(rf"в комплект.{{0,160}}{re.escape(part)}", text)
             or re.search(rf"комплект поставки.{{0,500}}{re.escape(part)}", text)

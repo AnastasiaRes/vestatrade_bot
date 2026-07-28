@@ -655,8 +655,11 @@ class ResponseComposerAgent:
         ]
         lines = ["Сравниваю показанные варианты по карточкам товаров:"]
         for card in cards:
-            parts = [f"цена {card.price:g} {card.currency}", f"наличие: {card.stock_status}"]
-            for key in diff_keys[:2]:
+            stock = card.stock_status
+            if card.stock_qty is not None:
+                stock = f"{stock}, {card.stock_qty} шт."
+            parts = [f"цена {card.price:g} {card.currency}", f"наличие: {stock}"]
+            for key in seen_keys[:4]:
                 value = card.characteristics.get(key)
                 if value:
                     parts.append(f"{key}: {value}")
@@ -1026,6 +1029,8 @@ class ResponseComposerAgent:
             details.append(str(slots["contours"]))
         if slots.get("area_m2"):
             details.append(f"{slots['area_m2']:g} м²")
+        if slots.get("voltage_v"):
+            details.append(f"{int(slots['voltage_v'])} В")
         if slots.get("max_price") is not None:
             details.append(f"до {float(slots['max_price']):g} RUB")
         if slots.get("min_price") is not None:
@@ -1038,6 +1043,20 @@ class ResponseComposerAgent:
             details.append(
                 "без: " + ", ".join(str(item) for item in slots["excluded_features"])
             )
+        if slots.get("required_builtin_parts"):
+            details.append(
+                "встроено: "
+                + ", ".join(str(item) for item in slots["required_builtin_parts"])
+            )
+        if slots.get("excluded_builtin_parts"):
+            details.append(
+                "без встроенных компонентов: "
+                + ", ".join(str(item) for item in slots["excluded_builtin_parts"])
+            )
+        if query.in_stock_only or slots.get("in_stock"):
+            details.append("только в наличии")
+        if slots.get("result_limit") == 1:
+            details.append("1 вариант")
         return ", ".join(details)
 
     def _polish(self, agent: str, user_message: str, draft: str, instruction: str) -> str:

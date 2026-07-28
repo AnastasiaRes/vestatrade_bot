@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 RELEVANT_ATTRS: dict[str, list[str]] = {
     "pipes": ["назначение", "материал", "диаметр (мм)", "длина", "армирование"],
     "sewer": ["тип товара", "диаметр (мм)", "длина", "материал"],
-    "pumps": ["тип товара", "напор", "монтажная длина", "присоединение", "мощность"],
+    "pumps": ["тип товара", "напор", "монтажная длина", "присоедин", "мощность"],
     "boilers": [
         "мощность",
         "диапазон мощности отопления по паспорту",
@@ -91,7 +91,10 @@ class ProductCardAgent:
             return {}
 
         preferred = RELEVANT_ATTRS.get(query.category, [])
-        max_attributes = 4 if query.category == "boilers" else 3
+        # Pumps need four grounded dimensions together: kind, head, mounting
+        # length and connection.  Dropping the fourth field made the bot suggest
+        # compatible fittings and then lose the very size needed to select them.
+        max_attributes = 4 if query.category in {"boilers", "pumps"} else 3
         picked: dict[str, str] = {}
         for key in preferred:
             for attr_key, value in attrs.items():

@@ -200,6 +200,44 @@ def _attach_passport_power_range(
     )
 
 
+def _attach_confirmed_connection_facts(
+    product: Product,
+    path: Path,
+    docs_text: str,
+) -> None:
+    """Enrich structured fields only when a model table proves the mapping.
+
+    The VRS passport defines the first two digits after ``VRS.`` as nominal DN
+    and its technical table maps DN25 to G 1 1/2 and DN32 to G 2.  Keeping those
+    facts as structured attributes lets cards and deterministic follow-ups cite
+    them without asking an LLM to reconstruct a flattened PDF table.
+    """
+    sku = normalize_text(product.sku)
+    model = re.match(r"^vrs\.(25|32)[468]\.", sku)
+    text = normalize_text(docs_text)
+    if not model:
+        return
+    if not all(
+        marker in text
+        for marker in [
+            "диаметр условного прохода",
+            "присоединительная резьба",
+            "типы vrs.254",
+        ]
+    ):
+        return
+    nominal_dn = model.group(1)
+    thread = '1 1/2"' if nominal_dn == "25" else '2"'
+    product.attributes_normalized.setdefault(
+        "диаметр условного прохода, мм",
+        nominal_dn,
+    )
+    product.attributes_normalized.setdefault(
+        "присоединительная резьба, дюйм",
+        thread,
+    )
+
+
 def _compact_document_text(text: str, limit: int = MAX_DOC_CHARS) -> str:
     """Keep the beginning and useful body sections of a long product manual.
 
@@ -349,5 +387,6 @@ def load_docs_for_products(
                 else:
                     product.docs_text = text
                 _attach_passport_power_range(product, path, boiler_power_ranges)
+                _attach_confirmed_connection_facts(product, path, text)
             attached_docs += 1
     return attached_docs

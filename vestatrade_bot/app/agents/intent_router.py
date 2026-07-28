@@ -291,7 +291,14 @@ class IntentRouterAgent:
             or SLASH_SKU_RE.search(sku_text)
             or ALPHANUM_SKU_RE.search(sku_text)
         )
-        if sku_match and self._is_valid_sku_candidate(sku_match.group(0)):
+        if (
+            sku_match
+            and self._is_valid_sku_candidate(sku_match.group(0))
+            and not self._sku_candidate_is_measurement(
+                text,
+                sku_match.group(0),
+            )
+        ):
             slots["sku"] = sku_match.group(0)
 
         for brand in BRANDS:
@@ -336,12 +343,16 @@ class IntentRouterAgent:
             slots["pump_context"] = "котел"
             slots["allow_basic_option"] = True
 
+        complectation_request = bool(
+            any(word in text for word in COMPLECTATION_WORDS)
+            and not self._is_bare_pump_assortment_question(text)
+            and not self._is_builtin_selection_constraint(text, category)
+        )
         intent_type = "unknown"
         confidence = category_score
         if (
             slots.get("sku")
-            and any(word in text for word in COMPLECTATION_WORDS)
-            and not self._is_bare_pump_assortment_question(text)
+            and complectation_request
         ):
             # «В котле VT.033 есть встроенный насос?» names a SKU but asks about
             # complectation, not a plain lookup — exact_sku would search that SKU
@@ -359,7 +370,7 @@ class IntentRouterAgent:
         elif flags["in_stock"]:
             intent_type = "stock_request"
             confidence = max(confidence, 0.8)
-        elif any(word in text for word in COMPLECTATION_WORDS) and not self._is_bare_pump_assortment_question(text):
+        elif complectation_request:
             intent_type = "complectation"
             if session and session.category:
                 category = session.category
@@ -557,6 +568,70 @@ class IntentRouterAgent:
 
         if category == "fittings" and "ppr" in text:
             slots["fitting_system"] = "ppr"
+
+        if category == "boilers" and self._is_builtin_selection_constraint(
+            text,
+            category,
+        ):
+            part_patterns = {
+                "насос": r"(?:встроенн\w*\s+)?(?:циркуляционн\w*\s+)?насос",
+                "бак": r"(?:встроенн\w*\s+)?(?:расширительн\w*\s+)?бак",
+                "группа безопасности": r"(?:встроенн\w*\s+)?групп\w*\s+безопасн",
+                "3-ходовой клапан": (
+                    r"(?:встроенн\w*\s+)?(?:трех|3)[- ]?ходов\w*\s+клапан"
+                ),
+            }
+            excluded_parts = [
+                part
+                for part, pattern in part_patterns.items()
+                if (
+                    re.search(rf"\bбез(?:\s+\w+){{0,3}}\s+{pattern}", text)
+                    or re.search(
+                        rf"\bне\s+(?:нужен\w*|требуется|должен\s+быть)"
+                        rf"(?:\s+\w+){{0,3}}\s+{pattern}",
+                        text,
+                    )
+                    or re.search(rf"\bне\s+с(?:о)?\s+{pattern}", text)
+                    or re.search(
+                        rf"{pattern}(?:\s+\w+){{0,4}}\s+"
+                        r"(?:не\s+(?:нужен\w*|требуется|должен\s+быть)|"
+                        r"исключить|не\s+включать)",
+                        text,
+                    )
+                )
+            ]
+            required_parts: list[str] = []
+            positive_patterns = {
+                "насос": (
+                    r"(?:со?|с)\s+(?:встроенн\w*\s+)?"
+                    r"(?:циркуляционн\w*\s+)?насос"
+                    r"|встроенн\w*(?:\s+\w+){0,3}\s+насос"
+                ),
+                "бак": (
+                    r"(?:со?|с)\s+(?:встроенн\w*\s+)?"
+                    r"(?:расширительн\w*\s+)?бак"
+                    r"|встроенн\w*(?:\s+\w+){0,3}\s+бак"
+                ),
+                "группа безопасности": (
+                    r"(?:со?|с)\s+(?:встроенн\w*\s+)?групп\w*\s+безопасн"
+                    r"|встроенн\w*(?:\s+\w+){0,3}\s+групп\w*\s+безопасн"
+                ),
+                "3-ходовой клапан": (
+                    r"(?:со?|с)\s+(?:встроенн\w*\s+)?"
+                    r"(?:трех|3)[- ]?ходов\w*\s+клапан"
+                    r"|встроенн\w*(?:\s+\w+){0,3}\s+"
+                    r"(?:трех|3)[- ]?ходов\w*\s+клапан"
+                ),
+            }
+            for part, pattern in positive_patterns.items():
+                if part not in excluded_parts and re.search(pattern, text):
+                    required_parts.append(part)
+            if required_parts:
+                slots["required_builtin_parts"] = required_parts
+                slots["allow_alternatives"] = False
+            if excluded_parts:
+                slots["excluded_builtin_parts"] = excluded_parts
+                slots["allow_alternatives"] = False
 
         if "циркуляц" in text:
             slots["pump_type"] = "циркуляционный"
@@ -1069,6 +1144,27 @@ class IntentRouterAgent:
                 return False
         return any(char.isdigit() for char in normalized)
 
+    @staticmethod
+    def _sku_candidate_is_measurement(text: str, value: str) -> bool:
+        """Do not reinterpret a budget, quantity or engineering value as SKU."""
+        candidate = normalize_text(value)
+        if not candidate.isdigit():
+            return False
+        escaped = re.escape(candidate)
+        return bool(
+            re.search(
+                rf"(?<!\d){escaped}\s*"
+                r"(?:руб\w*|тыс\w*|к\b|шт\w*|мм\b|см\b|м\b|м2\b|"
+                r"м²\b|квт\b|вт\b|вольт\w*|бар\b|л\b)",
+                text,
+            )
+            or re.search(
+                rf"\b(?:бюджет(?:ом)?|до|не\s+дороже|цена\s+до|за)\s+"
+                rf"{escaped}\b",
+                text,
+            )
+        )
+
     def _looks_like_attribute_followup(self, text: str) -> bool:
         markers = [
             "мм",
@@ -1137,6 +1233,68 @@ class IntentRouterAgent:
         if re.fullmatch(r"\s*\d{2,4}\s*", text):
             return True
         return False
+
+    @staticmethod
+    def _is_builtin_selection_constraint(text: str, category: str) -> bool:
+        """Separate a requested built-in feature from a card-fact question."""
+        if category != "boilers":
+            return False
+        mentions_component_constraint = bool(
+            "встро" in text
+            or re.search(
+                r"\bбез(?:\s+\w+){0,3}\s+(?:насос|бак|групп\w*\s+безопасн|"
+                r"(?:трех|3)[- ]?ходов\w*\s+клапан)",
+                text,
+            )
+            or re.search(
+                r"\bс\s+(?:насос|бак|групп\w*\s+безопасн|"
+                r"(?:трех|3)[- ]?ходов\w*\s+клапан)",
+                text,
+            )
+        )
+        if not mentions_component_constraint:
+            return False
+        if any(
+            marker in text
+            for marker in [
+                "есть ли",
+                "входит ли",
+                "что входит",
+                "проверь",
+                "по паспорту",
+                "в этом котле",
+                "у этого котла",
+                "у него",
+                "у показанного",
+                "какие из",
+                "у каких",
+            ]
+        ):
+            return False
+        return any(
+            marker in text
+            for marker in [
+                "нужен",
+                "нужна",
+                "нужно",
+                "подбери",
+                "подберите",
+                "покажи",
+                "ищу",
+                "вариант",
+                "услови",
+                "требуется",
+                "хочу",
+                "только",
+                "электр",
+                "газов",
+                "220",
+                "380",
+                "до ",
+                "бюджет",
+                "один вариант",
+            ]
+        )
 
     def _is_bare_pump_assortment_question(self, text: str) -> bool:
         if "насос" not in text:
@@ -1385,6 +1543,10 @@ class IntentRouterAgent:
                 for pattern in (SKU_RE, NUMERIC_SKU_RE, SLASH_SKU_RE, ALPHANUM_SKU_RE)
                 for match in pattern.finditer(sku_text)
                 if self._is_valid_sku_candidate(match.group(0))
+                and not self._sku_candidate_is_measurement(
+                    text,
+                    match.group(0),
+                )
             }
             if normalize_sku(str(llm_sku)) not in current_skus:
                 llm_result.slots.pop("sku", None)

@@ -4,7 +4,12 @@
   "VT.226-227-228-1248в.pdf": {"sku_prefixes": ["VT.226", "VT.227", "VT.228"]},
   "VT.3000-0624.pdf": {"sku_prefixes": ["VT.3000"]},
   "1637-37-38-10.pdf": {"sku_prefixes": ["VT.037", "VT.038"]},
-  "VRS-0725.pdf": {"sku_prefixes": ["VRS."]},
+  "VRS-0725.pdf": {
+    "sku_prefixes": [
+      "VRS.254.", "VRS.256.", "VRS.258.",
+      "VRS.324.", "VRS.326.", "VRS.328."
+    ]
+  },
   "VTp.700.AL25-0425.pdf": {"sku_prefixes": ["VTp.700.AL25"]},
   "VTp.700-fitingi-0625.pdf": {
     "sku_prefixes": [

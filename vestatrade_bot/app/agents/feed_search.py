@@ -284,6 +284,95 @@ def _feature_state(product: Product, feature: str) -> bool | None:
     return None
 
 
+_BUILTIN_PART_TARGETS: dict[str, str] = {
+    "насос": r"(?:циркуляционн\w*\s+)?насос",
+    "бак": r"(?:расширительн\w*\s+)?бак",
+    "3-ходовой клапан": r"(?:трех|3)[- ]?ходов\w*\s+клапан",
+    "манометр": r"манометр",
+    "камера": r"камер\w*\s+сгоран",
+    "бойлер": r"(?:накопительн\w*\s+)?бойлер",
+    "группа безопасности": r"групп\w*\s+безопасн",
+}
+
+
+def _builtin_part_state_from_text(text: str, part: str) -> bool | None:
+    """Return a grounded built-in/in-package state without inverting negations.
+
+    Product descriptions commonly mention components that are optional, external,
+    or explicitly absent.  A keyword hit is therefore not evidence of inclusion.
+    """
+    normalized = normalize_text(text)
+    canonical = normalize_text(part)
+    target = _BUILTIN_PART_TARGETS.get(canonical)
+    if not target:
+        return None
+
+    negative_patterns = (
+        rf"(?:\bбез\b|\bне\s+входит\b|\bне\s+включен\w*\b|"
+        rf"\bне\s+встроен\w*\b|\bне\s+предусмотрен\w*\b|"
+        rf"\bотсутств\w*\b)(?:\s+\w+){{0,5}}\s+{target}",
+        rf"{target}(?:\s+\w+){{0,8}}\s+(?:\bнет\b|\bне\s+входит\b|"
+        rf"\bне\s+включен\w*\b|\bне\s+встроен\w*\b|"
+        rf"\bне\s+предусмотрен\w*\b|\bотсутств\w*\b)",
+        rf"{target}(?:[^.!?]{{0,140}})(?:приобрета\w*|поставля\w*)\s+отдельно",
+        rf"(?:приобрета\w*|поставля\w*)\s+отдельно(?:[^.!?]{{0,100}}){target}",
+    )
+    if any(re.search(pattern, normalized) for pattern in negative_patterns):
+        return False
+
+    positive_patterns: dict[str, tuple[str, ...]] = {
+        "насос": (
+            r"встроен\w*\s+(?:циркуляционн\w*\s+)?насос",
+            r"(?:циркуляционн\w*\s+)?насос[^.!?]{0,45}встроен",
+        ),
+        "бак": (
+            r"встроенн\w*[^.!?]{0,100}(?:расширительн\w*\s+)?бак",
+            r"(?:расширительн\w*\s+)?бак[^.!?]{0,45}встроен",
+        ),
+        "3-ходовой клапан": (
+            r"встроенн\w*[^.!?]{0,35}(?:трех|3)[- ]?ходов\w*\s+клапан",
+        ),
+        "манометр": (
+            r"встроенн\w*[^.!?]{0,45}манометр",
+        ),
+        "камера": (r"закрыт\w*\s+камер\w*\s+сгоран",),
+        "бойлер": (
+            r"встроенн\w*\s+(?:накопительн\w*\s+)?бойлер",
+            r"(?:накопительн\w*\s+)?бойлер[^.!?]{0,45}встроен",
+        ),
+        "группа безопасности": (
+            r"встроенн\w*[^.!?]{0,45}групп\w*\s+безопасн",
+            r"(?:полный\s+)?комплект\s+гидравлическ\w*\s+безопасн",
+        ),
+    }
+    if any(
+        re.search(pattern, normalized)
+        for pattern in positive_patterns.get(canonical, ())
+    ):
+        return True
+    return None
+
+
+def _builtin_part_state(product: Product, part: str) -> bool | None:
+    text = " ".join(
+        [
+            product.name,
+            product.description or "",
+            product.docs_text or "",
+            " ".join(
+                f"{key} {value}"
+                for key, value in product.attributes_normalized.items()
+            ),
+        ]
+    )
+    return _builtin_part_state_from_text(text, part)
+
+
+def _builtin_part_confirmed(product: Product, part: str) -> bool:
+    """Strict evidence for a component being inside the selected product."""
+    return _builtin_part_state(product, part) is True
+
+
 def _product_matches_hard_constraints(product: Product, slots: Mapping[str, Any]) -> bool:
     max_price = _constraint_number(slots.get("max_price"))
     min_price = _constraint_number(slots.get("min_price"))
@@ -302,6 +391,14 @@ def _product_matches_hard_constraints(product: Product, slots: Mapping[str, Any]
         # «Без Wi‑Fi» is a hard statement.  Missing feed data is unknown, not
         # evidence that the feature is absent.
         if _feature_state(product, feature) is not False:
+            return False
+    for part in _constraint_features(slots.get("required_builtin_parts")):
+        if not _builtin_part_confirmed(product, part):
+            return False
+    for part in _constraint_features(slots.get("excluded_builtin_parts")):
+        # Absence is a hard constraint too: missing documentation is unknown,
+        # not proof that the component is absent.
+        if _builtin_part_state(product, part) is not False:
             return False
     return True
 
@@ -324,12 +421,123 @@ def _requested_result_limit(slots: Mapping[str, Any]) -> int | None:
 
 class FeedSearchAgent:
     def __init__(self, products: list[Product] | None = None) -> None:
-        self.products = products or []
+        self.products: list[Product] = []
         self._canonical_category_cache: dict[int, str] = {}
+        self._sku_mention_patterns: list[
+            tuple[Product, re.Pattern[str], int]
+        ] = []
+        self.set_products(products or [])
 
     def set_products(self, products: list[Product]) -> None:
         self.products = products
         self._canonical_category_cache.clear()
+        self._sku_mention_patterns = self._build_sku_mention_patterns(products)
+
+    @staticmethod
+    def _build_sku_mention_patterns(
+        products: list[Product],
+    ) -> list[tuple[Product, re.Pattern[str], int]]:
+        patterns: list[tuple[Product, re.Pattern[str], int]] = []
+        for product in products:
+            sku = normalize_text(product.sku)
+            compact = re.sub(r"[^a-zа-я0-9]", "", sku)
+            if not compact or (compact.isdigit() and len(compact) < 5):
+                continue
+            tokens = re.findall(r"[a-zа-я]+|\d+|[./+\-]", sku)
+            if not tokens:
+                continue
+            pattern = re.compile(
+                r"(?<![a-zа-я0-9])"
+                + r"\s*".join(re.escape(token) for token in tokens)
+                + r"(?![a-zа-я0-9])"
+            )
+            patterns.append(
+                (product, pattern, len(compact) if compact.isdigit() else 0)
+            )
+        return patterns
+
+    def resolve_sku_mentions(self, message: str) -> list[Product]:
+        """Resolve every catalogue SKU explicitly present in a user turn.
+
+        The intent router deliberately recognises only conservative, generic
+        article shapes.  A catalogue-aware pass is both safer and more complete:
+        it can recognise vendor articles containing spaces and slashes (for
+        example ``PS 25/6G 180``), while still returning only identities that
+        actually exist in the current feed.
+        """
+        text = normalize_text(message)
+        raw_text = html.unescape(message).lower().replace("ё", "е")
+        explicit_numeric_context = bool(
+            any(
+                marker in text
+                for marker in [
+                    "артикул",
+                    "арт ",
+                    "sku",
+                    "код товара",
+                    "сравни",
+                    "сравнение",
+                    "проигнор",
+                    "не сравнил",
+                    "не сравнила",
+                    "второй товар",
+                    "второй артикул",
+                    "оба товар",
+                    "оба артикул",
+                ]
+            )
+            or re.fullmatch(r"\d{5,}", text)
+        )
+        matches: list[tuple[int, int, int, Product]] = []
+        for product, pattern, numeric_length in self._sku_mention_patterns:
+            # Five-digit numbers are often budgets or quantities. Resolve them
+            # as articles only in explicit article/comparison context. Longer
+            # numeric identifiers (such as 2202211) remain usable in natural
+            # cross-product questions.
+            if numeric_length == 5 and not explicit_numeric_context:
+                continue
+            match = pattern.search(text)
+            if match and numeric_length:
+                numeric_token = re.escape(re.sub(r"\D", "", product.sku))
+                adjacent_unit = bool(
+                    re.search(
+                        rf"(?<!\d){numeric_token}\s*"
+                        r"(?:₽|руб\w*|тыс\w*|к\b|шт\w*|мм\b|см\b|"
+                        r"м\b|м2\b|м²\b|квт\b|вт\b|вольт\w*|бар\b|л\b)",
+                        raw_text,
+                    )
+                )
+                if adjacent_unit:
+                    continue
+            if match:
+                matches.append(
+                    (
+                        match.start(),
+                        match.end(),
+                        -(match.end() - match.start()),
+                        product,
+                    )
+                )
+
+        # Preserve mention order.  If catalogue aliases overlap at the same
+        # position, prefer the longer identity and never emit the same SKU twice.
+        matches.sort(key=lambda item: (item[0], item[2]))
+        result: list[Product] = []
+        seen: set[str] = set()
+        accepted_spans: list[tuple[int, int]] = []
+        for start, end, _, product in matches:
+            if any(
+                accepted_start <= start and end <= accepted_end
+                for accepted_start, accepted_end in accepted_spans
+            ):
+                continue
+            key = normalize_sku(product.sku)
+            if key in seen:
+                continue
+            seen.add(key)
+            accepted_spans.append((start, end))
+            result.append(product)
+        return result
 
     def matches_constraints(
         self,
@@ -338,6 +546,8 @@ class FeedSearchAgent:
         slots: Mapping[str, Any],
     ) -> bool:
         """Shared final-card predicate for search and consultant paths."""
+        if slots.get("in_stock") and not product.is_in_stock:
+            return False
         return _product_matches_hard_constraints(
             product,
             slots,
@@ -814,6 +1024,8 @@ class FeedSearchAgent:
         grouped: dict[str, list[Product]] = {category: [] for category in wanted}
         for product in self.products:
             if product.price is None or not product.url:
+                continue
+            if slots.get("in_stock") and not product.is_in_stock:
                 continue
             canon = self.canonical_category(product)
             if canon in grouped:
@@ -1651,6 +1863,8 @@ class FeedSearchAgent:
             or _constraint_number(effective_slots.get("min_price")) is not None
             or _constraint_features(effective_slots.get("required_features"))
             or _constraint_features(effective_slots.get("excluded_features"))
+            or _constraint_features(effective_slots.get("required_builtin_parts"))
+            or _constraint_features(effective_slots.get("excluded_builtin_parts"))
         ):
             return True
         strict_by_category = {
