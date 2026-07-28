@@ -138,11 +138,49 @@ class GuardrailsAgent:
                     issues.append(
                         f"card {card.sku} does not confirm absence of built-in part {part}"
                     )
-            if not semantic_matcher._semantic_slots_match(
+            if query.category == "water_heaters":
+                if semantic_matcher.canonical_category(product) != "water_heaters":
+                    issues.append(
+                        f"card {card.sku} is not a complete water-heating appliance"
+                    )
+                water_heater_checks = (
+                    (
+                        "heater_type",
+                        semantic_matcher._water_heater_type_matches,
+                    ),
+                    (
+                        "energy_source",
+                        semantic_matcher._water_heater_energy_matches,
+                    ),
+                    (
+                        "volume_l",
+                        semantic_matcher._water_heater_volume_matches,
+                    ),
+                    (
+                        "mounting",
+                        semantic_matcher._water_heater_mounting_matches,
+                    ),
+                    (
+                        "orientation",
+                        semantic_matcher._water_heater_orientation_matches,
+                    ),
+                )
+                for slot_key, matcher in water_heater_checks:
+                    requested = query.slots.get(slot_key)
+                    if requested is None or requested == "":
+                        continue
+                    if not matcher(product, requested):
+                        issues.append(
+                            f"card {card.sku} does not confirm requested "
+                            f"water-heater characteristic {slot_key}={requested}"
+                        )
+
+            semantic_matches = semantic_matcher._semantic_slots_match(
                 product,
                 query.category,
                 query.slots,
-            ):
+            )
+            if not semantic_matches:
                 if query.slots.get("contours"):
                     issues.append(
                         f"card {card.sku} does not match requested contours "

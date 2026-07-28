@@ -62,6 +62,13 @@ BRANDS = [
 ]
 
 CATEGORY_KEYWORDS: dict[str, list[str]] = {
+    "water_heaters": [
+        "водонагрев",
+        "водогрей",
+        "бойлер",
+        "газовая колонк",
+        "газовый колонк",
+    ],
     "sewer": ["канализац", "канализация", "htem", "ostendorf", "отвод", "тройник", "муфта", "ревизия"],
     "pumps": [
         "насос",
@@ -80,7 +87,6 @@ CATEGORY_KEYWORDS: dict[str, list[str]] = {
         "кател",
         "boiler",
         "газовый",
-        "электрический",
         "квт",
         "квадрат",
     ],
@@ -196,6 +202,7 @@ VALID_CATEGORIES = {
     "pipes",
     "pumps",
     "boilers",
+    "water_heaters",
     "valves",
     "sewer",
     "radiator_fittings",
@@ -314,9 +321,42 @@ class IntentRouterAgent:
             slots["reference_brand"] = slots.pop("brand")
 
         category, category_score = self._detect_category(text)
+        if (
+            category == "boilers"
+            and self._has_non_negated_match(
+                text,
+                r"\b(?:кот[её]л|котл\w*|кател\w*)\b",
+            )
+            and self._has_non_negated_match(text, r"\bбойлер\w*\b")
+            and not re.search(
+                r"\b(?:кот[её]л|котл\w*)\b[^.!?]{0,30}"
+                r"\bс\s+(?:встроенн\w*\s+)?бойлер\w*\b",
+                text,
+            )
+        ):
+            slots["boiler_water_heater_pair"] = True
+        if (
+            category == "other"
+            and session
+            and session.category == "boilers"
+            and self._looks_like_boiler_type_followup(text, session)
+        ):
+            category = "boilers"
+            category_score = 0.85
         if category == "other" and session and session.category and self._looks_like_attribute_followup(text):
             category = session.category
             category_score = 0.65
+        if (
+            session
+            and session.category == "water_heaters"
+            and not re.search(r"\b(?:кот[её]л|котл\w*|кател\w*)\b", text)
+            and self._looks_like_water_heater_followup(text, session)
+        ):
+            # Short answers to our own questions (``электрический``, ``80``,
+            # ``вертикальный``) must not be reclassified as boilers or lose the
+            # active product family.
+            category = "water_heaters"
+            category_score = max(category_score, 0.85)
         symptom_match = any(symptom in text for symptom in SYMPTOM_KEYWORDS) or (
             "вода" in text and ("шла" in text or "иде" in text or "течет" in text)
         )
@@ -410,6 +450,49 @@ class IntentRouterAgent:
     def _detect_category(self, text: str) -> tuple[str, float]:
         if OLD_CIRCULATION_PUMP_RE.search(text):
             return "pumps", 0.9
+        # Product nouns win over generic energy words.  Previously the single
+        # adjective ``электрический`` was a boiler keyword, so an electric
+        # water-heater request was routed into the boiler funnel before the LLM
+        # could see it.  Keep ``котёл с бойлером`` in the boiler branch (the
+        # customer is selecting a boiler/complectation), while a standalone
+        # boiler or an explicit water-heater kind starts the water-heater
+        # branch.
+        has_positive_boiler_noun = self._has_non_negated_match(
+            text,
+            r"\b(?:кот[её]л|котл\w*|кател\w*)\b",
+        )
+        boiler_with_tank = bool(
+            has_positive_boiler_noun
+            and (
+                re.search(
+                    r"\b(?:кот[её]л|котл\w*)\b[^.!?]{0,45}"
+                    r"(?:\bс\s+(?:встроенн\w*\s+)?бойлер\w*|"
+                    r"\bбойлер\w*\s+(?:встроен|внутри|в комплект))",
+                    text,
+                )
+            )
+        )
+        water_heater_accessory = self._is_water_heater_accessory_request(text)
+        has_positive_water_heater_noun = self._has_non_negated_match(
+            text,
+            r"\b(?:водонагрев\w*|водогре\w*|бойлер\w*)\b",
+        )
+        has_positive_gas_column = self._has_non_negated_match(
+            text,
+            r"\bгазов\w*\s+колонк\w*\b",
+        )
+        explicit_water_heater = not water_heater_accessory and bool(
+            has_positive_water_heater_noun or has_positive_gas_column
+        )
+        if boiler_with_tank:
+            return "boilers", 0.95
+        # A single-category search cannot represent two separate products.
+        # Preserve the heating-system branch for "котёл и бойлер" instead of
+        # silently discarding the explicitly requested котёл.
+        if has_positive_boiler_noun and has_positive_water_heater_noun:
+            return "boilers", 0.9
+        if explicit_water_heater and not has_positive_boiler_noun:
+            return "water_heaters", 0.95
         if (
             any(marker in text for marker in ["радиатор", "батаре", "биметалл"])
             and not any(
@@ -442,6 +525,8 @@ class IntentRouterAgent:
         best_category = "other"
         best_score = 0.0
         for category, keywords in CATEGORY_KEYWORDS.items():
+            if category == "water_heaters" and water_heater_accessory:
+                continue
             hits = sum(
                 1
                 for keyword in keywords
@@ -455,6 +540,56 @@ class IntentRouterAgent:
         if best_category == "sewer" and "труба" in text:
             best_score = max(best_score, 0.9)
         return best_category, best_score
+
+    @staticmethod
+    def _has_non_negated_match(text: str, pattern: str) -> bool:
+        """Return true when at least one matching product mention is positive."""
+        for match in re.finditer(pattern, text):
+            before = text[max(0, match.start() - 70) : match.start()]
+            after = text[match.end() : match.end() + 55]
+            negated_before = re.search(
+                r"\b(?:без|кроме|не(?!\s+только)"
+                r"(?:\s+(?:нужен|нужна|нужны|надо|хочу|интересует|"
+                r"предлагай|показывай))?|не\s+хочу)"
+                r"\s+(?:\w+\s+){0,2}$",
+                before,
+            )
+            negated_after = re.match(
+                r"(?:\s+\w+){0,3}\s+не\s+"
+                r"(?:нужен|нужна|нужны|надо|интересует|"
+                r"предлагай|показывай|хочу)\b",
+                after,
+            )
+            if not negated_before and not negated_after:
+                return True
+        return False
+
+    @staticmethod
+    def _is_water_heater_accessory_request(text: str) -> bool:
+        """Distinguish an appliance from a requested spare part for it."""
+        accessory = (
+            r"(?:тэн|анод|термостат|датчик|клапан|кран|фланец|"
+            r"прокладк\w*|креплен\w*)"
+        )
+        appliance = r"(?:водонагрев\w*|бойлер\w*)"
+        return bool(
+            # "ТЭН для бойлера" / "анод к водонагревателю".
+            re.search(
+                rf"\b{accessory}\b[^.!?]{{0,35}}\b(?:для|к)\s+{appliance}\b",
+                text,
+            )
+            # Natural reverse order: "для бойлера нужен ТЭН".
+            or re.search(
+                rf"\b(?:для|к)\s+{appliance}\b[^.!?]{{0,45}}\b{accessory}\b",
+                text,
+            )
+            # The accessory itself is the grammatical object of the request.
+            or re.search(
+                rf"\b(?:нужен|нужна|нужно|нужны|ищу|подбери|подберите|"
+                rf"покажи|покажите|купить)\s+(?:\w+\s+){{0,2}}{accessory}\b",
+                text,
+            )
+        )
 
     @staticmethod
     def _thread_type_from_text(text: str) -> str | None:
@@ -647,7 +782,7 @@ class IntentRouterAgent:
             slots["pump_type"] = "скважинный"
 
         has_electric = "электр" in text
-        has_gas = "газ" in text
+        has_gas = bool(re.search(r"\bгаз(?:ов\w*|а|у|ом)?\b", text))
         rejects_electric = bool(re.search(r"\bне\s+электр", text))
         rejects_gas = bool(
             re.search(r"\bне\s+газ", text)
@@ -657,14 +792,24 @@ class IntentRouterAgent:
             or "без газ" in text
             or "нет газ" in text
         )
-        if rejects_electric and has_gas:
-            slots["boiler_type"] = "газовый"
-        elif rejects_gas:
-            slots["boiler_type"] = "электрический"
-        elif has_gas and not has_electric:
-            slots["boiler_type"] = "газовый"
-        elif has_electric and not has_gas:
-            slots["boiler_type"] = "электрический"
+        if category == "boilers":
+            if rejects_electric and has_gas:
+                slots["boiler_type"] = "газовый"
+            elif rejects_gas:
+                slots["boiler_type"] = "электрический"
+            elif has_gas and not has_electric:
+                slots["boiler_type"] = "газовый"
+            elif has_electric and not has_gas:
+                slots["boiler_type"] = "электрический"
+        elif category == "water_heaters":
+            self._extract_water_heater_slots(
+                text,
+                slots,
+                has_electric=has_electric,
+                has_gas=has_gas,
+                rejects_electric=rejects_electric,
+                rejects_gas=rejects_gas,
+            )
 
         if "двухконтурн" in text:
             slots["contours"] = "двухконтурный"
@@ -1009,8 +1154,171 @@ class IntentRouterAgent:
         if any(word in text for word in STOCK_WORDS):
             slots["in_stock"] = True
 
+        if category == "water_heaters" and (
+            re.search(
+                r"\bможно\s+(?:(?:показать|подобрать)\s+)?"
+                r"(?:аналог\w*|альтернатив\w*)\b",
+                text,
+            )
+            or re.search(
+                r"\b(?:аналог\w*|альтернатив\w*)\s+"
+                r"(?:можно|допустим\w*|разрешен\w*|разрешён\w*|подойд\w*)\b",
+                text,
+            )
+            or re.search(
+                r"\bразрешаю\s+(?:(?:показывать|подбирать)\s+)?"
+                r"(?:аналог\w*|альтернатив\w*)\b",
+                text,
+            )
+        ):
+            # Consent only enables the alternative-search branch. Water-heater
+            # volume/type/source, stock and budget remain hard predicates there;
+            # changing one of them still requires a separate explicit choice.
+            slots["allow_alternatives"] = True
+
         if category == "pumps" and "насос" in text and "pump_type" not in slots:
             slots["product_kind"] = "насос"
+
+    def _extract_water_heater_slots(
+        self,
+        text: str,
+        slots: dict[str, Any],
+        *,
+        has_electric: bool,
+        has_gas: bool,
+        rejects_electric: bool,
+        rejects_gas: bool,
+    ) -> None:
+        """Extract water-heater constraints without leaking boiler slots.
+
+        ``бойлер`` in ordinary customer speech is ambiguous, so the bare word
+        establishes only the category.  A storage/flow/indirect qualifier is
+        required before ``heater_type`` is set.
+        """
+        mentions_indirect = bool(
+            re.search(r"\bкосвенн\w*(?:\s+нагрев\w*)?\b", text)
+        )
+        mentions_flow = bool(
+            re.search(r"\bпроточн\w*\b", text)
+            or re.search(r"\bгазов\w*\s+колонк\w*\b", text)
+        )
+        mentions_storage = bool(re.search(r"\bнакопительн\w*\b", text))
+        rejects_flow = bool(re.search(r"\bне\s+проточн\w*\b", text))
+        rejects_storage = bool(re.search(r"\bне\s+накопительн\w*\b", text))
+
+        if mentions_indirect and not re.search(r"\bне\s+косвенн\w*\b", text):
+            slots["heater_type"] = "косвенного нагрева"
+            slots["energy_source"] = "косвенный"
+        elif mentions_storage and not rejects_storage:
+            slots["heater_type"] = "накопительный"
+        elif mentions_flow and not rejects_flow:
+            slots["heater_type"] = "проточный"
+
+        mentions_combined = bool(re.search(r"\bкомбинированн\w*\b", text))
+        if mentions_combined:
+            slots["energy_source"] = "комбинированный"
+            # In the water-heater feed "комбинированный" describes a tank
+            # appliance heated from more than one source, not a third
+            # storage/flow geometry. Keep the two dimensions separate.
+            if "heater_type" not in slots:
+                slots["heater_type"] = "накопительный"
+        elif rejects_electric and has_gas:
+            slots["energy_source"] = "газовый"
+        elif (
+            rejects_gas
+            and slots.get("heater_type") != "косвенного нагрева"
+        ):
+            slots["energy_source"] = "электрический"
+        elif has_gas and not has_electric and not rejects_gas:
+            slots["energy_source"] = "газовый"
+        elif has_electric and not has_gas and not rejects_electric:
+            slots["energy_source"] = "электрический"
+
+        volume = self._extract_water_heater_volume_l(text)
+        if volume is not None:
+            slots["volume_l"] = volume
+
+        has_wall = self._has_non_negated_match(text, r"\bнастенн\w*\b")
+        has_floor = self._has_non_negated_match(text, r"\bнапольн\w*\b")
+        has_under_sink = self._has_non_negated_match(
+            text,
+            r"\bпод\s+мойк\w*\b",
+        )
+        has_over_sink = self._has_non_negated_match(
+            text,
+            r"\bнад\s+мойк\w*\b",
+        )
+        if has_wall:
+            slots["mounting"] = "настенный"
+        elif has_floor:
+            slots["mounting"] = "напольный"
+        elif has_under_sink:
+            slots["mounting"] = "под мойкой"
+        elif has_over_sink:
+            slots["mounting"] = "над мойкой"
+
+        has_vertical = self._has_non_negated_match(
+            text,
+            r"\bвертикальн\w*\b",
+        )
+        has_horizontal = self._has_non_negated_match(
+            text,
+            r"\bгоризонтальн\w*\b",
+        )
+        if has_vertical and has_horizontal:
+            slots["orientation"] = "универсальный"
+        elif has_vertical:
+            slots["orientation"] = "вертикальный"
+        elif has_horizontal:
+            slots["orientation"] = "горизонтальный"
+        elif re.search(r"\bуниверсальн\w*\b", text):
+            slots["orientation"] = "универсальный"
+
+    @staticmethod
+    def _extract_water_heater_volume_l(
+        text: str,
+        *,
+        allow_unitless: bool = False,
+    ) -> int | float | None:
+        """Extract volume while preferring the replacement in corrections."""
+        number = r"(\d{1,4}(?:[,.]\d+)?)"
+        unit = r"(?:л\b|литр(?:а|ов)?\b)"
+        correction = re.search(
+            rf"\bне\s+{number}\s*(?:{unit})?"
+            rf"\s*(?:,?\s*(?:а|но)\s+){number}\s*(?:{unit})?",
+            text,
+        )
+        if correction and (
+            allow_unitless
+            or re.search(r"\b(?:л|литр(?:а|ов)?)\b", correction.group(0))
+        ):
+            value = float(correction.group(2).replace(",", "."))
+            if 1 <= value <= 5000:
+                return int(value) if value.is_integer() else value
+
+        explicit_matches = list(
+            re.finditer(
+                rf"(?<!\d){number}\s*{unit}",
+                text,
+            )
+        )
+        for match in reversed(explicit_matches):
+            before = text[max(0, match.start() - 12) : match.start()]
+            if re.search(r"\bне\s*$", before):
+                continue
+            value = float(match.group(1).replace(",", "."))
+            if 1 <= value <= 5000:
+                return int(value) if value.is_integer() else value
+
+        if not allow_unitless:
+            return None
+        unitless_values = re.findall(r"(?<!\d)\d{1,4}(?:[,.]\d+)?(?!\d)", text)
+        if len(unitless_values) != 1:
+            return None
+        value = float(unitless_values[0].replace(",", "."))
+        if not 1 <= value <= 5000:
+            return None
+        return int(value) if value.is_integer() else value
 
     @staticmethod
     def _extract_price_bound(text: str, *, upper: bool) -> float | None:
@@ -1222,6 +1530,17 @@ class IntentRouterAgent:
             "контурн",
             "гвс",
             "газ",
+            "литр",
+            "накопительн",
+            "проточн",
+            "косвенн",
+            "настенн",
+            "напольн",
+            "вертикальн",
+            "горизонтальн",
+            "универсальн",
+            "отдельн",
+            "встроенн",
             "380",
             "220",
             "стар",
@@ -1233,6 +1552,68 @@ class IntentRouterAgent:
         if re.fullmatch(r"\s*\d{2,4}\s*", text):
             return True
         return False
+
+    def _looks_like_water_heater_followup(
+        self,
+        text: str,
+        session: SessionState,
+    ) -> bool:
+        pending = normalize_text(session.pending_question or "")
+        if any(
+            marker in text
+            for marker in [
+                "водонагрев",
+                "бойлер",
+                "накопительн",
+                "проточн",
+                "косвенн",
+                "электр",
+                "газ",
+                "литр",
+                "настенн",
+                "напольн",
+                "вертикальн",
+                "горизонтальн",
+                "универсальн",
+                "под мойк",
+                "над мойк",
+            ]
+        ):
+            return True
+        if re.search(r"(?<!\d)\d{1,4}\s*л\b", text):
+            return True
+        if re.fullmatch(r"\d{1,4}(?:[,.]\d+)?", text) and any(
+            marker in pending for marker in ["объем", "объём", "литр"]
+        ):
+            return True
+        if (
+            session.slots.get("volume_l") is not None
+            or any(marker in pending for marker in ["объем", "объём", "литр"])
+        ) and re.fullmatch(
+            r"не\s+\d{1,4}(?:[,.]\d+)?\s*(?:,?\s*(?:а|но)\s+)"
+            r"\d{1,4}(?:[,.]\d+)?",
+            text,
+        ):
+            return True
+        return False
+
+    def _looks_like_boiler_type_followup(
+        self,
+        text: str,
+        session: SessionState,
+    ) -> bool:
+        if not re.search(r"\b(?:электр\w*|газов\w*)\b", text):
+            return False
+        if re.search(
+            r"\b(?:водонагрев\w*|водогре\w*|бойлер\w*|накопительн\w*|"
+            r"проточн\w*|насос\w*|труб\w*|радиатор\w*)\b"
+            r"|\b(?:тепл\w*|электрическ\w*)\s+пол\b",
+            text,
+        ):
+            return False
+        pending = normalize_text(session.pending_question or "")
+        compact_answer = len(text.split()) <= 8
+        return compact_answer or "газовый или электрический" in pending
 
     @staticmethod
     def _is_builtin_selection_constraint(text: str, category: str) -> bool:
@@ -1326,6 +1707,12 @@ class IntentRouterAgent:
     ) -> None:
         text = normalize_text(message)
         slots = result.slots
+        explicit_category, explicit_score = self._detect_category(text)
+        if explicit_category == "water_heaters" and explicit_score >= 0.9:
+            result.category = "water_heaters"
+            if result.intent_type in {"unknown", "small_talk"}:
+                result.intent_type = "broad_category"
+            result.confidence = max(result.confidence, explicit_score)
         if result.category == "other" and session and session.category and self._looks_like_attribute_followup(text):
             result.category = session.category
             if result.intent_type == "unknown":
@@ -1395,6 +1782,54 @@ class IntentRouterAgent:
                 slots["area_m2"] = area
                 result.is_topic_change = False
 
+        pending_volume = normalize_text(session.pending_question or "") if session else ""
+        expects_volume = any(
+            marker in pending_volume for marker in ["объем", "объём", "литр"]
+        )
+        corrects_known_volume = bool(
+            session
+            and session.slots.get("volume_l") is not None
+            and re.search(
+                r"\bне\s+\d{1,4}(?:[,.]\d+)?\s*"
+                r"(?:,?\s*(?:а|но)\s+)\d{1,4}(?:[,.]\d+)?",
+                text,
+            )
+        )
+        contextual_volume = self._extract_water_heater_volume_l(
+            text,
+            allow_unitless=expects_volume or corrects_known_volume,
+        )
+        if (
+            session
+            and session.category == "water_heaters"
+            and result.category in {"other", "water_heaters"}
+            and contextual_volume is not None
+            and (expects_volume or corrects_known_volume)
+        ):
+            result.category = "water_heaters"
+            result.intent_type = "attribute_request"
+            result.confidence = max(result.confidence, 0.9)
+            slots["volume_l"] = contextual_volume
+            result.is_topic_change = False
+
+        pending_pair_relation = bool(
+            session
+            and session.category == "boilers"
+            and "отдельн" in pending
+            and "встро" in pending
+        )
+        if pending_pair_relation:
+            if "отдельн" in text:
+                result.category = "boilers"
+                result.intent_type = "attribute_request"
+                result.is_topic_change = False
+                slots["boiler_water_heater_relation"] = "отдельные приборы"
+            elif "встро" in text:
+                result.category = "boilers"
+                result.intent_type = "attribute_request"
+                result.is_topic_change = False
+                slots["boiler_water_heater_relation"] = "встроенный бойлер"
+
         if result.category in {
             "pumps",
             "valves",
@@ -1404,6 +1839,7 @@ class IntentRouterAgent:
             "sewer",
             "pipes",
             "boilers",
+            "water_heaters",
         }:
             self._extract_slots(text, result.category, slots)
 
@@ -1451,6 +1887,64 @@ class IntentRouterAgent:
                 or "single" in contours
             ):
                 slots["contours"] = "одноконтурный"
+
+        # Accept a few common LLM field aliases, but keep one canonical slot in
+        # the session so subsequent turns do not ask for an already supplied
+        # water-heater type.
+        if not slots.get("heater_type"):
+            for alias in ["water_heater_type", "heating_type"]:
+                if slots.get(alias):
+                    slots["heater_type"] = slots[alias]
+                    break
+        slots.pop("water_heater_type", None)
+        slots.pop("heating_type", None)
+        heater_type = normalize_text(str(slots.get("heater_type") or ""))
+        if heater_type:
+            if "косвен" in heater_type or "indirect" in heater_type:
+                slots["heater_type"] = "косвенного нагрева"
+                slots.setdefault("energy_source", "косвенный")
+            elif "проточ" in heater_type or "instant" in heater_type or "tankless" in heater_type:
+                slots["heater_type"] = "проточный"
+            elif "накоп" in heater_type or "storage" in heater_type or "tank" == heater_type:
+                slots["heater_type"] = "накопительный"
+
+        source = normalize_text(str(slots.get("energy_source") or ""))
+        if source:
+            if "электр" in source or source in {"electric", "electrical"}:
+                slots["energy_source"] = "электрический"
+            elif "газ" in source or source == "gas":
+                slots["energy_source"] = "газовый"
+            elif "комбин" in source or source in {"combined", "hybrid"}:
+                slots["energy_source"] = "комбинированный"
+            elif "косвен" in source or source == "indirect":
+                slots["energy_source"] = "косвенный"
+
+        if slots.get("volume_l") is not None:
+            volume = self._to_float_slot(slots["volume_l"])
+            if volume is None or not 1 <= volume <= 5000:
+                slots.pop("volume_l", None)
+            else:
+                slots["volume_l"] = int(volume) if volume.is_integer() else volume
+
+        mounting = normalize_text(str(slots.get("mounting") or ""))
+        if mounting:
+            if "настенн" in mounting or mounting == "wall":
+                slots["mounting"] = "настенный"
+            elif "напольн" in mounting or mounting == "floor":
+                slots["mounting"] = "напольный"
+            elif mounting == "under_sink" or "под мойк" in mounting:
+                slots["mounting"] = "под мойкой"
+            elif mounting == "over_sink" or "над мойк" in mounting:
+                slots["mounting"] = "над мойкой"
+
+        orientation = normalize_text(str(slots.get("orientation") or ""))
+        if orientation:
+            if "вертик" in orientation or orientation == "vertical":
+                slots["orientation"] = "вертикальный"
+            elif "горизонт" in orientation or orientation == "horizontal":
+                slots["orientation"] = "горизонтальный"
+            elif "универс" in orientation or orientation == "universal":
+                slots["orientation"] = "универсальный"
 
     def _to_float_slot(self, value: Any) -> float | None:
         if isinstance(value, (int, float)):
@@ -1512,6 +2006,62 @@ class IntentRouterAgent:
             llm_result.intent_type = rule_result.intent_type
         if llm_result.category not in VALID_CATEGORIES:
             llm_result.category = rule_result.category
+
+        explicit_category, explicit_score = self._detect_category(text)
+        if explicit_category == "water_heaters" and explicit_score >= 0.9:
+            llm_result.category = "water_heaters"
+            if llm_result.intent_type in {"unknown", "small_talk"}:
+                llm_result.intent_type = "broad_category"
+        conflicts_with_water_heater = bool(
+            self._is_water_heater_accessory_request(text)
+            or (
+                re.search(
+                    r"\b(?:накопительн|проточн)\w*\s+"
+                    r"(?:фильтр|бак|емкост|резервуар)\w*\b",
+                    text,
+                )
+                and not re.search(
+                    r"\b(?:водонагрев\w*|водогре\w*|бойлер\w*|"
+                    r"газов\w*\s+колонк\w*)\b",
+                    text,
+                )
+            )
+        )
+        if (
+            conflicts_with_water_heater
+            and llm_result.category == "water_heaters"
+            and rule_result.category != "water_heaters"
+        ):
+            llm_result.category = rule_result.category
+            llm_result.intent_type = rule_result.intent_type
+            for key in [
+                "volume_l",
+                "heater_type",
+                "energy_source",
+                "mounting",
+                "orientation",
+            ]:
+                llm_result.slots.pop(key, None)
+
+        # An energy adjective is a constraint, not a product family.  Outside
+        # an existing boiler dialogue the model must not turn ``электрический``
+        # (or ``нужен электрический``) into a boiler search.
+        generic_electric_only = bool(
+            "электр" in text
+            and not re.search(
+                r"\b(?:кот[её]л|котл\w*|кател\w*|boiler|водонагрев\w*|"
+                r"водогре\w*|бойлер\w*|накопительн\w*|проточн\w*)\b",
+                text,
+            )
+        )
+        if (
+            generic_electric_only
+            and rule_result.category == "other"
+            and llm_result.category == "boilers"
+        ):
+            llm_result.category = "other"
+            llm_result.intent_type = rule_result.intent_type
+            llm_result.slots.pop("boiler_type", None)
 
         if llm_result.intent_type == "complectation" and not any(
             word in text for word in COMPLECTATION_WORDS
@@ -1594,8 +2144,14 @@ class IntentRouterAgent:
         fallback = self._as_dict(fallback_result)
         schema_hint = {
             "intent_type": "exact_sku|brand_category|broad_category|cheap_request|stock_request|attribute_request|complectation|small_talk|out_of_scope|unknown",
-            "category": "pipes|fittings|pumps|boilers|valves|sewer|radiators|radiator_fittings|other",
-            "slots": {},
+            "category": "pipes|fittings|pumps|boilers|water_heaters|valves|sewer|radiators|radiator_fittings|other",
+            "slots": {
+                "volume_l": "number|null",
+                "heater_type": "storage|flow|indirect|null",
+                "energy_source": "electric|gas|indirect|combined|null",
+                "mounting": "wall|floor|under_sink|over_sink|null",
+                "orientation": "vertical|horizontal|universal|null",
+            },
             "flags": {},
             "confidence": 0.0,
         }
@@ -1626,6 +2182,14 @@ class IntentRouterAgent:
                     "(консультация по системе), а не small_talk. "
                     "Учитывай отрицание: «газа нет», «без газа» означает отсутствие газа "
                     "(boiler_type должен быть электрический, не газовый). "
+                    "Водонагреватель, отдельный бойлер, газовая колонка и бойлер "
+                    "косвенного нагрева относятся к category=water_heaters. Слова "
+                    "«накопительный» и «проточный» означают эту категорию только "
+                    "когда относятся именно к водонагревателю: проточный фильтр или "
+                    "накопительный бак — не водонагреватели. ТЭН, анод, клапан и "
+                    "другие запчасти для бойлера — это не сам водонагреватель. "
+                    "Фраза «котёл с бойлером» относится к category=boilers. "
+                    "Слово «электрический» без названия товара само по себе не означает котёл. "
                     "Верни только JSON без Markdown. Не выдумывай факты."
                 ),
             },

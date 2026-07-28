@@ -23,7 +23,10 @@ class SlotFillingAgent:
             return SlotFillingResult(slots=slots)
         if intent.intent_type == "complectation":
             return SlotFillingResult(slots=slots)
-        if intent.intent_type == "stock_request" and category != "other":
+        if (
+            intent.intent_type == "stock_request"
+            and category not in {"other", "water_heaters"}
+        ):
             return SlotFillingResult(slots=slots)
 
         if category == "pipes" and slots.get("pipe_purpose") == "канализация":
@@ -32,6 +35,14 @@ class SlotFillingAgent:
         if category == "pumps":
             self._infer_plain_circulation_parameters(text, slots)
             self._drop_parameter_shaped_sku(slots, intent)
+
+        if category == "water_heaters":
+            self._reconcile_water_heater_negations(
+                text,
+                slots,
+                previous_slots=previous_slots,
+                current_slots=intent.slots,
+            )
 
         if category == "sewer":
             self._infer_sewer_followup_slots(
@@ -51,6 +62,8 @@ class SlotFillingAgent:
             return self._pumps(slots, text)
         if category == "boilers":
             return self._boilers(slots)
+        if category == "water_heaters":
+            return self._water_heaters(slots)
         if category == "valves":
             return self._valves(slots, text)
         if category == "radiator_fittings":
@@ -490,12 +503,33 @@ class SlotFillingAgent:
         return any(marker in text for marker in markers)
 
     def _boilers(self, slots: dict) -> SlotFillingResult:
+        pair_relation = normalize_text(
+            str(slots.get("boiler_water_heater_relation") or "")
+        )
+        if slots.get("boiler_water_heater_pair") and not pair_relation:
+            return SlotFillingResult(
+                slots=slots,
+                needs_clarification=True,
+                question=(
+                    "Вы имеете в виду два отдельных прибора — котёл для отопления "
+                    "и отдельный водонагреватель — или котёл со встроенным бойлером?"
+                ),
+            )
+        pair_prefix = ""
+        if pair_relation == "отдельные приборы":
+            pair_prefix = (
+                "Понял, нужны два отдельных прибора. Сначала уточним котёл, "
+                "затем отдельно подберём водонагреватель. "
+            )
+        elif pair_relation == "встроенный бойлер":
+            pair_prefix = "Понял, нужен котёл со встроенным бойлером. "
+            slots["boiler_requirement"] = "с бойлером"
         if not slots.get("boiler_type"):
             area = slots.get("area_m2")
             prefix = (
                 f"Понял, подбираем котёл примерно на {float(area):g} м². "
                 if area
-                else ""
+                else pair_prefix
             )
             return SlotFillingResult(
                 slots=slots,
@@ -507,7 +541,7 @@ class SlotFillingAgent:
                 ),
             )
         if not slots.get("area_m2") and not slots.get("power_kw"):
-            prefix = ""
+            prefix = pair_prefix
             if slots.get("contours") == "двухконтурный":
                 prefix = "Понял, нужен двухконтурный котёл — с горячей водой. "
             elif slots.get("contours") == "одноконтурный":
@@ -536,6 +570,145 @@ class SlotFillingAgent:
                 question="Какое питание доступно для котла: 220 или 380 В?",
             )
         return SlotFillingResult(slots=slots)
+
+    def _water_heaters(self, slots: dict) -> SlotFillingResult:
+        # Normalise aliases defensively for sessions created by an LLM or an
+        # older deployment.  ``heater_type`` is the canonical key used by the
+        # router and search layer.
+        if not slots.get("heater_type"):
+            for alias in ["water_heater_type", "heating_type"]:
+                if slots.get(alias):
+                    slots["heater_type"] = slots[alias]
+                    break
+
+        heater_type = normalize_text(str(slots.get("heater_type") or ""))
+        if "косвен" in heater_type or "indirect" in heater_type:
+            slots["heater_type"] = "косвенного нагрева"
+            slots.setdefault("energy_source", "косвенный")
+        elif "проточ" in heater_type or "instant" in heater_type or "tankless" in heater_type:
+            slots["heater_type"] = "проточный"
+        elif "накоп" in heater_type or "storage" in heater_type:
+            slots["heater_type"] = "накопительный"
+
+        if not slots.get("heater_type"):
+            known_volume = slots.get("volume_l")
+            prefix = (
+                f"Понял, нужен водонагреватель объёмом {float(known_volume):g} л. "
+                if known_volume
+                else ""
+            )
+            return SlotFillingResult(
+                slots=slots,
+                needs_clarification=True,
+                question=(
+                    prefix
+                    + "Какой тип нужен: накопительный, проточный или бойлер "
+                    "косвенного нагрева?"
+                ),
+            )
+
+        missing: list[str] = []
+        if not slots.get("energy_source"):
+            missing.append("источник нагрева: электрический или газовый")
+        if (
+            slots.get("heater_type") != "проточный"
+            and not slots.get("volume_l")
+        ):
+            missing.append("объём в литрах")
+        if missing:
+            if len(missing) == 1:
+                question = f"Уточните {missing[0]}."
+            else:
+                question = (
+                    "Уточните источник нагрева — электрический или газовый — "
+                    "и нужный объём в литрах."
+                )
+            return SlotFillingResult(
+                slots=slots,
+                needs_clarification=True,
+                question=question,
+            )
+        return SlotFillingResult(slots=slots)
+
+    def _reconcile_water_heater_negations(
+        self,
+        text: str,
+        slots: dict,
+        *,
+        previous_slots: dict,
+        current_slots: dict,
+    ) -> None:
+        """Remove a rejected value when no replacement was supplied this turn."""
+        rejected_types = []
+        if re.search(r"\bне\s+проточн\w*\b", text):
+            rejected_types.append("проточный")
+        if re.search(r"\bне\s+накопительн\w*\b", text):
+            rejected_types.append("накопительный")
+        if re.search(r"\bне\s+косвенн\w*\b", text):
+            rejected_types.append("косвенного нагрева")
+        if (
+            "heater_type" not in current_slots
+            and normalize_text(str(previous_slots.get("heater_type") or ""))
+            in rejected_types
+        ):
+            slots.pop("heater_type", None)
+
+        previous_source = normalize_text(
+            str(previous_slots.get("energy_source") or "")
+        )
+        if (
+            "energy_source" not in current_slots
+            and (
+                (re.search(r"\bне\s+электр\w*\b", text) and "электр" in previous_source)
+                or (re.search(r"\bне\s+газов\w*\b", text) and "газ" in previous_source)
+            )
+        ):
+            slots.pop("energy_source", None)
+
+        rejected_volume = re.search(
+            r"\bне\s+(\d{1,4}(?:[,.]\d+)?)"
+            r"(?:\s*(?:л\b|литр(?:а|ов)?\b))?",
+            text,
+        )
+        if (
+            "volume_l" not in current_slots
+            and rejected_volume
+            and previous_slots.get("volume_l") is not None
+        ):
+            previous_volume = float(previous_slots["volume_l"])
+            rejected_value = float(rejected_volume.group(1).replace(",", "."))
+            if previous_volume == rejected_value:
+                slots.pop("volume_l", None)
+
+        rejected_mounting = []
+        if re.search(r"\bне\s+настенн\w*\b", text):
+            rejected_mounting.append("настенный")
+        if re.search(r"\bне\s+напольн\w*\b", text):
+            rejected_mounting.append("напольный")
+        if re.search(r"\bне\s+под\s+мойк\w*\b", text):
+            rejected_mounting.append("под мойкой")
+        if re.search(r"\bне\s+над\s+мойк\w*\b", text):
+            rejected_mounting.append("над мойкой")
+        if (
+            "mounting" not in current_slots
+            and normalize_text(str(previous_slots.get("mounting") or ""))
+            in rejected_mounting
+        ):
+            slots.pop("mounting", None)
+
+        rejected_orientations = []
+        if re.search(r"\bне\s+вертикальн\w*\b", text):
+            rejected_orientations.append("вертикальный")
+        if re.search(r"\bне\s+горизонтальн\w*\b", text):
+            rejected_orientations.append("горизонтальный")
+        if re.search(r"\bне\s+универсальн\w*\b", text):
+            rejected_orientations.append("универсальный")
+        if (
+            "orientation" not in current_slots
+            and normalize_text(str(previous_slots.get("orientation") or ""))
+            in rejected_orientations
+        ):
+            slots.pop("orientation", None)
 
     def _valves(self, slots: dict, text: str) -> SlotFillingResult:
         if "дренаж" in text and "кран" in text:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import logging
+import re
 
 from app.models import Product, ProductCard, SearchQuery
 
@@ -21,6 +22,13 @@ RELEVANT_ATTRS: dict[str, list[str]] = {
         "тип котла",
         "количество контуров",
         "площадь",
+    ],
+    "water_heaters": [
+        "объем бака",
+        "тип водонагревателя",
+        "вид нагрева",
+        "монтаж",
+        "мощность",
     ],
     # «тип резьбы» и «тип ручки» стоят выше «типа присоединения»: у кранов
     # одного диаметра присоединение почти всегда «Резьбовой», и сравнение
@@ -90,6 +98,9 @@ class ProductCardAgent:
         if not attrs:
             return {}
 
+        if query.category == "water_heaters":
+            return self._pick_water_heater_characteristics(product, attrs)
+
         preferred = RELEVANT_ATTRS.get(query.category, [])
         # Pumps need four grounded dimensions together: kind, head, mounting
         # length and connection.  Dropping the fourth field made the bot suggest
@@ -111,6 +122,106 @@ class ProductCardAgent:
             if len(picked) >= max_attributes:
                 break
         return picked
+
+    def _pick_water_heater_characteristics(
+        self,
+        product: Product,
+        attrs: dict[str, str],
+    ) -> dict[str, str]:
+        """Show the five dimensions needed to verify a heater selection.
+
+        ``Вид нагрева`` and ``Способ нагрева`` are alternative feed names for
+        one concept, not two separate characteristics.  Grouping aliases keeps
+        both from crowding out mounting or power on otherwise complete cards.
+        """
+        preferred_groups = (
+            (
+                "объем бака",
+                "объём бака",
+                "объем, л",
+                "объём, л",
+                "литраж",
+            ),
+            ("тип водонагревателя",),
+            (
+                "вид нагрева",
+                "способ нагрева",
+                "источник энергии",
+                "тип нагрева",
+            ),
+            (
+                "монтаж",
+                "способ крепления",
+                "тип размещения",
+                "размещение",
+            ),
+            ("мощность",),
+        )
+        picked: dict[str, str] = {}
+        for aliases in preferred_groups:
+            matched = False
+            for alias in aliases:
+                for attr_key, value in attrs.items():
+                    if (
+                        alias in normalize_text(attr_key)
+                        and value
+                        and self._safe_water_heater_attribute(
+                            product,
+                            attr_key,
+                            value,
+                        )
+                    ):
+                        picked[attr_key] = value
+                        matched = True
+                        break
+                if matched:
+                    break
+
+        for key, value in attrs.items():
+            if (
+                len(picked) >= 5
+                or key in picked
+                or not value
+                or not self._safe_water_heater_attribute(product, key, value)
+            ):
+                continue
+            picked[key] = value
+        return picked
+
+    def _safe_water_heater_attribute(
+        self,
+        product: Product,
+        key: str,
+        value: str,
+    ) -> bool:
+        if not self._safe_attribute(product, key, value):
+            return False
+
+        # Several gas-column rows currently contain values such as
+        # ``мощность, кВт: 0.02`` while their exact descriptions identify
+        # 20 kW appliances.  A grounded card must not repeat a physically
+        # implausible primary heating power merely because it is present in the
+        # feed.  Suppression is safer than multiplying by 1000: normalization
+        # would require a single, independently confirmed value from a passport
+        # or exact description.
+        key_text = normalize_text(key)
+        if "мощност" not in key_text or "квт" not in key_text:
+            return True
+        if any(
+            marker in key_text
+            for marker in [
+                "теплообмен",
+                "режим",
+                "диапазон",
+                "потреб",
+            ]
+        ):
+            return True
+        number_match = re.search(r"\d+(?:[.,]\d+)?", str(value))
+        if not number_match:
+            return True
+        power_kw = float(number_match.group(0).replace(",", "."))
+        return not (0 < power_kw < 0.1)
 
     def _safe_attribute(self, product: Product, key: str, value: str) -> bool:
         # The feed has rows where vendorCode (the card identity) and a copied

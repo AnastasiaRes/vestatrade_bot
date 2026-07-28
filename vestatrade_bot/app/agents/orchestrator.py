@@ -215,6 +215,10 @@ SPECIFIC_PRODUCT_WORDS = [
     "котёл",
     "котл",
     "бойлер",
+    "водонагрев",
+    "накопительн",
+    "проточн",
+    "газовая колонк",
     "насос",
     "помпа",
     "нсос",
@@ -235,6 +239,8 @@ SPECIFIC_PRODUCT_WORDS = [
     "угольник",
     "клапан",
     "коллектор",
+    "унитаз",
+    "инсталляц",
 ]
 
 # Воронки по «системам»: клиент называет систему/проект целиком, а не товар.
@@ -315,6 +321,7 @@ PROJECT_SCOPE_LABELS: dict[str, str] = {
 
 PROJECT_CATEGORY_LABELS: dict[str, str] = {
     "boilers": "Котёл",
+    "water_heaters": "Водонагреватель",
     "pumps": "Насос",
     "pipes": "Трубы",
     "valves": "Запорная арматура",
@@ -326,6 +333,7 @@ PROJECT_CATEGORY_LABELS: dict[str, str] = {
 
 PROJECT_CATEGORY_REASONS: dict[str, str] = {
     "boilers": "закрывает источник тепла; мощность и тип котла нужно сверять с площадью, топливом и ГВС",
+    "water_heaters": "готовит горячую воду; объём, способ нагрева и тип установки нужно сверять с задачей",
     "pumps": "нужен для циркуляции или отдельного контура, если штатного насоса котла/узла недостаточно",
     "pipes": "это базовая магистраль системы; диаметр и материал уточняются по задаче",
     "valves": "нужна для отсечения и обслуживания узлов без слива всей системы",
@@ -510,6 +518,29 @@ class ChatOrchestrator:
         self.composer.set_state(session.category, session.slots, last_summary, docs_excerpt)
         agents_used: list[str] = []
 
+        water_heater_safety = self._maybe_water_heater_operational_safety_answer(
+            message,
+            session,
+        )
+        if water_heater_safety:
+            intent = IntentResult(
+                intent_type="water_heater_safety",
+                category="water_heaters",
+                confidence=1.0,
+            )
+            agents_used.append("GuardrailsAgent")
+            self._append_history(session, message, water_heater_safety)
+            self.sessions.save(session)
+            return self._response(
+                session_id,
+                water_heater_safety,
+                [],
+                False,
+                intent,
+                session,
+                agents_used,
+            )
+
         emergency_answer = self._maybe_water_emergency_answer(message, session)
         if emergency_answer:
             intent = IntentResult(
@@ -534,7 +565,7 @@ class ChatOrchestrator:
         if gas_safety:
             intent = IntentResult(
                 intent_type="gas_safety",
-                category="boilers",
+                category=session.category or "boilers",
                 confidence=1.0,
             )
             agents_used.append("GuardrailsAgent")
@@ -554,7 +585,7 @@ class ChatOrchestrator:
         if electrical_safety:
             intent = IntentResult(
                 intent_type="electrical_safety",
-                category="boilers",
+                category=session.category or "boilers",
                 confidence=1.0,
             )
             agents_used.append("GuardrailsAgent")
@@ -731,6 +762,34 @@ class ChatOrchestrator:
         self._ground_catalog_sku_intent(message, intent)
         self._enrich_brand_from_feed(message, intent)
         agents_used.append("IntentRouterAgent")
+
+        toilet_project_answer = self._maybe_toilet_installation_project(
+            message,
+            session,
+        )
+        if toilet_project_answer:
+            # This project is outside the currently typed basket categories.
+            # Clear any stale boiler/pump goal before the consultant can expand
+            # «нужно всё» into an unrelated generic engineering basket.
+            intent = IntentResult(
+                intent_type="broad_category",
+                category="other",
+                confidence=1.0,
+                is_topic_change=True,
+            )
+            agents_used.extend(["ResponseComposerAgent", "GuardrailsAgent"])
+            self._append_history(session, message, toilet_project_answer)
+            self.sessions.save(session)
+            return self._response(
+                session_id,
+                toilet_project_answer,
+                [],
+                False,
+                intent,
+                session,
+                agents_used,
+            )
+
         self._stabilize_active_goal(message, intent, session)
         self._ground_builtin_boiler_refinement(message, intent, session)
         self._reconcile_builtin_constraints(intent, session)
@@ -1224,7 +1283,11 @@ class ChatOrchestrator:
             answer, cards = focused_stock
             agents_used.extend(["ResponseComposerAgent", "GuardrailsAgent"])
             answer = self._guard_composed_answer(answer, "products", agents_used)
-            session.last_products = cards
+            # A strict stock follow-up may intentionally hide an unavailable
+            # card. Keep the exact shown product as the internal reference so a
+            # subsequent «покажи аналоги» can use its verified characteristics.
+            if cards:
+                session.last_products = cards
             self._append_history(session, message, answer)
             self.sessions.save(session)
             return self._response(
@@ -2127,6 +2190,24 @@ class ChatOrchestrator:
                 slots["contours"] = "двухконтурный"
             elif "одно" in contours or contours == "1" or "one" in contours or "single" in contours:
                 slots["contours"] = "одноконтурный"
+        heater_type = normalize_text(str(slots.get("heater_type") or ""))
+        if heater_type:
+            if "проточ" in heater_type or heater_type in {"instant", "tankless"}:
+                slots["heater_type"] = "проточный"
+            elif "косвен" in heater_type or heater_type == "indirect":
+                slots["heater_type"] = "косвенного нагрева"
+            elif "накоп" in heater_type or heater_type in {"storage", "tank"}:
+                slots["heater_type"] = "накопительный"
+        energy_source = normalize_text(str(slots.get("energy_source") or ""))
+        if energy_source:
+            if "комбин" in energy_source or energy_source == "combined":
+                slots["energy_source"] = "комбинированный"
+            elif "косвен" in energy_source or energy_source == "indirect":
+                slots["energy_source"] = "косвенный"
+            elif "газ" in energy_source or energy_source == "gas":
+                slots["energy_source"] = "газовый"
+            elif "электр" in energy_source or energy_source in {"electric", "electrical"}:
+                slots["energy_source"] = "электрический"
         return slots
 
     def _is_searchable(self, query: SearchQuery) -> bool:
@@ -2150,6 +2231,11 @@ class ChatOrchestrator:
             "power_kw",
             "area_m2",
             "boiler_type",
+            "volume_l",
+            "heater_type",
+            "energy_source",
+            "mounting",
+            "orientation",
             "pump_type",
             "pump_use",
             "element_type",
@@ -3961,10 +4047,14 @@ class ChatOrchestrator:
         ):
             return False
 
+        if intent.slots.get("boiler_water_heater_pair"):
+            return True
+
         if self._is_explicit_boiler_product_request(text, intent):
             return False
 
         concrete_non_boiler = {
+            "water_heaters",
             "pumps",
             "pipes",
             "fittings",
@@ -3995,6 +4085,11 @@ class ChatOrchestrator:
             "mounting_length_mm",
             "size_inch",
             "application",
+            "volume_l",
+            "heater_type",
+            "energy_source",
+            "mounting",
+            "orientation",
         }
         if intent.category in concrete_non_boiler and concrete_slot_keys.intersection(intent.slots):
             if not any(marker in text for marker in broad_markers):
@@ -4048,6 +4143,7 @@ class ChatOrchestrator:
             "радиатор",
             "фитинг",
             "бойлер",
+            "водонагрев",
         ]
         if "есть" in text and any(word in text for word in category_words):
             return True
@@ -4080,8 +4176,9 @@ class ChatOrchestrator:
     def _update_project_state(self, message: str, intent: IntentResult, session: SessionState) -> None:
         text = normalize_text(message)
         if intent.slots.get("area_m2"):
-            mentions_warm_floor = "пол" in text and any(
-                marker in text for marker in ["тепл", "тёпл"]
+            mentions_warm_floor = bool(
+                re.search(r"\bпол(?:а|у|ом|е)?\b", text)
+                and any(marker in text for marker in ["тепл", "тёпл"])
             )
             explicitly_names_house_area = bool(
                 re.search(
@@ -4105,34 +4202,62 @@ class ChatOrchestrator:
         if intent.slots.get("contours"):
             session.slots["contours"] = intent.slots["contours"]
 
-        # Источники тепла с учётом отрицания: «газа нет» → has_gas=False, а не +газ.
-        no_gas = self._message_rejects_gas(text)
-        if no_gas:
-            session.slots["has_gas"] = False
-            # An explicit negative constraint supersedes a gas selection kept
-            # from an earlier turn or inferred from the word ``газ`` itself.
-            session.slots["boiler_type"] = "электрический"
-            session.slots.pop("boiler_types", None)
-        elif "газ" in text:
-            session.slots["has_gas"] = True
-        if "электр" in text or no_gas:
-            # «газа нет» обычно подразумевает электрическую котельную.
-            session.slots["has_electricity"] = True
+        # Energy words inside a water-heater request describe that appliance,
+        # not the heat source of an отопление project.  Keeping them in
+        # ``heat_sources`` made a later «покажи ещё» jump from water heaters to
+        # boilers in the consultant branch.
+        heat_project_context = intent.category != "water_heaters" and bool(
+            intent.category == "boilers"
+            or session.category == "boilers"
+            or session.slots.get("project")
+            or session.slots.get("project_scope") in {"heating", "general", "warm_floor"}
+            or any(
+                marker in text
+                for marker in [
+                    "котел",
+                    "котёл",
+                    "котельн",
+                    "отоплен",
+                    "источник тепла",
+                    "обогрев",
+                    "строю дом",
+                    "построить дом",
+                ]
+            )
+        )
+        if heat_project_context:
+            # Источники тепла с учётом отрицания:
+            # «газа нет» → has_gas=False, а не +газ.
+            no_gas = self._message_rejects_gas(text)
+            if no_gas:
+                session.slots["has_gas"] = False
+                # An explicit negative constraint supersedes a gas selection kept
+                # from an earlier turn or inferred from the word ``газ`` itself.
+                session.slots["boiler_type"] = "электрический"
+                session.slots.pop("boiler_types", None)
+            elif "газ" in text:
+                session.slots["has_gas"] = True
+            if "электр" in text or no_gas:
+                # «газа нет» обычно подразумевает электрическую котельную.
+                session.slots["has_electricity"] = True
 
-        sources: list[str] = []
-        if session.slots.get("has_gas") is True:
-            sources.append("газ")
-        if session.slots.get("has_electricity") is True:
-            sources.append("электричество")
-        if session.slots.get("has_gas") is False:
-            sources.append("газа нет")
-        if sources:
-            session.slots["heat_sources"] = ", ".join(dict.fromkeys(sources))
-        if session.slots.get("has_gas") is True and session.slots.get("has_electricity") is True:
-            mentions_both_sources = "газ" in text and "электр" in text
-            if mentions_both_sources:
-                session.slots.pop("boiler_type", None)
-                session.slots["boiler_types"] = ["газовый", "электрический"]
+            sources: list[str] = []
+            if session.slots.get("has_gas") is True:
+                sources.append("газ")
+            if session.slots.get("has_electricity") is True:
+                sources.append("электричество")
+            if session.slots.get("has_gas") is False:
+                sources.append("газа нет")
+            if sources:
+                session.slots["heat_sources"] = ", ".join(dict.fromkeys(sources))
+            if (
+                session.slots.get("has_gas") is True
+                and session.slots.get("has_electricity") is True
+            ):
+                mentions_both_sources = "газ" in text and "электр" in text
+                if mentions_both_sources:
+                    session.slots.pop("boiler_type", None)
+                    session.slots["boiler_types"] = ["газовый", "электрический"]
 
         if any(word in text for word in ["дом", "коттедж", "построить", "строю"]):
             session.slots.setdefault("project", "частный дом")
@@ -4143,11 +4268,12 @@ class ChatOrchestrator:
             session.slots["boiler_requirement"] = "с бойлером"
         elif re.search(r"\bбез\s+бойлер\w*\b", text):
             session.slots["boiler_requirement"] = "без бойлера"
-        if "водян" in text and "пол" in text:
+        mentions_floor = bool(re.search(r"\bпол(?:а|у|ом|е)?\b", text))
+        if "водян" in text and mentions_floor:
             session.slots["warm_floor_type"] = "водяной"
         elif "от котл" in text and session.slots.get("project_scope") == "warm_floor":
             session.slots["warm_floor_type"] = "водяной"
-        elif "электр" in text and "пол" in text:
+        elif "электр" in text and mentions_floor:
             session.slots["warm_floor_type"] = "электрический"
         elif text.strip(" .,!?:;") in {"водяной", "водяной от котла", "электрический"}:
             if session.slots.get("project_scope") == "warm_floor":
@@ -4194,6 +4320,14 @@ class ChatOrchestrator:
         named: list[str] = []
         if "котел" in text or "котёл" in text or "котельн" in text:
             named.append("boilers")
+        if (
+            "водонагрев" in text
+            or (
+                "бойлер" in text
+                and not re.search(r"\bкот[её]л\w*\s+с\s+(?:встроенн\w*\s+)?бойлер\w*", text)
+            )
+        ):
+            named.append("water_heaters")
         if "насос" in text:
             named.append("pumps")
         if "труб" in text and "канализац" not in text:
@@ -4236,7 +4370,16 @@ class ChatOrchestrator:
         if warm_floor and not named:
             return ["pipes", "pumps", "valves"], slots
         if broad:
-            return ["boilers", "pumps", "pipes", "valves", "sewer"], slots
+            # An explicitly named product/category limits retrieval.  A request
+            # such as «нужно всё для водонагревателя» must not silently become a
+            # generic basket containing boilers and unrelated systems.
+            return list(dict.fromkeys(named)) or [
+                "boilers",
+                "pumps",
+                "pipes",
+                "valves",
+                "sewer",
+            ], slots
         # Вопрос про встроенный насос котла — нужен и котёл, и насосы в контексте.
         if "встроен" in text and "pumps" not in named:
             named = ["boilers", "pumps"]
@@ -4250,6 +4393,7 @@ class ChatOrchestrator:
     def _primary_session_category(self, categories: list[str]) -> str | None:
         mapping = {
             "boilers": "boilers",
+            "water_heaters": "water_heaters",
             "pumps": "pumps",
             "pipes": "pipes",
             "valves": "valves",
@@ -4950,6 +5094,7 @@ class ChatOrchestrator:
             return False
         return intent.category in {
             "boilers",
+            "water_heaters",
             "pumps",
             "pipes",
             "valves",
@@ -5574,6 +5719,75 @@ class ChatOrchestrator:
             return GENERAL_FUNNEL
 
         return None
+
+    def _maybe_toilet_installation_project(
+        self,
+        message: str,
+        session: SessionState,
+    ) -> str | None:
+        """Fail closed for an untyped sanitary-fixture basket.
+
+        The feed contains both toilets and small accessories, but they do not yet
+        have a typed project-cart category.  A broad installation request must
+        therefore collect the interface facts first instead of inheriting an old
+        category or asking the consultant to retrieve a generic heating basket.
+        """
+        text = normalize_text(message)
+        names_toilet_fixture = bool(re.search(r"\bунитаз\w*\b", text))
+        installs_toilet_fixture = bool(
+            re.search(
+                r"\b(?:установк\w*|монтаж\w*|подключени\w*)\s+"
+                r"(?:нов\w+\s+)?туалет\w*\b",
+                text,
+            )
+        )
+        project_request = any(
+            marker in text
+            for marker in [
+                "установ",
+                "монтаж",
+                "подключ",
+                "все для",
+                "всё для",
+                "все что нужно",
+                "всё что нужно",
+                "комплект",
+                "под ключ",
+            ]
+        )
+        if not (
+            installs_toilet_fixture
+            or names_toilet_fixture and project_request
+        ):
+            return None
+
+        session.slots = {
+            "project_scope": "toilet_installation",
+            "project_fixture": "унитаз",
+        }
+        session.category = None
+        session.last_products = []
+        session.last_intent = "broad_category"
+        session.topic_changed = True
+        session.pending_category = None
+        session.pending_slot_keys = []
+        session.pending_complectation_parts = []
+        session.question_repeats = 0
+        session.pending_handoff = None
+        if session.handoff_status in {"awaiting_contact", "awaiting_consent", "failed"}:
+            session.handoff_status = "none"
+
+        question = (
+            "Чтобы собрать корректный комплект для установки унитаза, сначала уточните: "
+            "нужен сам унитаз или только подключение уже выбранного; он напольный или "
+            "подвесной; какой у него выпуск и как расположена канализационная труба; "
+            "как подведена вода? Пока эти данные неизвестны, не буду показывать случайные "
+            "товары. После уточнения отдельно проверю по карточкам унитаз, крепёж, "
+            "манжету/переход к канализации, подводку и запорный кран."
+        )
+        session.pending_question = question
+        session.pending_intent_type = "broad_category"
+        return question
 
     def _maybe_scope_followup_answer(self, message: str, session: SessionState) -> str | None:
         scope = session.slots.get("scope_funnel")
@@ -6242,6 +6456,21 @@ class ChatOrchestrator:
             return False
         if self._wants_choose_one(message):
             return False
+        if "только в налич" in text:
+            # This is a persistent catalogue filter, not a question about the
+            # stock of the card already on screen.
+            return False
+        # A stock marker may accompany a new product refinement. Do not answer
+        # «только в наличии» about the old card when this turn also changes a
+        # typed water-heater constraint.
+        if {
+            "volume_l",
+            "heater_type",
+            "energy_source",
+            "mounting",
+            "orientation",
+        }.intersection(intent.slots):
+            return False
         # Уточнения и команды, которые умеет детерминированный конвейер.
         refine_signals = [
             "дешевле",
@@ -6739,6 +6968,13 @@ class ChatOrchestrator:
             "relative_cheaper",
         }
         current_slots = self._merge_persistent_slots(session, intent.slots)
+        reference_slots = self._shown_water_heater_reference_slots(session)
+        for key, value in reference_slots.items():
+            # Current-turn constraints are authoritative. Missing compatibility
+            # dimensions, however, must come from the exact shown feed row—not
+            # from semantic similarity to the words «покажи аналоги».
+            current_slots.setdefault(key, value)
+            session.slots.setdefault(key, value)
         query = SearchQuery(
             original_text=message,
             category=session.category or "other",
@@ -6747,6 +6983,10 @@ class ChatOrchestrator:
                 for key, value in current_slots.items()
                 if key not in transient_slots
             },
+            in_stock_only=bool(
+                current_slots.get("in_stock")
+                or intent.flags.get("in_stock")
+            ),
         )
         if wants_cheaper:
             query.cheap = True
@@ -6773,7 +7013,14 @@ class ChatOrchestrator:
                     if product.price is not None and product.price < min_shown_price
                 ]
         if not alternatives:
-            if wants_cheaper:
+            if (
+                query.category == "water_heaters"
+                and query.slots.get("allow_alternatives") is True
+            ):
+                agents_used.append("ResponseComposerAgent")
+                answer = self.composer.compose_no_match(query)
+                answer = self._guard_composed_answer(answer, "generic", agents_used)
+            elif wants_cheaper:
                 agents_used.append("ResponseComposerAgent")
                 answer = self.composer.compose_no_cheaper(session.last_products)
                 answer = self._guard_composed_answer(answer, "generic", agents_used)
@@ -6805,6 +7052,18 @@ class ChatOrchestrator:
         session.last_products = cards
         self._append_history(session, message, answer)
         return self._response(session.session_id, answer, cards, False, intent, session, agents_used)
+
+    def _shown_water_heater_reference_slots(
+        self,
+        session: SessionState,
+    ) -> dict[str, object]:
+        """Hydrate hard analogue constraints from one exact shown card."""
+        if session.category != "water_heaters" or len(session.last_products) != 1:
+            return {}
+        product = self._find_product_by_sku(session.last_products[0].sku)
+        if product is None:
+            return {}
+        return self.search_agent.water_heater_reference_slots(product)
 
     def _maybe_comparison_answer(self, message: str, session: SessionState) -> str | None:
         if len(session.last_products) < 2:
@@ -7210,6 +7469,102 @@ class ChatOrchestrator:
             "параметрам, а для расчёта лучше передать задачу специалисту."
         )
 
+    def _maybe_water_heater_operational_safety_answer(
+        self,
+        message: str,
+        session: SessionState,
+    ) -> str | None:
+        """Stop unsafe water-heater operation before routing and catalogue search."""
+        text = normalize_text(message)
+        water_heater_context = bool(
+            re.search(r"\b(?:водонагрев\w*|электробойлер\w*|бойлер\w*)\b", text)
+        )
+        if not water_heater_context:
+            return None
+
+        relief_valve = bool(
+            re.search(
+                r"\b(?:предохранительн\w*|сбросн\w*)"
+                r"(?:\s+\w+){0,2}\s+клапан\w*\b",
+                text,
+            )
+            or re.search(
+                r"\bклапан\w*(?:\s+\w+){0,2}\s+"
+                r"(?:предохранительн\w*|сбросн\w*)\b",
+                text,
+            )
+        )
+        blocking_action = bool(
+            re.search(
+                r"\b(?:заглуш\w*|перекры\w*|закры\w*|затк\w*|"
+                r"зажат\w*|зажм\w*|пережат\w*|пережм\w*)\b",
+                text,
+            )
+        )
+        # Blocking the valve itself is already unsafe; customers do not always
+        # name its drain/outlet explicitly.
+        unsafe_relief_block = relief_valve and blocking_action
+
+        start_action = bool(
+            re.search(
+                r"\b(?:включ\w*|запуст\w*|старт\w*|"
+                r"подат\w*\s+питан\w*|начат\w*\s+нагрев\w*)\b",
+                text,
+            )
+        )
+        empty_state = bool(
+            re.search(r"\bпуст\w*\b", text)
+            or "без воды" in text
+            or re.search(
+                r"\b(?:не|еще\s+не|ещё\s+не)\s+"
+                r"(?:заполн\w*|наполн\w*|набран\w*)\s*(?:вод\w*)?\b",
+                text,
+            )
+            or re.search(
+                r"\bвод\w*(?:\s+\w+){0,2}\s+"
+                r"(?:не\s+подал\w*|не\s+набра\w*|нет)\b",
+                text,
+            )
+        )
+        unsafe_dry_start = start_action and empty_state
+
+        if not (unsafe_relief_block or unsafe_dry_start):
+            return None
+
+        # This is an explicit topic switch.  Do not let words such as
+        # «клапан», «слив» or an earlier dialogue leave radiator/sewer slots
+        # attached to the water-heater safety answer.
+        session.category = "water_heaters"
+        session.slots = {}
+        session.last_products = []
+        session.pending_question = None
+        session.pending_intent_type = None
+        session.pending_category = None
+        session.pending_slot_keys = []
+        session.pending_complectation_parts = []
+        session.pending_handoff = None
+        session.question_repeats = 0
+        if session.handoff_status in {"awaiting_contact", "awaiting_consent", "failed"}:
+            session.handoff_status = "none"
+
+        if unsafe_relief_block:
+            return (
+                "Нет: не заглушайте и не перекрывайте слив, выход или отвод "
+                "предохранительного клапана водонагревателя. Клапан должен свободно "
+                "сбрасывать избыточное давление; блокировка может привести к повреждению "
+                "бака, разрыву и ожогам горячей водой. Если клапан постоянно или сильно "
+                "течёт, прекратите эксплуатацию, безопасно отключите питание и поручите "
+                "проверку клапана, давления и монтажа квалифицированному специалисту."
+            )
+        return (
+            "Нет: не включайте и не запускайте водонагреватель без воды. Сухой "
+            "запуск может быстро повредить нагревательный элемент и создать опасность "
+            "перегрева. До подачи питания заполните накопительный бак по инструкции "
+            "или обеспечьте штатный проток для проточной модели и убедитесь, что вода "
+            "идёт без воздуха. Если оборудование уже включали пустым, отключите питание "
+            "и перед повторным запуском поручите его проверку специалисту."
+        )
+
     def _maybe_gas_safety_answer(
         self,
         message: str,
@@ -7231,8 +7586,49 @@ class ChatOrchestrator:
                 "gas_safety_bathroom",
                 "gas_safety_no_window",
                 "gas_safety_ventilation_blocked",
+                "gas_safety_category",
             ]:
                 session.slots.pop(key, None)
+
+        explicit_product = self._resolve_explicit_safety_product(text)
+        explicit_product_category = (
+            self.search_agent.canonical_category(explicit_product)
+            if explicit_product is not None
+            else None
+        )
+        explicit_product_is_gas = bool(
+            explicit_product is not None
+            and "газов" in self.search_agent._structured_text(explicit_product)
+        )
+        explicit_gas_boiler = bool(
+            re.search(r"\bгазов\w*\s+кот[её]л\w*\b", text)
+            or re.search(r"\bкот[её]л\w*[^.!?]{0,30}\bгазов\w*\b", text)
+            or (
+                explicit_product_category == "boilers"
+                and explicit_product_is_gas
+            )
+        )
+        explicit_gas_water_heater = bool(
+            re.search(r"\bгазов\w*\s+колонк\w*\b", text)
+            or re.search(r"\bколонк\w*[^.!?]{0,30}\bгазов\w*\b", text)
+            or re.search(r"\bгазов\w*[^.!?]{0,30}\bводонагревател\w*\b", text)
+            or re.search(r"\bводонагревател\w*[^.!?]{0,30}\bгазов\w*\b", text)
+            or (
+                explicit_product_category == "water_heaters"
+                and explicit_product_is_gas
+            )
+        )
+        stored_safety_category = normalize_text(
+            str(session.slots.get("gas_safety_category") or "")
+        )
+        if explicit_gas_water_heater:
+            safety_category = "water_heaters"
+        elif explicit_gas_boiler:
+            safety_category = "boilers"
+        elif safety_active and stored_safety_category in {"boilers", "water_heaters"}:
+            safety_category = stored_safety_category
+        else:
+            safety_category = "boilers"
 
         gas_leak = any(
             marker in text
@@ -7268,9 +7664,10 @@ class ChatOrchestrator:
         ):
             leak_explicitly_denied = False
         if gas_leak and not leak_explicitly_denied:
-            session.category = "boilers"
+            session.category = safety_category
             session.slots["gas_safety_active"] = True
             session.slots["gas_safety_expires_at"] = len(session.history) + 6
+            session.slots["gas_safety_category"] = safety_category
             session.last_products = []
             session.pending_question = None
             session.pending_category = None
@@ -7287,7 +7684,10 @@ class ChatOrchestrator:
         explicit_non_gas_topic = bool(
             (
                 "электр" in text
-                and any(marker in text for marker in ["котел", "котл"])
+                and any(
+                    marker in text
+                    for marker in ["котел", "котл", "водонагрев", "бойлер", "колонк"]
+                )
                 and "газов" not in text
             )
             or any(
@@ -7309,6 +7709,7 @@ class ChatOrchestrator:
                 "gas_safety_bathroom",
                 "gas_safety_no_window",
                 "gas_safety_ventilation_blocked",
+                "gas_safety_category",
             ]:
                 session.slots.pop(key, None)
             safety_active = False
@@ -7326,6 +7727,8 @@ class ChatOrchestrator:
                         "окн",
                         "ванн",
                         "котл",
+                        "водонагрев",
+                        "колонк",
                     ]
                 )
                 or any(
@@ -7342,12 +7745,10 @@ class ChatOrchestrator:
                 )
             )
         )
-        explicit_gas_boiler = bool(
-            re.search(r"\bгазов\w*\s+кот[её]л\w*\b", text)
-            or re.search(r"\bкот[её]л\w*[^.!?]{0,30}\bгазов\w*\b", text)
-        )
         gas_context = bool(
-            explicit_gas_boiler or referential_safety_followup
+            explicit_gas_boiler
+            or explicit_gas_water_heater
+            or referential_safety_followup
         )
         bathroom = any(marker in text for marker in ["ванн", "сануз"])
         no_window = any(
@@ -7438,15 +7839,21 @@ class ChatOrchestrator:
                 "gas_safety_bathroom",
                 "gas_safety_no_window",
                 "gas_safety_ventilation_blocked",
+                "gas_safety_category",
             ]:
                 session.slots.pop(key, None)
             safety_active = False
             referential_safety_followup = False
-            gas_context = explicit_gas_boiler
+            gas_context = explicit_gas_boiler or explicit_gas_water_heater
             if any(marker in text for marker in ["можно", "став", "установ", "запуст"]):
+                equipment = (
+                    "газового водонагревателя"
+                    if safety_category == "water_heaters"
+                    else "газового котла"
+                )
                 return (
                     "Восстановление вентиляции устраняет один из опасных факторов, но само "
-                    "по себе не подтверждает допустимость установки газового котла. Помещение, "
+                    f"по себе не подтверждает допустимость установки {equipment}. Помещение, "
                     "приток воздуха, дымоудаление и проект подключения должна проверить "
                     "специализированная газовая организация до монтажа и запуска."
                 )
@@ -7458,15 +7865,22 @@ class ChatOrchestrator:
         if not (gas_context and unsafe_room):
             return None
 
-        session.category = "boilers"
-        session.slots = {
-            "boiler_type": "газовый",
+        session.category = safety_category
+        safety_slots: dict[str, Any] = {
             "gas_safety_active": True,
             "gas_safety_expires_at": len(session.history) + 6,
             "gas_safety_bathroom": effective_bathroom,
             "gas_safety_no_window": effective_no_window,
             "gas_safety_ventilation_blocked": effective_ventilation_blocked,
+            "gas_safety_category": safety_category,
         }
+        if safety_category == "water_heaters":
+            safety_slots["energy_source"] = "газовый"
+            if "колонк" in text:
+                safety_slots["heater_type"] = "проточный"
+        else:
+            safety_slots["boiler_type"] = "газовый"
+        session.slots = safety_slots
         session.last_products = []
         session.pending_question = None
         session.pending_intent_type = None
@@ -7480,15 +7894,25 @@ class ChatOrchestrator:
             and effective_bathroom
             and effective_no_window
         ):
+            equipment = (
+                "газовом водонагревателе"
+                if safety_category == "water_heaters"
+                else "газовом котле"
+            )
             return (
                 "То, что вентиляция восстановлена, важно, но исходная проблема "
-                "полностью не снята: речь всё ещё о газовом котле в ванной без окна. "
+                f"полностью не снята: речь всё ещё о {equipment} в ванной без окна. "
                 "Не устанавливайте и не запускайте его до проверки помещения, притока "
                 "воздуха, дымоудаления и проекта специализированной газовой организацией."
             )
+        equipment = (
+            "газовый водонагреватель (газовую колонку)"
+            if safety_category == "water_heaters"
+            else "газовый котёл"
+        )
         return (
             "Нет: заглушать или перекрывать вентиляцию в помещении с газовым "
-            "оборудованием нельзя. Не устанавливайте и не запускайте газовый котёл "
+            f"оборудованием нельзя. Не устанавливайте и не запускайте {equipment} "
             "в ванной без согласованного решения и проверки специализированной газовой "
             "организацией. Отсутствие окна, объём помещения, постоянный приток воздуха, "
             "вентиляцию и дымоудаление должен проверить специалист; закрытая камера "
@@ -7514,14 +7938,53 @@ class ChatOrchestrator:
             session.slots.pop("electrical_safety_active", None)
             session.slots.pop("electrical_safety_sku", None)
             session.slots.pop("electrical_safety_expires_at", None)
+            session.slots.pop("electrical_safety_category", None)
         product = self._resolve_electrical_safety_product(text, session)
-        boiler_context = bool(
-            any(marker in text for marker in ["котел", "котёл", "электрокот", "квт"])
+        product_category = (
+            self.search_agent.canonical_category(product)
+            if product is not None
+            else None
+        )
+        explicit_water_heater = bool(
+            any(marker in text for marker in ["водонагрев", "электробойлер"])
             or (
-                product is not None
-                and self.search_agent.canonical_category(product) == "boilers"
+                "бойлер" in text
+                and not any(marker in text for marker in ["котел", "котёл", "котл"])
             )
-            or session.category == "boilers"
+        )
+        explicit_boiler = any(
+            marker in text for marker in ["котел", "котёл", "электрокот"]
+        )
+        if (
+            explicit_water_heater
+            and not explicit_boiler
+            and product_category != "water_heaters"
+        ):
+            # A fallback to the only/previous boiler must not override the
+            # appliance explicitly named in the current safety question.
+            product = None
+            product_category = None
+        elif explicit_boiler and product_category != "boilers":
+            product = None
+            product_category = None
+        stored_safety_category = normalize_text(
+            str(session.slots.get("electrical_safety_category") or "")
+        )
+        if product_category in {"boilers", "water_heaters"}:
+            safety_category = product_category
+        elif explicit_water_heater and not explicit_boiler:
+            safety_category = "water_heaters"
+        elif explicit_boiler:
+            safety_category = "boilers"
+        elif safety_active and stored_safety_category in {"boilers", "water_heaters"}:
+            safety_category = stored_safety_category
+        elif session.category in {"boilers", "water_heaters"}:
+            safety_category = session.category
+        else:
+            safety_category = None
+        equipment_context = bool(
+            safety_category in {"boilers", "water_heaters"}
+            or "квт" in text
             or safety_active
         )
         electrical_action = any(
@@ -7558,7 +8021,7 @@ class ChatOrchestrator:
             ]
         )
         if not (
-            boiler_context
+            equipment_context
             and electrical_action
             and (installation_question or safety_active)
         ):
@@ -7570,9 +8033,10 @@ class ChatOrchestrator:
             else (None, False, False)
         )
 
-        session.category = "boilers"
+        session.category = safety_category or "boilers"
         session.slots["electrical_safety_active"] = True
         session.slots["electrical_safety_expires_at"] = len(session.history) + 6
+        session.slots["electrical_safety_category"] = session.category
         if product:
             session.slots["electrical_safety_sku"] = product.sku
 
@@ -7590,6 +8054,14 @@ class ChatOrchestrator:
                 f"{qualification} Не включайте оборудование до проверки "
                 "квалифицированным электриком."
             )
+        if session.category == "water_heaters":
+            return (
+                "Не подключайте электрический водонагреватель к обычной розетке только "
+                "по названию товара или значению 220 В. Нужно сверить паспорт: мощность, "
+                "допустимость штепсельного подключения, заземление, УЗО, выделенную линию "
+                "и защиту. Схему питания, кабель и автоматику должен проверить "
+                "квалифицированный электрик. До проверки оборудование не включайте."
+            )
         return (
             "Не подключайте мощный электрический котёл к обычной розетке только на основании "
             "того, что указано 220 В. Нужно сверить паспорт, выделенную мощность, схему питания "
@@ -7597,14 +8069,43 @@ class ChatOrchestrator:
             "До проверки оборудование не включайте."
         )
 
+    def _resolve_explicit_safety_product(
+        self,
+        text: str,
+    ) -> Product | None:
+        """Resolve only a product identity explicitly present in this turn."""
+        mentioned = self.search_agent.resolve_sku_mentions(text)
+        if len(mentioned) == 1:
+            return mentioned[0]
+        if len(mentioned) > 1:
+            return None
+
+        normalized_text = normalize_text(text)
+        exact_name_matches = [
+            product
+            for product in self.search_agent.products
+            if len(normalize_text(product.name).split()) >= 3
+            and re.search(
+                rf"(?<!\w){re.escape(normalize_text(product.name))}(?!\w)",
+                normalized_text,
+            )
+        ]
+        if not exact_name_matches:
+            return None
+        exact_name_matches.sort(
+            key=lambda product: len(normalize_text(product.name)),
+            reverse=True,
+        )
+        return exact_name_matches[0]
+
     def _resolve_electrical_safety_product(
         self,
         text: str,
         session: SessionState,
     ) -> Product | None:
-        for product in self.search_agent.products:
-            if normalize_sku_token(product.sku) in normalize_sku_token(text):
-                return product
+        explicit_product = self._resolve_explicit_safety_product(text)
+        if explicit_product is not None:
+            return explicit_product
         # Resolve an explicitly named model before falling back to the previous
         # safety target. This prevents «а Arderia E9?» from inheriting E12 facts.
         explicit_matches: list[Product] = []
@@ -7705,6 +8206,14 @@ class ChatOrchestrator:
         session: SessionState,
     ) -> str | None:
         text = normalize_text(message)
+        if (
+            re.search(r"\b(?:водонагрев\w*|бойлер\w*)\b", text)
+            or re.search(r"\bгазов\w*\s+колонк\w*\b", text)
+        ):
+            # «Водонагреватель под мойку» names a complete appliance.  The
+            # location phrase must not be mistaken for an undersink
+            # siphon/valve request before intent routing starts.
+            return None
         state = session.slots.get("sink_flow")
         mentions_sink = any(marker in text for marker in ["под раковин", "под мойк"])
         drain_markers = ["слив", "сифон", "водослив"]
@@ -8330,6 +8839,8 @@ class ChatOrchestrator:
             marker in text
             for marker in [
                 "котел",
+                "бойлер",
+                "водонагрев",
                 "труб",
                 "радиатор",
                 "кран",
@@ -8381,6 +8892,17 @@ class ChatOrchestrator:
                 keys.append("area_m2")
             if "220" in text and "380" in text:
                 keys.append("voltage_v")
+        if category == "water_heaters":
+            if "объ" in text or "литр" in text:
+                keys.append("volume_l")
+            if "накоп" in text or "проточ" in text:
+                keys.append("heater_type")
+            if any(marker in text for marker in ["электр", "газ", "косвен", "источник"]):
+                keys.append("energy_source")
+            if "монтаж" in text or "настенн" in text or "напольн" in text:
+                keys.append("mounting")
+            if "вертик" in text or "горизонт" in text:
+                keys.append("orientation")
         return list(dict.fromkeys(keys))
 
     def _is_pending_continuation(
@@ -8398,6 +8920,26 @@ class ChatOrchestrator:
             session.pending_category == "boilers"
             and not intent.is_topic_change
             and any(marker in text for marker in ["электр", "газ", "220", "380"])
+        ):
+            return True
+        if (
+            session.pending_category == "water_heaters"
+            and not intent.is_topic_change
+            and any(
+                marker in text
+                for marker in [
+                    "электр",
+                    "газ",
+                    "косвен",
+                    "накоп",
+                    "проточ",
+                    "литр",
+                    "настенн",
+                    "напольн",
+                    "вертик",
+                    "горизонт",
+                ]
+            )
         ):
             return True
         if intent.intent_type in {"small_talk", "unknown", "out_of_scope"} and intent.category == "other":
@@ -8419,6 +8961,8 @@ class ChatOrchestrator:
             intent.category = session.pending_category
         elif session.pending_category == "boilers" and not intent.is_topic_change:
             intent.category = session.pending_category
+        elif session.pending_category == "water_heaters" and not intent.is_topic_change:
+            intent.category = session.pending_category
         elif session.category and intent.category == "other":
             intent.category = session.category
         if session.pending_complectation_parts:
@@ -8439,6 +8983,15 @@ class ChatOrchestrator:
         if session.slots.get("pump_accessory_sku") and session.category == "valves":
             return None
         text = normalize_text(message)
+        # This shortcut is only for a *pure* follow-up about a card that has
+        # already been shown.  A stock phrase may be appended to new or
+        # corrected product requirements (for example: "не проточный,
+        # накопительный 80 л, только в наличии").  In that case the normal
+        # search pipeline must apply the new hard constraints instead of
+        # reporting the stock of the previous card.
+        stock_only_slots = {"in_stock", "cheap", "sort_mode"}
+        if set(intent.slots) - stock_only_slots:
+            return None
         if self._wants_choose_one(message) and "в наличии" in text:
             # This is a selection constraint, not a question about the stock of
             # the currently displayed (possibly unavailable) card.
@@ -8453,11 +9006,29 @@ class ChatOrchestrator:
             if index is not None:
                 selected = session.last_products[index]
             elif len(session.last_products) == 1 and any(
-                marker in text for marker in ["у него", "у неё", "у нее", "этого", "этой", "сколько осталось"]
+                marker in text
+                for marker in [
+                    "у него",
+                    "у неё",
+                    "у нее",
+                    "этого",
+                    "этой",
+                    "сколько осталось",
+                    "только в налич",
+                    "а в налич",
+                    "он в налич",
+                    "она в налич",
+                    "есть ли",
+                ]
             ):
                 selected = session.last_products[0]
         if selected is None:
             return None
+        strict_in_stock = "только в налич" in text
+        if strict_in_stock:
+            # This turn is handled before the normal slot merge, therefore the
+            # filter must be made durable explicitly.
+            session.slots["in_stock"] = True
         if selected.stock_qty is not None:
             stock = (
                 f"в наличии {selected.stock_qty} шт."
@@ -8472,6 +9043,12 @@ class ChatOrchestrator:
             if "дешев" in text
             else f"По товару {selected.sku} ({selected.name}): {stock}"
         )
+        if strict_in_stock and not self._card_is_in_stock(selected):
+            answer += (
+                " По фильтру «только в наличии» карточку не показываю. "
+                "Если хотите, покажу только совместимые аналоги с подтверждённым остатком."
+            )
+            return answer, []
         return answer, [selected]
 
     def _maybe_shown_category_price_answer(
@@ -8542,6 +9119,11 @@ class ChatOrchestrator:
             "power_kw",
             "area_m2",
             "boiler_type",
+            "volume_l",
+            "heater_type",
+            "energy_source",
+            "mounting",
+            "orientation",
             "pump_type",
             "element_type",
             "sewer_scope",
@@ -8790,6 +9372,7 @@ class ChatOrchestrator:
             "pipes": ["труба", "трубы"],
             "sewer": ["канализац"],
             "boilers": ["котел", "котёл", "котл"],
+            "water_heaters": ["водонагрев", "бойлер", "накопительн", "проточн"],
             "valves": ["кран", "шаровый", "вентиль"],
             "radiator_fittings": ["радиатор", "батаре", "термоголов", "клапан"],
             "radiators": ["радиатор", "батаре", "биметалл"],
@@ -8812,6 +9395,14 @@ class ChatOrchestrator:
                 "дюйм",
                 "dn",
                 "секц",
+                "литр",
+                "накоп",
+                "проточ",
+                "косвен",
+                "настенн",
+                "напольн",
+                "вертик",
+                "горизонт",
                 "дешев",
                 "подешевле",
                 "в наличии",

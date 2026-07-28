@@ -33,6 +33,13 @@ except ImportError:  # pragma: no cover - exercised only without optional depend
 
 SYNONYMS: dict[str, list[str]] = {
     "котел": ["котел", "котёл", "boiler"],
+    "водонагреватель": [
+        "водонагреватель",
+        "водонагреватели",
+        "накопительный водонагреватель",
+        "проточный водонагреватель",
+        "бойлер косвенного нагрева",
+    ],
     "насос": ["насос", "помпа"],
     "циркуляционный насос": ["циркуляционный насос", "насос циркуляционный"],
     "кран": ["кран", "шаровый кран", "вентиль"],
@@ -103,6 +110,11 @@ CATEGORY_NEEDLES: dict[str, list[str]] = {
     "sewer": ["канализац", "ostendorf", "htem", "htee", "htr"],
     "pumps": ["насос", "помпа", "pump"],
     "boilers": ["котел", "котёл", "boiler"],
+    "water_heaters": [
+        "водонагревател",
+        "бойлер косвенного нагрева",
+        "water heater",
+    ],
     "valves": ["кран", "шаровый", "вентиль"],
     "radiator_fittings": ["радиатор", "термоголов", "термостатическ", "клапан"],
     "radiators": ["радиатор", "батаре", "биметалл"],
@@ -113,6 +125,10 @@ CATEGORY_NEEDLES: dict[str, list[str]] = {
 # Котлы и насосы лежат в акционных разделах, поэтому сперва смотрим имя товара,
 # и только потом — путь категории. Фитинги (угольник/муфта/тройник) отделяем от труб.
 _NAME_CATEGORY_RULES: list[tuple[str, list[str]]] = [
+    (
+        "water_heaters",
+        ["водонагреватель", "бойлер косвенного нагрева", "water heater"],
+    ),
     ("boilers", ["котел", "котёл", "boiler"]),
     ("pumps", ["насос", "помпа"]),
     ("radiators", ["радиатор алюмин", "радиатор биметал", "радиатор стальн", "радиатор панельн"]),
@@ -548,6 +564,11 @@ class FeedSearchAgent:
         """Shared final-card predicate for search and consultant paths."""
         if slots.get("in_stock") and not product.is_in_stock:
             return False
+        if (
+            category == "water_heaters"
+            and self.canonical_category(product) != "water_heaters"
+        ):
+            return False
         return _product_matches_hard_constraints(
             product,
             slots,
@@ -563,6 +584,17 @@ class FeedSearchAgent:
                 product
                 for product in exact
                 if _product_matches_hard_constraints(product, query.slots)
+                and (
+                    query.category != "water_heaters"
+                    or (
+                        self._category_matches(product, "water_heaters")
+                        and self._semantic_slots_match(
+                            product,
+                            "water_heaters",
+                            dict(query.slots),
+                        )
+                    )
+                )
             ]
             if exact:
                 return exact[: self._query_result_limit(query, query.limit)]
@@ -656,7 +688,7 @@ class FeedSearchAgent:
             if query is not None
             else limit
         )
-        matches: list[tuple[float, int, Product]] = []
+        eligible: list[Product] = []
         for product in self.products:
             if query and query.category != "other" and not self._category_matches(
                 product, query.category
@@ -674,6 +706,33 @@ class FeedSearchAgent:
                 product, effective_slots, query.category
             ):
                 continue
+            eligible.append(product)
+
+        # A complete catalogue name is an identity boundary.  Fuzzy coverage
+        # deliberately tolerates one missing token, but that is unsafe for model
+        # families where the only difference is ``30``/``50``/``80``.  Resolve
+        # the literal normalized name first and only use fuzzy matching when no
+        # full card name is present in the message.
+        exact_name_matches = [
+            product
+            for product in eligible
+            if len(normalize_text(product.name).split()) >= 3
+            and re.search(
+                rf"(?<!\w){re.escape(normalize_text(product.name))}(?!\w)",
+                text,
+            )
+        ]
+        if exact_name_matches:
+            exact_name_matches.sort(
+                key=lambda product: (
+                    -len(normalize_text(product.name)),
+                    not product.is_in_stock,
+                )
+            )
+            return exact_name_matches[:effective_limit]
+
+        matches: list[tuple[float, int, Product]] = []
+        for product in eligible:
             # Сопоставляем только с идентичностью товара (название/категория),
             # без длинного маркетингового описания — иначе общая лексика паспорта
             # даёт ложные совпадения.
@@ -862,6 +921,59 @@ class FeedSearchAgent:
             or re.search(r"\bкотел\b", type_text)
         )
 
+    def _is_actual_water_heater(self, product: Product) -> bool:
+        """Separate complete water-heating appliances from their accessories.
+
+        The feed section ``Водонагреватели`` also contains heating elements,
+        anodes, control panels, jackets and connection kits.  A section path is
+        therefore not evidence that a row is an appliance.  Prefer the explicit
+        product type, and use the name only for the sparse indirect-cylinder
+        rows that have no structured type.
+        """
+        name = normalize_text(product.name)
+        product_types = {
+            normalize_text(str(value))
+            for key, value in product.attributes_normalized.items()
+            if "тип товара" in normalize_text(key)
+        }
+        if any(value == "водонагреватель" for value in product_types):
+            return True
+        if product_types.intersection(
+            {
+                "тэн",
+                "анод",
+                "комплектующие",
+                "автоматика",
+                "запчасть",
+                "аксессуар",
+            }
+        ):
+            return False
+
+        accessory_prefixes = (
+            "тэн ",
+            "анод ",
+            "комплект ",
+            "панель ",
+            "термостат ",
+            "датчик ",
+            "изоляция ",
+            "кожух ",
+            "фланец ",
+            "прокладка ",
+            "клапан ",
+        )
+        if name.startswith(accessory_prefixes):
+            return False
+        return bool(
+            re.match(
+                r"^(?:(?:электрическ|газов|накопительн|проточн|"
+                r"комбинированн)\w*\s+){0,3}водонагреватель\b",
+                name,
+            )
+            or re.match(r"^бойлер\s+косвенн\w*\s+нагрев\w*\b", name)
+        )
+
     def _is_actual_pump(self, product: Product) -> bool:
         name = normalize_text(product.name)
         type_values = [
@@ -980,6 +1092,8 @@ class FeedSearchAgent:
         name = normalize_text(product.name)
         path = normalize_text(product.category_path)
 
+        if self._is_actual_water_heater(product):
+            return "water_heaters"
         if self._is_actual_boiler(product):
             return "boilers"
         if self._is_actual_pump(product):
@@ -1044,6 +1158,10 @@ class FeedSearchAgent:
             "radiator_fittings": "radiator_fittings",
             "radiators": "radiators",
             "boilers": "boilers",
+            "water_heaters": "water_heaters",
+            "water_heater": "water_heaters",
+            "водонагреватель": "water_heaters",
+            "водонагреватели": "water_heaters",
             "pumps": "pumps",
             "pipes": "pipes",
             "fittings": "fittings",
@@ -1192,6 +1310,351 @@ class FeedSearchAgent:
         if "тверд" in expected:
             return "тверд" in trusted
         return bool(expected and expected in trusted)
+
+    @staticmethod
+    def _canonical_heater_type(value: object) -> str | None:
+        normalized = normalize_text(str(value or ""))
+        if "косвен" in normalized:
+            return "косвенного нагрева"
+        if "проточ" in normalized:
+            return "проточный"
+        if "накоп" in normalized or normalized in {"бойлер", "баковый"}:
+            return "накопительный"
+        return None
+
+    @staticmethod
+    def _canonical_heater_energy(value: object) -> str | None:
+        normalized = normalize_text(str(value or ""))
+        if "комбинир" in normalized or "комбинирован" in normalized:
+            return "комбинированный"
+        if (
+            "косвен" in normalized
+            or "внешн" in normalized and "источник" in normalized
+            or "от котл" in normalized
+        ):
+            return "косвенный"
+        if "газ" in normalized:
+            return "газовый"
+        if "электр" in normalized:
+            return "электрический"
+        return None
+
+    @staticmethod
+    def _canonical_heater_mounting(value: object) -> str | None:
+        normalized = normalize_text(str(value or ""))
+        if "под мойк" in normalized or "под раковин" in normalized:
+            return "под мойкой"
+        if (
+            "над мойк" in normalized
+            or "над раковин" in normalized
+            or "на раковин" in normalized
+        ):
+            return "над мойкой"
+        if "настен" in normalized or "на стен" in normalized:
+            return "настенный"
+        if "наполь" in normalized or "на пол" in normalized:
+            return "напольный"
+        if "универс" in normalized:
+            return "универсальный"
+        return None
+
+    @staticmethod
+    def _canonical_heater_orientation(value: object) -> str | None:
+        normalized = normalize_text(str(value or ""))
+        has_vertical = "вертик" in normalized
+        has_horizontal = "горизонт" in normalized
+        if "универс" in normalized or (has_vertical and has_horizontal):
+            return "универсальный"
+        if has_vertical:
+            return "вертикальный"
+        if has_horizontal:
+            return "горизонтальный"
+        return None
+
+    def _water_heater_attribute_values(
+        self,
+        product: Product,
+        key_markers: tuple[str, ...],
+    ) -> list[str]:
+        normalized_markers = tuple(normalize_text(marker) for marker in key_markers)
+        return [
+            str(value)
+            for key, value in product.attributes_normalized.items()
+            if any(marker in normalize_text(key) for marker in normalized_markers)
+        ]
+
+    def _water_heater_type(self, product: Product) -> str | None:
+        # «Косвенный» is a user-visible heater class even when a supplier also
+        # calls the vessel накопительный in the generic type field.
+        indirect_evidence = normalize_text(
+            " ".join(
+                [
+                    product.name,
+                    *self._water_heater_attribute_values(
+                        product,
+                        ("вид нагрева", "способ нагрева"),
+                    ),
+                ]
+            )
+        )
+        if "косвен" in indirect_evidence:
+            return "косвенного нагрева"
+        values = self._water_heater_attribute_values(
+            product,
+            ("тип водонагревателя",),
+        )
+        for value in values:
+            canonical = self._canonical_heater_type(value)
+            if canonical:
+                return canonical
+            # Suppliers often put "Комбинированный" into the appliance-type
+            # field even though it describes two heat sources. Such products
+            # are tank/storage heaters; energy remains a separate dimension.
+            if "комбинир" in normalize_text(value):
+                return "накопительный"
+        canonical = self._canonical_heater_type(product.name)
+        if canonical:
+            return canonical
+        description = normalize_text(product.description or "")
+        if re.search(r"\bнакопительн\w*\s+водонагрев", description):
+            return "накопительный"
+        if re.search(r"\bпроточн\w*\s+водонагрев", description):
+            return "проточный"
+        if re.search(r"\bбойлер\w*\s+косвенн\w*\s+нагрев", description):
+            return "косвенного нагрева"
+        return None
+
+    def _water_heater_energy_source(self, product: Product) -> str | None:
+        values = self._water_heater_attribute_values(
+            product,
+            (
+                "вид нагрева",
+                "способ нагрева",
+                "источник энергии",
+                "тип нагрева",
+            ),
+        )
+        for value in values:
+            canonical = self._canonical_heater_energy(value)
+            if canonical:
+                return canonical
+        canonical = self._canonical_heater_energy(product.name)
+        if canonical:
+            return canonical
+        description = normalize_text(product.description or "")
+        if (
+            re.search(r"\bэлектрическ\w*\s+(?:накопительн\w*\s+)?водонагрев", description)
+            or "электрический нагрев" in description
+        ):
+            return "электрический"
+        if (
+            re.search(r"\bгазов\w*\s+(?:проточн\w*\s+)?водонагрев", description)
+            or re.search(r"\bгазов\w*\s+колонк", description)
+        ):
+            return "газовый"
+        if (
+            re.search(r"\bбойлер\w*\s+косвенн\w*\s+нагрев", description)
+            or re.search(r"\bгре\w*\s+[^.!?]{0,30}\bот\s+котл", description)
+        ):
+            return "косвенный"
+        return None
+
+    def _water_heater_volume_l(self, product: Product) -> float | None:
+        volume_values = self._water_heater_attribute_values(
+            product,
+            (
+                "объем бака",
+                "объём бака",
+                "объем, л",
+                "объём, л",
+                "номинальный объем",
+                "номинальный объём",
+                "литраж",
+            ),
+        )
+        for value in volume_values:
+            number = _constraint_number(value)
+            if number is not None:
+                return number
+
+        # A unit is mandatory in the name fallback.  Model suffixes such as
+        # ``CW080`` are not proof of an 80-litre vessel.
+        name = normalize_text(product.name)
+        match = re.search(
+            r"(?<![a-zа-я0-9])(\d+(?:[.,]\d+)?)\s*(?:л\b|литр\w*\b|liter\b)",
+            name,
+        )
+        if not match:
+            description = normalize_text(product.description or "")
+            description_patterns = (
+                r"\b(?:полезн\w*\s+)?объем\w*(?:\s+бака)?"
+                r"\s*(?::|-|составляет)?\s*(\d+(?:[.,]\d+)?)\s*"
+                r"(?:л\b|литр\w*\b)",
+                r"\b(?:бойлер|водонагревател)\w*[^.!?]{0,45}"
+                r"\bна\s+(\d+(?:[.,]\d+)?)\s*литр\w*\b",
+            )
+            for pattern in description_patterns:
+                description_match = re.search(pattern, description)
+                if description_match:
+                    return float(description_match.group(1).replace(",", "."))
+            return None
+        return float(match.group(1).replace(",", "."))
+
+    def _water_heater_mounting(self, product: Product) -> str | None:
+        values = self._water_heater_attribute_values(
+            product,
+            (
+                "монтаж",
+                "способ крепления",
+                "тип размещения",
+                "размещение",
+            ),
+        )
+        for value in values:
+            canonical = self._canonical_heater_mounting(value)
+            if canonical:
+                return canonical
+        return self._canonical_heater_mounting(
+            " ".join([product.name, product.description or ""])
+        )
+
+    def _water_heater_orientation(self, product: Product) -> str | None:
+        values = self._water_heater_attribute_values(
+            product,
+            ("установка", "ориентация"),
+        )
+        for value in values:
+            canonical = self._canonical_heater_orientation(value)
+            if canonical:
+                return canonical
+        name = normalize_text(product.name)
+        if "вертик" in name or "горизонт" in name:
+            canonical = self._canonical_heater_orientation(name)
+            if canonical:
+                return canonical
+        description = normalize_text(product.description or "")
+        if (
+            re.search(
+                r"\bуниверсальн(?:ая|ой)\s+"
+                r"(?:установ|ориентац)\w*\b"
+                r"|\b(?:установ|ориентац)\w*\s+"
+                r"универсальн(?:ая|ой)\b"
+                r"|\bуниверсальн(?:ый|ого)\s+(?:способ\s+)?монтаж\w*\b"
+                r"|\bмонтаж\w*\s+универсальн(?:ый|ого)\b",
+                description,
+            )
+            or re.search(
+                r"(?:установ|монтаж)\w*[^.!?]{0,35}"
+                r"(?:вертикальн\w*\s+(?:или|и|/)\s+горизонтальн\w*|"
+                r"горизонтальн\w*\s+(?:или|и|/)\s+вертикальн\w*)",
+                description,
+            )
+            or re.search(
+                r"как\s+вертикальн\w*\s*,?\s+так\s+и\s+горизонтальн",
+                description,
+            )
+        ):
+            return "универсальный"
+        if re.search(
+            r"(?:установ|монтаж)\w*[^.!?]{0,20}"
+            r"(?:строго\s+)?вертикальн",
+            description,
+        ):
+            return "вертикальный"
+        if re.search(
+            r"(?:установ|монтаж)\w*[^.!?]{0,20}горизонтальн",
+            description,
+        ):
+            return "горизонтальный"
+        return None
+
+    def water_heater_reference_slots(self, product: Product) -> dict[str, object]:
+        """Return verified compatibility dimensions for a shown water heater.
+
+        A concrete card is an identity boundary for follow-up analogue searches.
+        Recover the appliance facts from that exact feed row instead of trying to
+        infer them again from a short command such as ``покажи аналоги``.
+        Unknown dimensions are deliberately omitted: they must never be invented
+        merely to make an alternative pass the filter.
+        """
+        if self.canonical_category(product) != "water_heaters":
+            return {}
+        values: dict[str, object | None] = {
+            "heater_type": self._water_heater_type(product),
+            "energy_source": self._water_heater_energy_source(product),
+            "volume_l": self._water_heater_volume_l(product),
+            "mounting": self._water_heater_mounting(product),
+            "orientation": self._water_heater_orientation(product),
+        }
+        return {
+            key: value
+            for key, value in values.items()
+            if value is not None
+        }
+
+    def _water_heater_type_matches(self, product: Product, requested: object) -> bool:
+        expected = self._canonical_heater_type(requested)
+        actual = self._water_heater_type(product)
+        return expected is not None and actual is not None and actual == expected
+
+    def _water_heater_energy_matches(self, product: Product, requested: object) -> bool:
+        expected = self._canonical_heater_energy(requested)
+        actual = self._water_heater_energy_source(product)
+        if expected is None or actual is None:
+            return False
+        if actual == expected:
+            return True
+        if expected == "косвенный" and actual == "комбинированный":
+            # A combined indirect cylinder adds an electric element but still
+            # supports heating from the boiler coil.  Treat it as compatible
+            # only when the card explicitly identifies an indirect-heating
+            # appliance; never relax every combined heater this way.
+            evidence = normalize_text(
+                " ".join(
+                    [
+                        product.name,
+                        product.category_path,
+                        *self._water_heater_attribute_values(
+                            product,
+                            ("полное наименование", "тип товара"),
+                        ),
+                    ]
+                )
+            )
+            return bool(
+                re.search(r"\b(?:бойлер\w*\s+)?косвенн\w*\s+нагрев", evidence)
+            )
+        return False
+
+    def _water_heater_volume_matches(self, product: Product, requested: object) -> bool:
+        expected = _constraint_number(requested)
+        actual = self._water_heater_volume_l(product)
+        return (
+            expected is not None
+            and actual is not None
+            and abs(actual - expected) < 0.01
+        )
+
+    def _water_heater_mounting_matches(self, product: Product, requested: object) -> bool:
+        expected = self._canonical_heater_mounting(requested)
+        actual = self._water_heater_mounting(product)
+        return expected is not None and actual is not None and actual == expected
+
+    def _water_heater_orientation_matches(
+        self,
+        product: Product,
+        requested: object,
+    ) -> bool:
+        expected = self._canonical_heater_orientation(requested)
+        actual = self._water_heater_orientation(product)
+        if expected is None or actual is None:
+            return False
+        # A card explicitly marked universal/vertical+horizontal supports either
+        # requested orientation; unknown orientation never does.
+        return actual == expected or (
+            actual == "универсальный"
+            and expected in {"вертикальный", "горизонтальный"}
+        )
 
     def _contours_match(self, product: Product, requested: object) -> bool:
         expected = normalize_text(str(requested))
@@ -1633,6 +2096,12 @@ class FeedSearchAgent:
                 ["напряжение", "питание"],
             ):
                 return False
+        if category == "water_heaters":
+            # These dimensions define a different appliance, not merely a
+            # lower-ranked analogue.  Re-check them explicitly here so future
+            # relaxation of generic semantic scoring cannot change them.
+            if not self._semantic_slots_match(product, category, slots):
+                return False
         if category in {"valves", "radiator_fittings"}:
             size_inch = slots.get("size_inch")
             if size_inch and not self._inch_size_matches(product, str(size_inch)):
@@ -1680,6 +2149,32 @@ class FeedSearchAgent:
 
     def _semantic_slots_match(self, product: Product, category: str, slots: dict) -> bool:
         """Enforce categorical/usage slots as non-negotiable constraints."""
+        if category == "water_heaters":
+            if slots.get("heater_type") and not self._water_heater_type_matches(
+                product,
+                slots["heater_type"],
+            ):
+                return False
+            if slots.get("energy_source") and not self._water_heater_energy_matches(
+                product,
+                slots["energy_source"],
+            ):
+                return False
+            if slots.get("volume_l") is not None and not self._water_heater_volume_matches(
+                product,
+                slots["volume_l"],
+            ):
+                return False
+            if slots.get("mounting") and not self._water_heater_mounting_matches(
+                product,
+                slots["mounting"],
+            ):
+                return False
+            if slots.get("orientation") and not self._water_heater_orientation_matches(
+                product,
+                slots["orientation"],
+            ):
+                return False
         if category == "boilers":
             boiler_types = slots.get("boiler_types") or []
             if isinstance(boiler_types, str):
@@ -1908,6 +2403,13 @@ class FeedSearchAgent:
             "radiators": {"radiator_size_mm", "length_mm", "sections", "size_inch"},
             "fittings": {"diameter_mm", "secondary_diameter_mm", "size_inch", "element_type"},
             "boilers": {"boiler_type", "contours", "voltage_v"},
+            "water_heaters": {
+                "heater_type",
+                "energy_source",
+                "volume_l",
+                "mounting",
+                "orientation",
+            },
         }
         strict_keys = strict_by_category.get(query.category, set())
         return bool(strict_keys.intersection(effective_slots))
@@ -1921,7 +2423,12 @@ class FeedSearchAgent:
     def _alternative_threshold(self, query: SearchQuery) -> int:
         if query.category == "sewer":
             return 55
-        if query.category in {"pumps", "valves", "radiator_fittings"}:
+        if query.category in {
+            "pumps",
+            "valves",
+            "radiator_fittings",
+            "water_heaters",
+        }:
             return 45
         return 35
 
@@ -2046,6 +2553,41 @@ class FeedSearchAgent:
                 score += 20
             else:
                 score -= 10
+
+        heater_type = slots.get("heater_type")
+        if heater_type:
+            if self._water_heater_type_matches(product, heater_type):
+                score += 30
+            else:
+                return 0
+
+        energy_source = slots.get("energy_source")
+        if energy_source:
+            if self._water_heater_energy_matches(product, energy_source):
+                score += 30
+            else:
+                return 0
+
+        volume_l = slots.get("volume_l")
+        if volume_l is not None:
+            if self._water_heater_volume_matches(product, volume_l):
+                score += 30
+            else:
+                return 0
+
+        heater_mounting = slots.get("mounting")
+        if heater_mounting:
+            if self._water_heater_mounting_matches(product, heater_mounting):
+                score += 20
+            else:
+                return 0
+
+        orientation = slots.get("orientation")
+        if orientation:
+            if self._water_heater_orientation_matches(product, orientation):
+                score += 15
+            else:
+                return 0
 
         body_form = slots.get("body_form")
         if body_form:

@@ -567,6 +567,11 @@ class ResponseComposerAgent:
                 "если монтажная длина, присоединение или напор вашей системы отличаются — "
                 "сверьте характеристики в карточке."
             )
+        if category == "water_heaters":
+            return (
+                "если отличаются объём, накопительный/проточный тип, источник нагрева "
+                "или вариант монтажа — этот товар не является совместимой заменой."
+            )
         if category in {"pipes", "sewer"}:
             return "если нужен другой диаметр или назначение — уточните, подберу заново."
         return "если параметры вашей задачи отличаются от указанных — сверьте характеристики в карточке."
@@ -716,6 +721,22 @@ class ResponseComposerAgent:
                 "Если захотите, можно отдельно разрешить ослабить одно из условий."
                 f"{hot_water_note}"
             )
+        elif query.category == "water_heaters":
+            requested = self._requested_summary(query) or query.original_text
+            if slots.get("allow_alternatives") is True:
+                draft = (
+                    f"Не вижу совпадения в ассортименте: {requested}. Даже среди аналогов "
+                    "с теми же обязательными параметрами подходящего товара нет. Уточните, "
+                    "какое одно условие можно изменить: объём, тип водонагревателя, источник "
+                    "нагрева, монтаж, бюджет или требование наличия."
+                )
+            else:
+                draft = (
+                    f"Не вижу точного совпадения в ассортименте: {requested}. "
+                    "Не буду подменять накопительный водонагреватель проточным, электрический "
+                    "косвенным или менять требуемый объём без вашего согласия. Можно отдельно "
+                    "разрешить изменить одно из условий."
+                )
         else:
             draft = "Не нашёл подходящие товары в текущем ассортименте. Могу уточнить параметры или передать вопрос менеджеру."
         self.last_draft = draft
@@ -845,7 +866,11 @@ class ResponseComposerAgent:
                 stock = f"{stock}, {card.stock_qty} шт."
             lines.append(f"   Наличие: {stock}")
             if card.characteristics:
-                characteristic_limit = 4 if query.category == "boilers" else 3
+                characteristic_limit = (
+                    5
+                    if query.category == "water_heaters"
+                    else 4 if query.category == "boilers" else 3
+                )
                 attrs = "; ".join(
                     f"{key}: {value}"
                     for key, value in list(card.characteristics.items())[:characteristic_limit]
@@ -998,6 +1023,11 @@ class ResponseComposerAgent:
                 "Чтобы проверить применимость точнее, уточните регион, утепление "
                 "и высоту потолков."
             )
+        if query.category == "water_heaters" and cards_count == 1:
+            return (
+                "Перед покупкой сверьте способ монтажа, подвод воды, электропитание "
+                "или источник нагрева с паспортом этой модели."
+            )
         if cards_count > 1:
             return "Могу сравнить эти варианты по главным отличиям для вашей задачи."
         return "Могу показать сопоставимые аналоги."
@@ -1025,6 +1055,16 @@ class ResponseComposerAgent:
             details.append(f"монтажная длина {slots['mounting_length_mm']} мм")
         if slots.get("boiler_type"):
             details.append(str(slots["boiler_type"]))
+        if slots.get("energy_source"):
+            details.append(str(slots["energy_source"]))
+        if slots.get("heater_type"):
+            details.append(str(slots["heater_type"]))
+        if slots.get("volume_l") is not None:
+            details.append(f"{float(slots['volume_l']):g} л")
+        if slots.get("mounting"):
+            details.append(f"монтаж: {slots['mounting']}")
+        if slots.get("orientation"):
+            details.append(f"ориентация: {slots['orientation']}")
         if slots.get("contours"):
             details.append(str(slots["contours"]))
         if slots.get("area_m2"):
