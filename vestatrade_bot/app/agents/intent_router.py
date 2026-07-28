@@ -213,10 +213,31 @@ VALID_CATEGORIES = {
 
 
 class IntentRouterAgent:
-    def __init__(self, llm_client: OpenRouterClient | None = None) -> None:
+    def __init__(
+        self,
+        llm_client: OpenRouterClient | None = None,
+        catalog_brands: list[str] | None = None,
+    ) -> None:
         self.llm_client = llm_client or OpenRouterClient()
         self._cache: dict[str, IntentResult] = {}
         self._cache_lock = RLock()
+        self._catalog_brands: list[str] = []
+        self.set_catalog_brands(catalog_brands or [])
+
+    def set_catalog_brands(self, brands: list[str]) -> None:
+        by_normalized: dict[str, str] = {}
+        for brand in [*BRANDS, *brands]:
+            normalized = normalize_text(brand)
+            if len(normalized) < 2:
+                continue
+            by_normalized.setdefault(normalized, str(brand).strip())
+        self._catalog_brands = sorted(
+            by_normalized.values(),
+            key=lambda value: len(normalize_text(value)),
+            reverse=True,
+        )
+        with self._cache_lock:
+            self._cache.clear()
 
     def route(self, message: str, session: SessionState | None = None) -> IntentResult:
         normalized_message = normalize_text(message)
@@ -309,8 +330,12 @@ class IntentRouterAgent:
         ):
             slots["sku"] = sku_match.group(0)
 
-        for brand in BRANDS:
-            if normalize_text(brand) in text:
+        for brand in self._catalog_brands:
+            brand_text = normalize_text(brand)
+            if re.search(
+                rf"(?<![a-zа-я0-9]){re.escape(brand_text)}(?![a-zа-я0-9])",
+                text,
+            ):
                 slots["brand"] = brand
                 break
         if (
@@ -611,8 +636,7 @@ class IntentRouterAgent:
             return "mm"
         return None
 
-    @staticmethod
-    def _name_tokens_from_text(text: str) -> list[str]:
+    def _name_tokens_from_text(self, text: str) -> list[str]:
         """Latin model/series words from the query, e.g. BASE, MINI, GOST.
 
         Units and measurement words are excluded; brands are matched separately
@@ -636,7 +660,12 @@ class IntentRouterAgent:
         tokens = [
             token
             for token in re.findall(r"\b[a-z][a-z0-9]{2,}\b", text)
-            if token not in stop and token not in {brand.lower() for brand in BRANDS}
+            if token not in stop
+            and token
+            not in {
+                normalize_text(brand)
+                for brand in self._catalog_brands
+            }
         ]
         return list(dict.fromkeys(tokens))[:3]
 
@@ -846,14 +875,19 @@ class IntentRouterAgent:
         elif category in {"pipes", "sewer"} and "отоплен" in text:
             slots["pipe_purpose"] = "отопление"
         elif category in {"pipes", "sewer"} and (
-            "водоснаб" in text or "для воды" in text or "горяч" in text or "холодн" in text
+            "водоснаб" in text
+            or "для воды" in text
+            or "горяч" in text
+            or "холодн" in text
+            or "гвс" in text
+            or "хвс" in text
         ):
             slots["pipe_purpose"] = "водоснабжение"
 
         if category == "pipes":
-            if "горяч" in text:
+            if "горяч" in text or "гвс" in text:
                 slots["water_temperature"] = "горячая"
-            elif "холод" in text:
+            elif "холод" in text or "хвс" in text:
                 slots["water_temperature"] = "холодная"
             if "бел" in text:
                 slots["pipe_color"] = "белая"
@@ -910,9 +944,9 @@ class IntentRouterAgent:
             elif any(marker in text for marker in ["открыт", "снаружи стен"]):
                 slots["installation_method"] = "открытая"
         elif category in {"valves", "radiator_fittings"}:
-            if "горяч" in text:
+            if "горяч" in text or "гвс" in text:
                 slots["water_temperature"] = "горячая"
-            elif "холод" in text:
+            elif "холод" in text or "хвс" in text:
                 slots["water_temperature"] = "холодная"
 
         if "батаре" in text:
@@ -1026,7 +1060,9 @@ class IntentRouterAgent:
         elif "перекры" in text or "закрывать" in text or "отсек" in text:
             slots["thermostatic_head"] = False
             slots["radiator_action"] = "перекрывать поток"
-        elif "регулир" in text or "температур" in text:
+        elif category == "radiator_fittings" and (
+            "регулир" in text or "температур" in text
+        ):
             slots["thermostatic_head"] = True
             slots["radiator_action"] = "регулировать температуру"
 

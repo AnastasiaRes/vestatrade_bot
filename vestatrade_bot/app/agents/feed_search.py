@@ -13,6 +13,7 @@ from .utils import normalize_sku, normalize_text
 
 
 logger = logging.getLogger(__name__)
+DEFAULT_PREFERRED_BRAND = "valtec"
 
 try:
     from rapidfuzz import fuzz
@@ -651,6 +652,7 @@ class FeedSearchAgent:
             # globally cheapest valid product can be discarded by fuzzy score.
             scored.sort(
                 key=lambda item: (
+                    not self._default_preferred_brand(item[1], query),
                     not item[1].is_in_stock,
                     item[1].price is None,
                     item[1].price or float("inf"),
@@ -658,7 +660,15 @@ class FeedSearchAgent:
                 )
             )
         else:
-            scored.sort(key=lambda item: item[0], reverse=True)
+            scored.sort(
+                key=lambda item: (
+                    not self._default_preferred_brand(item[1], query),
+                    -item[0],
+                    not item[1].is_in_stock,
+                    item[1].price is None,
+                    item[1].price or float("inf"),
+                )
+            )
         result_limit = self._query_result_limit(query, query.limit)
         return [product for _, product in scored[:result_limit]]
 
@@ -812,6 +822,7 @@ class FeedSearchAgent:
         scored = [item for item in scored if item[0] >= self._alternative_threshold(query)]
         scored.sort(
             key=lambda item: (
+                not self._default_preferred_brand(item[1], query),
                 -item[0],
                 not item[1].is_in_stock,
                 item[1].price is None,
@@ -820,6 +831,15 @@ class FeedSearchAgent:
         )
         result_limit = self._query_result_limit(query, min(query.limit, 6))
         return [product for _, product in scored[:result_limit]]
+
+    def _default_preferred_brand(
+        self,
+        product: Product,
+        query: SearchQuery,
+    ) -> bool:
+        if query.brand or query.sku:
+            return False
+        return normalize_text(product.brand) == DEFAULT_PREFERRED_BRAND
 
     def _search_sku(self, sku: str) -> list[Product]:
         needle = normalize_sku(sku)
@@ -1176,12 +1196,26 @@ class FeedSearchAgent:
         category: str,
         slots: dict,
     ) -> list[Product]:
+        requested_brand = normalize_text(str(slots.get("brand") or ""))
+        if requested_brand:
+            products = [
+                product
+                for product in products
+                if requested_brand in normalize_text(product.brand)
+            ]
         products = [
             product
             for product in products
             if _product_matches_hard_constraints(product, slots)
             and self._semantic_slots_match(product, category, slots)
         ]
+
+        def brand_priority(product: Product) -> bool:
+            return bool(
+                not requested_brand
+                and normalize_text(product.brand) != DEFAULT_PREFERRED_BRAND
+            )
+
         if category == "boilers":
             required_kw = None
             if slots.get("power_kw"):
@@ -1192,10 +1226,22 @@ class FeedSearchAgent:
                 def closeness(product: Product) -> tuple:
                     power = self._extract_power_kw(product) or 0.0
                     enough = power >= required_kw * 0.9
-                    return (not product.is_in_stock, not enough, abs(power - required_kw))
+                    return (
+                        not product.is_in_stock,
+                        not enough,
+                        brand_priority(product),
+                        abs(power - required_kw),
+                    )
 
                 return sorted(products, key=closeness)
-            return sorted(products, key=lambda p: (not p.is_in_stock, p.price or float("inf")))
+            return sorted(
+                products,
+                key=lambda p: (
+                    brand_priority(p),
+                    not p.is_in_stock,
+                    p.price or float("inf"),
+                ),
+            )
         if category == "pumps":
             pump_type = normalize_text(str(slots.get("pump_type") or ""))
             pump_use = normalize_text(str(slots.get("pump_use") or slots.get("project_note") or ""))
@@ -1236,10 +1282,22 @@ class FeedSearchAgent:
                             kind_priority = 1
                         else:
                             kind_priority = 2
-                        return (kind_priority, not product.is_in_stock, product.price or float("inf"))
+                        return (
+                            kind_priority,
+                            brand_priority(product),
+                            not product.is_in_stock,
+                            product.price or float("inf"),
+                        )
 
                     return sorted(products, key=irrigation_priority)
-            return sorted(products, key=lambda p: (not p.is_in_stock, p.price or float("inf")))
+            return sorted(
+                products,
+                key=lambda p: (
+                    brand_priority(p),
+                    not p.is_in_stock,
+                    p.price or float("inf"),
+                ),
+            )
         if category == "sewer":
             element_type = normalize_text(str(slots.get("element_type") or ""))
             if element_type:
@@ -1248,7 +1306,14 @@ class FeedSearchAgent:
                     for product in products
                     if element_type in self._product_text(product)
                 ]
-            return sorted(products, key=lambda p: (not p.is_in_stock, p.price or float("inf")))
+            return sorted(
+                products,
+                key=lambda p: (
+                    brand_priority(p),
+                    not p.is_in_stock,
+                    p.price or float("inf"),
+                ),
+            )
         if category == "pipes":
             project_note = normalize_text(str(slots.get("project_note") or ""))
             if "тепл" in project_note and "пол" in project_note:
@@ -1269,8 +1334,22 @@ class FeedSearchAgent:
                     for product in products
                     if any(marker in self._product_text(product) for marker in loop_pipe_markers)
                 ]
-            return sorted(products, key=lambda p: (not p.is_in_stock, p.price or float("inf")))
-        return sorted(products, key=lambda p: (not p.is_in_stock, p.price or float("inf")))
+            return sorted(
+                products,
+                key=lambda p: (
+                    brand_priority(p),
+                    not p.is_in_stock,
+                    p.price or float("inf"),
+                ),
+            )
+        return sorted(
+            products,
+            key=lambda p: (
+                brand_priority(p),
+                not p.is_in_stock,
+                p.price or float("inf"),
+            ),
+        )
 
     def _extract_power_kw(self, product: Product) -> float | None:
         text = normalize_text(
@@ -1731,6 +1810,9 @@ class FeedSearchAgent:
         primary = normalize_text(
             " ".join([product.sku, product.name, product.category_path, explicit])
         )
+        evidence = normalize_text(
+            " ".join([primary, product.description or ""])
+        )
         if any(marker in expected for marker in ["ppr", "ппр", "полипроп"]):
             ppr_markers = [
                 "ppr",
@@ -1761,8 +1843,39 @@ class FeedSearchAgent:
             ]
             if explicit or any(marker in primary for marker in other_materials):
                 return False
-            description = normalize_text(product.description or "")
-            return any(marker in description for marker in ppr_markers)
+            return any(marker in evidence for marker in ppr_markers)
+        if any(
+            marker in expected
+            for marker in ["металлопласт", "металлополимер", "м/п", "pex-al"]
+        ):
+            return any(
+                marker in evidence
+                for marker in [
+                    "металлопласт",
+                    "металлополимер",
+                    "м/п",
+                    "pex-al-pex",
+                    "pe-x/al/pe",
+                    "pe-xa/al/pe",
+                ]
+            )
+        if any(marker in expected for marker in ["pex", "pe-x", "сшит"]):
+            if any(
+                marker in evidence
+                for marker in ["pex-al", "pe-x/al", "металлопласт", "металлополимер"]
+            ):
+                return False
+            return any(
+                marker in evidence
+                for marker in ["pex", "pe-x", "pe xa", "pe-xa", "сшит"]
+            )
+        if any(marker in expected for marker in ["pe-rt", "pert", "пе-рт"]):
+            if any(
+                marker in evidence
+                for marker in ["pex-al", "pe-x/al", "металлопласт", "металлополимер"]
+            ):
+                return False
+            return any(marker in evidence for marker in ["pe-rt", "pert", "пе-рт"])
         return bool(expected and expected in primary)
 
     def _pipe_purpose_matches(self, product: Product, requested: object) -> bool:
@@ -1783,7 +1896,7 @@ class FeedSearchAgent:
         return bool(expected and expected in evidence)
 
     def _maximum_temperature(self, product: Product) -> float | None:
-        values = []
+        values: list[float] = []
         for key, value in product.attributes_normalized.items():
             key_norm = normalize_text(key)
             if "температур" in key_norm and any(
@@ -1791,6 +1904,17 @@ class FeedSearchAgent:
             ):
                 matches = re.findall(r"-?\d+(?:[.,]\d+)?", normalize_text(str(value)))
                 values.extend(float(match.replace(",", ".")) for match in matches)
+        if not values:
+            description = normalize_text(product.description or "")
+            matches = re.findall(
+                r"(-?\d{1,3}(?:[.,]\d+)?)\s*[cс]\b",
+                description,
+            )
+            values.extend(
+                float(match.replace(",", "."))
+                for match in matches
+                if -50 <= float(match.replace(",", ".")) <= 200
+            )
         return max(values) if values else None
 
     def _maximum_pressure_bar(self, product: Product) -> float | None:
@@ -1810,6 +1934,87 @@ class FeedSearchAgent:
         if pn_match:
             return float(pn_match.group(1).replace(",", "."))
         return None
+
+    def _pipe_operating_points(self, product: Product) -> list[tuple[float, float]]:
+        text = normalize_text(product.description or "")
+        points: list[tuple[float, float]] = []
+        temperature_then_pressure = re.compile(
+            r"температур\w*[^.!?]{0,45}?"
+            r"(-?\d{1,3}(?:[.,]\d+)?)\s*[cс]\b"
+            r"[^.!?]{0,45}?(\d+(?:[.,]\d+)?)\s*(?:бар|bar)\b"
+        )
+        pressure_then_temperature = re.compile(
+            r"давлен\w*[^.!?]{0,45}?(\d+(?:[.,]\d+)?)\s*(?:бар|bar)\b"
+            r"[^.!?]{0,45}?температур\w*[^.!?]{0,30}?"
+            r"(-?\d{1,3}(?:[.,]\d+)?)\s*[cс]\b"
+        )
+        for match in temperature_then_pressure.finditer(text):
+            points.append(
+                (
+                    float(match.group(1).replace(",", ".")),
+                    float(match.group(2).replace(",", ".")),
+                )
+            )
+        for match in pressure_then_temperature.finditer(text):
+            points.append(
+                (
+                    float(match.group(2).replace(",", ".")),
+                    float(match.group(1).replace(",", ".")),
+                )
+            )
+        return points
+
+    def _pipe_ratings_match(
+        self,
+        product: Product,
+        requested_temperature: object | None,
+        requested_pressure: object | None,
+    ) -> bool:
+        return self.pipe_ratings_status(
+            product,
+            requested_temperature,
+            requested_pressure,
+        ) is not False
+
+    def pipe_ratings_status(
+        self,
+        product: Product,
+        requested_temperature: object | None,
+        requested_pressure: object | None,
+    ) -> bool | None:
+        """True when confirmed, False when conflicting, None when feed is sparse."""
+        temperature = (
+            float(requested_temperature)
+            if requested_temperature is not None
+            else None
+        )
+        pressure = (
+            float(requested_pressure)
+            if requested_pressure is not None
+            else None
+        )
+        if temperature is not None and pressure is not None:
+            operating_points = self._pipe_operating_points(product)
+            if operating_points:
+                return any(
+                    temperature <= rated_temperature
+                    and pressure <= rated_pressure
+                    for rated_temperature, rated_pressure in operating_points
+                )
+        unconfirmed = False
+        if temperature is not None:
+            maximum_temperature = self._maximum_temperature(product)
+            if maximum_temperature is None:
+                unconfirmed = True
+            elif maximum_temperature < temperature:
+                return False
+        if pressure is not None:
+            maximum_pressure = self._maximum_pressure_bar(product)
+            if maximum_pressure is None:
+                unconfirmed = True
+            elif maximum_pressure < pressure:
+                return False
+        return None if unconfirmed else True
 
     def _maximum_flow_m3_h(self, product: Product) -> float | None:
         values: list[float] = []
@@ -1892,6 +2097,14 @@ class FeedSearchAgent:
             has_cold_evidence = any(
                 marker in evidence for marker in ["холод", "хол/водосн", "хвс"]
             )
+            has_water_supply_evidence = any(
+                marker in evidence
+                for marker in ["водоснаб", "питьев", "для воды"]
+            )
+            has_heating_evidence = any(
+                marker in evidence
+                for marker in ["отоплен", "теплоносител"]
+            )
             if has_cold_evidence and not has_hot_evidence:
                 return False
             name = normalize_text(product.name)
@@ -1902,6 +2115,11 @@ class FeedSearchAgent:
                 has_hot_evidence
                 or hot_water_ppr
                 or (maximum_temperature is not None and maximum_temperature >= 60)
+                # Some VALTEC metal-polymer cards state two grounded scopes
+                # separately: drinking water supply and heating. Together they
+                # establish hot-water applicability even when the short card
+                # omits the literal abbreviation «ГВС».
+                or (has_water_supply_evidence and has_heating_evidence)
             )
         if "холод" in expected:
             return any(marker in evidence for marker in ["холод", "хвс"])
@@ -2328,21 +2546,13 @@ class FeedSearchAgent:
             ):
                 return False
             requested_temperature = slots.get("operating_temperature_c")
-            if requested_temperature is not None:
-                maximum_temperature = self._maximum_temperature(product)
-                if (
-                    maximum_temperature is None
-                    or maximum_temperature < float(requested_temperature)
-                ):
-                    return False
             requested_pressure = slots.get("operating_pressure_bar")
-            if requested_pressure is not None:
-                maximum_pressure = self._maximum_pressure_bar(product)
-                if (
-                    maximum_pressure is None
-                    or maximum_pressure < float(requested_pressure)
-                ):
-                    return False
+            if not self._pipe_ratings_match(
+                product,
+                requested_temperature,
+                requested_pressure,
+            ):
+                return False
         if category in {"valves", "radiator_fittings"}:
             requested_temperature = slots.get("operating_temperature_c")
             if requested_temperature is not None:
@@ -2871,6 +3081,26 @@ class FeedSearchAgent:
                 values.append(normalize_text(attr_value))
         if values:
             return any(self._number_matches(value, number) for value in values)
+        raw_identity = " ".join(
+            [
+                product.name,
+                *[
+                    str(value)
+                    for key, value in product.attributes_normalized.items()
+                    if "полное наименование" in normalize_text(key)
+                ],
+            ]
+        )
+        if (
+            any(key in {"диаметр", "размер"} for key in key_texts)
+            and re.search(
+                rf"(?<!\d){number}\s*\(\s*\d+(?:[.,]\d+)?\s*\)",
+                raw_identity,
+            )
+        ):
+            # Металлополимерные трубы часто записаны как 16(2,0):
+            # наружный диаметр 16 мм, толщина стенки 2,0 мм.
+            return True
         # В реальном фиде размеры часто только в названии вида «50*1500», а «*»
         # выбрасывается нормализацией — приводим её к «х», чтобы 50х1500 распознавалось.
         fallback = normalize_text(product.name.replace("*", "х"))

@@ -75,13 +75,12 @@ def test_brand_request_is_not_overridden_by_price() -> None:
     assert order[0].startswith("VT."), order
 
 
-def test_unconstrained_search_still_prefers_stock_then_price() -> None:
-    # Without stated constraints the old cheap-first behaviour must remain.
+def test_unconstrained_search_prefers_valtec_then_price() -> None:
     query = SearchQuery(original_text="кран шаровой", category="valves")
 
     order = [product.sku for product in RankingAgent().rank([BASE, MINI, ROMMER], query)]
 
-    assert order == ["RBV-0005", "VT.331.N.04", "VT.217S.N.04"]
+    assert order == ["VT.331.N.04", "VT.217S.N.04", "RBV-0005"]
 
 
 def test_identity_attributes_are_not_shown_as_characteristics() -> None:

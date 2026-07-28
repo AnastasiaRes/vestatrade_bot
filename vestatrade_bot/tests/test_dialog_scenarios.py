@@ -504,7 +504,8 @@ def test_pipe_purpose_followup_continues_context(orchestrator) -> None:
 
     assert response.debug["category"] == "pipes"
     assert response.debug["slots"]["pipe_purpose"] == "водоснабжение"
-    assert "холодная или горячая" in response.answer
+    assert "ХВС" in response.answer
+    assert "ГВС" in response.answer
     assert "диаметр" in response.answer.lower()
 
 

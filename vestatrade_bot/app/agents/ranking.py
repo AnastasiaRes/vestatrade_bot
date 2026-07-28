@@ -7,6 +7,9 @@ from app.models import Product, SearchQuery
 from .utils import normalize_sku, normalize_text
 
 
+DEFAULT_PREFERRED_BRAND = "valtec"
+
+
 class RankingAgent:
     def rank(self, products: list[Product], query: SearchQuery) -> list[Product]:
         ranked = list(products)
@@ -20,6 +23,7 @@ class RankingAgent:
             # Цена — сам запрос («подешевле»), но товар в наличии всё равно выше.
             ranked.sort(
                 key=lambda product: (
+                    not self._default_preferred_brand(product, query),
                     not product.is_in_stock,
                     product.price is None,
                     product.price or float("inf"),
@@ -35,6 +39,7 @@ class RankingAgent:
         ranked.sort(
             key=lambda product: (
                 needle is not None and normalize_sku(product.sku) != needle,
+                not self._default_preferred_brand(product, query),
                 -self._relevance_score(product, query),
                 not product.is_in_stock,
                 product.price is None,
@@ -42,6 +47,15 @@ class RankingAgent:
             )
         )
         return ranked
+
+    def _default_preferred_brand(
+        self,
+        product: Product,
+        query: SearchQuery,
+    ) -> bool:
+        if query.brand or query.sku:
+            return False
+        return normalize_text(product.brand) == DEFAULT_PREFERRED_BRAND
 
     def _relevance_score(self, product: Product, query: SearchQuery) -> int:
         """How many of the constraints the customer actually stated are met.

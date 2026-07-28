@@ -416,7 +416,14 @@ class ChatOrchestrator:
         self.feed_loader = FeedLoader(self.settings)
         self.llm_client = llm_client or OpenRouterClient(self.settings)
         self.sessions = session_store or InMemorySessionStore()
-        self.intent_router = IntentRouterAgent(self.llm_client)
+        self.intent_router = IntentRouterAgent(
+            self.llm_client,
+            catalog_brands=[
+                product.brand
+                for product in (products or [])
+                if product.brand
+            ],
+        )
         self.slot_filling = SlotFillingAgent()
         self.engineering_requirements = EngineeringRequirementsAgent(
             self.slot_filling
@@ -446,6 +453,9 @@ class ChatOrchestrator:
             products, source = self.feed_loader.load_products(refresh=refresh)
             self.docs_attached = load_docs_for_products(products, self._docs_dirs())
             self.search_agent.set_products(products)
+            self.intent_router.set_catalog_brands(
+                [product.brand for product in products if product.brand]
+            )
             self.products_loaded_from = source
             return len(products), source
 
@@ -1883,7 +1893,7 @@ class ChatOrchestrator:
             answer = self.composer.compose_products(
                 cards,
                 query,
-                note=self._compose_query_note(query),
+                note=self._compose_query_note(query, ranked),
             )
         answer = self._guard_composed_answer(answer, "products", agents_used)
         answer = self._append_companion_hint(answer, session, query.category)
@@ -8577,7 +8587,11 @@ class ChatOrchestrator:
             return cards
         return [nearest_card]
 
-    def _compose_query_note(self, query: SearchQuery) -> str | None:
+    def _compose_query_note(
+        self,
+        query: SearchQuery,
+        products: list[Product] | None = None,
+    ) -> str | None:
         notes: list[str] = []
         if query.category == "pipes" and (
             query.slots.get("operating_temperature_c") is not None
@@ -8592,12 +8606,38 @@ class ChatOrchestrator:
                 checks.append(
                     f"при {float(query.slots['operating_pressure_bar']):g} бар"
                 )
-            notes.append(
-                "Оставил только трубы, у которых карточка подтверждает работу "
-                + " ".join(checks)
-                + ". Перед монтажом всё равно сверьте сочетание температуры и "
-                "давления по диаграмме/паспорту конкретной трубы."
-            )
+            unconfirmed = [
+                product
+                for product in (products or [])
+                if self.search_agent.pipe_ratings_status(
+                    product,
+                    query.slots.get("operating_temperature_c"),
+                    query.slots.get("operating_pressure_bar"),
+                )
+                is None
+            ]
+            if unconfirmed:
+                brands = ", ".join(
+                    dict.fromkeys(
+                        product.brand or product.sku
+                        for product in unconfirmed
+                    )
+                )
+                notes.append(
+                    "Сначала показываю VALTEC, если он соответствует назначению, "
+                    "материалу и размеру. Для части карточек "
+                    f"({brands}) в фиде нет числового подтверждения режима "
+                    + " ".join(checks)
+                    + " — это кандидаты, а не подтверждённый расчётом выбор; "
+                    "перед монтажом обязательно сверьте паспорт/диаграмму трубы."
+                )
+            else:
+                notes.append(
+                    "Оставил только трубы, у которых карточка подтверждает работу "
+                    + " ".join(checks)
+                    + ". Перед монтажом всё равно сверьте сочетание температуры и "
+                    "давления по диаграмме/паспорту конкретной трубы."
+                )
         if query.category == "pipes" and query.slots.get("total_length_m"):
             notes.append(
                 f"Общий метраж {float(query.slots['total_length_m']):g} м учёл как требуемое количество, "
