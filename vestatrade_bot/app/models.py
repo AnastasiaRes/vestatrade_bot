@@ -124,6 +124,7 @@ class SessionState(BaseModel):
     # ``last_products`` this survives pagination so "покажи ещё" cannot repeat
     # page one after page two.
     shown_product_skus: list[str] = Field(default_factory=list)
+    shown_result_signature: str | None = None
     history: list[dict[str, str]] = Field(default_factory=list)
     topic_changed: bool = False
     pending_question: str | None = None

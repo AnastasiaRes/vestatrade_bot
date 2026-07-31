@@ -673,14 +673,7 @@ class FeedSearchAgent:
             )
         result_limit = self._query_result_limit(query, query.limit)
         if query.category == "boilers" and query.slots.get("power_kw") is not None:
-            # Pagination still needs access to every exact in-stock match even
-            # when the catalogue group is larger than the normal search pool.
-            exact_in_stock_count = sum(
-                1
-                for _, product in scored
-                if self._explicit_boiler_power_priority(product, query)[0] == 0
-            )
-            result_limit = max(result_limit, exact_in_stock_count)
+            result_limit = self._explicit_boiler_result_limit(scored, query)
         return [product for _, product in scored[:result_limit]]
 
     def search_by_name(
@@ -843,13 +836,30 @@ class FeedSearchAgent:
         )
         result_limit = self._query_result_limit(query, min(query.limit, 6))
         if query.category == "boilers" and query.slots.get("power_kw") is not None:
-            exact_in_stock_count = sum(
-                1
-                for _, product in scored
-                if self._explicit_boiler_power_priority(product, query)[0] == 0
-            )
-            result_limit = max(result_limit, exact_in_stock_count)
+            result_limit = self._explicit_boiler_result_limit(scored, query)
         return [product for _, product in scored[:result_limit]]
+
+    def _explicit_boiler_result_limit(
+        self,
+        scored: list[tuple[int, Product]],
+        query: SearchQuery,
+    ) -> int:
+        """Keep every exact rating plus a small, useful analogue tail.
+
+        The normal top-N cut used to hide exact out-of-stock models after a few
+        pages.  Returning every exact match makes pagination complete for any
+        requested rating, while six nearest non-exact candidates keep the
+        analogue tail bounded and relevant.
+        """
+        requested_limit = _requested_result_limit(query.slots)
+        if requested_limit is not None:
+            return requested_limit
+        exact_count = sum(
+            1
+            for _, product in scored
+            if self._explicit_boiler_power_priority(product, query)[0] in {0, 1}
+        )
+        return min(len(scored), exact_count + 6)
 
     def _default_preferred_brand(
         self,
