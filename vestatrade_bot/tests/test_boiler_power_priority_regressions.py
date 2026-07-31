@@ -99,9 +99,10 @@ def test_search_keeps_every_exact_match_beyond_the_normal_result_limit() -> None
     result = FeedSearchAgent([*nearby, *exact]).search(_power_query(14))
 
     assert len(result) == 41
-    assert [product.sku for product in result[:35]] == [
+    assert {product.sku for product in result[:35]} == {
         product.sku for product in exact
-    ]
+    }
+    assert all(product.stock_status == "нет в наличии" for product in result[:35])
 
 
 @pytest.mark.parametrize(
@@ -169,7 +170,15 @@ def test_chat_pages_exact_in_stock_boilers_and_puts_valtec_first() -> None:
     answer = more.answer.lower()
     assert "продолжаю показывать точные котлы 6 квт в наличии" in answer
     assert "точные совпадения без остатка" in answer
-    assert "ближайшие по мощности альтернативы" in answer
+    assert "показать ближайшие мощности" in answer
+    assert all(product.sku != "NEARBY-IN-STOCK" for product in more.products)
+
+    alternatives = bot.handle_chat("all-exact-six-kw", "Да")
+    assert [product.sku for product in alternatives.products] == [
+        "NEARBY-IN-STOCK"
+    ]
+    assert "только для сравнения" in alternatives.answer.lower()
+    assert "не подтверждённая замена" in alternatives.answer.lower()
 
     exhausted = bot.handle_chat("all-exact-six-kw", "Покажи ещё")
     assert exhausted.products == []
@@ -193,6 +202,7 @@ def test_arbitrary_power_pages_have_truthful_stock_and_alternative_notes() -> No
     first = bot.handle_chat(session_id, "Нужен электрический котёл на 14 кВт")
     second = bot.handle_chat(session_id, "Покажи ещё")
     third = bot.handle_chat(session_id, "Покажи ещё")
+    alternatives = bot.handle_chat(session_id, "Да, покажи ближайшие")
     exhausted = bot.handle_chat(session_id, "Покажи ещё")
 
     assert [product.sku for product in first.products] == [
@@ -205,15 +215,16 @@ def test_arbitrary_power_pages_have_truthful_stock_and_alternative_notes() -> No
     assert all(product.stock_status == "нет в наличии" for product in second.products)
     assert "точные котлы 14 квт без наличия" in second.answer.lower()
     assert "продолжаю показывать" not in second.answer.lower()
-    assert [product.sku for product in third.products] == [
-        "EXACT-OUT-5",
+    assert [product.sku for product in third.products] == ["EXACT-OUT-5"]
+    assert "показать ближайшие мощности" in third.answer.lower()
+    assert [product.sku for product in alternatives.products] == [
         "NEAR-13",
         "NEAR-15",
     ]
-    assert "ближайшие по мощности альтернативы" in third.answer.lower()
+    assert "только для сравнения" in alternatives.answer.lower()
     shown = [
         product.sku
-        for response in [first, second, third]
+        for response in [first, second, third, alternatives]
         for product in response.products
     ]
     assert len(shown) == len(set(shown)) == len(products)
@@ -237,3 +248,101 @@ def test_changing_requested_power_starts_a_new_result_set() -> None:
     assert first.products[0].sku == "SIX"
     assert second.products[0].sku == "NINE"
     assert session.shown_product_skus == [product.sku for product in second.products]
+
+
+def test_no_exact_rating_asks_before_showing_available_nearby_power() -> None:
+    gas_nearby = _boiler("GAS-NEARBY", 13.9, in_stock=True)
+    gas_nearby = gas_nearby.model_copy(
+        update={
+            "name": "Котёл газовый TEST 13.9 кВт",
+            "category_path": "Котлы газовые",
+            "attributes_normalized": {
+                **gas_nearby.attributes_normalized,
+                "тип котла": "Газовый",
+            },
+        }
+    )
+    bot = ChatOrchestrator(
+        products=[
+            gas_nearby,
+            _boiler("ELECTRIC-13", 13, in_stock=True),
+            _boiler("ELECTRIC-15", 15, in_stock=True),
+            _boiler("ELECTRIC-16-OUT", 16, in_stock=False),
+        ]
+    )
+    session_id = "no-exact-rating"
+
+    offer = bot.handle_chat(
+        session_id,
+        "Нужен электрический котёл на 14 кВт",
+    )
+
+    assert offer.products == []
+    assert "показать ближайшие мощности" in offer.answer.lower()
+    assert "не подтверждённая замена" in offer.answer.lower()
+
+    accepted = bot.handle_chat(session_id, "Да")
+
+    assert [product.sku for product in accepted.products] == [
+        "ELECTRIC-13",
+        "ELECTRIC-15",
+    ]
+    assert all(product.stock_status == "в наличии" for product in accepted.products)
+    assert "GAS-NEARBY" not in {product.sku for product in accepted.products}
+    assert "ELECTRIC-16-OUT" not in {
+        product.sku for product in accepted.products
+    }
+
+
+def test_user_can_decline_nearby_power_and_new_rating_requires_new_consent() -> None:
+    bot = ChatOrchestrator(
+        products=[
+            _boiler("SEVEN", 7, in_stock=True),
+            _boiler("TEN", 10, in_stock=True),
+        ]
+    )
+    session_id = "power-alternative-consent-scope"
+
+    first_offer = bot.handle_chat(
+        session_id,
+        "Нужен электрический котёл на 6 кВт",
+    )
+    declined = bot.handle_chat(session_id, "Нет, не показывай")
+    second_offer = bot.handle_chat(
+        session_id,
+        "Теперь нужен электрический котёл на 9 кВт",
+    )
+
+    assert first_offer.products == []
+    assert declined.products == []
+    assert "другой мощности не показываю" in declined.answer.lower()
+    assert second_offer.products == []
+    assert "показать ближайшие мощности" in second_offer.answer.lower()
+
+
+def test_available_power_alternatives_are_paginated_three_at_a_time() -> None:
+    bot = ChatOrchestrator(
+        products=[
+            _boiler(f"NEAR-{power}", power, in_stock=True)
+            for power in [7, 8, 9, 11, 12, 13]
+        ]
+    )
+    session_id = "power-alternative-pages"
+
+    offer = bot.handle_chat(
+        session_id,
+        "Нужен электрический котёл на 10 кВт",
+    )
+    first = bot.handle_chat(session_id, "Да")
+    second = bot.handle_chat(session_id, "Покажи ещё")
+
+    assert offer.products == []
+    assert len(first.products) == 3
+    assert "есть ещё 3 доступных вариантов другой мощности" in first.answer.lower()
+    assert len(second.products) == 3
+    shown = [
+        product.sku
+        for response in [first, second]
+        for product in response.products
+    ]
+    assert len(shown) == len(set(shown)) == 6

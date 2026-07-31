@@ -1791,6 +1791,28 @@ class ChatOrchestrator:
                 agents_used,
             )
         if not products:
+            if query.category == "boilers" and query.slots.get("power_kw") is not None:
+                # An empty strict search means that no boiler satisfies the
+                # remaining hard constraints. Do not relax type, voltage,
+                # contours or other requirements merely to produce cards.
+                answer = self.composer.compose_no_match(query)
+                answer = self._guard_composed_answer(
+                    answer,
+                    "generic",
+                    agents_used,
+                )
+                self._append_history(session, message, answer)
+                self.sessions.save(session)
+                agents_used.append("ResponseComposerAgent")
+                return self._response(
+                    session_id,
+                    answer,
+                    [],
+                    True,
+                    intent,
+                    session,
+                    agents_used,
+                )
             alternatives = (
                 self.search_agent.search_alternatives(query)
                 if query.slots.get("allow_alternatives", True)
@@ -1849,6 +1871,100 @@ class ChatOrchestrator:
 
         agents_used.append("RankingAgent")
         ranked = self.ranking_agent.rank(products, query)
+        explicit_boiler_power = bool(
+            query.category == "boilers"
+            and query.slots.get("power_kw") is not None
+        )
+        power_alternatives_allowed = bool(
+            explicit_boiler_power
+            and (
+                query.slots.get("allow_power_alternatives") is True
+                or self._explicit_boiler_power_alternative_request(
+                    query.original_text
+                )
+            )
+        )
+        if power_alternatives_allowed:
+            session.slots["allow_power_alternatives"] = True
+        exact_power_ranked: list[Product] = []
+        available_power_alternatives: list[Product] = []
+        if explicit_boiler_power:
+            requested_kw = float(query.slots["power_kw"])
+            exact_power_ranked = [
+                product
+                for product in ranked
+                if self._boiler_power_page_kind(product, requested_kw)
+                in {"exact_stock", "exact_no_stock"}
+            ]
+            available_power_alternatives = [
+                product
+                for product in ranked
+                if self._boiler_power_page_kind(product, requested_kw)
+                == "alternative_stock"
+            ]
+            # A different nominal rating is never used to fill free places on
+            # an exact-power page. It becomes a separate, opt-in result set.
+            ranked = (
+                available_power_alternatives
+                if power_alternatives_allowed
+                else exact_power_ranked
+            )
+            if not ranked and not power_alternatives_allowed:
+                if available_power_alternatives:
+                    answer = self._compose_boiler_power_alternative_offer(query)
+                    self._set_boiler_power_alternative_pending(session, answer)
+                    session.last_products = []
+                    session.shown_product_skus = []
+                    session.shown_result_signature = (
+                        self._boiler_power_result_signature(query)
+                    )
+                    self._append_history(session, message, answer)
+                    self.sessions.save(session)
+                    agents_used.append("ResponseComposerAgent")
+                    return self._response(
+                        session_id,
+                        answer,
+                        [],
+                        False,
+                        intent,
+                        session,
+                        agents_used,
+                    )
+                answer = self.composer.compose_no_match(query)
+                answer = self._guard_composed_answer(
+                    answer,
+                    "generic",
+                    agents_used,
+                )
+                self._append_history(session, message, answer)
+                self.sessions.save(session)
+                agents_used.append("ResponseComposerAgent")
+                return self._response(
+                    session_id,
+                    answer,
+                    [],
+                    True,
+                    intent,
+                    session,
+                    agents_used,
+                )
+            if not ranked and power_alternatives_allowed:
+                answer = (
+                    "Доступных котлов другой мощности, которые сохраняют остальные "
+                    "параметры текущего запроса, в каталоге не вижу."
+                )
+                self._append_history(session, message, answer)
+                self.sessions.save(session)
+                agents_used.append("ResponseComposerAgent")
+                return self._response(
+                    session_id,
+                    answer,
+                    [],
+                    False,
+                    intent,
+                    session,
+                    agents_used,
+                )
         if (
             query.cheap
             and session.last_products
@@ -1893,6 +2009,7 @@ class ChatOrchestrator:
             return self._response(session_id, answer, [], True, intent, session, agents_used)
 
         agents_used.append("ResponseComposerAgent")
+        power_alternative_offer: str | None = None
         if query.slots.get("choose_one"):
             answer = self.composer.compose_choose_one(
                 cards[0],
@@ -1905,7 +2022,26 @@ class ChatOrchestrator:
                 query,
                 note=self._compose_query_note(query, ranked, cards),
             )
+        if explicit_boiler_power and not power_alternatives_allowed:
+            card_skus = {normalize_sku_token(card.sku) for card in cards}
+            exact_after_page = [
+                product
+                for product in exact_power_ranked
+                if normalize_sku_token(product.sku) not in card_skus
+            ]
+            if not exact_after_page and available_power_alternatives:
+                power_alternative_offer = (
+                    self._compose_boiler_power_alternative_offer(query)
+                )
+                self._set_boiler_power_alternative_pending(
+                    session,
+                    power_alternative_offer,
+                )
         answer = self._guard_composed_answer(answer, "products", agents_used)
+        if power_alternative_offer:
+            # This is deterministic workflow guidance, not a product fact from
+            # the generative composer, so append it after validating the cards.
+            answer = f"{answer}\n\n{power_alternative_offer}"
         answer = self._append_companion_hint(answer, session, query.category)
         self._remember_project_cart(session, cards, replace_category=query.category)
         session.last_products = cards
@@ -2170,6 +2306,15 @@ class ChatOrchestrator:
         base = dict(session.slots)
         incoming = dict(new_slots)
         explicit = explicit_slots if explicit_slots is not None else new_slots
+        if any(
+            key in explicit
+            for key in {"power_kw", "boiler_type", "boiler_types", "contours", "voltage_v"}
+        ):
+            # Permission to inspect a different boiler rating belongs only to
+            # the current selection. A new explicit boiler requirement must
+            # ask again rather than inheriting consent from the previous one.
+            base.pop("allow_power_alternatives", None)
+            incoming.pop("allow_power_alternatives", None)
         if "excluded_features" in explicit:
             incoming.pop("required_features", None)
             excluded = set(
@@ -7073,6 +7218,46 @@ class ChatOrchestrator:
         text = normalize_text(message)
         if self._wants_choose_one(message):
             return None
+        awaiting_power_alternatives = bool(
+            session.pending_intent_type == "boiler_power_alternatives"
+            and session.category == "boilers"
+            and session.slots.get("power_kw") is not None
+        )
+        declines_power_alternatives = bool(
+            text in {"нет", "не надо", "не нужно", "не показывай"}
+            or re.match(r"^нет(?:[\s,.]|$)", text) is not None
+        )
+        starts_new_boiler_selection = any(
+            key in intent.slots
+            for key in {
+                "power_kw",
+                "boiler_type",
+                "boiler_types",
+                "contours",
+                "voltage_v",
+            }
+        )
+        if (
+            awaiting_power_alternatives
+            and declines_power_alternatives
+            and not starts_new_boiler_selection
+        ):
+            session.pending_question = None
+            session.pending_intent_type = None
+            session.pending_category = None
+            session.pending_slot_keys = []
+            session.slots.pop("allow_power_alternatives", None)
+            answer = "Хорошо, котлы другой мощности не показываю."
+            self._append_history(session, message, answer)
+            return self._response(
+                session.session_id,
+                answer,
+                [],
+                False,
+                intent,
+                session,
+                agents_used,
+            )
         asks_more = any(
             marker in text
             for marker in [
@@ -7085,6 +7270,20 @@ class ChatOrchestrator:
                 "ещё котл",
             ]
         )
+        explicit_power_alternative_request = bool(
+            session.category == "boilers"
+            and session.slots.get("power_kw") is not None
+            and self._explicit_boiler_power_alternative_request(message)
+        )
+        power_alternatives_approved = bool(
+            explicit_power_alternative_request
+            or (
+                awaiting_power_alternatives
+                and (asks_more or self._looks_like_affirmation(message))
+            )
+        )
+        if power_alternatives_approved:
+            asks_more = True
         wants_cheaper = bool(
             intent.flags.get("cheap")
             or intent.slots.get("cheap")
@@ -7092,7 +7291,7 @@ class ChatOrchestrator:
         )
         if "аналог" not in text and not asks_more and not wants_cheaper:
             return None
-        if not session.last_products:
+        if not session.last_products and not awaiting_power_alternatives:
             return None
         blocking_slots = {"sku", "brand", "reference_brand", "old_model"}
         if blocking_slots.intersection(intent.slots):
@@ -7107,6 +7306,13 @@ class ChatOrchestrator:
             "relative_cheaper",
         }
         current_slots = self._merge_persistent_slots(session, intent.slots)
+        if power_alternatives_approved:
+            current_slots["allow_power_alternatives"] = True
+            session.slots["allow_power_alternatives"] = True
+            session.pending_question = None
+            session.pending_intent_type = None
+            session.pending_category = None
+            session.pending_slot_keys = []
         reference_slots = self._shown_water_heater_reference_slots(session)
         for key, value in reference_slots.items():
             # Current-turn constraints are authoritative. Missing compatibility
@@ -7161,12 +7367,42 @@ class ChatOrchestrator:
             alternative_pool = self.search_agent.search(query)
         else:
             alternative_pool = self.search_agent.search_alternatives(query)
-        alternatives = [
+        remaining_pool = [
             product
             for product in alternative_pool
             if normalize_sku_token(product.sku) not in shown_skus
         ]
-        alternatives = self._drop_underpowered_boilers(alternatives, query)
+        remaining_pool = self._drop_underpowered_boilers(remaining_pool, query)
+        explicit_boiler_power = bool(
+            query.category == "boilers"
+            and query.slots.get("power_kw") is not None
+        )
+        power_alternatives_allowed = bool(
+            explicit_boiler_power
+            and query.slots.get("allow_power_alternatives") is True
+        )
+        if explicit_boiler_power:
+            requested_kw = float(query.slots["power_kw"])
+            exact_remaining = [
+                product
+                for product in remaining_pool
+                if self._boiler_power_page_kind(product, requested_kw)
+                in {"exact_stock", "exact_no_stock"}
+            ]
+            available_power_alternatives = [
+                product
+                for product in remaining_pool
+                if self._boiler_power_page_kind(product, requested_kw)
+                == "alternative_stock"
+            ]
+            alternatives = (
+                available_power_alternatives
+                if power_alternatives_allowed
+                else exact_remaining
+            )
+        else:
+            available_power_alternatives = []
+            alternatives = remaining_pool
         if wants_cheaper:
             min_shown_price = min((card.price for card in session.last_products), default=None)
             if min_shown_price is not None:
@@ -7187,6 +7423,13 @@ class ChatOrchestrator:
                 agents_used.append("ResponseComposerAgent")
                 answer = self.composer.compose_no_cheaper(session.last_products)
                 answer = self._guard_composed_answer(answer, "generic", agents_used)
+            elif (
+                explicit_boiler_power
+                and not power_alternatives_allowed
+                and available_power_alternatives
+            ):
+                answer = self._compose_boiler_power_alternative_offer(query)
+                self._set_boiler_power_alternative_pending(session, answer)
             else:
                 if query.category == "boilers" and query.slots.get("power_kw") is not None:
                     answer = (
@@ -7225,7 +7468,25 @@ class ChatOrchestrator:
             query,
             note=note,
         )
+        power_alternative_offer: str | None = None
+        if explicit_boiler_power and not power_alternatives_allowed:
+            card_skus = {normalize_sku_token(card.sku) for card in cards}
+            exact_after_page = [
+                product
+                for product in exact_remaining
+                if normalize_sku_token(product.sku) not in card_skus
+            ]
+            if not exact_after_page and available_power_alternatives:
+                power_alternative_offer = (
+                    self._compose_boiler_power_alternative_offer(query)
+                )
+                self._set_boiler_power_alternative_pending(
+                    session,
+                    power_alternative_offer,
+                )
         answer = self._guard_composed_answer(answer, "products", agents_used)
+        if power_alternative_offer:
+            answer = f"{answer}\n\n{power_alternative_offer}"
         session.last_products = cards
         session.shown_product_skus = [
             *(session.shown_product_skus if use_accumulated_page else []),
@@ -8662,6 +8923,57 @@ class ChatOrchestrator:
             return "exact_stock" if product.is_in_stock else "exact_no_stock"
         return "alternative_stock" if product.is_in_stock else "alternative_no_stock"
 
+    def _explicit_boiler_power_alternative_request(self, message: str) -> bool:
+        """Recognize direct consent to compare a different nominal rating."""
+        text = normalize_text(message)
+        if any(
+            marker in text
+            for marker in [
+                "не показывай альтернатив",
+                "не показывайте альтернатив",
+                "без альтернатив",
+                "только точн",
+                "только указанн",
+            ]
+        ):
+            return False
+        return any(
+            marker in text
+            for marker in [
+                "аналог",
+                "альтернатив",
+                "другая мощ",
+                "другую мощ",
+                "другой мощ",
+                "ближайш",
+            ]
+        )
+
+    def _compose_boiler_power_alternative_offer(
+        self,
+        query: SearchQuery,
+    ) -> str:
+        requested_kw = float(query.slots["power_kw"])
+        return (
+            f"Новых точных вариантов {requested_kw:g} кВт для показа нет. "
+            "В каталоге есть ближайшие по мощности модели в наличии, но другая "
+            "мощность — это только вариант для сравнения, а не подтверждённая замена. "
+            "По карточке или паспорту можно сверить характеристики самой модели, но не её "
+            "пригодность для вашего объекта. Для окончательного подбора нужно учесть "
+            "площадь или теплопотери, напряжение 220/380 В, выделенную электрическую "
+            "мощность и требуемые контуры/ГВС. Показать ближайшие мощности?"
+        )
+
+    def _set_boiler_power_alternative_pending(
+        self,
+        session: SessionState,
+        question: str,
+    ) -> None:
+        session.pending_question = question
+        session.pending_intent_type = "boiler_power_alternatives"
+        session.pending_category = "boilers"
+        session.pending_slot_keys = ["allow_power_alternatives"]
+
     def _compose_boiler_power_page_note(
         self,
         query: SearchQuery,
@@ -8703,14 +9015,12 @@ class ChatOrchestrator:
             {"alternative_stock", "alternative_no_stock"}.intersection(kinds)
         )
         if has_alternatives:
-            prefix = (
-                "После точных позиций"
-                if {"exact_stock", "exact_no_stock"}.intersection(kinds)
-                else f"Точные котлы {requested_kw:g} кВт закончились. Ниже"
-            )
             parts.append(
-                f"{prefix} — ближайшие по мощности альтернативы; "
-                "отличие видно в характеристиках каждой карточки."
+                f"Точных котлов {requested_kw:g} кВт в этой выдаче нет. "
+                "Показываю ближайшие доступные мощности только для сравнения. "
+                "Это не подтверждённая замена: пригодность для объекта нужно проверить "
+                "по площади или теплопотерям, напряжению питания, выделенной мощности "
+                "и требуемым контурам/ГВС."
             )
         if kinds == {"unknown"}:
             parts.append(
@@ -8729,6 +9039,18 @@ class ChatOrchestrator:
             parts.append(
                 f"В наличии есть ещё {remaining_exact_stock} шт. с теми же параметрами — "
                 "напишите «покажи ещё»."
+            )
+        remaining_alternative_stock = sum(
+            1
+            for product in ordered_products
+            if normalize_sku_token(product.sku) not in page_skus
+            and self._boiler_power_page_kind(product, requested_kw)
+            == "alternative_stock"
+        )
+        if has_alternatives and remaining_alternative_stock:
+            parts.append(
+                f"Есть ещё {remaining_alternative_stock} доступных вариантов другой "
+                "мощности — напишите «покажи ещё»."
             )
         return " ".join(parts) or "Показываю следующие варианты по текущим параметрам."
 
