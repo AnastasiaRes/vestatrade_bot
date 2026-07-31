@@ -575,6 +575,11 @@ class ResponseComposerAgent:
                 "если отличаются объём, накопительный/проточный тип, источник нагрева "
                 "или вариант монтажа — этот товар не является совместимой заменой."
             )
+        if category == "hydraulic_accumulators":
+            return (
+                "если это бак другого назначения (отопление вместо водоснабжения), "
+                "другого расчётного объёма или присоединения — он не является заменой."
+            )
         if category in {"pipes", "sewer"}:
             return "если нужен другой диаметр или назначение — уточните, подберу заново."
         return "если параметры вашей задачи отличаются от указанных — сверьте характеристики в карточке."
@@ -740,6 +745,26 @@ class ResponseComposerAgent:
                     "косвенным или менять требуемый объём без вашего согласия. Можно отдельно "
                     "разрешить изменить одно из условий."
                 )
+        elif query.category == "hydraulic_accumulators":
+            requested = self._requested_summary(query) or query.original_text
+            draft = (
+                f"Не вижу точного совпадения в ассортименте: {requested}. "
+                "Не буду подменять гидроаккумулятор для водоснабжения расширительным "
+                "баком отопления или менять расчётный объём без вашего согласия."
+            )
+        elif query.category == "filters":
+            requested = self._requested_summary(query) or query.original_text
+            draft = (
+                f"Не вижу точного совпадения в ассортименте: {requested}. "
+                "Не буду подменять типоразмер или назначение картриджа; проверьте "
+                "формат, технологию очистки и тонкость фильтрации."
+            )
+        elif query.category == "controls":
+            requested = self._requested_summary(query) or query.original_text
+            draft = (
+                f"Не вижу точного совпадения в ассортименте: {requested}. "
+                "Проверьте тип автоматики, питание, нормальное состояние и сигнал управления."
+            )
         else:
             draft = "Не нашёл подходящие товары в текущем ассортименте. Могу уточнить параметры или передать вопрос менеджеру."
         self.last_draft = draft
@@ -880,6 +905,17 @@ class ResponseComposerAgent:
                 )
                 lines.append(f"   Характеристики: {attrs}")
             lines.append(f"   Ссылка: {card.url}")
+
+        if query.category == "boilers" and query.slots.get("needs_chimney"):
+            chimney_type = query.slots.get("chimney_type") or "требуемый тип"
+            chimney_size = query.slots.get("chimney_size")
+            size_text = f" {chimney_size}" if chimney_size else ""
+            lines.append(
+                "Дымоход зафиксировал как второй обязательный компонент: "
+                f"{chimney_type}{size_text}. Его нельзя выбирать универсально — сначала "
+                "нужно выбрать точную модель котла и сверить по её паспорту диаметр, "
+                "состав комплекта и допустимую длину."
+            )
 
         lines.append(self._next_action(query, len(cards)))
         draft = "\n".join(lines)

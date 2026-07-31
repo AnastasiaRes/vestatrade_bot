@@ -218,6 +218,15 @@ SPECIFIC_PRODUCT_WORDS = [
     "котл",
     "бойлер",
     "водонагрев",
+    "гидроаккумулятор",
+    "гидробак",
+    "мембранный бак",
+    "фильтр",
+    "картридж",
+    "водоочист",
+    "сервопривод",
+    "терморегулятор",
+    "контроллер",
     "накопительн",
     "проточн",
     "газовая колонк",
@@ -324,6 +333,9 @@ PROJECT_SCOPE_LABELS: dict[str, str] = {
 PROJECT_CATEGORY_LABELS: dict[str, str] = {
     "boilers": "Котёл",
     "water_heaters": "Водонагреватель",
+    "hydraulic_accumulators": "Мембранный бак",
+    "filters": "Фильтр/картридж",
+    "controls": "Автоматика",
     "pumps": "Насос",
     "pipes": "Трубы",
     "valves": "Запорная арматура",
@@ -336,6 +348,9 @@ PROJECT_CATEGORY_LABELS: dict[str, str] = {
 PROJECT_CATEGORY_REASONS: dict[str, str] = {
     "boilers": "закрывает источник тепла; мощность и тип котла нужно сверять с площадью, топливом и ГВС",
     "water_heaters": "готовит горячую воду; объём, способ нагрева и тип установки нужно сверять с задачей",
+    "hydraulic_accumulators": "поддерживает давление и снижает число пусков насоса; назначение и объём должны быть рассчитаны",
+    "filters": "очищает воду; нужны тип элемента, типоразмер и задача очистки",
+    "controls": "управляет отопительным узлом; важны совместимость, питание и тип сигнала",
     "pumps": "нужен для циркуляции или отдельного контура, если штатного насоса котла/узла недостаточно",
     "pipes": "это базовая магистраль системы; диаметр и материал уточняются по задаче",
     "valves": "нужна для отсечения и обслуживания узлов без слива всей системы",
@@ -349,7 +364,7 @@ PROJECT_SCOPE_CATEGORIES: dict[str, list[str]] = {
     "warm_floor": ["pipes", "pumps", "valves"],
     "bathroom": ["pipes", "valves", "sewer"],
     "heating": ["boilers", "pumps", "pipes", "valves", "radiator_fittings"],
-    "water": ["pipes", "valves", "pumps"],
+    "water": ["pipes", "valves", "pumps", "hydraulic_accumulators", "filters"],
     "sewer": ["sewer"],
     "general": ["boilers", "pumps", "pipes", "valves", "sewer"],
 }
@@ -2475,6 +2490,7 @@ class ChatOrchestrator:
             "total_length_m",
             "secondary_diameter_mm",
             "radiator_size_mm",
+            "radiator_height_mm",
             "sections",
             "application",
             "cheap",
@@ -3897,9 +3913,17 @@ class ChatOrchestrator:
             "required_builtin_parts",
             "excluded_builtin_parts",
             "area_m2",
+            "floors",
             "power_kw",
             "voltage_v",
             "contours",
+            "combustion_chamber",
+            "needs_chimney",
+            "chimney_type",
+            "chimney_size",
+            "needs_hot_water",
+            "has_warm_floor",
+            "system_type",
             "in_stock",
         }
         if any(
@@ -4340,6 +4364,9 @@ class ChatOrchestrator:
 
         concrete_non_boiler = {
             "water_heaters",
+            "hydraulic_accumulators",
+            "filters",
+            "controls",
             "pumps",
             "pipes",
             "fittings",
@@ -4375,6 +4402,14 @@ class ChatOrchestrator:
             "energy_source",
             "mounting",
             "orientation",
+            "filter_format",
+            "filtration_microns",
+            "filter_technology",
+            "filter_element_type",
+            "control_kind",
+            "normal_state",
+            "control_signal",
+            "voltage_v",
         }
         if intent.category in concrete_non_boiler and concrete_slot_keys.intersection(intent.slots):
             if not any(marker in text for marker in broad_markers):
@@ -4486,6 +4521,24 @@ class ChatOrchestrator:
             session.slots["boiler_type"] = intent.slots["boiler_type"]
         if intent.slots.get("contours"):
             session.slots["contours"] = intent.slots["contours"]
+        if "needs_hot_water" in intent.slots:
+            session.slots["needs_hot_water"] = bool(intent.slots["needs_hot_water"])
+        if "has_warm_floor" in intent.slots:
+            session.slots["has_warm_floor"] = bool(intent.slots["has_warm_floor"])
+        if intent.slots.get("system_type"):
+            session.slots["system_type"] = intent.slots["system_type"]
+        if intent.slots.get("floors"):
+            session.slots["floors"] = intent.slots["floors"]
+
+        complex_heating_project = bool(
+            re.search(r"\b(?:дом|коттедж)\w*\b", text)
+            and (intent.slots.get("area_m2") or session.slots.get("area_m2"))
+            and any(marker in text for marker in ["газ", "электр", "гвс", "радиатор"])
+            and any(marker in text for marker in ["радиатор", "тепл", "тёпл", "гвс"])
+        )
+        if complex_heating_project:
+            session.slots.setdefault("project_scope", "heating")
+            session.slots.setdefault("scope_funnel", "heating")
 
         # Energy words inside a water-heater request describe that appliance,
         # not the heat source of an отопление project.  Keeping them in
@@ -4554,7 +4607,12 @@ class ChatOrchestrator:
         elif re.search(r"\bбез\s+бойлер\w*\b", text):
             session.slots["boiler_requirement"] = "без бойлера"
         mentions_floor = bool(re.search(r"\bпол(?:а|у|ом|е)?\b", text))
-        if "водян" in text and mentions_floor:
+        if self._negates_warm_floor(text):
+            session.slots["has_warm_floor"] = False
+            if "радиатор" in text:
+                session.slots["system_type"] = "радиаторы"
+            session.slots.pop("warm_floor_type", None)
+        elif "водян" in text and mentions_floor:
             session.slots["warm_floor_type"] = "водяной"
         elif "от котл" in text and session.slots.get("project_scope") == "warm_floor":
             session.slots["warm_floor_type"] = "водяной"
@@ -4679,6 +4737,9 @@ class ChatOrchestrator:
         mapping = {
             "boilers": "boilers",
             "water_heaters": "water_heaters",
+            "hydraulic_accumulators": "hydraulic_accumulators",
+            "filters": "filters",
+            "controls": "controls",
             "pumps": "pumps",
             "pipes": "pipes",
             "valves": "valves",
@@ -5127,6 +5188,11 @@ class ChatOrchestrator:
                 r"\b(?:без|не|кроме|исключи|убери|только\s+не)\s+[^.?!,;]{0,24}(?:тепл|тёпл)[^,.?!;]{0,12}пол",
                 text,
             )
+            or re.search(
+                r"\b(?:тепл|тёпл)\w*\s+пол\w*[^.?!,;]{0,20}"
+                r"(?:не\s+будет|не\s+нужен|не\s+нужно|исключен\w*)",
+                text,
+            )
         )
 
     def _project_area_from_text(self, text: str) -> float | None:
@@ -5186,6 +5252,7 @@ class ChatOrchestrator:
             "diameter_mm",
             "secondary_diameter_mm",
             "radiator_size_mm",
+            "radiator_height_mm",
             "sections",
         ]:
             session.slots.pop(key, None)
@@ -5380,6 +5447,9 @@ class ChatOrchestrator:
         return intent.category in {
             "boilers",
             "water_heaters",
+            "hydraulic_accumulators",
+            "filters",
+            "controls",
             "pumps",
             "pipes",
             "valves",
@@ -6427,6 +6497,24 @@ class ChatOrchestrator:
         if "консультац" in text and not any(
             marker in text for marker in HUMAN_ROLE_MARKERS
         ):
+            return False
+        if (
+            re.search(r"\bподдерж\w*\s+давлен\w*\b", text)
+            and not any(
+                re.search(rf"\b{re.escape(marker)}\w*\b", text)
+                for marker in [
+                    "менеджер",
+                    "оператор",
+                    "консультант",
+                    "сотрудник",
+                    "продавец",
+                    "специалист",
+                    "человек",
+                ]
+            )
+        ):
+            # ``поддержание давления`` describes a pressure vessel; fuzzy
+            # matching must not turn it into the human role ``поддержка``.
             return False
         return self._has_marker(text, HUMAN_ROLE_MARKERS, fuzzy_threshold=76)
 
@@ -7787,6 +7875,63 @@ class ChatOrchestrator:
             return None
         explanations: list[tuple[str, list[str], str]] = [
             (
+                "ГВС / ХВС",
+                ["гвс", "хвс", "г в с", "х в с"],
+                "ГВС — горячее водоснабжение, ХВС — холодное водоснабжение. "
+                "Это разные назначения: при подборе труб и арматуры нужно отдельно "
+                "учитывать температуру, давление, материал и участок системы.",
+            ),
+            (
+                "гидроаккумулятор",
+                ["гидроаккумулятор", "гидробак", "га "],
+                "это мембранный бак именно для системы водоснабжения: он создаёт запас "
+                "воды, сглаживает колебания давления и уменьшает число пусков насоса. "
+                "Его не делят на «паровой и водяной» и не подменяют расширительным "
+                "баком отопления; объём рассчитывают по насосу и настройкам давления.",
+            ),
+            (
+                "БКН",
+                ["бкн"],
+                "бойлер косвенного нагрева — накопительный бак, который обычно греется "
+                "теплоносителем от котла через теплообменник. Объём и мощность змеевика "
+                "подбирают под расход ГВС и возможности котла.",
+            ),
+            (
+                "ЭВН",
+                ["эвн"],
+                "электрический водонагреватель. Сокращение само по себе не задаёт все "
+                "параметры: нужно уточнить накопительный он или проточный, объём/расход, "
+                "мощность и способ установки.",
+            ),
+            (
+                "Ду / DN и Ру / PN",
+                ["ду", "dn", "ру", "pn"],
+                "Ду (DN) — условный проход, то есть номинальный размер соединения; "
+                "Ру (PN) — номинальный класс давления при установленных стандартом "
+                "условиях. Это не гарантирует пригодность при любой температуре — "
+                "нужно сверять паспорт и рабочую точку.",
+            ),
+            (
+                "Q / H насоса",
+                ["q=", "q =", "h=", "h =", "q ", "h "],
+                "Q — расход, обычно в м³/ч; H — напор в метрах. Насос выбирают по "
+                "совместной рабочей точке Q–H на его кривой, а не по двум независимым "
+                "максимальным значениям.",
+            ),
+            (
+                "ЗКС / ОКС",
+                ["зкс", "окс"],
+                "ЗКС — закрытая камера сгорания, ОКС — открытая. Это обязательная "
+                "характеристика котла, связанная с подачей воздуха и дымоудалением; "
+                "дымоход подбирают к точной модели по паспорту.",
+            ),
+            (
+                "межосевое расстояние",
+                ["м/о", "межосев"],
+                "это расстояние между осями верхнего и нижнего подключений радиатора. "
+                "Запись «м/о 500» означает 500 мм и должна совпасть со схемой подключения.",
+            ),
+            (
                 "монтажная длина",
                 ["монтажн"],
                 "это расстояние между гайками насоса, то есть сколько места он занимает в трубе. "
@@ -7840,21 +7985,25 @@ class ChatOrchestrator:
             (
                 "армированная труба",
                 ["армиров"],
-                "это полипропиленовая труба, усиленная стекловолокном или алюминием. Она меньше "
-                "расширяется от горячей воды, поэтому её берут для отопления и горячего водоснабжения.",
+                "это полипропиленовая труба, усиленная стекловолокном или алюминием. "
+                "Армирование уменьшает температурное удлинение, но само по себе не "
+                "доказывает пригодность для конкретного отопления или ГВС: проверяют "
+                "паспортный режим температуры/давления и систему соединений.",
             ),
             (
                 "pn",
                 ["pn"],
-                "это класс давления трубы. Для горячей воды и отопления часто смотрят PN20 или армированные трубы, "
-                "но точный выбор зависит от задачи.",
+                "это номинальный класс давления при заданных стандартом условиях. "
+                "При горячей воде допустимое давление может быть ниже, поэтому конкретную "
+                "трубу проверяют по её температурно-ресурсной диаграмме и паспорту.",
             ),
             (
                 "котёл",
                 ["котел", "котл"],
-                "это прибор, который греет воду для системы отопления, а двухконтурный — ещё и горячую "
-                "воду для крана. Газовый дешевле в эксплуатации, но требует дымоход; электрический проще "
-                "в установке. Мощность подбирают примерно 1 кВт на 10 м² площади.",
+                "это прибор, который греет теплоноситель системы отопления, а двухконтурный "
+                "ещё готовит ГВС. Тип, мощность и схему нельзя выбирать только по площади: "
+                "нужны теплопотери, топливо/электропитание, требование ГВС, дымоудаление и "
+                "диапазон модуляции; оценка по площади бывает лишь предварительным ориентиром.",
             ),
             (
                 "насос",
@@ -9251,6 +9400,30 @@ class ChatOrchestrator:
         """
         text = normalize_text(message)
         if (
+            session.slots.get("project_scope") == "heating"
+            or session.slots.get("scope_funnel") == "heating"
+        ) and (
+            "гвс" in text or ("горяч" in text and "вод" in text)
+        ):
+            # A short project refinement names a requirement, not a random new
+            # catalogue family. Keep it attached to the boiler selection.
+            intent.category = "boilers"
+            intent.intent_type = "attribute_request"
+            intent.is_topic_change = False
+            intent.slots["needs_hot_water"] = True
+            intent.slots["contours"] = "двухконтурный"
+
+        if (
+            session.slots.get("project_scope") == "heating"
+            or session.slots.get("scope_funnel") == "heating"
+        ) and "радиатор" in text and self._negates_warm_floor(text):
+            intent.category = "boilers"
+            intent.intent_type = "attribute_request"
+            intent.is_topic_change = False
+            intent.slots["has_warm_floor"] = False
+            intent.slots["system_type"] = "радиаторы"
+
+        if (
             session.pending_category == "boilers"
             and "газовый или электрический" in normalize_text(
                 session.pending_question or ""
@@ -9680,6 +9853,32 @@ class ChatOrchestrator:
                 keys.append("mounting")
             if "вертик" in text or "горизонт" in text:
                 keys.append("orientation")
+        if category == "hydraulic_accumulators":
+            if "водоснаб" in text or "отоплен" in text or "назначен" in text:
+                keys.append("tank_application")
+            if "объ" in text or "литр" in text:
+                keys.append("volume_l")
+            if "вертик" in text or "горизонт" in text:
+                keys.append("orientation")
+        if category == "filters":
+            if "типоразмер" in text or any(
+                marker in text for marker in ["10sl", "20sl", "10bb", "20bb"]
+            ):
+                keys.append("filter_format")
+            if "мкм" in text or "микрон" in text or "тонкость" in text:
+                keys.append("filtration_microns")
+            if any(
+                marker in text
+                for marker in ["механическ", "уголь", "осмос", "назначен"]
+            ):
+                keys.append("filter_technology")
+        if category == "controls":
+            if "24" in text or "230" in text or "питани" in text:
+                keys.append("voltage_v")
+            if any(marker in text for marker in ["нз", "н.з", "nc", "no"]):
+                keys.append("normal_state")
+            if "сигнал" in text or "0-10" in text:
+                keys.append("control_signal")
         return list(dict.fromkeys(keys))
 
     def _is_pending_continuation(
@@ -9692,6 +9891,12 @@ class ChatOrchestrator:
             return False
         text = normalize_text(message)
         if session.pending_category == "pumps" and not intent.is_topic_change:
+            return True
+        if (
+            session.pending_category in {"filters", "controls"}
+            and intent.category in {session.pending_category, "other"}
+            and not intent.is_topic_change
+        ):
             return True
         if (
             session.pending_category == "pipes"
@@ -9725,6 +9930,12 @@ class ChatOrchestrator:
             )
         ):
             return True
+        if (
+            session.pending_category == "hydraulic_accumulators"
+            and not intent.is_topic_change
+            and intent.category in {"hydraulic_accumulators", "other"}
+        ):
+            return True
         if intent.intent_type in {"small_talk", "unknown", "out_of_scope"} and intent.category == "other":
             return True
         if intent.intent_type == "exact_sku" and session.pending_complectation_parts:
@@ -9743,6 +9954,12 @@ class ChatOrchestrator:
         if session.pending_category == "pumps" and not intent.is_topic_change:
             intent.category = session.pending_category
         elif (
+            session.pending_category in {"filters", "controls"}
+            and intent.category in {session.pending_category, "other"}
+            and not intent.is_topic_change
+        ):
+            intent.category = session.pending_category
+        elif (
             session.pending_category == "pipes"
             and intent.category in {"pipes", "other"}
             and not intent.is_topic_change
@@ -9751,6 +9968,8 @@ class ChatOrchestrator:
         elif session.pending_category == "boilers" and not intent.is_topic_change:
             intent.category = session.pending_category
         elif session.pending_category == "water_heaters" and not intent.is_topic_change:
+            intent.category = session.pending_category
+        elif session.pending_category == "hydraulic_accumulators" and not intent.is_topic_change:
             intent.category = session.pending_category
         elif session.category and intent.category == "other":
             intent.category = session.category
@@ -9917,7 +10136,7 @@ class ChatOrchestrator:
             "element_type",
             "sewer_scope",
         }
-        if specific_keys.intersection(intent.slots):
+        if specific_keys.intersection(merge_slots(session.slots, intent.slots)):
             return False
         return True
 
@@ -10162,6 +10381,28 @@ class ChatOrchestrator:
             "sewer": ["канализац"],
             "boilers": ["котел", "котёл", "котл"],
             "water_heaters": ["водонагрев", "бойлер", "накопительн", "проточн"],
+            "hydraulic_accumulators": [
+                "гидроаккумулятор",
+                "гидробак",
+                "мембранн",
+                "бак",
+            ],
+            "filters": [
+                "фильтр",
+                "картридж",
+                "водоочист",
+                "водоподготов",
+                "10bb",
+                "20bb",
+                "10sl",
+                "20sl",
+            ],
+            "controls": [
+                "термостат",
+                "терморегулятор",
+                "сервопривод",
+                "контроллер",
+            ],
             "valves": ["кран", "шаровый", "вентиль"],
             "radiator_fittings": ["радиатор", "батаре", "термоголов", "клапан"],
             "radiators": ["радиатор", "батаре", "биметалл"],

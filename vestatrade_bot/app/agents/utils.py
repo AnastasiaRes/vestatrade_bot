@@ -18,7 +18,10 @@ def normalize_text(text: str | None) -> str:
     # слово и его падежные формы к каноническому термину до классификации,
     # извлечения слотов и поиска по ассортименту.
     text = re.sub(r"\bканашк(?:а|и|у|е|ой|ою)?\b", "канализация", text)
-    text = re.sub(r"[^a-zа-я0-9./,\-+² ]+", " ", text)
+    # Preserve engineering symbols used as semantic separators/units.  They
+    # remain harmless for ordinary lexical search but let the notation layer
+    # distinguish ``ΔT``, ``Ø20``, ``16×2`` and Cyrillic ``°С`` reliably.
+    text = re.sub(r"[^a-zа-я0-9./,=\-+²°×µμδ∆~ ]+", " ", text)
     return re.sub(r"\s+", " ", text).strip()
 
 

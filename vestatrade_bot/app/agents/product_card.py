@@ -38,6 +38,8 @@ RELEVANT_ATTRS: dict[str, list[str]] = {
         "диапазон мощности отопления по паспорту",
         "тип котла",
         "количество контуров",
+        "камера сгорания",
+        "диаметр дымохода",
         "площадь",
     ],
     "water_heaters": [
@@ -46,6 +48,31 @@ RELEVANT_ATTRS: dict[str, list[str]] = {
         "вид нагрева",
         "монтаж",
         "мощность",
+    ],
+    "hydraulic_accumulators": [
+        "тип товара",
+        "объем бака",
+        "объём бака",
+        "ориентация бака",
+        "присоединительный размер",
+        "максимальное давление",
+    ],
+    "filters": [
+        "тип товара",
+        "типоразмер",
+        "тонкость фильтрации",
+        "мкм",
+        "назначение",
+        "производительность",
+        "присоедин",
+    ],
+    "controls": [
+        "тип товара",
+        "напряжение",
+        "параметры сети",
+        "класс защиты",
+        "тип управления",
+        "монтаж",
     ],
     # «тип резьбы» и «тип ручки» стоят выше «типа присоединения»: у кранов
     # одного диаметра присоединение почти всегда «Резьбовой», и сравнение
@@ -60,7 +87,7 @@ RELEVANT_ATTRS: dict[str, list[str]] = {
         "тип конструкции",
     ],
     "radiator_fittings": ["тип товара", "диаметр", "подключение", "комплектация"],
-    "radiators": ["тип", "межосевое расстояние", "количество секций", "теплоотдача", "площадь обогрева", "диаметр подключения"],
+    "radiators": ["тип", "высота", "межосевое расстояние", "количество секций", "теплоотдача", "площадь обогрева", "диаметр подключения"],
     "fittings": ["тип товара", "диаметр", "присоединительная резьба", "угол", "тип присоединения"],
 }
 
@@ -122,8 +149,8 @@ class ProductCardAgent:
         # Pumps need four grounded dimensions together: kind, head, mounting
         # length and connection.  Dropping the fourth field made the bot suggest
         # compatible fittings and then lose the very size needed to select them.
-        max_attributes = 5 if query.category == "pumps" else (
-            4 if query.category in {"boilers", "pipes"} else 3
+        max_attributes = 5 if query.category in {"pumps", "hydraulic_accumulators", "boilers"} else (
+            4 if query.category == "pipes" else 3
         )
         picked: dict[str, str] = {}
         for key in preferred:

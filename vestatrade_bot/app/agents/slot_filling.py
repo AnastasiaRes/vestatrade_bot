@@ -25,7 +25,11 @@ class SlotFillingAgent:
             return SlotFillingResult(slots=slots)
         if (
             intent.intent_type == "stock_request"
-            and category not in {"other", "water_heaters"}
+            and category not in {
+                "other",
+                "water_heaters",
+                "hydraulic_accumulators",
+            }
         ):
             return SlotFillingResult(slots=slots)
 
@@ -64,12 +68,78 @@ class SlotFillingAgent:
             return self._boilers(slots)
         if category == "water_heaters":
             return self._water_heaters(slots)
+        if category == "hydraulic_accumulators":
+            return self._hydraulic_accumulators(slots)
+        if category == "filters":
+            return self._filters(slots)
+        if category == "controls":
+            return self._controls(slots)
         if category == "valves":
             return self._valves(slots, text)
         if category == "radiator_fittings":
             return self._radiator(slots)
         if category == "radiators":
             return self._radiators(slots)
+        return SlotFillingResult(slots=slots)
+
+    def _filters(self, slots: dict) -> SlotFillingResult:
+        element = normalize_text(str(slots.get("filter_element_type") or ""))
+        if not element and not any(
+            slots.get(key)
+            for key in ["filter_format", "filter_technology", "filtration_microns"]
+        ):
+            return SlotFillingResult(
+                slots=slots,
+                needs_clarification=True,
+                question=(
+                    "Что именно нужно: корпус фильтра, сменный картридж или система "
+                    "водоочистки? Укажите источник воды и задачу/результат анализа; "
+                    "для замены — типоразмер, например 10SL, 10BB или 20BB."
+                ),
+            )
+        if element == "картридж" and not slots.get("filter_format"):
+            return SlotFillingResult(
+                slots=slots,
+                needs_clarification=True,
+                question=(
+                    "Какой типоразмер картриджа нужен: 10SL, 20SL, 10BB или 20BB? "
+                    "Также укажите назначение картриджа или требуемую тонкость в мкм."
+                ),
+            )
+        if element == "картридж" and not (
+            slots.get("filter_technology")
+            or slots.get("filtration_microns") is not None
+        ):
+            return SlotFillingResult(
+                slots=slots,
+                needs_clarification=True,
+                question=(
+                    "Для чего нужен картридж: механическая очистка, угольная очистка "
+                    "или другая задача? Для механического укажите тонкость фильтрации в мкм."
+                ),
+            )
+        return SlotFillingResult(slots=slots)
+
+    def _controls(self, slots: dict) -> SlotFillingResult:
+        kind = normalize_text(str(slots.get("control_kind") or ""))
+        if not kind:
+            return SlotFillingResult(
+                slots=slots,
+                needs_clarification=True,
+                question=(
+                    "Что требуется: комнатный термостат/терморегулятор, сервопривод "
+                    "клапана или контроллер? Укажите систему и модель совместимого узла."
+                ),
+            )
+        if kind == "сервопривод" and not slots.get("voltage_v"):
+            return SlotFillingResult(
+                slots=slots,
+                needs_clarification=True,
+                question=(
+                    "Какое питание сервопривода — 24 или 230 В? Если это замена, "
+                    "укажите также НЗ/NC или НО/NO, сигнал управления и присоединение."
+                ),
+            )
         return SlotFillingResult(slots=slots)
 
     def _pipes(self, slots: dict) -> SlotFillingResult:
@@ -875,6 +945,40 @@ class SlotFillingAgent:
             )
         return SlotFillingResult(slots=slots)
 
+    def _hydraulic_accumulators(self, slots: dict) -> SlotFillingResult:
+        """Collect vessel sizing facts without confusing it with a pump."""
+        application = normalize_text(str(slots.get("tank_application") or ""))
+        if not application:
+            return SlotFillingResult(
+                slots=slots,
+                needs_clarification=True,
+                question=(
+                    "Бак нужен как гидроаккумулятор для водоснабжения/насоса или "
+                    "как расширительный бак для закрытой системы отопления? Это разные "
+                    "назначения, подменять одно другим нельзя."
+                ),
+            )
+        if slots.get("volume_l") is None:
+            if "водоснаб" in application:
+                question = (
+                    "Какой расчётный объём гидроаккумулятора нужен в литрах? Если он ещё "
+                    "не рассчитан, укажите тип и мощность насоса, требуемый расход, "
+                    "давления включения/отключения и допустимое число пусков — по одной "
+                    "цене безопасно выбирать объём нельзя."
+                )
+            else:
+                question = (
+                    "Какой расчётный объём расширительного бака нужен в литрах? Для "
+                    "расчёта нужны общий объём теплоносителя, минимальная/максимальная "
+                    "температура и рабочие давления системы."
+                )
+            return SlotFillingResult(
+                slots=slots,
+                needs_clarification=True,
+                question=question,
+            )
+        return SlotFillingResult(slots=slots)
+
     def _reconcile_water_heater_negations(
         self,
         text: str,
@@ -1034,6 +1138,7 @@ class SlotFillingAgent:
             slots.get(key)
             for key in [
                 "radiator_size_mm",
+                "radiator_height_mm",
                 "length_mm",
                 "sections",
                 "size_inch",
