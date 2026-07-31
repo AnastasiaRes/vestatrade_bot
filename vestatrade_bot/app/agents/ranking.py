@@ -23,6 +23,7 @@ class RankingAgent:
             # Цена — сам запрос («подешевле»), но товар в наличии всё равно выше.
             ranked.sort(
                 key=lambda product: (
+                    *self._explicit_boiler_power_priority(product, query),
                     not self._default_preferred_brand(product, query),
                     not product.is_in_stock,
                     product.price is None,
@@ -39,6 +40,7 @@ class RankingAgent:
         ranked.sort(
             key=lambda product: (
                 needle is not None and normalize_sku(product.sku) != needle,
+                *self._explicit_boiler_power_priority(product, query),
                 not self._default_preferred_brand(product, query),
                 -self._relevance_score(product, query),
                 not product.is_in_stock,
@@ -56,6 +58,29 @@ class RankingAgent:
         if query.brand or query.sku:
             return False
         return normalize_text(product.brand) == DEFAULT_PREFERRED_BRAND
+
+    def _explicit_boiler_power_priority(
+        self,
+        product: Product,
+        query: SearchQuery,
+    ) -> tuple[int, float]:
+        if query.category != "boilers" or query.slots.get("power_kw") is None:
+            return (0, 0.0)
+        requested_kw = float(query.slots["power_kw"])
+        actual_kw = self._extract_power_kw(product)
+        if actual_kw is None:
+            return (4, float("inf"))
+        distance = abs(actual_kw - requested_kw)
+        exact = distance <= 0.05
+        if exact and product.is_in_stock:
+            tier = 0
+        elif exact:
+            tier = 1
+        elif product.is_in_stock:
+            tier = 2
+        else:
+            tier = 3
+        return (tier, distance)
 
     def _relevance_score(self, product: Product, query: SearchQuery) -> int:
         """How many of the constraints the customer actually stated are met.
@@ -111,7 +136,10 @@ class RankingAgent:
         return None
 
     def _filter_weak_boilers(self, products: list[Product], query: SearchQuery) -> list[Product]:
-        required_kw = self._required_boiler_kw(query)
+        # An explicit rating ("котёл 6 кВт") is an identity-like catalogue
+        # parameter, not a minimum capacity.  Do not discard nearby lower-power
+        # analogues here; only area-based sizing has a safe minimum threshold.
+        required_kw = self._required_boiler_kw_for_area(query)
         if not required_kw:
             return products
         adequate = [
@@ -121,9 +149,7 @@ class RankingAgent:
         ]
         return adequate or products
 
-    def _required_boiler_kw(self, query: SearchQuery) -> float | None:
-        if query.slots.get("power_kw"):
-            return float(query.slots["power_kw"])
+    def _required_boiler_kw_for_area(self, query: SearchQuery) -> float | None:
         if query.slots.get("area_m2"):
             return float(query.slots["area_m2"]) / 10.0
         return None

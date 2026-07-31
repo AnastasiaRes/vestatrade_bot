@@ -858,6 +858,7 @@ class ChatOrchestrator:
         if intent.is_topic_change:
             session.slots = {}
             session.last_products = []
+            session.shown_product_skus = []
             session.topic_changed = True
             session.pending_question = None
             session.pending_intent_type = None
@@ -872,6 +873,7 @@ class ChatOrchestrator:
         if self._should_restart_category_context(message, intent, session):
             session.slots = {}
             session.last_products = []
+            session.shown_product_skus = []
 
         if intent.category == "pumps" and self._pump_requested_for_boiler_context(message, session):
             intent.slots.setdefault("pump_type", "циркуляционный")
@@ -1649,13 +1651,16 @@ class ChatOrchestrator:
             direct_products = self.search_agent.search_by_name(message, query)
         if (
             query.category == "boilers"
-            and query.slots.get("area_m2")
+            and (
+                query.slots.get("area_m2")
+                or query.slots.get("power_kw") is not None
+            )
             and not query.sku
-            and not query.brand
         ):
-            # A broad sizing request such as "котёл на 240 м" is not an
-            # exact model-name lookup. Fuzzy name matching confuses 240 м² with
-            # model/power token 24 and can drop the best 24 kW option.
+            # A rating/sizing request such as "котёл 6 кВт" or "котёл на
+            # 240 м²" asks for the whole matching catalogue group, not one
+            # model found by fuzzy name coverage.  The latter used to turn the
+            # number into a model token and hide exact in-stock peers.
             direct_products = []
 
         if not direct_products and self._stock_or_link_without_context(intent, session, message):
@@ -1825,6 +1830,7 @@ class ChatOrchestrator:
                     answer = self._append_companion_hint(answer, session, query.category)
                     self._remember_project_cart(session, cards, replace_category=query.category)
                     session.last_products = cards
+                    session.shown_product_skus = [card.sku for card in cards]
                     self._remember_result_category(session, cards)
                     self._append_history(session, message, answer)
                     self.sessions.save(session)
@@ -1899,6 +1905,7 @@ class ChatOrchestrator:
         answer = self._append_companion_hint(answer, session, query.category)
         self._remember_project_cart(session, cards, replace_category=query.category)
         session.last_products = cards
+        session.shown_product_skus = [card.sku for card in cards]
         self._remember_result_category(session, cards)
         self._append_history(session, message, answer)
         self.sessions.save(session)
@@ -7087,7 +7094,13 @@ class ChatOrchestrator:
             return None
         if intent.category not in {"other", session.category}:
             return None
-        shown_skus = {normalize_sku_token(card.sku) for card in session.last_products}
+        shown_skus = {
+            normalize_sku_token(sku)
+            for sku in (
+                session.shown_product_skus
+                or [card.sku for card in session.last_products]
+            )
+        }
         transient_slots = {
             "cheap",
             "choose_one",
@@ -7171,13 +7184,54 @@ class ChatOrchestrator:
             self._append_history(session, message, answer)
             return self._response(session.session_id, answer, [], True, intent, session, agents_used)
         agents_used.append("ResponseComposerAgent")
+        note = "Аналоги к показанным ранее товарам — проверьте отличия в характеристиках:"
+        if query.category == "boilers" and query.slots.get("power_kw") is not None:
+            requested_kw = float(query.slots["power_kw"])
+            exact_in_stock_remaining = [
+                product
+                for product in alternatives
+                if product.is_in_stock
+                and (power := self.ranking_agent._extract_power_kw(product)) is not None
+                and abs(power - requested_kw) <= 0.05
+            ]
+            exact_shown = sum(
+                1
+                for card in cards
+                if (
+                    (product := self._find_product_by_sku(card.sku)) is not None
+                    and product.is_in_stock
+                    and (
+                        power := self.ranking_agent._extract_power_kw(product)
+                    ) is not None
+                    and abs(power - requested_kw) <= 0.05
+                )
+            )
+            still_available = max(len(exact_in_stock_remaining) - exact_shown, 0)
+            note = (
+                f"Сначала показываю следующие котлы ровно {requested_kw:g} кВт в наличии. "
+                "Если после них на странице идут позиции без остатка или другой мощности, "
+                "это уже следующие по приоритету варианты."
+            )
+            if still_available:
+                note += (
+                    f" В наличии есть ещё {still_available} шт. с теми же параметрами — "
+                    "напишите «покажи ещё»."
+                )
         answer = self.composer.compose_products(
             cards,
             query,
-            note="Аналоги к показанным ранее товарам — проверьте отличия в характеристиках:",
+            note=note,
         )
         answer = self._guard_composed_answer(answer, "products", agents_used)
         session.last_products = cards
+        session.shown_product_skus = [
+            *session.shown_product_skus,
+            *[
+                card.sku
+                for card in cards
+                if normalize_sku_token(card.sku) not in shown_skus
+            ],
+        ]
         self._append_history(session, message, answer)
         return self._response(session.session_id, answer, cards, False, intent, session, agents_used)
 
@@ -8593,6 +8647,37 @@ class ChatOrchestrator:
         products: list[Product] | None = None,
     ) -> str | None:
         notes: list[str] = []
+        if query.category == "boilers" and query.slots.get("power_kw") is not None:
+            requested_kw = float(query.slots["power_kw"])
+            exact_in_stock = [
+                product
+                for product in (products or [])
+                if product.is_in_stock
+                and (power := self.ranking_agent._extract_power_kw(product)) is not None
+                and abs(power - requested_kw) <= 0.05
+            ]
+            if exact_in_stock:
+                page_limit = self._card_limit(query)
+                note = f"Сначала показываю котлы ровно {requested_kw:g} кВт в наличии."
+                if len(exact_in_stock) > page_limit:
+                    remaining = len(exact_in_stock) - page_limit
+                    note += (
+                        f" Сейчас показываю первые {page_limit}; в наличии есть ещё "
+                        f"{remaining} шт. с теми же параметрами — напишите «покажи ещё»."
+                    )
+                else:
+                    note += (
+                        " После них идут точные совпадения без остатка, а затем "
+                        "ближайшие по мощности варианты — это уже альтернативы "
+                        "указанному параметру."
+                    )
+                notes.append(note)
+            else:
+                notes.append(
+                    f"Котлов ровно {requested_kw:g} кВт в наличии не нашёл. Сначала "
+                    "показываю точные совпадения без остатка, затем ближайшие по мощности "
+                    "варианты с явным отличием в характеристиках."
+                )
         if query.category == "pipes" and (
             query.slots.get("operating_temperature_c") is not None
             or query.slots.get("operating_pressure_bar") is not None

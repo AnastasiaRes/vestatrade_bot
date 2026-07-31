@@ -1072,6 +1072,8 @@ class ResponseComposerAgent:
             details.append(str(slots["contours"]))
         if slots.get("area_m2"):
             details.append(f"{slots['area_m2']:g} м²")
+        if slots.get("power_kw") is not None:
+            details.append(f"{float(slots['power_kw']):g} кВт")
         if slots.get("voltage_v"):
             details.append(f"{int(slots['voltage_v'])} В")
         if slots.get("max_price") is not None:

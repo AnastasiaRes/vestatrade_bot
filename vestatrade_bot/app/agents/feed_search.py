@@ -652,6 +652,7 @@ class FeedSearchAgent:
             # globally cheapest valid product can be discarded by fuzzy score.
             scored.sort(
                 key=lambda item: (
+                    *self._explicit_boiler_power_priority(item[1], query),
                     not self._default_preferred_brand(item[1], query),
                     not item[1].is_in_stock,
                     item[1].price is None,
@@ -662,6 +663,7 @@ class FeedSearchAgent:
         else:
             scored.sort(
                 key=lambda item: (
+                    *self._explicit_boiler_power_priority(item[1], query),
                     not self._default_preferred_brand(item[1], query),
                     -item[0],
                     not item[1].is_in_stock,
@@ -670,6 +672,15 @@ class FeedSearchAgent:
                 )
             )
         result_limit = self._query_result_limit(query, query.limit)
+        if query.category == "boilers" and query.slots.get("power_kw") is not None:
+            # Pagination still needs access to every exact in-stock match even
+            # when the catalogue group is larger than the normal search pool.
+            exact_in_stock_count = sum(
+                1
+                for _, product in scored
+                if self._explicit_boiler_power_priority(product, query)[0] == 0
+            )
+            result_limit = max(result_limit, exact_in_stock_count)
         return [product for _, product in scored[:result_limit]]
 
     def search_by_name(
@@ -822,6 +833,7 @@ class FeedSearchAgent:
         scored = [item for item in scored if item[0] >= self._alternative_threshold(query)]
         scored.sort(
             key=lambda item: (
+                *self._explicit_boiler_power_priority(item[1], query),
                 not self._default_preferred_brand(item[1], query),
                 -item[0],
                 not item[1].is_in_stock,
@@ -830,6 +842,13 @@ class FeedSearchAgent:
             )
         )
         result_limit = self._query_result_limit(query, min(query.limit, 6))
+        if query.category == "boilers" and query.slots.get("power_kw") is not None:
+            exact_in_stock_count = sum(
+                1
+                for _, product in scored
+                if self._explicit_boiler_power_priority(product, query)[0] == 0
+            )
+            result_limit = max(result_limit, exact_in_stock_count)
         return [product for _, product in scored[:result_limit]]
 
     def _default_preferred_brand(
@@ -840,6 +859,45 @@ class FeedSearchAgent:
         if query.brand or query.sku:
             return False
         return normalize_text(product.brand) == DEFAULT_PREFERRED_BRAND
+
+    def _explicit_boiler_power_priority(
+        self,
+        product: Product,
+        query: SearchQuery,
+    ) -> tuple[int, float]:
+        """Keep an explicitly requested boiler rating ahead of all analogues.
+
+        ``power_kw`` names a concrete catalogue characteristic, unlike
+        ``area_m2`` which is only a sizing estimate.  Exact in-stock models must
+        therefore survive the top-N search cut before brand, price or fuzzy
+        relevance can promote a different rating.
+        """
+        if query.category != "boilers":
+            return (0, 0.0)
+        return self._boiler_power_priority_for_slots(product, query.slots)
+
+    def _boiler_power_priority_for_slots(
+        self,
+        product: Product,
+        slots: Mapping[str, Any],
+    ) -> tuple[int, float]:
+        requested_kw = _constraint_number(slots.get("power_kw"))
+        if requested_kw is None:
+            return (0, 0.0)
+        actual_kw = self._extract_power_kw(product)
+        if actual_kw is None:
+            return (4, float("inf"))
+        distance = abs(actual_kw - requested_kw)
+        exact = distance <= 0.05
+        if exact and product.is_in_stock:
+            tier = 0
+        elif exact:
+            tier = 1
+        elif product.is_in_stock:
+            tier = 2
+        else:
+            tier = 3
+        return (tier, distance)
 
     def _search_sku(self, sku: str) -> list[Product]:
         needle = normalize_sku(sku)
@@ -1217,11 +1275,20 @@ class FeedSearchAgent:
             )
 
         if category == "boilers":
-            required_kw = None
             if slots.get("power_kw"):
-                required_kw = float(slots["power_kw"])
-            elif slots.get("area_m2"):
-                required_kw = float(slots["area_m2"]) / 10.0
+                return sorted(
+                    products,
+                    key=lambda product: (
+                        *self._boiler_power_priority_for_slots(product, slots),
+                        brand_priority(product),
+                        product.price or float("inf"),
+                    ),
+                )
+            required_kw = (
+                float(slots["area_m2"]) / 10.0
+                if slots.get("area_m2")
+                else None
+            )
             if required_kw:
                 def closeness(product: Product) -> tuple:
                     power = self._extract_power_kw(product) or 0.0

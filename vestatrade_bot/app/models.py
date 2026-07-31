@@ -120,6 +120,10 @@ class SessionState(BaseModel):
     # later "вернёмся к трубам" does not require starting from zero.
     project_context: dict[str, Any] = Field(default_factory=dict)
     last_products: list[ProductCard] = Field(default_factory=list)
+    # All cards already emitted for the active catalogue result set. Unlike
+    # ``last_products`` this survives pagination so "покажи ещё" cannot repeat
+    # page one after page two.
+    shown_product_skus: list[str] = Field(default_factory=list)
     history: list[dict[str, str]] = Field(default_factory=list)
     topic_changed: bool = False
     pending_question: str | None = None
