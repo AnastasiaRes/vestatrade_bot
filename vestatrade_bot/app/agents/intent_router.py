@@ -433,8 +433,7 @@ class IntentRouterAgent:
             category = session.category
             category_score = 0.65
         if (
-            category == "other"
-            and session
+            session
             and session.pending_category
             and not re.search(
                 r"\b(?:кот[её]л|насос|труб|радиатор|кран|бойлер|водонагрев|"
@@ -550,12 +549,81 @@ class IntentRouterAgent:
     def _detect_category(self, text: str) -> tuple[str, float]:
         if OLD_CIRCULATION_PUMP_RE.search(text):
             return "pumps", 0.9
+        mentions_warm_floor = bool(
+            ("тепл" in text or "тёпл" in text)
+            and re.search(r"\bпол(?:а|у|ом|е|ы)?\b", text)
+        )
+        negates_warm_floor = bool(
+            re.search(
+                r"\b(?:без|не|кроме|исключи|убери|только\s+не)\s+"
+                r"[^.?!,;]{0,24}(?:тепл|тёпл)[^,.?!;]{0,12}пол",
+                text,
+            )
+            or re.search(
+                r"\b(?:тепл|тёпл)\w*\s+пол\w*[^.?!,;]{0,20}"
+                r"(?:не\s+будет|не\s+нужен|не\s+нужно|исключен\w*)",
+                text,
+            )
+        )
+        if mentions_warm_floor and not negates_warm_floor:
+            # A warm floor is a project scope, not a radiator fitting.  An
+            # explicitly named component still wins; otherwise start with the
+            # loop-pipe branch and let the project state machine collect area
+            # and heat-source facts.
+            if re.search(r"\b(?:насос|помп)\w*\b", text):
+                return "pumps", 0.96
+            if re.search(
+                r"\b(?:термостат|терморегулятор|сервопривод|контроллер)\w*\b",
+                text,
+            ):
+                return "controls", 0.96
+            boiler_mentioned = bool(
+                re.search(r"\b(?:кот[её]л|котл\w*|кател\w*)\b", text)
+            )
+            boiler_is_context = bool(
+                re.search(
+                    r"\bот\s+(?:(?:газов|электрическ)\w*\s+)?"
+                    r"кот(?:[её]л|л)\w*\b",
+                    text,
+                )
+                or re.search(
+                    r"\bкот(?:[её]л|л)\w*[^.!?]{0,16}(?:уже\s+есть|имеется|установлен)",
+                    text,
+                )
+            )
+            explicit_boiler_task = any(
+                marker in text
+                for marker in ["обвяз", "бойлер", "радиатор", "гвс"]
+            ) or bool(
+                re.search(
+                    r"\b(?:подбери|подобрать|нужен|купить|заменить)\w*"
+                    r"[^.!?]{0,18}кот(?:[её]л|л)\w*",
+                    text,
+                )
+            )
+            boiler_is_primary = boiler_mentioned and (
+                explicit_boiler_task or not boiler_is_context
+            )
+            broader_heating_project = bool(
+                re.search(r"\b(?:дом|коттедж)\w*\b", text)
+                and any(
+                    marker in text
+                    for marker in ["газ", "электр", "радиатор", "гвс", "отоплен"]
+                )
+            )
+            if boiler_is_primary or broader_heating_project:
+                return "boilers", 0.96
+            return "pipes", 0.95
         if (
             "зеркал" in text
-            and "кольц" in text
+            and re.search(r"\bкол(?:ьц|ец)\w*", text)
             and any(marker in text for marker in ["вод", "расход", "колод"])
         ):
             return "pumps", 0.9
+        if "колод" in text or (
+            "столб" in text and "вод" in text
+        ):
+            return "pumps", 0.88
         notation_category, notation_score = engineering_category_hint(text)
         if notation_category:
             return notation_category, notation_score
@@ -1081,6 +1149,63 @@ class IntentRouterAgent:
                 slots["system_type"] = "радиаторы"
         elif mentions_warm_floor:
             slots["has_warm_floor"] = True
+            if category == "pipes":
+                slots["project_scope"] = "warm_floor"
+            if "водян" in text or "от котл" in text:
+                slots["warm_floor_type"] = "водяной"
+            elif "электр" in text and "кот" not in text:
+                slots["warm_floor_type"] = "электрический"
+            if "от котл" in text:
+                slots["warm_floor_heat_source"] = "котёл"
+            if "газ" in text and "кот" in text:
+                slots["warm_floor_heat_source"] = "газовый котёл"
+            elif "электр" in text and "кот" in text:
+                slots["warm_floor_heat_source"] = "электрический котёл"
+
+        insulation_ready = bool(
+            re.search(
+                r"\b(?:утеплител|теплоизоляц)\w*[^.!?]{0,25}"
+                r"(?:есть|готов|уложен|сделан|уже)\w*\b",
+                text,
+            )
+            or re.search(
+                r"\b(?:есть|готов|уложен|сделан)\w*[^.!?]{0,20}"
+                r"(?:утеплител|теплоизоляц)\w*\b",
+                text,
+            )
+        )
+        insulation_missing = bool(
+            re.search(
+                r"\b(?:утеплител|теплоизоляц)\w*[^.!?]{0,20}"
+                r"(?:нет|не\s+(?:готов|уложен|сделан))\b",
+                text,
+            )
+            or re.search(r"\bбез\s+(?:утеплител|теплоизоляц)\w*\b", text)
+        )
+        if insulation_ready:
+            slots["floor_insulation_ready"] = True
+        elif insulation_missing:
+            slots["floor_insulation_ready"] = False
+
+        automation_mentioned = bool(
+            re.search(
+                r"\b(?:автоматик|сервопривод|комнатн\w*\s+термостат)\w*\b",
+                text,
+            )
+        )
+        if automation_mentioned:
+            automation_rejected = bool(
+                re.search(
+                    r"\bбез\s+(?:автоматик|сервопривод|термостат)\w*\b",
+                    text,
+                )
+                or re.search(
+                    r"\b(?:автоматик|сервопривод|термостат)\w*[^.!?]{0,18}"
+                    r"не\s+(?:нужн|треб)\w*",
+                    text,
+                )
+            )
+            slots["warm_floor_automation_needed"] = not automation_rejected
 
         if category == "sewer":
             if "внутрен" in text:
@@ -1298,8 +1423,31 @@ class IntentRouterAgent:
             r"(\d{2,4})\s*(?:м2|м²|квадрат|кв\.?\s*м|кв\b)",
             text,
         )
-        if area_match:
-            slots["area_m2"] = float(area_match.group(1))
+        warm_floor_area_match = re.search(
+            r"(?:тепл\w*|тёпл\w*)\s+пол\w*.{0,30}?"
+            r"(\d{1,4})\s*(?:м2|м²|квадрат|кв\.?\s*м|кв\b)|"
+            r"(\d{1,4})\s*(?:м2|м²|квадрат|кв\.?\s*м|кв\b)"
+            r".{0,30}?(?:тепл\w*|тёпл\w*)\s+пол",
+            text,
+        )
+        house_area_match = re.search(
+            r"(?:дом|коттедж|площад\w*\s+дом\w*|общ\w*\s+площад\w*)"
+            r"\D{0,20}(\d{2,4})\s*(?:м2|м²|квадрат|кв\.?\s*м|кв\b|метр)|"
+            r"(\d{2,4})\s*(?:м2|м²|квадрат|кв\.?\s*м|кв\b|метр)"
+            r"\D{0,12}(?:дом|коттедж|общ\w*\s+площад)",
+            text,
+        )
+        if warm_floor_area_match and not rejects_warm_floor:
+            raw_area = warm_floor_area_match.group(1) or warm_floor_area_match.group(2)
+            slots["warm_floor_area_m2"] = float(raw_area)
+        if house_area_match and not re.search(r"\bдо\s+дом\w*\b", text):
+            raw_area = house_area_match.group(1) or house_area_match.group(2)
+            slots["area_m2"] = float(raw_area)
+        elif area_match and not warm_floor_area_match:
+            if mentions_warm_floor and not rejects_warm_floor and category == "pipes":
+                slots["warm_floor_area_m2"] = float(area_match.group(1))
+            else:
+                slots["area_m2"] = float(area_match.group(1))
         elif category == "boilers":
             area_meters_match = re.search(r"(\d{2,4})\s*(?:м\b|метр)", text)
             if area_meters_match:
@@ -1476,7 +1624,7 @@ class IntentRouterAgent:
             )
             before_water_level = text.split("зеркал", 1)[0]
             ring_match = re.search(
-                rf"(?<!\w)({count_token})\s+(?:ж/?б\s+)?кольц\w*",
+                rf"(?<!\w)({count_token})\s+(?:ж/?б\s+)?кол(?:ьц|ец)\w*",
                 before_water_level,
             )
             if ring_match:
@@ -1485,11 +1633,10 @@ class IntentRouterAgent:
                     slots["water_source"] = "колодец"
                     slots["pump_use"] = "водоснабжение"
                     slots["well_ring_count"] = rings
-                    slots["well_depth_m"] = round(rings * 0.9, 3)
                     slots["ring_height_assumed"] = True
             water_level_match = re.search(
                 rf"зеркал\w*(?:\s+вод\w*)?[^\dа-я]{{0,12}}"
-                rf"(?:на\s+)?({count_token})\s+кольц\w*",
+                rf"(?:на\s+)?({count_token})\s+кол(?:ьц|ец)\w*",
                 text,
             )
             if water_level_match:
@@ -1498,19 +1645,80 @@ class IntentRouterAgent:
                     slots["water_source"] = "колодец"
                     slots["pump_use"] = "водоснабжение"
                     slots["water_level_ring_count"] = rings
-                    slots["dynamic_water_level_m"] = round(rings * 0.9, 3)
+                    if re.search(
+                        r"(?:от\s+(?:верха|края|поверхност\w*)|"
+                        r"сверху|глубин\w*\s+до\s+вод)",
+                        text,
+                    ):
+                        slots["water_level_reference"] = "from_top"
+                    elif re.search(
+                        r"(?:от\s+дна|со\s+дна|вод\w*\s+от\s+дна)",
+                        text,
+                    ):
+                        slots["water_level_reference"] = "from_bottom"
+                    else:
+                        # «Зеркало на двух кольцах» does not say whether the
+                        # count starts at the top or at the bottom.  Keep the
+                        # raw count and make the dialogue resolve it once.
+                        slots["water_level_reference"] = "ambiguous"
                     slots["ring_height_assumed"] = True
             water_column_match = re.search(
                 rf"столб\w*\s+вод\w*[^\dа-я]{{0,12}}"
-                rf"({count_token})\s+кольц\w*",
+                rf"({count_token})\s+кол(?:ьц|ец)\w*",
                 text,
             )
             if water_column_match:
                 rings = self._household_count(water_column_match.group(1))
                 if rings:
                     slots["water_column_ring_count"] = rings
-                    slots["water_column_depth_m"] = round(rings * 0.9, 3)
+                    slots["water_level_reference"] = "from_bottom"
                     slots["ring_height_assumed"] = True
+            ring_height_match = re.search(
+                r"кол(?:ьц|ец)\w*[^.!?\d]{0,16}(\d+(?:[,.]\d+)?)\s*"
+                r"(?:м\b|метр\w*)|"
+                r"(\d+(?:[,.]\d+)?)\s*(?:м\b|метр\w*)"
+                r"[^.!?]{0,16}(?:высот\w*\s+)?кол(?:ьц|ец)\w*",
+                text,
+            )
+            if ring_height_match:
+                raw_height = ring_height_match.group(1) or ring_height_match.group(2)
+                slots["ring_height_m"] = float(raw_height.replace(",", "."))
+                slots["ring_height_assumed"] = False
+
+            explicit_well_depth = re.search(
+                r"(?:глубин\w*\s+колодц\w*|колодец\w*\s+глубин\w*)"
+                r"[^\d]{0,18}(\d+(?:[,.]\d+)?)\s*(?:м\b|метр\w*)",
+                text,
+            )
+            if explicit_well_depth:
+                slots["explicit_well_depth_m"] = float(
+                    explicit_well_depth.group(1).replace(",", ".")
+                )
+
+            explicit_water_column = re.search(
+                r"(?:столб\w*\s+вод\w*|вод\w*\s+от\s+дна\s+до\s+"
+                r"(?:поверхност\w*\s+вод\w*|зеркал\w*))"
+                r"[^\d]{0,30}(\d+(?:[,.]\d+)?)\s*(?:м\b|метр\w*)",
+                text,
+            )
+            if explicit_water_column:
+                slots["explicit_water_column_depth_m"] = float(
+                    explicit_water_column.group(1).replace(",", ".")
+                )
+                slots["water_level_reference"] = "from_bottom"
+
+            explicit_water_level = re.search(
+                r"(?:от\s+(?:верха|края)\s+колодц\w*\s+до\s+"
+                r"(?:поверхност\w*\s+вод\w*|вод\w*|зеркал\w*)|"
+                r"глубин\w*\s+до\s+(?:поверхност\w*\s+)?вод\w*)"
+                r"[^\d]{0,24}(\d+(?:[,.]\d+)?)\s*(?:м\b|метр\w*)",
+                text,
+            )
+            if explicit_water_level:
+                slots["explicit_water_level_depth_m"] = float(
+                    explicit_water_level.group(1).replace(",", ".")
+                )
+                slots["water_level_reference"] = "from_top"
             mounting_match = re.search(r"(\d{2,3})\s*мм", text)
             if mounting_match:
                 slots["mounting_length_mm"] = int(mounting_match.group(1))
@@ -1540,13 +1748,25 @@ class IntentRouterAgent:
             flow_match = re.search(
                 r"(?:расход\w*|производительност\w*|подач\w*)[^\d]{0,18}"
                 r"(\d+(?:[,.]\d+)?)\s*"
-                r"(м3/ч|м³/ч|куб(?:а|ов)?(?:\s+в\s+час)?|л/мин|л/ч)",
+                r"(м3/ч|м³/ч|куб(?:а|ов)?(?:\s+в\s+час)?|л/мин|"
+                r"литр\w*\s+в\s+минут\w*|л/ч|литр\w*\s+в\s+час)",
                 text,
             )
+            if not flow_match:
+                flow_match = re.search(
+                    r"(?<!\d)(\d+(?:[,.]\d+)?)\s*"
+                    r"(л/мин|литр\w*\s+в\s+минут\w*|л/ч|"
+                    r"литр\w*\s+в\s+час|м3/ч|м³/ч|"
+                    r"куб(?:а|ов)?(?:\s+в\s+час)?)(?!\w)",
+                    text,
+                )
             if flow_match:
                 flow_value = float(flow_match.group(1).replace(",", "."))
                 unit = normalize_text(flow_match.group(2))
-                if "л/мин" in unit:
+                if "л/мин" in unit or ("литр" in unit and "минут" in unit):
+                    slots["required_flow_l_min"] = flow_value
+                    slots["flow_unit_assumed"] = False
+                    slots["flow_unit_status"] = "confirmed_per_minute"
                     flow_value = flow_value * 60.0 / 1000.0
                 elif "л/ч" in unit:
                     flow_value = flow_value / 1000.0
@@ -1573,6 +1793,7 @@ class IntentRouterAgent:
                     slots["required_flow_l_min"] = flow_l_min
                     slots["required_flow_m3_h"] = round(flow_l_min * 60 / 1000, 4)
                     slots["flow_unit_assumed"] = True
+                    slots["flow_unit_status"] = "assumed"
 
             symbolic_head = re.search(
                 r"(?<![a-zа-я])h\s*(?:=\s*)?(\d+(?:[,.]\d+)?)\s*(?:м\b|метр\w*)?",
@@ -1582,6 +1803,7 @@ class IntentRouterAgent:
                 slots["required_head_m"] = float(
                     symbolic_head.group(1).replace(",", ".")
                 )
+                slots["required_head_calculated"] = False
                 slots.pop("head_m", None)
 
             connection_match = re.search(
@@ -1601,6 +1823,7 @@ class IntentRouterAgent:
                 slots["required_head_m"] = float(
                     required_head_match.group(1).replace(",", ".")
                 )
+                slots["required_head_calculated"] = False
                 # ``head_m`` means an exact pump marking (25/6); a calculated
                 # duty head is a minimum capability and must not be compared as
                 # exact equality with the product's maximum head.
@@ -1627,13 +1850,26 @@ class IntentRouterAgent:
                 (
                     "horizontal_run_m",
                     r"(?:горизонтальн\w*\s+(?:трасс|участ|длин)|"
-                    r"длин\w*\s+трасс\w*)[^\d]{0,18}"
+                    r"длин\w*\s+трасс\w*|расстоян\w*)[^\d]{0,18}"
                     r"(\d+(?:[,.]\d+)?)\s*(?:м|метр)",
                 ),
             ]:
                 match = re.search(pattern, text)
                 if match:
                     slots[key] = float(match.group(1).replace(",", "."))
+
+            if "horizontal_run_m" not in slots:
+                household_distance = re.search(
+                    r"(?:от\s+(?:колодц\w*|скважин\w*)\s+)?"
+                    r"до\s+(?:дом\w*|точк\w*\s+полив\w*|полив\w*)"
+                    r"[^\d]{0,15}(\d+(?:[,.]\d+)?)\s*(?:м\b|метр\w*)|"
+                    r"(?<!\d)(\d+(?:[,.]\d+)?)\s*(?:м\b|метр\w*)"
+                    r"[^.!?]{0,18}до\s+(?:дом\w*|полив\w*)",
+                    text,
+                )
+                if household_distance:
+                    raw_distance = household_distance.group(1) or household_distance.group(2)
+                    slots["horizontal_run_m"] = float(raw_distance.replace(",", "."))
 
             if "фекал" in text:
                 slots["water_quality"] = "фекальная"
@@ -2547,6 +2783,87 @@ class IntentRouterAgent:
                 session.pending_slot_keys,
             )
             slots.update(contextual)
+
+        if session and result.category == "pumps":
+            reference = normalize_text(
+                str(session.slots.get("water_level_reference") or "")
+            )
+            if reference == "ambiguous":
+                if re.search(
+                    r"(?:от\s+(?:верха|края|поверхност\w*)|"
+                    r"сверху\s+до\s+вод|глубин\w*\s+до\s+вод)",
+                    text,
+                ):
+                    slots["water_level_reference"] = "from_top"
+                    result.intent_type = "attribute_request"
+                    result.is_topic_change = False
+                elif re.search(
+                    r"(?:от\s+дна|со\s+дна|столб\w*\s+вод)",
+                    text,
+                ):
+                    slots["water_level_reference"] = "from_bottom"
+                    result.intent_type = "attribute_request"
+                    result.is_topic_change = False
+
+            confirms_per_minute = bool(
+                re.search(r"\b(?:да\s*,?\s*)?(?:именно\s+)?(?:в\s+)?минут\w*\b", text)
+                and not re.search(r"\bне\s+(?:в\s+)?минут", text)
+            )
+            confirms_total_volume = bool(
+                re.search(
+                    r"\b(?:нет\s*,?\s*)?(?:это\s+)?(?:общ\w*\s+объем|"
+                    r"общ\w*\s+объём|всего|суммарн\w*\s+объем|"
+                    r"суммарн\w*\s+объём)\b",
+                    text,
+                )
+            )
+            if session.slots.get("flow_unit_assumed") and confirms_total_volume:
+                slots["flow_unit_status"] = "total_volume"
+                result.intent_type = "attribute_request"
+                result.is_topic_change = False
+            elif session.slots.get("flow_unit_assumed") and confirms_per_minute:
+                litres = self._to_float_slot(session.slots.get("required_flow_l_min"))
+                if litres is not None and litres > 0:
+                    slots["required_flow_l_min"] = litres
+                    slots["required_flow_m3_h"] = round(litres * 60.0 / 1000.0, 4)
+                    slots["flow_unit_assumed"] = False
+                    slots["flow_unit_status"] = "confirmed_per_minute"
+                    result.intent_type = "attribute_request"
+                    result.is_topic_change = False
+
+        if session and (
+            session.slots.get("project_scope") == "warm_floor"
+            or session.slots.get("scope_funnel") == "warm_floor"
+        ):
+            if (
+                result.category in {"pipes", "other"}
+                and slots.get("area_m2") is not None
+                and not re.search(
+                    r"\b(?:кот[её]л|насос|радиатор|водонагрев|бойлер)\w*\b",
+                    text,
+                )
+            ):
+                slots["warm_floor_area_m2"] = slots["area_m2"]
+                slots.pop("area_m2", None)
+                slots["project_scope"] = "warm_floor"
+                result.category = "pipes"
+                result.intent_type = "attribute_request"
+                result.is_topic_change = False
+            correction = re.search(
+                r"\bне\s+\d{1,4}(?:[,.]\d+)?\s*"
+                r"(?:м2|м²|кв(?:\.?\s*м)?|квадрат\w*|метр\w*)?\s*"
+                r"(?:,?\s*(?:а|но)\s+)(\d{1,4}(?:[,.]\d+)?)\s*"
+                r"(?:м2|м²|кв(?:\.?\s*м)?|квадрат\w*|метр\w*)?\b",
+                text,
+            )
+            if correction:
+                area = float(correction.group(1).replace(",", "."))
+                if 1 <= area <= 10000:
+                    result.category = "pipes"
+                    result.intent_type = "attribute_request"
+                    result.is_topic_change = False
+                    slots["project_scope"] = "warm_floor"
+                    slots["warm_floor_area_m2"] = area
 
         if (
             session

@@ -4,6 +4,7 @@ import re
 
 from app.models import IntentResult, SessionState, SlotFillingResult
 
+from .engineering_calculations import normalize_engineering_slots
 from .utils import merge_slots, normalize_text
 
 
@@ -15,7 +16,9 @@ class SlotFillingAgent:
         session: SessionState,
     ) -> SlotFillingResult:
         previous_slots = dict(session.slots)
-        slots = merge_slots(session.slots, intent.slots)
+        slots = normalize_engineering_slots(
+            merge_slots(session.slots, intent.slots)
+        )
         category = intent.category
         text = normalize_text(message)
 
@@ -534,6 +537,12 @@ class SlotFillingAgent:
             or slots.get("old_model")
         ):
             slots["pump_type"] = "циркуляционный"
+        if (
+            slots.get("water_source") == "колодец"
+            and normalize_text(str(slots.get("pump_use") or ""))
+            in {"водоснабжение", "подача воды"}
+        ):
+            return self._well_water_supply(slots)
         if not slots.get("pump_type"):
             if slots.get("pump_replacement"):
                 return SlotFillingResult(
@@ -844,6 +853,122 @@ class SlotFillingAgent:
                     ),
                 )
         return SlotFillingResult(slots=slots)
+
+    def _well_water_supply(self, slots: dict) -> SlotFillingResult:
+        deferred = {
+            str(key)
+            for key in slots.get("deferred_slot_keys") or []
+            if slots.get(str(key)) in (None, "", [], {})
+        }
+        if deferred:
+            slots["deferred_slot_keys"] = sorted(deferred)
+        else:
+            slots.pop("deferred_slot_keys", None)
+        known: list[str] = []
+        if slots.get("well_ring_count") and slots.get("well_depth_m"):
+            rings_text = f"{float(slots['well_ring_count']):g}".replace(".", ",")
+            depth_text = f"{float(slots['well_depth_m']):g}".replace(".", ",")
+            ring_height_text = f"{float(slots.get('ring_height_m') or 0.9):g}".replace(
+                ".",
+                ",",
+            )
+            known.append(
+                f"колодец {rings_text} кольца "
+                f"(~{depth_text} м при высоте кольца {ring_height_text} м)"
+            )
+        water_level = (
+            slots.get("water_level_depth_m")
+            or slots.get("dynamic_water_level_m")
+            or slots.get("static_water_level_m")
+        )
+        if water_level is not None:
+            level_text = f"{float(water_level):g}".replace(".", ",")
+            known.append(f"глубина до воды ~{level_text} м")
+        if slots.get("water_column_depth_m") is not None:
+            column_text = f"{float(slots['water_column_depth_m']):g}".replace(
+                ".", ","
+            )
+            known.append(f"столб воды ~{column_text} м")
+        if slots.get("required_flow_m3_h"):
+            known.append(f"расход ~{float(slots['required_flow_m3_h']):g} м³/ч")
+        if slots.get("required_head_m") and slots.get("required_head_calculated"):
+            head_text = f"{float(slots['required_head_m']):g}".replace(".", ",")
+            known.append(f"расчётный геометрический напор ~{head_text} м")
+        prefix = "Принял: " + "; ".join(known) + ". " if known else ""
+
+        ambiguous_level = slots.get("water_level_reference") == "ambiguous"
+        if ambiguous_level and not slots.get("water_level_reference_question_asked"):
+            ring_count = float(slots.get("water_level_ring_count") or 0)
+            ring_text = f"{ring_count:g}".replace(".", ",")
+            return SlotFillingResult(
+                slots=slots,
+                needs_clarification=True,
+                question=(
+                    prefix
+                    + f"Уточните только направление отсчёта: {ring_text} кольца "
+                    "считаются от верха колодца до поверхности воды или это "
+                    f"{ring_text} кольца воды от дна до поверхности?"
+                ),
+            )
+        if slots.get("flow_unit_assumed"):
+            flow_l_min = float(slots.get("required_flow_l_min") or 0)
+            flow_m3_h = float(slots.get("required_flow_m3_h") or 0)
+            return SlotFillingResult(
+                slots=slots,
+                needs_clarification=True,
+                question=(
+                    prefix
+                    + f"{flow_l_min:g} литров предварительно понял как "
+                    f"{flow_l_min:g} л/мин ({flow_m3_h:g} м³/ч). "
+                    "Подтвердите: это литры в минуту или общий объём?"
+                ),
+            )
+        if water_level is None and not ambiguous_level:
+            question = "Уточните глубину от верха колодца до поверхности воды."
+        elif not slots.get("horizontal_run_m") and "horizontal_run_m" not in deferred:
+            question = "Какое расстояние по горизонтали от колодца до дома или полива?"
+        elif slots.get("lift_height_m") is None:
+            question = "На какую высоту выше поверхности воды нужно поднять воду?"
+        elif not slots.get("required_flow_m3_h"):
+            question = "Какой нужен расход: сколько литров в минуту?"
+        elif ambiguous_level:
+            return SlotFillingResult(
+                slots=slots,
+                needs_clarification=True,
+                question=(
+                    "Осталось определить положение воды. Сейчас известно число "
+                    "колец, но неизвестно, отсчитывалось оно сверху или снизу; "
+                    "без этого глубину до воды и тип насоса не подтверждаю."
+                ),
+            )
+        elif deferred:
+            return SlotFillingResult(
+                slots=slots,
+                needs_clarification=True,
+                question=(
+                    "Остался отложенный обязательный параметр: расстояние от колодца "
+                    "до дома или полива. Без него не учитываются потери в трассе, поэтому "
+                    "окончательный вариант насоса пока не подтверждаю."
+                ),
+            )
+        else:
+            # The installation family follows from suction depth; the customer
+            # is not asked to make an engineering choice on our behalf.
+            if not slots.get("pump_type"):
+                slots["pump_type"] = (
+                    "поверхностный" if float(water_level) < 8.0 else "колодезный"
+                )
+            slots["pump_type_decision"] = (
+                "уровень воды менее 8 м — возможен поверхностный насос/станция"
+                if float(water_level) < 8.0
+                else "уровень воды 8 м или глубже — нужен погружной колодезный насос"
+            )
+            return SlotFillingResult(slots=slots)
+        return SlotFillingResult(
+            slots=slots,
+            needs_clarification=True,
+            question=prefix + question,
+        )
 
     def _does_not_know_params(self, text: str) -> bool:
         markers = [

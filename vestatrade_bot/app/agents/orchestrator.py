@@ -4,7 +4,6 @@ import html
 import json
 import logging
 from contextlib import nullcontext
-from math import ceil
 import re
 from threading import RLock, local
 from typing import Any
@@ -42,6 +41,7 @@ from app.openrouter_client import OpenRouterClient
 from app.session_store import InMemorySessionStore
 
 from .consultant import ConsultantAgent
+from .engineering_calculations import normalize_engineering_slots
 from .engineering_interpreter import (
     EngineeringInterpretation,
     EngineeringInterpreterAgent,
@@ -378,6 +378,7 @@ PROJECT_SCOPE_CATEGORIES: dict[str, list[str]] = {
 PROJECT_CART_CATEGORY_ORDER = [
     "boilers",
     "pumps",
+    "controls",
     "pipes",
     "valves",
     "sewer",
@@ -551,15 +552,29 @@ class ChatOrchestrator:
         )
         if not (interpretation.output_accepted and interpretation.handled):
             return
-        if interpretation.intent_type:
+        # Explicit rule evidence from the current message is authoritative.
+        # The LLM may fill semantic gaps, but it cannot overwrite a number or
+        # cancel a topic transition that the user stated in this turn.
+        baseline_slots = dict(intent.slots)
+        baseline_category = intent.category
+        baseline_confidence = intent.confidence
+        if interpretation.intent_type and baseline_confidence < 0.55:
             intent.intent_type = interpretation.intent_type
-        if interpretation.category:
+        if interpretation.category and (
+            baseline_category == "other" or baseline_confidence < 0.55
+        ):
             intent.category = interpretation.category
-        intent.slots = merge_slots(intent.slots, interpretation.slots)
-        if interpretation.project_scope:
+        intent.slots = merge_slots(interpretation.slots, baseline_slots)
+        if (
+            interpretation.project_scope == "warm_floor"
+            and not intent.slots.get("project_scope")
+            and not intent.is_topic_change
+            and (
+                baseline_category == "pipes"
+                or (baseline_category == "other" and baseline_confidence < 0.55)
+            )
+        ):
             intent.slots["project_scope"] = interpretation.project_scope
-        if interpretation.continuation:
-            intent.is_topic_change = False
         intent.confidence = max(intent.confidence, 0.9)
 
     def _persist_engineering_interpretation(
@@ -568,31 +583,34 @@ class ChatOrchestrator:
         intent: IntentResult,
         session: SessionState,
     ) -> None:
-        slots = dict(interpretation.slots)
-        scope = interpretation.project_scope or slots.get("project_scope")
-        if scope:
+        # Start with semantic facts suggested by the model, then overlay the
+        # deterministic facts extracted from the current message.
+        slots = merge_slots(interpretation.slots, intent.slots)
+        # ``project_scope`` reaches the slots only after the precedence checks
+        # in ``_apply_engineering_interpretation_to_intent``.  Do not revive a
+        # rejected/stale LLM scope here.
+        scope = slots.get("project_scope")
+        if slots.get("project_scope"):
             slots["project_scope"] = scope
-            slots["scope_funnel"] = scope
+            if scope == "warm_floor":
+                slots["scope_funnel"] = scope
         if scope == "warm_floor":
             slots["has_warm_floor"] = True
-            area = self._float_slot(slots.get("warm_floor_area_m2"))
-            if area:
-                slots.setdefault("area_m2", area)
-                slots.setdefault("warm_floor_pipe_min_m", round(area * 6.5))
-                slots.setdefault("warm_floor_pipe_max_m", round(area * 7.0))
-                contours = ceil(area * 6.5 / 80.0)
-                slots.setdefault("warm_floor_contours", contours)
-                slots.setdefault("warm_floor_collector_count", ceil(contours / 12.0))
         if interpretation.assumptions:
             slots["engineering_assumptions"] = list(interpretation.assumptions)
 
-        self._merge_persistent_slots(session, slots, explicit_slots=slots)
-        intent.slots = merge_slots(intent.slots, slots)
+        canonical = normalize_engineering_slots(merge_slots(session.slots, slots))
+        self._merge_persistent_slots(
+            session,
+            canonical,
+            explicit_slots=intent.slots,
+        )
+        intent.slots = merge_slots(slots, canonical)
         if intent.category != "other":
             session.category = intent.category
             self.engineering_requirements.remember(
                 intent.category,
-                session.slots,
+                canonical,
                 session,
             )
 
@@ -620,6 +638,26 @@ class ChatOrchestrator:
                 docs_excerpt = last_product.docs_text[:700]
         self.composer.set_state(session.category, session.slots, last_summary, docs_excerpt)
         agents_used: list[str] = []
+
+        recall_answer = self._engineering_recall_answer(message, session)
+        if recall_answer:
+            recall_intent = IntentResult(
+                intent_type="attribute_request",
+                category=session.category or "other",
+                confidence=1.0,
+            )
+            agents_used.append("EngineeringRequirementsAgent")
+            self._append_history(session, message, recall_answer)
+            self.sessions.save(session)
+            return self._response(
+                session_id,
+                recall_answer,
+                [],
+                False,
+                recall_intent,
+                session,
+                agents_used,
+            )
 
         water_heater_safety = self._maybe_water_heater_operational_safety_answer(
             message,
@@ -958,23 +996,42 @@ class ChatOrchestrator:
                 intent.category = session.category
             intent.is_topic_change = False
 
-        if intent.is_topic_change and self._is_project_component_turn(intent, session):
+        if intent.is_topic_change and self._is_project_component_turn(
+            message,
+            intent,
+            session,
+        ):
             intent.is_topic_change = False
-        if intent.is_topic_change and session.slots.get("complex_engineering_request"):
+        if (
+            intent.is_topic_change
+            and session.slots.get("complex_engineering_request")
+            and not self._is_explicit_non_pump_topic_change(normalize_text(message))
+        ):
             intent.is_topic_change = False
 
         if intent.is_topic_change:
-            session.slots = {}
+            target_category = intent.category
+            activated_goal = target_category in self.engineering_requirements.CATEGORIES
+            if activated_goal:
+                self.engineering_requirements.activate_goal(
+                    message,
+                    target_category,
+                    session,
+                    explicit_slots=intent.slots,
+                )
+            else:
+                session.slots = {}
+                session.pending_question = None
+                session.pending_intent_type = None
+                session.pending_category = None
+                session.pending_slot_keys = []
+                session.pending_question_state = None
+                session.question_repeats = 0
             session.last_products = []
             session.shown_product_skus = []
             session.shown_result_signature = None
             session.topic_changed = True
-            session.pending_question = None
-            session.pending_intent_type = None
-            session.pending_category = None
-            session.pending_slot_keys = []
             session.pending_complectation_parts = []
-            session.question_repeats = 0
             if session.handoff_status in {"awaiting_contact", "awaiting_consent", "failed"}:
                 session.pending_handoff = None
                 session.handoff_status = "none"
@@ -996,36 +1053,10 @@ class ChatOrchestrator:
                 intent,
                 session,
             )
-            if engineering_interpretation.should_reply_now:
-                answer = engineering_interpretation.reply or ""
-                intent.raw["engineering_reply_used"] = True
-                session.last_intent = "engineering_interpretation"
-                if engineering_interpretation.clarifying_question:
-                    session.pending_question = (
-                        engineering_interpretation.clarifying_question
-                    )
-                    session.pending_intent_type = "engineering_interpretation"
-                    session.pending_category = (
-                        intent.category if intent.category != "other" else session.category
-                    )
-                    session.pending_slot_keys = list(
-                        engineering_interpretation.missing_slot_keys
-                    )
-                elif not engineering_interpretation.needs_clarification:
-                    session.pending_question = None
-                    session.pending_intent_type = None
-                    session.pending_slot_keys = []
-                self._append_history(session, message, answer)
-                self.sessions.save(session)
-                return self._response(
-                    session_id,
-                    answer,
-                    [],
-                    False,
-                    intent,
-                    session,
-                    agents_used,
-                )
+            # Never send the interpreter's free-form engineering answer
+            # directly.  The deterministic requirements gate below chooses
+            # the next missing fact and all numbers are rendered from the
+            # canonical slots.  A later composer may still improve wording.
 
         direct_comparison = self._maybe_direct_sku_comparison_response(
             session_id,
@@ -1662,18 +1693,14 @@ class ChatOrchestrator:
                 agents_used.extend(
                     ["EngineeringRequirementsAgent", "ResponseComposerAgent"]
                 )
-                if session.pending_question == question:
-                    session.question_repeats += 1
-                else:
-                    session.question_repeats = 0
-                session.pending_question = question
-                session.pending_intent_type = intent.intent_type
-                session.pending_category = (
+                pending_category = (
                     intent.category if intent.category != "other" else session.category
                 )
-                session.pending_slot_keys = self._pending_slot_keys_for_question(
-                    question,
-                    session.pending_category,
+                question = self._set_structured_pending_question(
+                    session,
+                    question=question,
+                    category=pending_category,
+                    intent_type=intent.intent_type,
                 )
                 self._append_history(session, message, question)
                 self.sessions.save(session)
@@ -1858,11 +1885,35 @@ class ChatOrchestrator:
             and not direct_products
             and not hard_refinement_on_shown
         ):
-            if session.pending_question == slot_result.question:
-                session.question_repeats += 1
-            else:
-                session.question_repeats = 0
-            if session.question_repeats < 2:
+            pending_category = (
+                intent.category if intent.category != "other" else session.category
+            )
+            expected_slots = self._pending_slot_keys_for_question(
+                slot_result.question,
+                pending_category,
+            )
+            question_id = SessionState._default_question_id(
+                pending_category,
+                expected_slots,
+                session.slots,
+            )
+            if not expected_slots:
+                signature = re.sub(
+                    r"[^a-zа-я0-9]+",
+                    "_",
+                    normalize_text(slot_result.question),
+                ).strip("_")
+                question_id = f"{question_id}.{signature[:64] or 'unknown'}"
+            previous_question = session.pending_question_state
+            repeat_count = 0
+            if previous_question and previous_question.question_id == question_id:
+                repeat_count = (
+                    previous_question.attempts
+                    if session.slots.get("_pending_just_restored")
+                    else previous_question.attempts + 1
+                )
+            session.question_repeats = repeat_count
+            if repeat_count < 2:
                 answer = self.composer.compose_clarification(
                     slot_result.question,
                     small_talk=bool(intent.flags.get("small_talk")),
@@ -1870,14 +1921,12 @@ class ChatOrchestrator:
                 )
                 agents_used.append("ResponseComposerAgent")
                 answer = self._guard_composed_answer(answer, "clarification", agents_used)
-                session.pending_question = slot_result.question
-                session.pending_intent_type = intent.intent_type
-                session.pending_category = (
-                    intent.category if intent.category != "other" else session.category
-                )
-                session.pending_slot_keys = self._pending_slot_keys_for_question(
-                    slot_result.question,
-                    session.pending_category,
+                answer = self._set_structured_pending_question(
+                    session,
+                    question=answer,
+                    category=pending_category,
+                    intent_type=intent.intent_type,
+                    expected_slots=expected_slots,
                 )
                 self._append_history(session, message, answer)
                 self.sessions.save(session)
@@ -2493,7 +2542,7 @@ class ChatOrchestrator:
                 base["excluded_features"] = excluded
             else:
                 base.pop("excluded_features", None)
-        merged_slots = merge_slots(base, incoming)
+        merged_slots = normalize_engineering_slots(merge_slots(base, incoming))
         # Presentation commands apply to one answer only. Persisting
         # ``result_limit=1`` after «назови один» silently restricted every
         # later catalogue request in the same session.
@@ -4660,6 +4709,15 @@ class ChatOrchestrator:
             session.slots["needs_hot_water"] = bool(intent.slots["needs_hot_water"])
         if "has_warm_floor" in intent.slots:
             session.slots["has_warm_floor"] = bool(intent.slots["has_warm_floor"])
+        for warm_floor_key in [
+            "warm_floor_area_m2",
+            "warm_floor_type",
+            "warm_floor_heat_source",
+            "floor_insulation_ready",
+            "warm_floor_automation_needed",
+        ]:
+            if warm_floor_key in intent.slots:
+                session.slots[warm_floor_key] = intent.slots[warm_floor_key]
         if intent.slots.get("system_type"):
             session.slots["system_type"] = intent.slots["system_type"]
         if intent.slots.get("floors"):
@@ -4764,6 +4822,7 @@ class ChatOrchestrator:
             session.slots["water_source"] = "колодец"
         elif "центральн" in text:
             session.slots["water_source"] = "центральный водопровод"
+        session.slots = normalize_engineering_slots(session.slots)
 
     def _consult_plan(
         self,
@@ -5127,7 +5186,21 @@ class ChatOrchestrator:
         self._update_project_state(message, intent, session)
         area = self._project_area_from_text(text)
         if area is not None:
-            session.slots["area_m2"] = area
+            active_scope = str(
+                explicit_scope
+                or session.slots.get("project_scope")
+                or session.slots.get("scope_funnel")
+                or ""
+            )
+            if active_scope == "warm_floor":
+                session.slots["warm_floor_area_m2"] = area
+            elif not (
+                session.slots.get("complex_engineering_request")
+                and "пол" in text
+                and any(marker in text for marker in ["тепл", "тёпл"])
+                and "дом" not in text
+            ):
+                session.slots["area_m2"] = area
 
         if self._wants_project_cart_summary(text) and not explicit_scope:
             in_stock_only = bool(
@@ -5218,7 +5291,17 @@ class ChatOrchestrator:
             session.last_intent = "project_cart"
             self._append_history(session, message, answer)
             return self._response(session_id, answer, cards, False, intent, session, agents_used)
-        if not self._should_handle_project_cart(text, intent, session):
+        warm_floor_progress = bool(
+            scope == "warm_floor"
+            and (
+                session.slots.get("warm_floor_area_m2")
+                or session.slots.get("warm_floor_type")
+            )
+        )
+        if (
+            not self._should_handle_project_cart(text, intent, session)
+            and not warm_floor_progress
+        ):
             intro = self._project_intro_for_scope(scope, text)
             concrete_warm_floor_pipe = bool(
                 scope == "warm_floor"
@@ -5248,6 +5331,11 @@ class ChatOrchestrator:
                     session.slots["has_warm_floor"] = True
                     session.pending_category = "pipes"
                     session.pending_slot_keys = ["warm_floor_area_m2"]
+                    self.engineering_requirements.remember(
+                        "pipes",
+                        session.slots,
+                        session,
+                    )
                 session.pending_question = intro
                 session.pending_intent_type = "broad_category"
                 agents_used.append("ResponseComposerAgent")
@@ -5257,12 +5345,24 @@ class ChatOrchestrator:
 
         session.slots["project_scope"] = scope
         session.slots["scope_funnel"] = scope
+        if scope == "warm_floor":
+            session.slots = normalize_engineering_slots(session.slots)
+            self.engineering_requirements.remember(
+                "pipes",
+                session.slots,
+                session,
+            )
 
         clarification = self._project_clarification(scope, session, text)
         if clarification:
             agents_used.append("ResponseComposerAgent")
-            session.pending_question = clarification
-            session.pending_intent_type = "broad_category"
+            pending_category = "pipes" if scope == "warm_floor" else session.category
+            clarification = self._set_structured_pending_question(
+                session,
+                question=clarification,
+                category=pending_category,
+                intent_type="broad_category",
+            )
             session.last_intent = "project_cart"
             self._append_history(session, message, clarification)
             return self._response(session_id, clarification, [], False, intent, session, agents_used)
@@ -5291,9 +5391,18 @@ class ChatOrchestrator:
         session.last_products = cards
         session.last_intent = "project_cart"
         session.category = self._primary_session_category(list(cards_by_category)) or session.category
-        session.pending_question = None
-        session.pending_intent_type = None
+        session.clear_pending_question_state()
         answer = self._compose_project_selection_answer(scope, cards_by_category, session)
+        if scope == "warm_floor":
+            followup = self._warm_floor_followup_question(session)
+            if followup:
+                followup = self._set_structured_pending_question(
+                    session,
+                    question=followup,
+                    category="pipes",
+                    intent_type="attribute_request",
+                )
+                answer += "\n" + followup
         agents_used.append("FeedSearchAgent")
         agents_used.append("ProductCardAgent")
         agents_used.append("ResponseComposerAgent")
@@ -5595,23 +5704,55 @@ class ChatOrchestrator:
             return False
         return any(word in text for word in SPECIFIC_PRODUCT_WORDS)
 
-    def _is_project_component_turn(self, intent: IntentResult, session: SessionState) -> bool:
+    def _is_project_component_turn(
+        self,
+        message: str,
+        intent: IntentResult,
+        session: SessionState,
+    ) -> bool:
         if not (session.slots.get("project_cart") or session.slots.get("project_scope")):
             return False
-        return intent.category in {
-            "boilers",
-            "water_heaters",
-            "hydraulic_accumulators",
-            "filters",
-            "controls",
-            "pumps",
-            "pipes",
-            "valves",
-            "sewer",
-            "radiator_fittings",
-            "radiators",
-            "fittings",
-        }
+        text = normalize_text(message)
+        if any(marker in text for marker in self.engineering_requirements.RETURN_MARKERS):
+            return False
+        relational = any(
+            marker in text
+            for marker in [
+                "к нему",
+                "для него",
+                "для этой систем",
+                "в этот проект",
+                "в комплект",
+                "от котл",
+            ]
+        )
+        if relational and session.slots.get("project_cart"):
+            return True
+        explicit_switch = bool(
+            self._is_explicit_non_pump_topic_change(text)
+            or self._is_explicit_pump_selection_or_correction(text)
+            or any(
+                marker in text
+                for marker in ["теперь", "перейдем", "перейдём", "сменим тему"]
+            )
+        )
+        if explicit_switch:
+            return False
+        scope = str(
+            session.slots.get("project_scope")
+            or session.slots.get("scope_funnel")
+            or ""
+        )
+        allowed = set(PROJECT_SCOPE_CATEGORIES.get(scope, []))
+        if scope == "warm_floor":
+            allowed.add("controls")
+        if not allowed or intent.category not in allowed:
+            return False
+        # Component mentions remain in the current project only when they are
+        # relational ("к нему", "для этой системы") or when the user merely
+        # supplies a project parameter instead of explicitly requesting a new
+        # product goal.
+        return relational or not self._is_new_product_request(text)
 
     def _project_clarification(
         self,
@@ -5619,7 +5760,10 @@ class ChatOrchestrator:
         session: SessionState,
         text: str,
     ) -> str | None:
-        if scope == "warm_floor" and not session.slots.get("area_m2"):
+        if scope == "warm_floor" and not (
+            session.slots.get("warm_floor_area_m2")
+            or session.slots.get("area_m2")
+        ):
             if "что нужно" in text:
                 return WARM_FLOOR_FUNNEL
             return WARM_FLOOR_ALL_FOLLOWUP
@@ -5629,19 +5773,12 @@ class ChatOrchestrator:
                 or session.slots.get("area_m2")
             )
             if area:
-                pipe_min = round(area * 6.5)
-                pipe_max = round(area * 7.0)
-                contours = ceil(area * 6.5 / 80.0)
-                collectors = ceil(contours / 12.0)
-                session.slots.update(
-                    {
-                        "warm_floor_area_m2": area,
-                        "warm_floor_pipe_min_m": pipe_min,
-                        "warm_floor_pipe_max_m": pipe_max,
-                        "warm_floor_contours": contours,
-                        "warm_floor_collector_count": collectors,
-                    }
-                )
+                session.slots["warm_floor_area_m2"] = area
+                session.slots = normalize_engineering_slots(session.slots)
+                pipe_min = int(session.slots["warm_floor_pipe_min_m"])
+                pipe_max = int(session.slots["warm_floor_pipe_max_m"])
+                contours = int(session.slots["warm_floor_contours"])
+                collectors = int(session.slots["warm_floor_collector_count"])
                 collector_text = (
                     "два коллектора, например 10+10"
                     if collectors == 2 and contours == 20
@@ -5684,6 +5821,29 @@ class ChatOrchestrator:
             return GENERAL_ALL_FOLLOWUP
         return None
 
+    @staticmethod
+    def _warm_floor_followup_question(session: SessionState) -> str | None:
+        """Return one next design question without blocking a preliminary cart."""
+
+        if session.slots.get("warm_floor_type") != "водяной":
+            return None
+        if "floor_insulation_ready" not in session.slots:
+            return (
+                "Пирог пола уже подготовлен — утеплитель или маты под трубу "
+                "уложены?"
+            )
+        if not session.slots.get("warm_floor_heat_source"):
+            return (
+                "Какой источник тепла будет греть тёплый пол: газовый котёл, "
+                "электрический котёл или тепловой насос?"
+            )
+        if "warm_floor_automation_needed" not in session.slots:
+            return (
+                "Нужна покомнатная автоматика: комнатные термостаты и "
+                "сервоприводы на коллекторе?"
+            )
+        return None
+
     def _project_cards_by_category(
         self,
         scope: str,
@@ -5691,6 +5851,20 @@ class ChatOrchestrator:
         session: SessionState,
     ) -> dict[str, list[ProductCard]]:
         categories = list(PROJECT_SCOPE_CATEGORIES.get(scope, PROJECT_SCOPE_CATEGORIES["general"]))
+        if scope == "warm_floor" and (
+            session.slots.get("warm_floor_automation_needed") is True
+            or any(
+                marker in normalize_text(message)
+                for marker in [
+                    "автоматик",
+                    "термостат",
+                    "терморегулятор",
+                    "сервопривод",
+                    "контроллер",
+                ]
+            )
+        ):
+            categories.append("controls")
         if scope == "water" and session.slots.get("water_source") == "центральный водопровод":
             categories = [category for category in categories if category != "pumps"]
         slots = self._project_retrieval_slots(scope, session)
@@ -6021,9 +6195,34 @@ class ChatOrchestrator:
             f"Хорошо, собираю стартовую подборку для {scope_label}.",
             "Это не окончательная инженерная спецификация: количества труб, контуров и расходников нужно считать по схеме. Цены и наличие ниже сверены с карточками товаров.",
         ]
-        area = session.slots.get("area_m2")
-        if area:
-            lines.append(f"Площадь {float(area):g} м² учёл как исходный параметр, но метраж трубы без схемы не рассчитываю.")
+        area = (
+            session.slots.get("warm_floor_area_m2")
+            if scope == "warm_floor"
+            else session.slots.get("area_m2")
+        )
+        if area and scope == "warm_floor":
+            canonical = normalize_engineering_slots(session.slots)
+            pipe_min = int(canonical["warm_floor_pipe_min_m"])
+            pipe_max = int(canonical["warm_floor_pipe_max_m"])
+            contours = int(canonical["warm_floor_contours"])
+            collectors = int(canonical["warm_floor_collector_count"])
+            collector_text = (
+                "1 коллекторный узел"
+                if collectors == 1
+                else f"{collectors} коллекторных узла"
+                if 2 <= collectors <= 4
+                else f"{collectors} коллекторных узлов"
+            )
+            lines.append(
+                f"Расчёт по площади {float(area):g} м² и шагу 15 см: "
+                f"{pipe_min}–{pipe_max} м трубы 16x2, {contours} контуров, "
+                f"{collector_text}."
+            )
+        elif area:
+            lines.append(
+                f"Площадь {float(area):g} м² учёл как исходный параметр, но "
+                "метраж труб отопления без схемы не рассчитываю."
+            )
 
         for category in PROJECT_CART_CATEGORY_ORDER:
             cards = cards_by_category.get(category)
@@ -9594,21 +9793,60 @@ class ChatOrchestrator:
             and "площад" in normalize_text(session.pending_question or "")
             and "пол" in normalize_text(session.pending_question or "")
         )
-        if pending_asks_floor_area:
+        warm_floor_correction = re.search(
+            r"\bне\s+\d{1,4}(?:[,.]\d+)?\s*"
+            r"(?:м2|м²|кв(?:\.?\s*м)?|квадрат\w*|метр\w*)?\s*"
+            r"(?:,?\s*(?:а|но)\s+)(\d{1,4}(?:[,.]\d+)?)\s*"
+            r"(?:м2|м²|кв(?:\.?\s*м)?|квадрат\w*|метр\w*)?\b",
+            text,
+        )
+        if warm_floor_scope and any(
+            key in intent.slots
+            for key in [
+                "warm_floor_type",
+                "warm_floor_heat_source",
+                "floor_insulation_ready",
+                "warm_floor_automation_needed",
+            ]
+        ):
+            intent.category = "pipes"
+            intent.intent_type = "attribute_request"
+            intent.is_topic_change = False
+            intent.slots["project_scope"] = "warm_floor"
+        if warm_floor_scope and (
+            "водян" in text or "от котл" in text or ("кот" in text and "газ" in text)
+        ):
+            intent.category = "pipes"
+            intent.intent_type = "attribute_request"
+            intent.is_topic_change = False
+            intent.slots["project_scope"] = "warm_floor"
+            intent.slots["warm_floor_type"] = "водяной"
+            if "газ" in text and "кот" in text:
+                intent.slots["warm_floor_heat_source"] = "газовый котёл"
+            elif "электр" in text and "кот" in text:
+                intent.slots["warm_floor_heat_source"] = "электрический котёл"
+            elif "кот" in text:
+                intent.slots["warm_floor_heat_source"] = "котёл"
+
+        if pending_asks_floor_area or (warm_floor_scope and warm_floor_correction):
             area_match = re.search(
                 r"(?<!\d)(\d{1,4}(?:[,.]\d+)?)\s*"
                 r"(?:м2|м²|кв(?:\.?\s*м)?|квадрат\w*|метр\w*)?\b",
                 text,
             )
-            if area_match:
-                area = float(area_match.group(1).replace(",", "."))
+            area_token = (
+                warm_floor_correction.group(1)
+                if warm_floor_correction
+                else area_match.group(1) if area_match else None
+            )
+            if area_token:
+                area = float(area_token.replace(",", "."))
                 if 1 <= area <= 10000:
                     intent.category = "pipes"
                     intent.intent_type = "attribute_request"
                     intent.is_topic_change = False
                     intent.slots["project_scope"] = "warm_floor"
                     intent.slots["warm_floor_area_m2"] = area
-                    intent.slots["area_m2"] = area
                     session.slots["project_scope"] = "warm_floor"
                     session.slots["scope_funnel"] = "warm_floor"
 
@@ -10007,6 +10245,137 @@ class ChatOrchestrator:
         )
         return bool(target and explicit_switch)
 
+    def _engineering_recall_answer(
+        self,
+        message: str,
+        session: SessionState,
+    ) -> str | None:
+        text = normalize_text(message)
+        if not any(
+            marker in text
+            for marker in [
+                "что запомнил",
+                "что ты запомнил",
+                "что уже знаешь",
+                "что мы уже знаем",
+                "что я уже сказал",
+                "что я уже сообщ",
+                "напомни что мы",
+                "какие данные запомнил",
+            ]
+        ):
+            return None
+
+        slots = dict(session.slots)
+        context = session.project_context or {}
+        target_category = None
+        if "насос" in text or "колод" in text or "скваж" in text:
+            target_category = "pumps"
+        elif "тепл" in text and "пол" in text:
+            target_category = "pipes"
+        elif "кот" in text:
+            target_category = "boilers"
+        if target_category:
+            selector: dict[str, Any] = {}
+            if target_category == "pumps":
+                if "колод" in text:
+                    selector["water_source"] = "колодец"
+                elif "скваж" in text:
+                    selector["water_source"] = "скважина"
+                elif any(marker in text for marker in ["емкост", "боч", "бак"]):
+                    selector["water_source"] = "ёмкость"
+            elif target_category == "boilers":
+                if "электр" in text:
+                    selector["boiler_type"] = "электрический"
+                elif "газ" in text:
+                    selector["boiler_type"] = "газовый"
+            elif target_category == "pipes" and "пол" in text:
+                selector["project_scope"] = "warm_floor"
+                selector["has_warm_floor"] = True
+            referenced_goal = self.engineering_requirements.goal_id_for(
+                target_category,
+                selector,
+            )
+            goals = context.get("goals") or {}
+            goal_id = (
+                referenced_goal
+                if ":" in referenced_goal and referenced_goal in goals
+                else (context.get("category_last_goal") or {}).get(target_category)
+            )
+            goal = (context.get("goals") or {}).get(goal_id, {})
+            remembered = dict(goal.get("slots") or {})
+            scope = goal.get("scope")
+            if scope:
+                remembered = merge_slots(
+                    dict((context.get("shared_by_scope") or {}).get(scope) or {}),
+                    remembered,
+                )
+                remembered.setdefault("project_scope", scope)
+            if remembered:
+                slots = remembered
+
+        slots = normalize_engineering_slots(slots)
+        facts: list[str] = []
+
+        def add(label: str, key: str, suffix: str = "") -> None:
+            value = slots.get(key)
+            if value not in (None, "", [], {}):
+                shown = f"{float(value):g}" if isinstance(value, (int, float)) else str(value)
+                facts.append(f"{label}: {shown}{suffix}")
+
+        add("Колодец", "well_ring_count", " кольца")
+        add("Общая глубина", "well_depth_m", " м")
+        if slots.get("water_level_reference") == "ambiguous":
+            add("Зеркало воды", "water_level_ring_count", " кольца; направление отсчёта пока не уточнено")
+        else:
+            add("Глубина до зеркала воды", "water_level_depth_m", " м")
+            add("Столб воды", "water_column_depth_m", " м")
+        add("Расстояние до дома/полива", "horizontal_run_m", " м")
+        add("Дополнительная высота подъёма", "lift_height_m", " м")
+        flow_status = str(slots.get("flow_unit_status") or "")
+        if flow_status == "assumed" and slots.get("required_flow_l_min") is not None:
+            add("Заявленный объём (время не подтверждено)", "required_flow_l_min", " л")
+        elif flow_status == "total_volume":
+            add("Общий объём", "stated_volume_l", " л")
+        else:
+            add("Расход", "required_flow_l_min", " л/мин")
+        if slots.get("required_head_calculated"):
+            add("Расчётный геометрический напор", "required_head_m", " м")
+        else:
+            add("Требуемый напор", "required_head_m", " м")
+        add("Площадь тёплого пола", "warm_floor_area_m2", " м²")
+        add("Ориентир трубы", "warm_floor_pipe_min_m", "–")
+        if slots.get("warm_floor_pipe_min_m") is not None and slots.get(
+            "warm_floor_pipe_max_m"
+        ) is not None:
+            # Replace the temporary one-sided item with a readable interval.
+            facts.pop()
+            facts.append(
+                "Ориентир трубы: "
+                f"{float(slots['warm_floor_pipe_min_m']):g}–"
+                f"{float(slots['warm_floor_pipe_max_m']):g} м"
+            )
+        add("Контуры", "warm_floor_contours")
+        add("Коллекторы", "warm_floor_collector_count")
+        add("Тип тёплого пола", "warm_floor_type")
+        add("Источник тепла", "warm_floor_heat_source")
+        if "floor_insulation_ready" in slots:
+            facts.append(
+                "Утеплитель/маты: "
+                + ("уже есть" if slots["floor_insulation_ready"] else "ещё не готовы")
+            )
+        if "warm_floor_automation_needed" in slots:
+            facts.append(
+                "Покомнатная автоматика: "
+                + ("нужна" if slots["warm_floor_automation_needed"] else "не нужна")
+            )
+        add("Тип котла", "boiler_type")
+        if slots.get("project_scope") != "warm_floor":
+            add("Площадь объекта", "area_m2", " м²")
+        if not facts:
+            return "Пока в текущей ветке нет подтверждённых инженерных параметров."
+        return "Вот что зафиксировал:\n- " + "\n- ".join(facts)
+
     @staticmethod
     def _pending_slot_keys_for_question(
         question: str,
@@ -10015,13 +10384,29 @@ class ChatOrchestrator:
         text = normalize_text(question)
         keys: list[str] = []
         if category == "pumps":
+            if (
+                "направление отсч" in text
+                or ("от верха" in text and "от дна" in text)
+            ):
+                return ["water_level_reference"]
+            if "литры в минуту" in text and "общ" in text and "объ" in text:
+                return ["flow_unit_confirmation"]
+            if "какой нужен расход" in text or "сколько литров в минуту" in text:
+                return ["required_flow_m3_h"]
+            if any(
+                marker in text
+                for marker in ["на какую высоту", "высоту выше", "нужно поднять воду"]
+            ):
+                return ["lift_height_m"]
             if any(marker in text for marker in ["для какой задач", "назначен", "отоплен"]):
                 keys.extend(["pump_use", "pump_type"])
             if "монтажн" in text:
                 keys.append("mounting_length_mm")
             if "напор" in text:
                 keys.extend(["head_m", "required_head_m"])
-            if "расход" in text or "производительност" in text:
+            if (
+                "расход" in text or "производительност" in text
+            ) and "flow_unit_confirmation" not in keys:
                 keys.append("required_flow_m3_h")
             if "присоедин" in text:
                 keys.append("connection_size")
@@ -10029,11 +10414,28 @@ class ChatOrchestrator:
                 keys.append("dynamic_water_level_m")
             if "статическ" in text:
                 keys.append("static_water_level_m")
+            if "до поверхности воды" in text and "от верха" in text:
+                keys.append("water_level_depth_m")
             if "давлен" in text:
                 keys.extend(["inlet_pressure_bar", "required_pressure_bar"])
-            if "горизонтальн" in text or "трасс" in text:
+            if (
+                "горизонтальн" in text
+                or "по горизонтали" in text
+                or "расстоян" in text
+                or "трасс" in text
+            ):
                 keys.append("horizontal_run_m")
         if category == "pipes":
+            if "площад" in text and ("тепл" in text or "пол" in text):
+                keys.append("warm_floor_area_m2")
+            if "водяной" in text and "электрическ" in text:
+                keys.append("warm_floor_type")
+            if "утепл" in text or "пирог пола" in text:
+                keys.append("floor_insulation_ready")
+            if "источник тепла" in text or "каким котл" in text:
+                keys.append("warm_floor_heat_source")
+            if "автоматик" in text or "покомнатн" in text:
+                keys.append("warm_floor_automation_needed")
             if "для чего" in text or "назначен" in text:
                 keys.append("pipe_purpose")
             if any(marker in text for marker in ["участ", "петл", "магистрал", "обвяз"]):
@@ -10093,6 +10495,103 @@ class ChatOrchestrator:
             if "сигнал" in text or "0-10" in text:
                 keys.append("control_signal")
         return list(dict.fromkeys(keys))
+
+    def _set_structured_pending_question(
+        self,
+        session: SessionState,
+        *,
+        question: str,
+        category: str | None,
+        intent_type: str | None,
+        expected_slots: list[str] | None = None,
+    ) -> str:
+        expected = list(
+            expected_slots
+            if expected_slots is not None
+            else self._pending_slot_keys_for_question(question, category)
+        )
+        question_id = SessionState._default_question_id(
+            category,
+            expected,
+            session.slots,
+        )
+        if not expected:
+            signature = re.sub(r"[^a-zа-я0-9]+", "_", normalize_text(question)).strip("_")
+            question_id = f"{question_id}.{signature[:64] or 'unknown'}"
+        previous = session.pending_question_state
+        repeated = bool(previous and previous.question_id == question_id)
+        if question_id == "well.water_level_reference" and not repeated:
+            session.slots["water_level_reference_question_asked"] = True
+        just_restored = bool(session.slots.pop("_pending_just_restored", False))
+        attempts = (
+            previous.attempts
+            if repeated and previous and just_restored
+            else previous.attempts + 1
+            if repeated and previous
+            else 0
+        )
+        if repeated and attempts >= 2 and question_id in {
+            "well.horizontal_distance",
+            "well.lift_height",
+            "well.flow",
+        }:
+            deferred = list(session.slots.get("deferred_slot_keys") or [])
+            deferred.extend(key for key in expected if key not in deferred)
+            session.slots["deferred_slot_keys"] = deferred
+            session.clear_pending_question_state()
+            if question_id == "well.horizontal_distance":
+                next_question = self._set_structured_pending_question(
+                    session,
+                    question=(
+                        "На какую высоту выше поверхности воды нужно поднять воду?"
+                    ),
+                    category="pumps",
+                    intent_type=intent_type,
+                    expected_slots=["lift_height_m"],
+                )
+                return (
+                    "Расстояние пока оставляю незаполненным и больше не повторяю "
+                    "тот же вопрос. "
+                    + next_question
+                )
+            if question_id == "well.lift_height":
+                next_question = self._set_structured_pending_question(
+                    session,
+                    question="Какой нужен расход: сколько литров в минуту?",
+                    category="pumps",
+                    intent_type=intent_type,
+                    expected_slots=["required_flow_m3_h"],
+                )
+                return (
+                    "Высоту подъёма пока оставляю незаполненной и больше не повторяю "
+                    "тот же вопрос. "
+                    + next_question
+                )
+            return (
+                "Расход пока оставляю незаполненным и больше не повторяю тот же "
+                "вопрос. Без него окончательный подбор насоса не подтверждаю."
+            )
+        visible_question = question
+        if repeated and attempts == 1:
+            visible_question = (
+                "Чтобы продолжить без догадок, нужен именно этот параметр. "
+                + question
+            )
+        elif repeated and attempts >= 2:
+            visible_question = (
+                "Без этого параметра точный подбор пока невозможен. Если данных сейчас "
+                "нет, можно отложить ветку; для продолжения всё же нужно уточнить: "
+                + question
+            )
+        session.set_pending_question_state(
+            text=visible_question,
+            expected_slots=expected,
+            question_id=question_id,
+            category=category,
+            intent_type=intent_type,
+            attempts=attempts,
+        )
+        return visible_question
 
     def _is_pending_continuation(
         self,

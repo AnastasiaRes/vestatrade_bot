@@ -124,7 +124,11 @@ def extract_contextual_short_answer(
     pending = normalize_text(pending_question)
     expected = set(pending_slot_keys or [])
     slots: dict[str, Any] = {}
-    number_match = re.fullmatch(r"\s*(\d{1,4}(?:[,.]\d+)?)\s*", text)
+    number_match = re.fullmatch(
+        r"\s*(\d{1,4}(?:[,.]\d+)?)\s*"
+        r"(?:м\b|метр(?:а|ов)?)?\s*",
+        text,
+    )
     if not number_match:
         return slots
     number = float(number_match.group(1).replace(",", "."))
@@ -139,6 +143,21 @@ def extract_contextual_short_answer(
         return slots
 
     if category == "pumps":
+        if (
+            "horizontal_run_m" in expected
+            or "расстоян" in pending
+            or "до дома" in pending
+            or "до полива" in pending
+        ):
+            if 0 < number <= 5000:
+                slots["horizontal_run_m"] = number
+            return slots
+        if "lift_height_m" in expected or any(
+            marker in pending for marker in ["высот", "поднять воду", "верхней точки"]
+        ):
+            if 0 <= number <= 300:
+                slots["lift_height_m"] = number
+            return slots
         if "connection_size" in expected or "присоедин" in pending or "условн" in pending:
             if number in {15, 20, 25, 32, 40, 50, 65, 80, 100}:
                 slots["connection_size"] = int(number)
@@ -150,6 +169,7 @@ def extract_contextual_short_answer(
         if {"required_head_m", "head_m"}.intersection(expected) or "напор" in pending:
             if 0 < number <= 300:
                 slots["required_head_m"] = number
+                slots["required_head_calculated"] = False
             return slots
 
     if category in {"pipes", "valves", "radiator_fittings"}:
@@ -392,6 +412,7 @@ def _extract_pump_notation(text: str, slots: dict[str, Any]) -> None:
     )
     if head:
         slots["required_head_m"] = float(head.group(1).replace(",", "."))
+        slots["required_head_calculated"] = False
 
     maximum_head = re.search(
         r"(?<![a-zа-я])h\s*max\s*(?:=|:)?\s*(\d+(?:[,.]\d+)?)\s*"
