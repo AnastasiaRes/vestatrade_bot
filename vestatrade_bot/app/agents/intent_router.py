@@ -262,6 +262,28 @@ class IntentRouterAgent:
         self._catalog_brands: list[str] = []
         self.set_catalog_brands(catalog_brands or [])
 
+    @staticmethod
+    def _household_count(token: str) -> float | None:
+        normalized = normalize_text(token).strip()
+        if re.fullmatch(r"\d{1,3}(?:[,.]\d+)?", normalized):
+            return float(normalized.replace(",", "."))
+        stems = {
+            "од": 1.0,
+            "дв": 2.0,
+            "тр": 3.0,
+            "четыр": 4.0,
+            "пят": 5.0,
+            "шест": 6.0,
+            "сем": 7.0,
+            "восем": 8.0,
+            "девят": 9.0,
+            "десят": 10.0,
+        }
+        for stem, value in stems.items():
+            if normalized.startswith(stem):
+                return value
+        return None
+
     def set_catalog_brands(self, brands: list[str]) -> None:
         by_normalized: dict[str, str] = {}
         for brand in [*BRANDS, *brands]:
@@ -527,6 +549,12 @@ class IntentRouterAgent:
 
     def _detect_category(self, text: str) -> tuple[str, float]:
         if OLD_CIRCULATION_PUMP_RE.search(text):
+            return "pumps", 0.9
+        if (
+            "зеркал" in text
+            and "кольц" in text
+            and any(marker in text for marker in ["вод", "расход", "колод"])
+        ):
             return "pumps", 0.9
         notation_category, notation_score = engineering_category_hint(text)
         if notation_category:
@@ -1442,6 +1470,47 @@ class IntentRouterAgent:
         if category == "pumps":
             self._extract_old_pump_model(text, slots)
             self._extract_standalone_pump_params(text, slots)
+            count_token = (
+                r"\d{1,3}(?:[,.]\d+)?|од\w*|дв\w*|тр\w*|четыр\w*|"
+                r"пят\w*|шест\w*|сем\w*|восем\w*|девят\w*|десят\w*"
+            )
+            before_water_level = text.split("зеркал", 1)[0]
+            ring_match = re.search(
+                rf"(?<!\w)({count_token})\s+(?:ж/?б\s+)?кольц\w*",
+                before_water_level,
+            )
+            if ring_match:
+                rings = self._household_count(ring_match.group(1))
+                if rings:
+                    slots["water_source"] = "колодец"
+                    slots["pump_use"] = "водоснабжение"
+                    slots["well_ring_count"] = rings
+                    slots["well_depth_m"] = round(rings * 0.9, 3)
+                    slots["ring_height_assumed"] = True
+            water_level_match = re.search(
+                rf"зеркал\w*(?:\s+вод\w*)?[^\dа-я]{{0,12}}"
+                rf"(?:на\s+)?({count_token})\s+кольц\w*",
+                text,
+            )
+            if water_level_match:
+                rings = self._household_count(water_level_match.group(1))
+                if rings:
+                    slots["water_source"] = "колодец"
+                    slots["pump_use"] = "водоснабжение"
+                    slots["water_level_ring_count"] = rings
+                    slots["dynamic_water_level_m"] = round(rings * 0.9, 3)
+                    slots["ring_height_assumed"] = True
+            water_column_match = re.search(
+                rf"столб\w*\s+вод\w*[^\dа-я]{{0,12}}"
+                rf"({count_token})\s+кольц\w*",
+                text,
+            )
+            if water_column_match:
+                rings = self._household_count(water_column_match.group(1))
+                if rings:
+                    slots["water_column_ring_count"] = rings
+                    slots["water_column_depth_m"] = round(rings * 0.9, 3)
+                    slots["ring_height_assumed"] = True
             mounting_match = re.search(r"(\d{2,3})\s*мм", text)
             if mounting_match:
                 slots["mounting_length_mm"] = int(mounting_match.group(1))
@@ -1492,6 +1561,18 @@ class IntentRouterAgent:
                     slots["required_flow_m3_h"] = float(
                         symbolic_flow.group(1).replace(",", ".")
                     )
+                household_flow = re.search(
+                    r"(?:расход\w*[^\d]{0,18}(?:литр\w*|л\b)[^\d]{0,8}"
+                    r"(\d+(?:[,.]\d+)?)|"
+                    r"расход\w*[^\d]{0,18}(\d+(?:[,.]\d+)?)\s*литр\w*)",
+                    text,
+                )
+                if household_flow and "required_flow_m3_h" not in slots:
+                    raw_value = household_flow.group(1) or household_flow.group(2)
+                    flow_l_min = float(raw_value.replace(",", "."))
+                    slots["required_flow_l_min"] = flow_l_min
+                    slots["required_flow_m3_h"] = round(flow_l_min * 60 / 1000, 4)
+                    slots["flow_unit_assumed"] = True
 
             symbolic_head = re.search(
                 r"(?<![a-zа-я])h\s*(?:=\s*)?(\d+(?:[,.]\d+)?)\s*(?:м\b|метр\w*)?",
@@ -1556,7 +1637,11 @@ class IntentRouterAgent:
 
             if "фекал" in text:
                 slots["water_quality"] = "фекальная"
-            elif any(marker in text for marker in ["грязн", "ил", "песок"]):
+            elif (
+                "грязн" in text
+                or "песок" in text
+                or re.search(r"\bил(?:а|ом|ист\w*)?\b", text)
+            ):
                 slots["water_quality"] = "грязная"
             elif "чист" in text:
                 slots["water_quality"] = "чистая"

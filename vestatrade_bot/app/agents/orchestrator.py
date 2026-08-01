@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 import logging
+from math import ceil
 import re
 from threading import RLock, local
 from typing import Any
@@ -40,6 +41,10 @@ from app.openrouter_client import OpenRouterClient
 from app.session_store import InMemorySessionStore
 
 from .consultant import ConsultantAgent
+from .engineering_interpreter import (
+    EngineeringInterpretation,
+    EngineeringInterpreterAgent,
+)
 from .engineering_requirements import EngineeringRequirementsAgent
 from .feed_search import FeedSearchAgent
 from .guardrails import GuardrailsAgent
@@ -440,6 +445,7 @@ class ChatOrchestrator:
                 if product.brand
             ],
         )
+        self.engineering_interpreter = EngineeringInterpreterAgent(self.llm_client)
         self.slot_filling = SlotFillingAgent()
         self.engineering_requirements = EngineeringRequirementsAgent(
             self.slot_filling
@@ -522,6 +528,69 @@ class ChatOrchestrator:
     def _session_lock(self, session_id: str) -> RLock:
         with self._session_locks_guard:
             return self._session_locks.setdefault(session_id, RLock())
+
+    def _overlay_engineering_interpretation(
+        self,
+        intent: IntentResult,
+        interpretation: EngineeringInterpretation,
+    ) -> None:
+        """Let accepted LLM semantics correct a confident-but-wrong rule route."""
+        intent.raw = dict(intent.raw or {})
+        intent.raw.update(
+            {
+                "engineering_llm_requested": interpretation.llm_requested,
+                "engineering_llm_used": interpretation.llm_used,
+                "engineering_llm_output_accepted": interpretation.output_accepted,
+                "engineering_llm_fallback_reason": interpretation.fallback_reason,
+                "engineering_reply_used": False,
+            }
+        )
+        if not (interpretation.output_accepted and interpretation.handled):
+            return
+        if interpretation.intent_type:
+            intent.intent_type = interpretation.intent_type
+        if interpretation.category:
+            intent.category = interpretation.category
+        intent.slots = merge_slots(intent.slots, interpretation.slots)
+        if interpretation.project_scope:
+            intent.slots["project_scope"] = interpretation.project_scope
+        if interpretation.continuation:
+            intent.is_topic_change = False
+        intent.confidence = max(intent.confidence, 0.9)
+
+    def _persist_engineering_interpretation(
+        self,
+        interpretation: EngineeringInterpretation,
+        intent: IntentResult,
+        session: SessionState,
+    ) -> None:
+        slots = dict(interpretation.slots)
+        scope = interpretation.project_scope or slots.get("project_scope")
+        if scope:
+            slots["project_scope"] = scope
+            slots["scope_funnel"] = scope
+        if scope == "warm_floor":
+            slots["has_warm_floor"] = True
+            area = self._float_slot(slots.get("warm_floor_area_m2"))
+            if area:
+                slots.setdefault("area_m2", area)
+                slots.setdefault("warm_floor_pipe_min_m", round(area * 6.5))
+                slots.setdefault("warm_floor_pipe_max_m", round(area * 7.0))
+                contours = ceil(area * 6.5 / 80.0)
+                slots.setdefault("warm_floor_contours", contours)
+                slots.setdefault("warm_floor_collector_count", ceil(contours / 12.0))
+        if interpretation.assumptions:
+            slots["engineering_assumptions"] = list(interpretation.assumptions)
+
+        self._merge_persistent_slots(session, slots, explicit_slots=slots)
+        intent.slots = merge_slots(intent.slots, slots)
+        if intent.category != "other":
+            session.category = intent.category
+            self.engineering_requirements.remember(
+                intent.category,
+                session.slots,
+                session,
+            )
 
     def _handle_chat(self, session_id: str, message: str) -> ChatResponse:
         session = self.sessions.get(session_id)
@@ -784,6 +853,25 @@ class ChatOrchestrator:
             )
 
         intent = self.intent_router.route(message, session)
+        engineering_interpretation: EngineeringInterpretation | None = None
+        if (
+            self.settings.llm_enabled
+            and self.engineering_interpreter.should_interpret(message, intent, session)
+        ):
+            agents_used.append("EngineeringInterpreterAgent")
+            try:
+                engineering_interpretation = self.engineering_interpreter.interpret(
+                    message,
+                    intent,
+                    session,
+                )
+            except Exception as exc:  # pragma: no cover - defensive integration guard
+                logger.exception("Engineering interpretation failed: %s", exc)
+                engineering_interpretation = EngineeringInterpretation(
+                    llm_requested=True,
+                    fallback_reason=str(exc),
+                )
+            self._overlay_engineering_interpretation(intent, engineering_interpretation)
         # Exact identities must see the catalogue on the very first request.
         # Keep the preload scoped to identity-shaped turns: small talk and
         # non-catalogue control turns must stay cheap and concurrent.
@@ -897,6 +985,43 @@ class ChatOrchestrator:
             intent.slots.setdefault("pump_type", "циркуляционный")
             intent.slots.setdefault("pump_use", "отопление")
             intent.slots.setdefault("pump_context", "котел")
+
+        if engineering_interpretation and engineering_interpretation.output_accepted:
+            self._persist_engineering_interpretation(
+                engineering_interpretation,
+                intent,
+                session,
+            )
+            if engineering_interpretation.should_reply_now:
+                answer = engineering_interpretation.reply or ""
+                intent.raw["engineering_reply_used"] = True
+                session.last_intent = "engineering_interpretation"
+                if engineering_interpretation.clarifying_question:
+                    session.pending_question = (
+                        engineering_interpretation.clarifying_question
+                    )
+                    session.pending_intent_type = "engineering_interpretation"
+                    session.pending_category = (
+                        intent.category if intent.category != "other" else session.category
+                    )
+                    session.pending_slot_keys = list(
+                        engineering_interpretation.missing_slot_keys
+                    )
+                elif not engineering_interpretation.needs_clarification:
+                    session.pending_question = None
+                    session.pending_intent_type = None
+                    session.pending_slot_keys = []
+                self._append_history(session, message, answer)
+                self.sessions.save(session)
+                return self._response(
+                    session_id,
+                    answer,
+                    [],
+                    False,
+                    intent,
+                    session,
+                    agents_used,
+                )
 
         direct_comparison = self._maybe_direct_sku_comparison_response(
             session_id,
@@ -1579,6 +1704,12 @@ class ChatOrchestrator:
             agents_used.append("ResponseComposerAgent")
             session.pending_question = scope_funnel
             session.pending_intent_type = "broad_category"
+            scope = str(session.slots.get("scope_funnel") or "")
+            if scope == "warm_floor":
+                session.slots["project_scope"] = "warm_floor"
+                session.slots["has_warm_floor"] = True
+                session.pending_category = "pipes"
+                session.pending_slot_keys = ["warm_floor_area_m2"]
             self._append_history(session, message, answer)
             self.sessions.save(session)
             return self._response(session_id, answer, [], False, intent, session, agents_used)
@@ -5108,6 +5239,11 @@ class ChatOrchestrator:
                 or (scope == "warm_floor" and not concrete_warm_floor_pipe)
             ):
                 session.slots["scope_funnel"] = scope
+                session.slots["project_scope"] = scope
+                if scope == "warm_floor":
+                    session.slots["has_warm_floor"] = True
+                    session.pending_category = "pipes"
+                    session.pending_slot_keys = ["warm_floor_area_m2"]
                 session.pending_question = intro
                 session.pending_intent_type = "broad_category"
                 agents_used.append("ResponseComposerAgent")
@@ -5265,6 +5401,20 @@ class ChatOrchestrator:
         explicit = self._explicit_project_scope_from_text(text)
         if explicit:
             return explicit
+        current_scope = session.slots.get("project_scope") or session.slots.get(
+            "scope_funnel"
+        )
+        pending = normalize_text(session.pending_question or "")
+        if (
+            current_scope
+            and "площад" in pending
+            and re.search(
+                r"(?<!\d)\d{1,4}(?:[,.]\d+)?\s*"
+                r"(?:м2|м²|кв(?:\.?\s*м)?|квадрат\w*|метр\w*)?\b",
+                text,
+            )
+        ):
+            return str(current_scope)
         if session.slots.get("project_scope") and (
             self._is_project_followup(text) or self._is_project_source_followup(text)
         ):
@@ -5470,6 +5620,36 @@ class ChatOrchestrator:
                 return WARM_FLOOR_FUNNEL
             return WARM_FLOOR_ALL_FOLLOWUP
         if scope == "warm_floor" and not session.slots.get("warm_floor_type"):
+            area = self._float_slot(
+                session.slots.get("warm_floor_area_m2")
+                or session.slots.get("area_m2")
+            )
+            if area:
+                pipe_min = round(area * 6.5)
+                pipe_max = round(area * 7.0)
+                contours = ceil(area * 6.5 / 80.0)
+                collectors = ceil(contours / 12.0)
+                session.slots.update(
+                    {
+                        "warm_floor_area_m2": area,
+                        "warm_floor_pipe_min_m": pipe_min,
+                        "warm_floor_pipe_max_m": pipe_max,
+                        "warm_floor_contours": contours,
+                        "warm_floor_collector_count": collectors,
+                    }
+                )
+                collector_text = (
+                    "два коллектора, например 10+10"
+                    if collectors == 2 and contours == 20
+                    else f"коллекторов: ориентировочно {collectors}"
+                )
+                return (
+                    f"Принято: площадь тёплого пола {area:g} м². Для водяного пола при "
+                    f"шаге 15 см экспресс-ориентир — {pipe_min}–{pipe_max} м трубы "
+                    f"PEX/PE-RT 16x2, около {contours} контуров и {collector_text}. "
+                    "Это предварительный расчёт, не готовый проект. Уточните одним ответом: "
+                    "пол водяной от котла или электрический?"
+                )
             return (
                 "Площадь учёл. Уточните ещё один обязательный параметр: тёплый пол водяной "
                 "от котла или электрический? Не буду подставлять насос и трубы без выбора типа."
@@ -6041,6 +6221,8 @@ class ChatOrchestrator:
         # Тёплый пол — отдельная подсистема отопления со своим составом.
         if ("тепл" in text and "пол" in text) or "теплый пол" in text:
             session.slots["scope_funnel"] = "warm_floor"
+            session.slots["project_scope"] = "warm_floor"
+            session.slots["has_warm_floor"] = True
             return WARM_FLOOR_FUNNEL
 
         # Отопление как система (без конкретного узла).
@@ -9399,6 +9581,33 @@ class ChatOrchestrator:
         an implicit request to abandon the pump selection.
         """
         text = normalize_text(message)
+        warm_floor_scope = (
+            session.slots.get("project_scope") == "warm_floor"
+            or session.slots.get("scope_funnel") == "warm_floor"
+        )
+        pending_asks_floor_area = bool(
+            warm_floor_scope
+            and "площад" in normalize_text(session.pending_question or "")
+            and "пол" in normalize_text(session.pending_question or "")
+        )
+        if pending_asks_floor_area:
+            area_match = re.search(
+                r"(?<!\d)(\d{1,4}(?:[,.]\d+)?)\s*"
+                r"(?:м2|м²|кв(?:\.?\s*м)?|квадрат\w*|метр\w*)?\b",
+                text,
+            )
+            if area_match:
+                area = float(area_match.group(1).replace(",", "."))
+                if 1 <= area <= 10000:
+                    intent.category = "pipes"
+                    intent.intent_type = "attribute_request"
+                    intent.is_topic_change = False
+                    intent.slots["project_scope"] = "warm_floor"
+                    intent.slots["warm_floor_area_m2"] = area
+                    intent.slots["area_m2"] = area
+                    session.slots["project_scope"] = "warm_floor"
+                    session.slots["scope_funnel"] = "warm_floor"
+
         if (
             session.slots.get("project_scope") == "heating"
             or session.slots.get("scope_funnel") == "heating"
@@ -10840,11 +11049,30 @@ class ChatOrchestrator:
         consultant_accepted = bool(
             getattr(self.consultant, "last_llm_output_accepted", False)
         )
-        transport_succeeded = bool(
-            intent.llm_used or response_transport or consultant_transport
+        engineering_requested = bool(
+            (intent.raw or {}).get("engineering_llm_requested")
         )
-        output_accepted = bool(response_accepted or consultant_accepted)
-        if consultant_accepted and "ConsultantAgent" in agents_used:
+        engineering_transport = bool(
+            (intent.raw or {}).get("engineering_llm_used")
+        )
+        engineering_accepted = bool(
+            (intent.raw or {}).get("engineering_llm_output_accepted")
+        )
+        engineering_reply_used = bool(
+            (intent.raw or {}).get("engineering_reply_used")
+        )
+        transport_succeeded = bool(
+            intent.llm_used
+            or engineering_transport
+            or response_transport
+            or consultant_transport
+        )
+        output_accepted = bool(
+            engineering_accepted or response_accepted or consultant_accepted
+        )
+        if engineering_reply_used and engineering_accepted:
+            final_answer_source = "engineering_interpreter_llm"
+        elif consultant_accepted and "ConsultantAgent" in agents_used:
             final_answer_source = "consultant_llm"
         elif response_accepted and "ResponseComposerAgent" in agents_used:
             final_answer_source = "response_llm"
@@ -10885,6 +11113,7 @@ class ChatOrchestrator:
                 "agents_used": agents_used,
                 "llm_used": transport_succeeded,
                 "llm_requested": intent_requested
+                or engineering_requested
                 or response_requested
                 or consultant_requested,
                 "llm_transport_succeeded": transport_succeeded,
@@ -10897,6 +11126,13 @@ class ChatOrchestrator:
                 "intent_llm_rejection_reason": (intent.raw or {}).get(
                     "llm_rejection_reason"
                 ),
+                "engineering_llm_requested": engineering_requested,
+                "engineering_llm_used": engineering_transport,
+                "engineering_llm_output_accepted": engineering_accepted,
+                "engineering_llm_fallback_reason": (intent.raw or {}).get(
+                    "engineering_llm_fallback_reason"
+                ),
+                "engineering_reply_used": engineering_reply_used,
                 "response_llm_used": response_transport,
                 "response_llm_requested": response_requested,
                 "response_llm_output_accepted": response_accepted,

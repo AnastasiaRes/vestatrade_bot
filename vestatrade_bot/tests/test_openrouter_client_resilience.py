@@ -97,6 +97,7 @@ def _client() -> OpenRouterClient:
             "ollama_model": "unit-model",
             "llm_timeout_seconds": 30.0,
             "llm_max_retries": 3,
+            "llm_retry_delay_seconds": 0.0,
         }
     )
     return OpenRouterClient(settings=settings, budget_manager=_Budget())
@@ -116,36 +117,46 @@ def _reset_shared_circuits():
 
 
 @pytest.mark.parametrize("kind", ["connect", "read"])
-def test_ollama_request_error_opens_circuit_without_retry(monkeypatch, kind: str) -> None:
+def test_ollama_request_error_is_retried_before_fallback(monkeypatch, kind: str) -> None:
     factory = _ClientFactory([_request_error(kind), _response()])
     monkeypatch.setattr(client_module.httpx, "Client", factory)
     client = _client()
 
-    failed = _complete(client)
-    skipped = _complete(client)
+    recovered = _complete(client)
 
-    assert failed.llm_used is False
-    assert f"ollama request failed" in (failed.fallback_reason or "")
-    assert skipped.llm_used is False
-    assert "circuit is open" in (skipped.fallback_reason or "")
-    assert factory.post_count == 1
+    assert recovered.llm_used is True
+    assert recovered.content == "ok"
+    assert factory.post_count == 2
 
 
 @pytest.mark.parametrize("status_code", [429, 500, 503])
-def test_ollama_transient_http_status_opens_circuit_after_one_call(
+def test_ollama_transient_http_status_is_retried(
     monkeypatch, status_code: int
 ) -> None:
     factory = _ClientFactory([_response(status_code), _response()])
     monkeypatch.setattr(client_module.httpx, "Client", factory)
     client = _client()
 
+    recovered = _complete(client)
+
+    assert recovered.llm_used is True
+    assert recovered.content == "ok"
+    assert factory.post_count == 2
+
+
+def test_ollama_opens_circuit_only_after_all_retries_fail(monkeypatch) -> None:
+    factory = _ClientFactory([_request_error("connect") for _ in range(4)])
+    monkeypatch.setattr(client_module.httpx, "Client", factory)
+    client = _client()
+
     failed = _complete(client)
     skipped = _complete(client)
 
     assert failed.llm_used is False
+    assert "ollama request failed" in (failed.fallback_reason or "")
     assert skipped.llm_used is False
     assert "circuit is open" in (skipped.fallback_reason or "")
-    assert factory.post_count == 1
+    assert factory.post_count == 4
 
 
 def test_non_retryable_4xx_does_not_retry_or_open_circuit(monkeypatch) -> None:
@@ -173,7 +184,7 @@ def test_only_one_half_open_probe_is_allowed(monkeypatch) -> None:
         return _response()
 
     factory = _ClientFactory(
-        [_request_error("connect"), blocking_probe, _response()]
+        [*[_request_error("connect") for _ in range(4)], blocking_probe, _response()]
     )
     monkeypatch.setattr(client_module, "monotonic", clock)
     monkeypatch.setattr(client_module.httpx, "Client", factory)
@@ -190,12 +201,12 @@ def test_only_one_half_open_probe_is_allowed(monkeypatch) -> None:
         concurrent = _complete(client)
         assert concurrent.llm_used is False
         assert "circuit is open" in (concurrent.fallback_reason or "")
-        assert factory.post_count == 2
+        assert factory.post_count == 5
         release_probe.set()
         assert probe.result(timeout=1).llm_used is True
 
     assert _complete(client).llm_used is True
-    assert factory.post_count == 3
+    assert factory.post_count == 6
 
 
 def test_http_client_uses_split_fail_fast_timeouts(monkeypatch) -> None:

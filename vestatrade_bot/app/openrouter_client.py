@@ -4,7 +4,7 @@ import json
 import logging
 from dataclasses import dataclass
 from threading import Lock, local
-from time import monotonic
+from time import monotonic, sleep
 from typing import Any
 
 import httpx
@@ -61,9 +61,19 @@ class OpenRouterClient:
     def last_json_output_accepted(self) -> bool | None:
         return getattr(self._telemetry, "json_output_accepted", None)
 
+    @property
+    def last_fallback_reason(self) -> str | None:
+        return getattr(self._telemetry, "fallback_reason", None)
+
     def _fallback(self, reason: str) -> LLMResult:
+        self._telemetry.fallback_reason = reason
         logger.info("LLM fallback: %s", reason)
         return LLMResult(content=None, llm_used=False, fallback_reason=reason)
+
+    def _wait_before_retry(self, attempt: int) -> None:
+        delay = max(0.0, float(self.settings.llm_retry_delay_seconds))
+        if delay:
+            sleep(delay * (attempt + 1))
 
     def _endpoint(self) -> str | None:
         if self.settings.llm_provider == "ollama":
@@ -159,6 +169,7 @@ class OpenRouterClient:
         max_tokens: int = 500,
         model: str | None = None,
     ) -> LLMResult:
+        self._telemetry.fallback_reason = None
         if not self.settings.llm_enabled:
             return self._fallback(f"LLM provider '{self.settings.llm_provider}' is not configured")
         if not self.budget.can_call():
@@ -221,10 +232,12 @@ class OpenRouterClient:
                 )
                 status_code = exc.response.status_code
                 if status_code == 429 or status_code >= 500:
+                    if attempt < self.settings.llm_max_retries:
+                        self._wait_before_retry(attempt)
+                        continue
                     if self.settings.llm_provider == "ollama":
                         self._open_circuit(endpoint, exc, circuit_permit)
-                        break
-                    continue
+                    break
                 self._close_half_open_circuit(endpoint, circuit_permit)
                 break
             except httpx.RequestError as exc:
@@ -236,9 +249,12 @@ class OpenRouterClient:
                     attempt + 1,
                     exc,
                 )
+                if attempt < self.settings.llm_max_retries:
+                    self._wait_before_retry(attempt)
+                    continue
                 if self.settings.llm_provider == "ollama":
                     self._open_circuit(endpoint, exc, circuit_permit)
-                    break
+                break
             except httpx.HTTPError as exc:
                 last_error = exc
                 logger.warning(
@@ -248,9 +264,12 @@ class OpenRouterClient:
                     attempt + 1,
                     exc,
                 )
+                if attempt < self.settings.llm_max_retries:
+                    self._wait_before_retry(attempt)
+                    continue
                 if self.settings.llm_provider == "ollama":
                     self._open_circuit(endpoint, exc, circuit_permit)
-                    break
+                break
             except (ValueError, KeyError) as exc:
                 last_error = exc
                 logger.warning(

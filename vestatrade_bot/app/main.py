@@ -68,6 +68,9 @@ def health() -> dict[str, Any]:
         "products_loaded": len(orchestrator.search_agent.products),
         "products_loaded_from": orchestrator.products_loaded_from,
         "product_docs_loaded": orchestrator.docs_attached,
+        "llm_provider": settings.llm_provider,
+        "llm_configured": settings.llm_enabled,
+        "llm_model": settings.llm_model if settings.llm_enabled else None,
     }
 
 

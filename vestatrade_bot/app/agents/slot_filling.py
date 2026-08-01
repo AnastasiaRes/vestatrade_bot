@@ -578,13 +578,53 @@ class SlotFillingAgent:
                         ),
                     )
                 if slots.get("water_source") == "колодец":
+                    known: list[str] = []
+                    if slots.get("well_ring_count") and slots.get("well_depth_m"):
+                        rings_text = f"{float(slots['well_ring_count']):g}".replace(".", ",")
+                        depth_text = f"{float(slots['well_depth_m']):g}".replace(".", ",")
+                        known.append(
+                            f"колодец {rings_text} кольца "
+                            f"(~{depth_text} м при высоте кольца 0,9 м)"
+                        )
+                    if slots.get("dynamic_water_level_m"):
+                        water_level_text = (
+                            f"{float(slots['dynamic_water_level_m']):g}".replace(".", ",")
+                        )
+                        known.append(
+                            f"глубина до воды ~{water_level_text} м"
+                        )
+                    if slots.get("required_flow_m3_h"):
+                        known.append(
+                            f"расход ~{float(slots['required_flow_m3_h']):g} м³/ч"
+                        )
+                    prefix = "Принял: " + "; ".join(known) + ". " if known else ""
+                    if slots.get("flow_unit_assumed"):
+                        return SlotFillingResult(
+                            slots=slots,
+                            needs_clarification=True,
+                            question=(
+                                prefix
+                                + "100 литров предварительно понял как 100 л/мин (6 м³/ч). "
+                                "Подтвердите: это литры в минуту или общий объём?"
+                            ),
+                        )
+                    if not (
+                        slots.get("dynamic_water_level_m")
+                        or slots.get("static_water_level_m")
+                    ):
+                        question = "Уточните глубину от верха колодца до поверхности воды."
+                    elif not slots.get("horizontal_run_m"):
+                        question = "Какое расстояние по горизонтали от колодца до дома или полива?"
+                    elif slots.get("lift_height_m") is None:
+                        question = "На какую высоту выше поверхности воды нужно поднять воду?"
+                    elif not slots.get("required_flow_m3_h"):
+                        question = "Какой нужен расход: сколько литров в минуту?"
+                    else:
+                        return SlotFillingResult(slots=slots)
                     return SlotFillingResult(
                         slots=slots,
                         needs_clarification=True,
-                        question=(
-                            "Понял, источник — колодец. Уточните глубину до воды, "
-                            "высоту подъёма и нужный расход."
-                        ),
+                        question=prefix + question,
                     )
                 return SlotFillingResult(
                     slots=slots,

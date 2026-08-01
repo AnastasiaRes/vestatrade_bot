@@ -53,6 +53,7 @@ class Settings(BaseModel):
     reload_feed_token: str | None
     llm_timeout_seconds: float
     llm_max_retries: int
+    llm_retry_delay_seconds: float
     input_price_per_1m_tokens_usd: float
     output_price_per_1m_tokens_usd: float
 
@@ -127,11 +128,12 @@ def get_settings() -> Settings:
         allowed_origins=_split_csv(os.getenv("ALLOWED_ORIGINS"), "*"),
         reload_feed_token=os.getenv("RELOAD_FEED_TOKEN"),
         llm_timeout_seconds=float(
-            os.getenv("LLM_TIMEOUT_SECONDS", os.getenv("OPENROUTER_TIMEOUT_SECONDS", "30"))
+            os.getenv("LLM_TIMEOUT_SECONDS", os.getenv("OPENROUTER_TIMEOUT_SECONDS", "60"))
         ),
         llm_max_retries=int(
             os.getenv("LLM_MAX_RETRIES", os.getenv("OPENROUTER_MAX_RETRIES", "2"))
         ),
+        llm_retry_delay_seconds=float(os.getenv("LLM_RETRY_DELAY_SECONDS", "1")),
         input_price_per_1m_tokens_usd=float(
             os.getenv(
                 "LLM_INPUT_PRICE_PER_1M_TOKENS_USD",
