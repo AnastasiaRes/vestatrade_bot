@@ -96,6 +96,7 @@ def _client() -> OpenRouterClient:
             "ollama_base_url": "http://ollama.test",
             "ollama_model": "unit-model",
             "llm_timeout_seconds": 30.0,
+            "llm_request_timeout_seconds": 180.0,
             "llm_max_retries": 3,
             "llm_retry_delay_seconds": 0.0,
         }
@@ -220,3 +221,86 @@ def test_http_client_uses_split_fail_fast_timeouts(monkeypatch) -> None:
     assert timeout.read == 30.0
     assert timeout.write == 5.0
     assert timeout.pool == 2.0
+
+
+def test_ollama_generation_receives_whole_turn_budget(monkeypatch) -> None:
+    clock = _Clock()
+    factory = _ClientFactory([_response()])
+    monkeypatch.setattr(client_module, "monotonic", clock)
+    monkeypatch.setattr(client_module.httpx, "Client", factory)
+    client = _client()
+
+    with client.request_budget():
+        result = _complete(client)
+
+    assert result.llm_used is True
+    assert factory.post_count == 1
+    assert factory.timeouts[0].read == pytest.approx(180.0)
+    assert factory.timeouts[0].connect == 3.0
+
+
+def test_multiple_llm_agents_share_one_turn_deadline(monkeypatch) -> None:
+    clock = _Clock()
+
+    def first_agent_response() -> httpx.Response:
+        clock.advance(120.0)
+        return _response()
+
+    factory = _ClientFactory([first_agent_response, _response()])
+    monkeypatch.setattr(client_module, "monotonic", clock)
+    monkeypatch.setattr(client_module.httpx, "Client", factory)
+    client = _client()
+
+    with client.request_budget():
+        first = _complete(client)
+        second = _complete(client)
+
+    assert first.llm_used is True
+    assert second.llm_used is True
+    assert [timeout.read for timeout in factory.timeouts] == pytest.approx(
+        [180.0, 60.0]
+    )
+
+
+def test_response_after_turn_deadline_falls_back_deterministically(monkeypatch) -> None:
+    clock = _Clock()
+
+    def late_response() -> httpx.Response:
+        clock.advance(181.0)
+        return _response()
+
+    factory = _ClientFactory([late_response])
+    monkeypatch.setattr(client_module, "monotonic", clock)
+    monkeypatch.setattr(client_module.httpx, "Client", factory)
+    client = _client()
+
+    with client.request_budget():
+        result = _complete(client)
+
+    assert result.llm_used is False
+    assert "180s" in (result.fallback_reason or "")
+    assert "budget" in (result.fallback_reason or "")
+    assert factory.post_count == 1
+
+
+def test_exhausted_turn_budget_skips_downstream_llm_agent(monkeypatch) -> None:
+    clock = _Clock()
+
+    def first_agent_response() -> httpx.Response:
+        clock.advance(179.0)
+        return _response()
+
+    factory = _ClientFactory([first_agent_response])
+    monkeypatch.setattr(client_module, "monotonic", clock)
+    monkeypatch.setattr(client_module.httpx, "Client", factory)
+    client = _client()
+
+    with client.request_budget():
+        first = _complete(client)
+        clock.advance(1.1)
+        downstream = _complete(client)
+
+    assert first.llm_used is True
+    assert downstream.llm_used is False
+    assert "budget" in (downstream.fallback_reason or "")
+    assert factory.post_count == 1

@@ -22,24 +22,26 @@ def main() -> int:
     print(f"Endpoint: {endpoint or '-'}")
     print(f"Model: {settings.llm_model}")
     print(f"Timeout: {settings.llm_timeout_seconds:g}s")
+    print(f"Turn budget: {settings.llm_request_timeout_seconds:g}s")
     print(f"Retries: {settings.llm_max_retries}")
 
     if not settings.llm_enabled:
         print("Result: LLM is not configured, bot will use fallback logic.")
         return 1
 
-    result = client.complete(
-        agent="LLMHealthcheck",
-        messages=[
-            {
-                "role": "system",
-                "content": "Ответь одним коротким русским предложением: LLM работает.",
-            },
-            {"role": "user", "content": "Проверка связи"},
-        ],
-        temperature=0.0,
-        max_tokens=40,
-    )
+    with client.request_budget():
+        result = client.complete(
+            agent="LLMHealthcheck",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Ответь одним коротким русским предложением: LLM работает.",
+                },
+                {"role": "user", "content": "Проверка связи"},
+            ],
+            temperature=0.0,
+            max_tokens=40,
+        )
     if result.llm_used and result.content:
         print("Result: OK")
         print(f"Reply: {result.content.strip()}")

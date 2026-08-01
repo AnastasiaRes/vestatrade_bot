@@ -10,6 +10,7 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 
 from app.agents.orchestrator import ChatOrchestrator
 from app.chat_logger import ChatLogger
@@ -62,7 +63,7 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 @app.get("/health")
-def health() -> dict[str, Any]:
+async def health() -> dict[str, Any]:
     return {
         "status": "ok",
         "products_loaded": len(orchestrator.search_agent.products),
@@ -71,26 +72,36 @@ def health() -> dict[str, Any]:
         "llm_provider": settings.llm_provider,
         "llm_configured": settings.llm_enabled,
         "llm_model": settings.llm_model if settings.llm_enabled else None,
+        "llm_request_timeout_seconds": settings.llm_request_timeout_seconds,
+        "llm_attempt_timeout_seconds": (
+            settings.llm_request_timeout_seconds
+            if settings.llm_provider == "ollama"
+            else min(
+                settings.llm_timeout_seconds,
+                settings.llm_request_timeout_seconds,
+            )
+        ),
+        "llm_max_retries": settings.llm_max_retries,
     }
 
 
 @app.get("/")
-def index() -> FileResponse:
+async def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
 
 
 @app.get("/styles.css")
-def root_styles() -> FileResponse:
+async def root_styles() -> FileResponse:
     return FileResponse(STATIC_DIR / "styles.css")
 
 
 @app.get("/app.js")
-def root_script() -> FileResponse:
+async def root_script() -> FileResponse:
     return FileResponse(STATIC_DIR / "app.js")
 
 
 @app.get("/widget-loader.js")
-def widget_loader() -> FileResponse:
+async def widget_loader() -> FileResponse:
     return FileResponse(
         STATIC_DIR / "widget-loader.js",
         media_type="application/javascript",
@@ -98,16 +109,28 @@ def widget_loader() -> FileResponse:
 
 
 @app.get("/widget-demo")
-def widget_demo() -> FileResponse:
+async def widget_demo() -> FileResponse:
     return FileResponse(STATIC_DIR / "widget-demo.html")
 
 
 @app.post("/chat", response_model=ChatResponse)
-def chat(request: ChatRequest) -> ChatResponse:
+async def chat(request: ChatRequest) -> ChatResponse:
     if not request.message.strip():
         raise HTTPException(status_code=400, detail="message must not be empty")
-    response = orchestrator.handle_chat(request.session_id, request.message)
-    chat_logger.log_turn(request.session_id, request.message, response)
+    # The orchestration path intentionally waits for a local LLM for up to the
+    # shared request budget.  Keep that blocking work outside the ASGI event
+    # loop so /health and static pages stay responsive meanwhile.
+    response = await run_in_threadpool(
+        orchestrator.handle_chat,
+        request.session_id,
+        request.message,
+    )
+    await run_in_threadpool(
+        chat_logger.log_turn,
+        request.session_id,
+        request.message,
+        response,
+    )
     return response
 
 

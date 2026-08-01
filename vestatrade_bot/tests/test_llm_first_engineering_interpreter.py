@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import Any
 
 from app.agents.orchestrator import ChatOrchestrator, WARM_FLOOR_FUNNEL
@@ -39,6 +40,26 @@ class _MalformedThenValidLLM(_EngineeringJSONLLM):
             return fallback, True
         self.last_json_output_accepted = True
         return self.payload, True
+
+
+class _BudgetTrackingLLM(_EngineeringJSONLLM):
+    def __init__(self, payload: dict[str, Any]) -> None:
+        super().__init__(payload)
+        self.budget_active = False
+        self.budget_entries = 0
+
+    @contextmanager
+    def request_budget(self):
+        self.budget_entries += 1
+        self.budget_active = True
+        try:
+            yield
+        finally:
+            self.budget_active = False
+
+    def complete_json(self, agent, messages, fallback):
+        assert self.budget_active is True
+        return super().complete_json(agent, messages, fallback)
 
 
 def _live_settings():
@@ -207,3 +228,30 @@ def test_deterministic_safety_net_understands_ring_phrasing_without_llm() -> Non
     assert "100 л/мин" in response.answer
     assert response.debug["slots"]["required_flow_m3_h"] == 6
     assert "water_quality" not in response.debug["slots"]
+
+
+def test_orchestrator_opens_one_shared_llm_budget_per_turn() -> None:
+    llm = _BudgetTrackingLLM(
+        {
+            "handled": True,
+            "continuation": True,
+            "intent_type": "attribute_request",
+            "category": "pumps",
+            "project_scope": "water",
+            "slots": {"water_source": "колодец", "well_depth_m": 2.7},
+            "assumptions": ["кольцо 0,9 м"],
+            "missing_slot_keys": ["horizontal_run_m"],
+            "needs_clarification": True,
+            "clarifying_question": "Какое расстояние от колодца до дома?",
+            "ready_for_catalog_selection": False,
+            "response_mode": "clarify",
+            "reply": "Принял глубину 2,7 м. Какое расстояние до дома?",
+        }
+    )
+    bot = ChatOrchestrator(settings=_live_settings(), products=[], llm_client=llm)
+
+    response = bot.handle_chat("shared-budget", "Колодец три кольца")
+
+    assert response.debug["final_answer_source"] == "engineering_interpreter_llm"
+    assert llm.budget_entries == 1
+    assert llm.budget_active is False

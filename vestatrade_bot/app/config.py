@@ -52,6 +52,7 @@ class Settings(BaseModel):
     allowed_origins: list[str]
     reload_feed_token: str | None
     llm_timeout_seconds: float
+    llm_request_timeout_seconds: float
     llm_max_retries: int
     llm_retry_delay_seconds: float
     input_price_per_1m_tokens_usd: float
@@ -129,6 +130,14 @@ def get_settings() -> Settings:
         reload_feed_token=os.getenv("RELOAD_FEED_TOKEN"),
         llm_timeout_seconds=float(
             os.getenv("LLM_TIMEOUT_SECONDS", os.getenv("OPENROUTER_TIMEOUT_SECONDS", "60"))
+        ),
+        # One user turn may invoke several LLM agents.  They must share one
+        # deadline so retries or downstream agents cannot make the browser wait
+        # indefinitely.  Ollama receives the whole remaining budget for its
+        # current generation; after the deadline the deterministic pipeline
+        # continues.
+        llm_request_timeout_seconds=float(
+            os.getenv("LLM_REQUEST_TIMEOUT_SECONDS", "180")
         ),
         llm_max_retries=int(
             os.getenv("LLM_MAX_RETRIES", os.getenv("OPENROUTER_MAX_RETRIES", "2"))

@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 import logging
+from contextlib import nullcontext
 from math import ceil
 import re
 from threading import RLock, local
@@ -518,12 +519,15 @@ class ChatOrchestrator:
         # may proceed in parallel.  This preserves session history without the
         # latency penalty of a process-wide chat lock.
         with self._session_lock(session_id):
-            self._request_agents.composer = ResponseComposerAgent(self.llm_client)
-            self._request_agents.consultant = ConsultantAgent(
-                self.llm_client,
-                model=self.settings.llm_model_strong,
-            )
-            return self._handle_chat(session_id, message)
+            request_budget = getattr(self.llm_client, "request_budget", None)
+            budget_scope = request_budget() if callable(request_budget) else nullcontext()
+            with budget_scope:
+                self._request_agents.composer = ResponseComposerAgent(self.llm_client)
+                self._request_agents.consultant = ConsultantAgent(
+                    self.llm_client,
+                    model=self.settings.llm_model_strong,
+                )
+                return self._handle_chat(session_id, message)
 
     def _session_lock(self, session_id: str) -> RLock:
         with self._session_locks_guard:

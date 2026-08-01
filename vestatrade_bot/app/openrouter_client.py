@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import contextmanager
 from dataclasses import dataclass
 from threading import Lock, local
 from time import monotonic, sleep
-from typing import Any
+from typing import Any, Iterator
 
 import httpx
 
@@ -70,10 +71,57 @@ class OpenRouterClient:
         logger.info("LLM fallback: %s", reason)
         return LLMResult(content=None, llm_used=False, fallback_reason=reason)
 
+    def _request_budget_fallback(self) -> LLMResult:
+        seconds = float(self.settings.llm_request_timeout_seconds)
+        return self._fallback(
+            f"LLM request budget of {seconds:g}s is exhausted"
+        )
+
+    def _remaining_request_seconds(self) -> float | None:
+        deadline = getattr(self._telemetry, "request_deadline", None)
+        if deadline is None:
+            return None
+        return deadline - monotonic()
+
+    def _request_budget_exhausted(self) -> bool:
+        remaining = self._remaining_request_seconds()
+        return remaining is not None and remaining <= 0
+
+    @contextmanager
+    def request_budget(self, seconds: float | None = None) -> Iterator[None]:
+        """Share one wall-clock deadline across every LLM agent in a chat turn."""
+        previous_deadline = getattr(self._telemetry, "request_deadline", None)
+        timeout = max(
+            0.0,
+            float(
+                self.settings.llm_request_timeout_seconds
+                if seconds is None
+                else seconds
+            ),
+        )
+        deadline = monotonic() + timeout
+        if previous_deadline is not None:
+            deadline = min(deadline, previous_deadline)
+        self._telemetry.request_deadline = deadline
+        try:
+            yield
+        finally:
+            if previous_deadline is None:
+                try:
+                    del self._telemetry.request_deadline
+                except AttributeError:
+                    pass
+            else:
+                self._telemetry.request_deadline = previous_deadline
+
     def _wait_before_retry(self, attempt: int) -> None:
         delay = max(0.0, float(self.settings.llm_retry_delay_seconds))
+        delay *= attempt + 1
+        remaining = self._remaining_request_seconds()
+        if remaining is not None:
+            delay = min(delay, max(0.0, remaining))
         if delay:
-            sleep(delay * (attempt + 1))
+            sleep(delay)
 
     def _endpoint(self) -> str | None:
         if self.settings.llm_provider == "ollama":
@@ -101,8 +149,10 @@ class OpenRouterClient:
             )
         return headers
 
-    def _timeout(self) -> httpx.Timeout:
-        read_timeout = self.settings.llm_timeout_seconds
+    def _timeout(self, read_timeout: float | None = None) -> httpx.Timeout:
+        if read_timeout is None:
+            read_timeout = self.settings.llm_timeout_seconds
+        read_timeout = max(0.001, float(read_timeout))
         return httpx.Timeout(
             connect=min(read_timeout, self._connect_timeout_seconds),
             read=read_timeout,
@@ -170,6 +220,8 @@ class OpenRouterClient:
         model: str | None = None,
     ) -> LLMResult:
         self._telemetry.fallback_reason = None
+        if self._request_budget_exhausted():
+            return self._request_budget_fallback()
         if not self.settings.llm_enabled:
             return self._fallback(f"LLM provider '{self.settings.llm_provider}' is not configured")
         if not self.budget.can_call():
@@ -196,12 +248,34 @@ class OpenRouterClient:
 
         last_error: Exception | None = None
         for attempt in range(self.settings.llm_max_retries + 1):
+            remaining = self._remaining_request_seconds()
+            if remaining is not None and remaining <= 0:
+                if self.settings.llm_provider == "ollama":
+                    self._open_circuit(
+                        endpoint,
+                        TimeoutError("LLM request budget exhausted"),
+                        circuit_permit,
+                    )
+                return self._request_budget_fallback()
+            # A local model should be allowed to use the entire remaining
+            # turn budget.  Fast connection/write/pool limits still detect an
+            # unreachable Ollama quickly.  Hosted providers retain their
+            # configured per-attempt read timeout while respecting the shared
+            # turn deadline.
+            if remaining is not None and self.settings.llm_provider == "ollama":
+                read_timeout = remaining
+            elif remaining is not None:
+                read_timeout = min(self.settings.llm_timeout_seconds, remaining)
+            else:
+                read_timeout = self.settings.llm_timeout_seconds
             try:
-                with httpx.Client(timeout=self._timeout()) as client:
+                with httpx.Client(timeout=self._timeout(read_timeout)) as client:
                     response = client.post(endpoint, headers=headers, json=payload)
                     response.raise_for_status()
                     data = response.json()
                     self._close_half_open_circuit(endpoint, circuit_permit)
+                if self._request_budget_exhausted():
+                    return self._request_budget_fallback()
                 content = (
                     data.get("choices", [{}])[0]
                     .get("message", {})
@@ -249,6 +323,10 @@ class OpenRouterClient:
                     attempt + 1,
                     exc,
                 )
+                if self._request_budget_exhausted():
+                    if self.settings.llm_provider == "ollama":
+                        self._open_circuit(endpoint, exc, circuit_permit)
+                    return self._request_budget_fallback()
                 if attempt < self.settings.llm_max_retries:
                     self._wait_before_retry(attempt)
                     continue
