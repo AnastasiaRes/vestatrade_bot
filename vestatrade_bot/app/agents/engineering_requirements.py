@@ -160,6 +160,8 @@ class EngineeringRequirementsAgent:
         },
         "boilers": {
             "boiler_type",
+            "boiler_water_heater_pair",
+            "boiler_water_heater_relation",
             "contours",
             "combustion_chamber",
             "needs_chimney",
@@ -617,6 +619,16 @@ class EngineeringRequirementsAgent:
                 elif any(marker in text for marker in ["емкост", "боч", "бак"]):
                     selector.setdefault("water_source", "ёмкость")
                     explicit.setdefault("water_source", "ёмкость")
+                elif "водопровод" in text or (
+                    "центральн" in text and "вод" in text
+                ):
+                    selector.setdefault("water_source", "центральный водопровод")
+                    selector.setdefault("pump_use", "повышение давления")
+                    explicit.setdefault("water_source", "центральный водопровод")
+                    explicit.setdefault("pump_use", "повышение давления")
+                elif "повысит" in text or "давлен" in text:
+                    selector.setdefault("pump_use", "повышение давления")
+                    explicit.setdefault("pump_use", "повышение давления")
             elif category == "boilers":
                 if "электр" in text:
                     selector.setdefault("boiler_type", "электрический")
@@ -624,16 +636,22 @@ class EngineeringRequirementsAgent:
                 elif "газ" in text:
                     selector.setdefault("boiler_type", "газовый")
                     explicit.setdefault("boiler_type", "газовый")
+            elif category == "pipes" and "тепл" in text and "пол" in text:
+                selector.setdefault("project_scope", "warm_floor")
+                selector.setdefault("has_warm_floor", True)
+                explicit.setdefault("project_scope", "warm_floor")
+                explicit.setdefault("has_warm_floor", True)
             referenced_goal_id = self.goal_id_for(category, selector)
+            explicit_variant = ":" in referenced_goal_id
             goal_id = str(
                 referenced_goal_id
-                if ":" in referenced_goal_id and referenced_goal_id in goals
+                if explicit_variant
                 else category_last_goal.get(category)
                 or referenced_goal_id
             )
             goal = dict(goals.get(goal_id) or {})
             restored = dict(goal.get("slots") or {})
-            scope = goal.get("scope") or self._scope_from_slots(explicit, context)
+            scope = goal.get("scope") or self._scope_from_slots(explicit)
             if scope:
                 restored = merge_slots(
                     dict((context.get("shared_by_scope") or {}).get(scope) or {}),
@@ -653,12 +671,40 @@ class EngineeringRequirementsAgent:
                     intent_type=pending.intent_type,
                     attempts=pending.attempts,
                 )
-                session.slots["_pending_just_restored"] = True
+                reconciled_pending = session.sync_pending_question_state()
+                goal["pending"] = (
+                    model_to_dict(reconciled_pending)
+                    if reconciled_pending
+                    else None
+                )
+                goals[goal_id] = goal
+                if reconciled_pending:
+                    session.slots["_pending_just_restored"] = True
             else:
                 session.clear_pending_question_state()
+            if goal_id not in goals:
+                allowed = (
+                    self.SHARED_KEYS
+                    | self.COMMERCIAL_KEYS
+                    | self.CATEGORY_KEYS.get(category, set())
+                )
+                goals[goal_id] = {
+                    "category": category,
+                    "scope": scope,
+                    "slots": {
+                        key: value
+                        for key, value in explicit.items()
+                        if key in allowed and self._present(value)
+                    },
+                    "pending": None,
+                }
         else:
             goal_id = self.goal_id_for(category, explicit)
-            scope = self._scope_from_slots(explicit, context)
+            # A newly selected category starts outside the previous branch's
+            # scope unless the current turn names its own scope explicitly.
+            # Otherwise a well-pump goal can inherit ``warm_floor`` merely
+            # because the user switched tasks from a floor calculation.
+            scope = self._scope_from_slots(explicit)
             session.slots = explicit
             session.clear_pending_question_state()
             goals[goal_id] = {

@@ -622,6 +622,10 @@ class IntentRouterAgent:
             return "pumps", 0.9
         if "колод" in text or (
             "столб" in text and "вод" in text
+        ) or (
+            re.search(r"\bкол(?:ьц|ец)\w*", text)
+            and "вод" in text
+            and "от дна" in text
         ):
             return "pumps", 0.88
         notation_category, notation_score = engineering_category_hint(text)
@@ -1383,8 +1387,14 @@ class IntentRouterAgent:
         ):
             slots["pump_use"] = "водоснабжение"
             slots["symptom"] = "проблема с подачей воды"
-        elif category == "pumps" and "водоснаб" in text:
+        elif category == "pumps" and (
+            "водоснаб" in text
+            or "для воды" in text
+            or ("вод" in text and "дом" in text)
+        ):
             slots["pump_use"] = "водоснабжение"
+            if "дом" in text:
+                slots["application"] = "дом"
         elif category == "pumps" and "полив" in text:
             slots["pump_use"] = "полив"
         elif category == "pumps" and ("откач" in text or "дренаж" in text):
@@ -1556,35 +1566,53 @@ class IntentRouterAgent:
 
         pressure_match = re.search(
             r"(?:рабоч\w*\s+)?давлен\w*[^\d]{0,18}"
-            r"(\d+(?:[,.]\d+)?)\s*(?:бар|bar)\b",
+            r"(\d+(?:[,.]\d+)?)\s*(?:бар(?:а|ов)?|bar)\b",
             text,
         )
         if not pressure_match:
             pressure_match = re.search(
-                r"(?<!\d)(\d+(?:[,.]\d+)?)\s*(?:бар|bar)\b",
+                r"(?<!\d)(\d+(?:[,.]\d+)?)\s*(?:бар(?:а|ов)?|bar)\b",
                 text,
             )
         if category == "pumps":
+            pressure_transition_match = re.search(
+                r"давлен\w*[^\d]{0,18}(\d+(?:[,.]\d+)?)\s*"
+                r"(?:бар(?:а|ов)?\s*)?(?:до|[-=]>|→|—|–)\s*"
+                r"(\d+(?:[,.]\d+)?)\s*(?:бар(?:а|ов)?|bar)\b",
+                text,
+            )
             inlet_pressure_match = re.search(
                 r"(?:давлен\w*[^\d]{0,15})?"
-                r"(?:на вход\w*|входн\w*\s+давлен\w*|исходн\w*\s+давлен\w*)"
-                r"[^\d]{0,12}(\d+(?:[,.]\d+)?)\s*(?:бар|bar)\b",
+                r"(?:на вход\w*|входн\w*\s+давлен\w*|исходн\w*\s+давлен\w*|"
+                r"сейчас|теперь|имеетс\w*|есть)"
+                r"[^\d]{0,12}(\d+(?:[,.]\d+)?)\s*(?:бар(?:а|ов)?|bar)\b",
                 text,
             )
             required_pressure_match = re.search(
                 r"(?:нужн\w*|требуем\w*|целев\w*|после насос\w*|на выход\w*)"
-                r"[^\d]{0,18}(\d+(?:[,.]\d+)?)\s*(?:бар|bar)\b",
+                r"[^\d]{0,18}(\d+(?:[,.]\d+)?)\s*(?:бар(?:а|ов)?|bar)\b",
                 text,
             )
-            if inlet_pressure_match:
+            if pressure_transition_match:
+                slots["inlet_pressure_bar"] = float(
+                    pressure_transition_match.group(1).replace(",", ".")
+                )
+                slots["required_pressure_bar"] = float(
+                    pressure_transition_match.group(2).replace(",", ".")
+                )
+            elif inlet_pressure_match:
                 slots["inlet_pressure_bar"] = float(
                     inlet_pressure_match.group(1).replace(",", ".")
                 )
-            if required_pressure_match:
+            if required_pressure_match and not pressure_transition_match:
                 slots["required_pressure_bar"] = float(
                     required_pressure_match.group(1).replace(",", ".")
                 )
-            elif pressure_match and not inlet_pressure_match:
+            elif (
+                pressure_match
+                and not inlet_pressure_match
+                and not pressure_transition_match
+            ):
                 slots["required_pressure_bar"] = float(
                     pressure_match.group(1).replace(",", ".")
                 )
@@ -1627,7 +1655,21 @@ class IntentRouterAgent:
                 rf"(?<!\w)({count_token})\s+(?:ж/?б\s+)?кол(?:ьц|ец)\w*",
                 before_water_level,
             )
-            if ring_match:
+            ring_prefix = (
+                before_water_level[max(0, ring_match.start() - 24) : ring_match.start()]
+                if ring_match
+                else ""
+            )
+            ring_suffix = (
+                before_water_level[ring_match.end() : ring_match.end() + 24]
+                if ring_match
+                else ""
+            )
+            ring_belongs_to_water = bool(
+                re.search(r"(?:вод\w*|столб\w*\s+вод\w*)(?:\s+на)?\s*$", ring_prefix)
+                or re.match(r"\s+(?:вод\w*\s+)?(?:от|со)\s+дна", ring_suffix)
+            )
+            if ring_match and not ring_belongs_to_water:
                 rings = self._household_count(ring_match.group(1))
                 if rings:
                     slots["water_source"] = "колодец"
@@ -1663,15 +1705,38 @@ class IntentRouterAgent:
                         slots["water_level_reference"] = "ambiguous"
                     slots["ring_height_assumed"] = True
             water_column_match = re.search(
-                rf"столб\w*\s+вод\w*[^\dа-я]{{0,12}}"
-                rf"({count_token})\s+кол(?:ьц|ец)\w*",
+                rf"(?:столб\w*\s+вод\w*[^\dа-я]{{0,12}}"
+                rf"({count_token})\s+кол(?:ьц|ец)\w*|"
+                rf"вод\w*\s+({count_token})\s+кол(?:ьц|ец)\w*\s+от\s+дна|"
+                rf"({count_token})\s+кол(?:ьц|ец)\w*\s+"
+                rf"(?:вод\w*\s+)?от\s+дна)",
                 text,
             )
             if water_column_match:
-                rings = self._household_count(water_column_match.group(1))
+                raw_rings = next(
+                    group for group in water_column_match.groups() if group is not None
+                )
+                rings = self._household_count(raw_rings)
                 if rings:
                     slots["water_column_ring_count"] = rings
                     slots["water_level_reference"] = "from_bottom"
+                    slots["ring_height_assumed"] = True
+            ambiguous_water_rings = re.search(
+                rf"\bвод\w*(?:\s+на)?\s+({count_token})\s+"
+                rf"кол(?:ьц|ец)\w*",
+                text,
+            )
+            if (
+                ambiguous_water_rings
+                and not water_level_match
+                and not water_column_match
+            ):
+                rings = self._household_count(ambiguous_water_rings.group(1))
+                if rings:
+                    slots["water_source"] = "колодец"
+                    slots["pump_use"] = "водоснабжение"
+                    slots["water_level_ring_count"] = rings
+                    slots["water_level_reference"] = "ambiguous"
                     slots["ring_height_assumed"] = True
             ring_height_match = re.search(
                 r"кол(?:ьц|ец)\w*[^.!?\d]{0,16}(\d+(?:[,.]\d+)?)\s*"
@@ -1714,6 +1779,13 @@ class IntentRouterAgent:
                 r"[^\d]{0,24}(\d+(?:[,.]\d+)?)\s*(?:м\b|метр\w*)",
                 text,
             )
+            if not explicit_water_level:
+                explicit_water_level = re.search(
+                    r"(\d+(?:[,.]\d+)?)\s*(?:м\b|метр\w*)\s+"
+                    r"от\s+(?:верха|края)(?:\s+колодц\w*)?"
+                    r"\s+до\s+(?:поверхност\w*\s+вод\w*|вод\w*|зеркал\w*)",
+                    text,
+                )
             if explicit_water_level:
                 slots["explicit_water_level_depth_m"] = float(
                     explicit_water_level.group(1).replace(",", ".")

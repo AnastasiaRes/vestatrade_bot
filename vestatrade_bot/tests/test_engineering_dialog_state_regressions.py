@@ -6,7 +6,9 @@ from typing import Any
 import pytest
 
 from app.agents.orchestrator import ChatOrchestrator
+from app.agents.intent_router import IntentRouterAgent
 from app.config import get_settings
+from app.models import SessionState
 from app.openrouter_client import LLMResult
 
 
@@ -526,3 +528,73 @@ def test_warm_floor_context_treats_gas_boiler_as_heat_source() -> None:
     assert slots["project_scope"] == "warm_floor"
     assert slots["warm_floor_area_m2"] == 80
     assert slots["warm_floor_heat_source"] == "газовый котёл"
+
+
+def test_household_pump_for_home_water_sets_water_supply_use() -> None:
+    bot = _bot(
+        _interpretation(category="pumps", project_scope="water", slots={})
+    )
+
+    response = bot.handle_chat("pump-for-home-water", "Насос для воды дома")
+    slots = response.debug["slots"]
+
+    assert response.debug["category"] == "pumps"
+    assert slots["pump_use"] == "водоснабжение"
+
+
+def test_household_ring_answer_separates_well_depth_and_water_column() -> None:
+    # The deterministic router must understand this household wording even
+    # when the semantic model contributes no pump category or slots.
+    bot = _bot(
+        _interpretation(category="other", project_scope="water", slots={})
+    )
+    session_id = "well-rings-from-bottom"
+
+    response = bot.handle_chat(
+        session_id,
+        "Всего 3 кольца, воды 2 кольца от дна",
+    )
+    slots = response.debug["slots"]
+
+    assert response.debug["category"] == "pumps"
+    assert slots["water_source"] == "колодец"
+    assert slots["well_ring_count"] == 3
+    assert slots["water_column_ring_count"] == 2
+    assert slots["water_level_reference"] == "from_bottom"
+    assert slots["well_depth_m"] == pytest.approx(2.7)
+    assert slots["water_column_depth_m"] == pytest.approx(1.8)
+    assert slots["water_level_depth_m"] == pytest.approx(0.9)
+
+
+def test_metric_first_answer_sets_water_level_from_top() -> None:
+    pump_turn = _interpretation(category="pumps", project_scope="water", slots={})
+    bot = _bot(pump_turn, pump_turn)
+    session_id = "well-level-metric-first"
+
+    bot.handle_chat(session_id, "Насос для колодца, всего 3 кольца")
+    response = bot.handle_chat(
+        session_id,
+        "1 метр от верха колодца до воды",
+    )
+    slots = response.debug["slots"]
+
+    assert response.debug["category"] == "pumps"
+    assert slots["water_level_reference"] == "from_top"
+    assert slots["explicit_water_level_depth_m"] == pytest.approx(1)
+    assert slots["water_level_depth_m"] == pytest.approx(1)
+    assert slots["water_column_depth_m"] == pytest.approx(1.7)
+
+
+def test_distance_from_well_edge_without_water_is_not_a_water_level() -> None:
+    router = IntentRouterAgent()
+    session = SessionState(
+        session_id="well-edge-distance",
+        category="pumps",
+        slots={"water_source": "колодец", "pump_use": "водоснабжение"},
+    )
+
+    intent = router.route("Дом в 1 метре от края колодца", session)
+
+    assert "explicit_water_level_depth_m" not in intent.slots
+    assert "water_level_depth_m" not in intent.slots
+    assert "water_level_reference" not in intent.slots

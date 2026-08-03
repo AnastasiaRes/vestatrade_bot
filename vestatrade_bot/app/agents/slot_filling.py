@@ -522,8 +522,19 @@ class SlotFillingAgent:
         # Keep this defensive conversion here as well as in IntentRouter: it
         # also protects sessions restored from an older version of the app.
         pump_use = normalize_text(str(slots.get("pump_use") or ""))
+        water_source = normalize_text(str(slots.get("water_source") or ""))
         if not slots.get("pump_type") and ("откач" in pump_use or "дренаж" in pump_use):
             slots["pump_type"] = "дренажный"
+        if (
+            not slots.get("pump_type")
+            and pump_use in {"водоснабжение", "подача воды", "повышение давления"}
+            and ("центральн" in water_source or "водопровод" in water_source)
+        ):
+            # With a central main the source is already known.  The remaining
+            # engineering task is pressure boosting; asking for the source
+            # again traps short natural answers in the previous funnel step.
+            slots["pump_type"] = "повысительный"
+            slots["pump_use"] = "повышение давления"
         if (
             not slots.get("pump_type")
             and slots.get("water_source") == "скважина"
@@ -835,21 +846,29 @@ class SlotFillingAgent:
             return SlotFillingResult(slots=slots)
 
         if slots.get("pump_type") == "повысительный":
-            missing = []
             if not slots.get("inlet_pressure_bar"):
-                missing.append("давление на входе")
-            if not slots.get("required_pressure_bar"):
-                missing.append("нужное давление после насоса")
-            if not slots.get("required_flow_m3_h"):
-                missing.append("расход при одновременном водоразборе")
-            if missing:
                 return SlotFillingResult(
                     slots=slots,
                     needs_clarification=True,
                     question=(
-                        "Для повышения давления уточните: "
-                        + "; ".join(missing)
-                        + ". Также укажите источник воды и размер подключения."
+                        "Какое давление сейчас на входе из центрального водопровода, в барах?"
+                    ),
+                )
+            if not slots.get("required_pressure_bar"):
+                return SlotFillingResult(
+                    slots=slots,
+                    needs_clarification=True,
+                    question=(
+                        "Какое давление нужно получить после насоса, в барах?"
+                    ),
+                )
+            if not slots.get("required_flow_m3_h"):
+                return SlotFillingResult(
+                    slots=slots,
+                    needs_clarification=True,
+                    question=(
+                        "Какой нужен расход при одновременном водоразборе, "
+                        "например в литрах в минуту?"
                     ),
                 )
         return SlotFillingResult(slots=slots)

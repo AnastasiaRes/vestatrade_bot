@@ -639,11 +639,30 @@ class ChatOrchestrator:
         self.composer.set_state(session.category, session.slots, last_summary, docs_excerpt)
         agents_used: list[str] = []
 
+        recall_category = self._engineering_recall_category(message)
+        recall_text = normalize_text(message)
+        if (
+            recall_category in self.engineering_requirements.CATEGORIES
+            and "напомни" in recall_text
+            and any(
+                marker in recall_text
+                for marker in self.engineering_requirements.RETURN_MARKERS
+            )
+        ):
+            # A command such as ``вернёмся к тёплому полу, напомни...`` is a
+            # read-only branch switch.  Restore the named goal before routing
+            # can reinterpret the words ``котёл``/``пол`` as a new pump task.
+            self.engineering_requirements.activate_goal(
+                message,
+                recall_category,
+                session,
+                returning=True,
+            )
         recall_answer = self._engineering_recall_answer(message, session)
         if recall_answer:
             recall_intent = IntentResult(
                 intent_type="attribute_request",
-                category=session.category or "other",
+                category=recall_category or session.category or "other",
                 confidence=1.0,
             )
             agents_used.append("EngineeringRequirementsAgent")
@@ -5280,7 +5299,11 @@ class ChatOrchestrator:
                 self._append_history(session, message, answer)
                 return self._response(session_id, answer, focus_cards, False, intent, session, agents_used)
 
-        scope = explicit_scope or self._project_scope_from_message(text, session)
+        scope = explicit_scope or self._project_scope_from_message(
+            text,
+            session,
+            intent,
+        )
         if not scope:
             return None
         if session.slots.get("project_cart") and self._wants_more_project_components(text):
@@ -5329,15 +5352,25 @@ class ChatOrchestrator:
                 session.slots["project_scope"] = scope
                 if scope == "warm_floor":
                     session.slots["has_warm_floor"] = True
-                    session.pending_category = "pipes"
-                    session.pending_slot_keys = ["warm_floor_area_m2"]
                     self.engineering_requirements.remember(
                         "pipes",
                         session.slots,
                         session,
                     )
-                session.pending_question = intro
-                session.pending_intent_type = "broad_category"
+                    intro = self._set_structured_pending_question(
+                        session,
+                        question=intro,
+                        category="pipes",
+                        intent_type="broad_category",
+                        # The next required turn is the area.  The same visible
+                        # prompt also offers the type, but treating both as
+                        # alternatives would close pending as soon as the
+                        # opening request already said ``водяной``.
+                        expected_slots=["warm_floor_area_m2"],
+                    )
+                else:
+                    session.pending_question = intro
+                    session.pending_intent_type = "broad_category"
                 agents_used.append("ResponseComposerAgent")
                 self._append_history(session, message, intro)
                 return self._response(session_id, intro, [], False, intent, session, agents_used)
@@ -5357,11 +5390,21 @@ class ChatOrchestrator:
         if clarification:
             agents_used.append("ResponseComposerAgent")
             pending_category = "pipes" if scope == "warm_floor" else session.category
+            expected_slots: list[str] | None = None
+            if scope == "warm_floor":
+                if not (
+                    session.slots.get("warm_floor_area_m2")
+                    or session.slots.get("area_m2")
+                ):
+                    expected_slots = ["warm_floor_area_m2"]
+                elif not session.slots.get("warm_floor_type"):
+                    expected_slots = ["warm_floor_type"]
             clarification = self._set_structured_pending_question(
                 session,
                 question=clarification,
                 category=pending_category,
                 intent_type="broad_category",
+                expected_slots=expected_slots,
             )
             session.last_intent = "project_cart"
             self._append_history(session, message, clarification)
@@ -5445,6 +5488,18 @@ class ChatOrchestrator:
         )
 
     def _project_area_from_text(self, text: str) -> float | None:
+        correction = re.search(
+            r"\bне\s+\d{1,4}(?:[,.]\d+)?\s*"
+            r"(?:м2|м²|кв(?:\.?\s*м)?|квадрат\w*|метр\w*)?\s*"
+            r",?\s*(?:а|но)\s+(\d{1,4}(?:[,.]\d+)?)\s*"
+            r"(?:м2|м²|кв(?:\.?\s*м)?|квадрат\w*|метр\w*)?\b",
+            text,
+        )
+        if correction:
+            try:
+                return float(correction.group(1).replace(",", "."))
+            except ValueError:
+                return None
         match = re.search(r"(\d{2,4})\s*(?:м2|м²|квадрат|кв\.?\s*м|кв\b)", text)
         if not match:
             return None
@@ -5510,13 +5565,32 @@ class ChatOrchestrator:
         session.pending_question = None
         session.pending_intent_type = None
 
-    def _project_scope_from_message(self, text: str, session: SessionState) -> str | None:
+    def _project_scope_from_message(
+        self,
+        text: str,
+        session: SessionState,
+        intent: IntentResult | None = None,
+    ) -> str | None:
         explicit = self._explicit_project_scope_from_text(text)
         if explicit:
             return explicit
         current_scope = session.slots.get("project_scope") or session.slots.get(
             "scope_funnel"
         )
+        warm_floor_answer_keys = {
+            "warm_floor_area_m2",
+            "warm_floor_type",
+            "floor_insulation_ready",
+            "warm_floor_heat_source",
+            "warm_floor_automation_needed",
+        }
+        if (
+            current_scope == "warm_floor"
+            and not self._is_new_product_request(text)
+            and intent is not None
+            and warm_floor_answer_keys.intersection(intent.slots)
+        ):
+            return "warm_floor"
         pending = normalize_text(session.pending_question or "")
         if (
             current_scope
@@ -5669,6 +5743,14 @@ class ChatOrchestrator:
         # сообщение с площадью снова уходило в сборку комплекта.
         if self._is_new_product_request(text):
             return False
+        if {
+            "warm_floor_area_m2",
+            "warm_floor_type",
+            "floor_insulation_ready",
+            "warm_floor_heat_source",
+            "warm_floor_automation_needed",
+        }.intersection(intent.slots):
+            return True
         if intent.slots.get("area_m2"):
             return True
         if self._is_project_source_followup(text):
@@ -9908,7 +9990,9 @@ class ChatOrchestrator:
 
         explicit_pump = self._is_explicit_pump_selection_or_correction(text)
         if explicit_pump:
-            previous_category = session.category
+            previous_category = session.category or (
+                session.project_context or {}
+            ).get("active_category")
             intent.category = "pumps"
             intent.intent_type = (
                 "attribute_request"
@@ -10245,13 +10329,35 @@ class ChatOrchestrator:
         )
         return bool(target and explicit_switch)
 
+    @staticmethod
+    def _engineering_recall_category(message: str) -> str | None:
+        """Return the engineering branch explicitly named in a recall turn."""
+
+        text = normalize_text(message)
+        # Check the compound warm-floor phrase before individual equipment:
+        # a heat source mentioned inside that branch must not turn the recall
+        # into a boiler or circulation-pump request.
+        if "тепл" in text and "пол" in text:
+            return "pipes"
+        if (
+            "насос" in text
+            or "колод" in text
+            or "скваж" in text
+            or "водопровод" in text
+            or ("центральн" in text and "вод" in text)
+        ):
+            return "pumps"
+        if "кот" in text:
+            return "boilers"
+        return None
+
     def _engineering_recall_answer(
         self,
         message: str,
         session: SessionState,
     ) -> str | None:
         text = normalize_text(message)
-        if not any(
+        known_recall_phrase = any(
             marker in text
             for marker in [
                 "что запомнил",
@@ -10263,18 +10369,18 @@ class ChatOrchestrator:
                 "напомни что мы",
                 "какие данные запомнил",
             ]
-        ):
+        )
+        # Punctuation between ``напомни`` and ``что`` is common in natural
+        # speech and is removed neither by normalize_text nor by browsers.
+        natural_recall_phrase = bool(
+            re.search(r"\bнапомни\b[^а-я0-9]{0,8}\bчто\b", text)
+        )
+        if not (known_recall_phrase or natural_recall_phrase):
             return None
 
         slots = dict(session.slots)
         context = session.project_context or {}
-        target_category = None
-        if "насос" in text or "колод" in text or "скваж" in text:
-            target_category = "pumps"
-        elif "тепл" in text and "пол" in text:
-            target_category = "pipes"
-        elif "кот" in text:
-            target_category = "boilers"
+        target_category = self._engineering_recall_category(message)
         if target_category:
             selector: dict[str, Any] = {}
             if target_category == "pumps":
@@ -10284,6 +10390,13 @@ class ChatOrchestrator:
                     selector["water_source"] = "скважина"
                 elif any(marker in text for marker in ["емкост", "боч", "бак"]):
                     selector["water_source"] = "ёмкость"
+                elif "водопровод" in text or (
+                    "центральн" in text and "вод" in text
+                ):
+                    selector["water_source"] = "центральный водопровод"
+                    selector["pump_use"] = "повышение давления"
+                elif "повысит" in text or "давлен" in text:
+                    selector["pump_use"] = "повышение давления"
             elif target_category == "boilers":
                 if "электр" in text:
                     selector["boiler_type"] = "электрический"
@@ -10299,7 +10412,7 @@ class ChatOrchestrator:
             goals = context.get("goals") or {}
             goal_id = (
                 referenced_goal
-                if ":" in referenced_goal and referenced_goal in goals
+                if ":" in referenced_goal
                 else (context.get("category_last_goal") or {}).get(target_category)
             )
             goal = (context.get("goals") or {}).get(goal_id, {})
@@ -10311,7 +10424,7 @@ class ChatOrchestrator:
                     remembered,
                 )
                 remembered.setdefault("project_scope", scope)
-            if remembered:
+            if remembered or ":" in referenced_goal:
                 slots = remembered
 
         slots = normalize_engineering_slots(slots)
@@ -10323,6 +10436,7 @@ class ChatOrchestrator:
                 shown = f"{float(value):g}" if isinstance(value, (int, float)) else str(value)
                 facts.append(f"{label}: {shown}{suffix}")
 
+        add("Источник воды", "water_source")
         add("Колодец", "well_ring_count", " кольца")
         add("Общая глубина", "well_depth_m", " м")
         if slots.get("water_level_reference") == "ambiguous":
@@ -10384,6 +10498,12 @@ class ChatOrchestrator:
         text = normalize_text(question)
         keys: list[str] = []
         if category == "pumps":
+            if "сверху" in text and "снизу" in text:
+                return ["water_level_reference"]
+            if "источник воды" in text or (
+                "скваж" in text and "колод" in text and "водопровод" in text
+            ):
+                keys.append("water_source")
             if (
                 "направление отсч" in text
                 or ("от верха" in text and "от дна" in text)
@@ -10417,7 +10537,18 @@ class ChatOrchestrator:
             if "до поверхности воды" in text and "от верха" in text:
                 keys.append("water_level_depth_m")
             if "давлен" in text:
-                keys.extend(["inlet_pressure_bar", "required_pressure_bar"])
+                if any(
+                    marker in text
+                    for marker in ["на вход", "сейчас", "исходн", "имеетс"]
+                ):
+                    keys.append("inlet_pressure_bar")
+                elif any(
+                    marker in text
+                    for marker in ["после насос", "получить", "нужно", "требуем"]
+                ):
+                    keys.append("required_pressure_bar")
+                else:
+                    keys.extend(["inlet_pressure_bar", "required_pressure_bar"])
             if (
                 "горизонтальн" in text
                 or "по горизонтали" in text
@@ -10451,8 +10582,16 @@ class ChatOrchestrator:
             if "материал" in text or "ppr" in text or "pex" in text:
                 keys.append("pipe_material")
         if category == "boilers":
+            if (
+                "два отдельных" in text
+                and "встроенн" in text
+                and "бойлер" in text
+            ):
+                keys.append("boiler_water_heater_relation")
             if "газов" in text and "электр" in text:
                 keys.append("boiler_type")
+            if "только для отопления" in text and "горяч" in text:
+                keys.extend(["contours", "needs_hot_water"])
             if "площад" in text:
                 keys.append("area_m2")
             if "220" in text and "380" in text:
@@ -10488,12 +10627,50 @@ class ChatOrchestrator:
             ):
                 keys.append("filter_technology")
         if category == "controls":
+            if (
+                "термостат" in text
+                and "сервопривод" in text
+                and "контроллер" in text
+            ):
+                keys.append("control_kind")
             if "24" in text or "230" in text or "питани" in text:
                 keys.append("voltage_v")
             if any(marker in text for marker in ["нз", "н.з", "nc", "no"]):
                 keys.append("normal_state")
             if "сигнал" in text or "0-10" in text:
                 keys.append("control_signal")
+        if category == "valves":
+            if "для чего" in text or (
+                "вода" in text and "отоплен" in text and "радиатор" in text
+            ):
+                keys.append("application")
+            if "размер" in text:
+                keys.extend(["size_inch", "diameter_mm", "connection_size"])
+            if "температур" in text:
+                keys.append("operating_temperature_c")
+            if "давлен" in text:
+                keys.append("operating_pressure_bar")
+        if category == "radiators":
+            if "тип радиатор" in text:
+                keys.append("radiator_type")
+            if any(
+                marker in text
+                for marker in [
+                    "размер",
+                    "высот",
+                    "межосев",
+                    "длин",
+                    "секц",
+                ]
+            ):
+                keys.extend(
+                    [
+                        "radiator_size_mm",
+                        "radiator_height_mm",
+                        "length_mm",
+                        "sections",
+                    ]
+                )
         return list(dict.fromkeys(keys))
 
     def _set_structured_pending_question(
@@ -10510,6 +10687,15 @@ class ChatOrchestrator:
             if expected_slots is not None
             else self._pending_slot_keys_for_question(question, category)
         )
+        # A composed question can mention several fields even after some are
+        # already known (for example temperature and pressure).  Persist only
+        # the fields that are still unanswered, otherwise save() would close
+        # the new question immediately on an older fact.
+        expected = [
+            key
+            for key in expected
+            if not SessionState._slot_has_answer(session.slots, key)
+        ]
         question_id = SessionState._default_question_id(
             category,
             expected,

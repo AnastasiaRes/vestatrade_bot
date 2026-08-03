@@ -208,6 +208,183 @@ class SessionState(BaseModel):
         )
         return f"{prefix}.{suffix}"
 
+    @staticmethod
+    def infer_pending_expected_slots(
+        text: str,
+        category: str | None = None,
+        question_id: str | None = None,
+    ) -> list[str]:
+        """Recover machine-readable slots for old text-only questions.
+
+        Some mature dialogue branches and already persisted sessions can have
+        a visible question without ``expected_slots``.  Keeping such a
+        question as generic pending state makes every short reply look like a
+        continuation and can trap the dialogue in a loop.  Only unambiguous,
+        well-known questions are recovered here; an unknown generic question
+        is deliberately not kept as pending state.
+        """
+
+        normalized = re.sub(
+            r"\s+",
+            " ",
+            str(text or "").lower().replace("ё", "е"),
+        ).strip()
+        normalized_id = str(question_id or "").lower()
+
+        id_slots = {
+            "warm_floor.area": ["warm_floor_area_m2"],
+            "warm_floor.warm_floor_area_m2": ["warm_floor_area_m2"],
+            "warm_floor.warm_floor_type": ["warm_floor_type"],
+            "warm_floor.floor_insulation_ready": ["floor_insulation_ready"],
+            "warm_floor.insulation": ["floor_insulation_ready"],
+            "warm_floor.warm_floor_heat_source": ["warm_floor_heat_source"],
+            "warm_floor.heat_source": ["warm_floor_heat_source"],
+            "warm_floor.warm_floor_automation_needed": [
+                "warm_floor_automation_needed"
+            ],
+            "warm_floor.automation": ["warm_floor_automation_needed"],
+            "well.horizontal_distance": ["horizontal_run_m"],
+            "well.lift_height": ["lift_height_m"],
+            "well.flow": ["required_flow_m3_h"],
+            "well.flow_unit_confirmation": ["flow_unit_confirmation"],
+            "pumps.flow_unit_confirmation": ["flow_unit_confirmation"],
+            "well.water_level_reference": ["water_level_reference"],
+        }
+        if normalized_id in id_slots:
+            return list(id_slots[normalized_id])
+
+        if category == "pipes" or normalized_id.startswith("warm_floor."):
+            if "площад" in normalized and (
+                "тепл" in normalized or "пол" in normalized
+            ):
+                return ["warm_floor_area_m2"]
+            if "водяной" in normalized and "электрическ" in normalized:
+                return ["warm_floor_type"]
+            if "утепл" in normalized or "пирог пола" in normalized:
+                return ["floor_insulation_ready"]
+            if "источник тепла" in normalized or "каким котл" in normalized:
+                return ["warm_floor_heat_source"]
+            if "автоматик" in normalized or "покомнатн" in normalized:
+                return ["warm_floor_automation_needed"]
+
+        if category == "pumps":
+            if "сверху" in normalized and "снизу" in normalized:
+                return ["water_level_reference"]
+            if "источник воды" in normalized or (
+                "скваж" in normalized
+                and "колод" in normalized
+                and "водопровод" in normalized
+            ):
+                return ["water_source"]
+            if "давлен" in normalized and any(
+                marker in normalized
+                for marker in ["на вход", "сейчас", "исходн", "имеетс"]
+            ):
+                return ["inlet_pressure_bar"]
+            if "давлен" in normalized and any(
+                marker in normalized
+                for marker in ["после насос", "получить", "нужно", "требуем"]
+            ):
+                return ["required_pressure_bar"]
+            if (
+                "литры в минуту" in normalized
+                and "общ" in normalized
+                and "объ" in normalized
+            ):
+                return ["flow_unit_confirmation"]
+            if "расход" in normalized or "литр" in normalized:
+                return ["required_flow_m3_h"]
+            if "для какой задач" in normalized:
+                return ["pump_use", "pump_type"]
+
+        if category == "boilers":
+            if (
+                "два отдельных" in normalized
+                and "встроенн" in normalized
+                and "бойлер" in normalized
+            ):
+                return ["boiler_water_heater_relation"]
+            if "площад" in normalized:
+                return ["area_m2"]
+            if "газов" in normalized and "электр" in normalized:
+                return ["boiler_type"]
+            if "только для отопления" in normalized and "горяч" in normalized:
+                return ["contours", "needs_hot_water"]
+            if "220" in normalized and "380" in normalized:
+                return ["voltage_v"]
+
+        if category == "water_heaters":
+            if "объем" in normalized or "литр" in normalized:
+                return ["volume_l"]
+            if "накоп" in normalized or "проточ" in normalized:
+                return ["heater_type"]
+
+        if category == "controls":
+            if (
+                "термостат" in normalized
+                and "сервопривод" in normalized
+                and "контроллер" in normalized
+            ):
+                return ["control_kind"]
+            if "24" in normalized or "230" in normalized or "питани" in normalized:
+                return ["voltage_v"]
+
+        if category == "valves":
+            if "для чего" in normalized or (
+                "вода" in normalized
+                and "отоплен" in normalized
+                and "радиатор" in normalized
+            ):
+                return ["application"]
+            if "температур" in normalized or "давлен" in normalized:
+                return ["operating_temperature_c", "operating_pressure_bar"]
+            if "размер" in normalized:
+                return ["size_inch", "diameter_mm", "connection_size"]
+
+        if category == "radiators":
+            expected: list[str] = []
+            if "тип радиатор" in normalized:
+                expected.append("radiator_type")
+            if any(
+                marker in normalized
+                for marker in ["размер", "высот", "межосев", "длин", "секц"]
+            ):
+                expected.extend(
+                    [
+                        "radiator_size_mm",
+                        "radiator_height_mm",
+                        "length_mm",
+                        "sections",
+                    ]
+                )
+            if expected:
+                return expected
+
+        return []
+
+    @staticmethod
+    def _slot_has_answer(slots: dict[str, Any], key: str) -> bool:
+        """Return whether a requested slot has a real user/domain answer."""
+
+        if key == "flow_unit_confirmation":
+            return str(slots.get("flow_unit_status") or "") in {
+                "confirmed",
+                "total_volume",
+            }
+        if key == "water_level_reference":
+            return str(slots.get(key) or "") in {"from_top", "from_bottom"}
+        if key not in slots:
+            return False
+        value = slots[key]
+        # ``False`` and numeric zero are valid answers.  Only genuinely empty
+        # values mean that the question is still unresolved.
+        return value is not None and value not in ("", [], {})
+
+    def pending_expected_slot_is_filled(self, expected_slots: list[str]) -> bool:
+        """Whether any alternative expected by the pending question is set."""
+
+        return any(self._slot_has_answer(self.slots, key) for key in expected_slots)
+
     def set_pending_question_state(
         self,
         *,
@@ -222,6 +399,12 @@ class SessionState(BaseModel):
 
         expected = list(expected_slots or [])
         pending_category = category or self.pending_category or self.category
+        if not expected:
+            expected = self.infer_pending_expected_slots(
+                text,
+                pending_category,
+                question_id,
+            )
         resolved_id = question_id or self._default_question_id(
             pending_category,
             expected,
@@ -272,20 +455,41 @@ class SessionState(BaseModel):
         if not self.pending_question:
             self.clear_pending_question_state()
             return None
+        previous = self.pending_question_state
         expected = list(self.pending_slot_keys or [])
+        if (
+            not expected
+            and previous
+            and previous.text == self.pending_question
+            and previous.expected_slots
+        ):
+            expected = list(previous.expected_slots)
+        if not expected:
+            expected = self.infer_pending_expected_slots(
+                self.pending_question,
+                self.pending_category or self.category,
+                previous.question_id if previous else None,
+            )
+
+        # A pending question has completed its lifecycle as soon as its
+        # expected answer reaches the active branch.  Do this before assigning
+        # an id so stale question text cannot overwrite a saved fact later.
+        if expected and self.pending_expected_slot_is_filled(expected):
+            self.clear_pending_question_state()
+            return None
+
+        # Unknown text-only questions cannot safely interpret a short answer.
+        # Do not persist them as generic pending state and therefore do not let
+        # them create an endless continuation loop.
+        if not expected:
+            self.clear_pending_question_state()
+            return None
+
         default_id = self._default_question_id(
             self.pending_category or self.category,
             expected,
             self.slots,
         )
-        if not expected:
-            signature = re.sub(
-                r"[^a-zа-я0-9]+",
-                "_",
-                self.pending_question.lower().replace("ё", "е"),
-            ).strip("_")
-            default_id = f"{default_id}.{signature[:64] or 'unknown'}"
-        previous = self.pending_question_state
         question_id = (
             previous.question_id
             if previous

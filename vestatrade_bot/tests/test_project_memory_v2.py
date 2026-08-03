@@ -391,3 +391,295 @@ def test_clearing_legacy_pending_question_resets_stale_counters() -> None:
     assert new_pending is not None
     assert new_pending.question_id == "well.lift_height"
     assert new_pending.attempts == 0
+
+
+def test_filled_expected_slot_clears_pending_and_active_goal_snapshot() -> None:
+    store = InMemorySessionStore()
+    session = SessionState(
+        session_id="filled-pending-slot",
+        category="pipes",
+        slots={
+            "project_scope": "warm_floor",
+            "has_warm_floor": True,
+        },
+        project_context={
+            "version": 2,
+            "active_goal": "pipes:warm_floor",
+            "active_category": "pipes",
+            "goals": {
+                "pipes:warm_floor": {
+                    "category": "pipes",
+                    "scope": "warm_floor",
+                    "slots": {"has_warm_floor": True},
+                    "pending": None,
+                }
+            },
+        },
+    )
+    session.set_pending_question_state(
+        text="Пирог пола уже готов, утеплитель есть?",
+        expected_slots=["floor_insulation_ready"],
+        question_id="warm_floor.floor_insulation_ready",
+        category="pipes",
+    )
+
+    # A negative answer is still a completed answer, not an empty slot.
+    session.slots["floor_insulation_ready"] = False
+    store.save(session)
+
+    assert session.pending_question_state is None
+    assert session.pending_question is None
+    assert session.pending_slot_keys == []
+    assert (
+        session.project_context["goals"]["pipes:warm_floor"]["pending"]
+        is None
+    )
+
+
+def test_text_only_known_pending_question_recovers_expected_slot_then_closes() -> None:
+    session = SessionState(
+        session_id="known-text-only-pending",
+        category="pipes",
+        slots={"project_scope": "warm_floor", "has_warm_floor": True},
+        pending_question=(
+            "Каким котлом или другим источником тепла будете греть?"
+        ),
+        pending_category="pipes",
+    )
+
+    pending = session.sync_pending_question_state()
+
+    assert pending is not None
+    assert pending.expected_slots == ["warm_floor_heat_source"]
+    assert session.pending_slot_keys == ["warm_floor_heat_source"]
+
+    session.slots["warm_floor_heat_source"] = "газовый котёл"
+    assert session.sync_pending_question_state() is None
+    assert session.pending_question is None
+
+
+def test_unknown_text_only_pending_question_is_not_persisted_as_generic_loop() -> None:
+    store = InMemorySessionStore()
+    session = SessionState(
+        session_id="unknown-text-only-pending",
+        category="pipes",
+        slots={"project_scope": "warm_floor"},
+        pending_question=(
+            "Уточните, пожалуйста, ещё некоторые данные."
+        ),
+        pending_category="pipes",
+        question_repeats=7,
+    )
+
+    store.save(session)
+
+    assert session.pending_question_state is None
+    assert session.pending_question is None
+    assert session.pending_slot_keys == []
+    assert session.question_repeats == 0
+
+
+def test_return_drops_stale_warm_floor_pending_without_losing_saved_facts() -> None:
+    agent = EngineeringRequirementsAgent()
+    session = SessionState(
+        session_id="return-with-stale-warm-floor-pending",
+        category="boilers",
+        slots={"boiler_type": "электрический", "area_m2": 100},
+        project_context={
+            "version": 2,
+            "active_goal": "boilers:electric",
+            "active_category": "boilers",
+            "category_last_goal": {
+                "boilers": "boilers:electric",
+                "pipes": "pipes:warm_floor",
+            },
+            "goals": {
+                "boilers:electric": {
+                    "category": "boilers",
+                    "scope": None,
+                    "slots": {"boiler_type": "электрический", "area_m2": 100},
+                    "pending": None,
+                },
+                "pipes:warm_floor": {
+                    "category": "pipes",
+                    "scope": "warm_floor",
+                    "slots": {
+                        "project_scope": "warm_floor",
+                        "has_warm_floor": True,
+                        "warm_floor_area_m2": 80,
+                        "floor_insulation_ready": True,
+                        "warm_floor_heat_source": "газовый котёл",
+                    },
+                    # Old sessions could persist this question without a slot
+                    # identity even after both facts had already been saved.
+                    "pending": {
+                        "question_id": "dialog.clarification.stale_warm_floor",
+                        "text": (
+                            "Пирог пола готов, утеплитель уже есть?"
+                        ),
+                        "expected_slots": [],
+                        "attempts": 3,
+                        "category": "pipes",
+                        "intent_type": "attribute_request",
+                    },
+                },
+            },
+            "shared_by_scope": {},
+            "known_facts": {},
+            "categories": {},
+        },
+    )
+
+    restored = agent.activate_goal(
+        "Вернёмся к тёплому полу",
+        "pipes",
+        session,
+        returning=True,
+    )
+
+    assert restored["floor_insulation_ready"] is True
+    assert restored["warm_floor_heat_source"] == "газовый котёл"
+    assert session.pending_question_state is None
+    assert session.pending_question is None
+    assert (
+        session.project_context["goals"]["pipes:warm_floor"]["pending"]
+        is None
+    )
+
+
+def test_return_names_warm_floor_instead_of_latest_generic_pipe_goal() -> None:
+    agent = EngineeringRequirementsAgent()
+    session = SessionState(
+        session_id="return-specific-warm-floor-goal",
+        category="pumps",
+        slots={"water_source": "колодец", "well_ring_count": 3},
+        project_context={
+            "version": 2,
+            "active_goal": "pumps:well",
+            "active_category": "pumps",
+            "category_last_goal": {
+                "pumps": "pumps:well",
+                "pipes": "pipes",
+            },
+            "goals": {
+                "pumps:well": {
+                    "category": "pumps",
+                    "scope": None,
+                    "slots": {"water_source": "колодец", "well_ring_count": 3},
+                    "pending": None,
+                },
+                "pipes": {
+                    "category": "pipes",
+                    "scope": None,
+                    "slots": {"pipe_purpose": "холодная вода"},
+                    "pending": None,
+                },
+                "pipes:warm_floor": {
+                    "category": "pipes",
+                    "scope": "warm_floor",
+                    "slots": {"warm_floor_area_m2": 100},
+                    "pending": None,
+                },
+            },
+            "shared_by_scope": {
+                "warm_floor": {
+                    "has_warm_floor": True,
+                    "warm_floor_area_m2": 100,
+                    "warm_floor_contours": 9,
+                }
+            },
+        },
+    )
+
+    restored = agent.activate_goal(
+        "Вернёмся к тёплому полу",
+        "pipes",
+        session,
+        returning=True,
+    )
+
+    assert session.project_context["active_goal"] == "pipes:warm_floor"
+    assert restored["project_scope"] == "warm_floor"
+    assert restored["warm_floor_area_m2"] == 100
+    assert restored["warm_floor_contours"] == 9
+    assert "pipe_purpose" not in restored
+
+
+def test_return_names_central_main_instead_of_latest_well_pump_goal() -> None:
+    agent = EngineeringRequirementsAgent()
+    session = SessionState(
+        session_id="return-specific-pressure-pump-goal",
+        category="pipes",
+        slots={"pipe_purpose": "отопление"},
+        project_context={
+            "version": 2,
+            "active_goal": "pipes",
+            "active_category": "pipes",
+            "category_last_goal": {
+                "pipes": "pipes",
+                "pumps": "pumps:well",
+            },
+            "goals": {
+                "pipes": {
+                    "category": "pipes",
+                    "scope": None,
+                    "slots": {"pipe_purpose": "отопление"},
+                    "pending": None,
+                },
+                "pumps:well": {
+                    "category": "pumps",
+                    "scope": None,
+                    "slots": {"water_source": "колодец", "well_ring_count": 3},
+                    "pending": None,
+                },
+                "pumps:pressure": {
+                    "category": "pumps",
+                    "scope": None,
+                    "slots": {
+                        "water_source": "центральный водопровод",
+                        "pump_use": "повышение давления",
+                        "inlet_pressure_bar": 1,
+                        "required_pressure_bar": 3,
+                    },
+                    "pending": None,
+                },
+            },
+        },
+    )
+
+    restored = agent.activate_goal(
+        "Вернёмся к насосу от центрального водопровода",
+        "pumps",
+        session,
+        returning=True,
+    )
+
+    assert session.project_context["active_goal"] == "pumps:pressure"
+    assert restored["water_source"] == "центральный водопровод"
+    assert restored["pump_use"] == "повышение давления"
+    assert restored["inlet_pressure_bar"] == 1
+    assert restored["required_pressure_bar"] == 3
+    assert "well_ring_count" not in restored
+
+
+def test_old_flow_confirmation_question_is_not_closed_by_assumed_flow() -> None:
+    session = SessionState(
+        session_id="migrate-flow-confirmation",
+        category="pumps",
+        slots={
+            "water_source": "колодец",
+            "required_flow_l_min": 100,
+            "required_flow_m3_h": 6,
+            "flow_unit_status": "assumed",
+        },
+        pending_question=(
+            "100 литров — это литры в минуту или общий объём?"
+        ),
+        pending_category="pumps",
+    )
+
+    pending = session.sync_pending_question_state()
+
+    assert pending is not None
+    assert pending.question_id == "well.flow_unit_confirmation"
+    assert pending.expected_slots == ["flow_unit_confirmation"]
