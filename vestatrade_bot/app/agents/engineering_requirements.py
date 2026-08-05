@@ -96,6 +96,7 @@ class EngineeringRequirementsAgent:
             "reinforcement",
             "thread_standard",
             "thread_gender",
+            "metric_thread",
             "press_profile",
             "seal_material",
             "installation_method",
@@ -156,6 +157,7 @@ class EngineeringRequirementsAgent:
             "shaft_power_w",
             "thread_standard",
             "thread_gender",
+            "metric_thread",
             "ip_rating",
             "phase_count",
             "voltage_v",
@@ -228,6 +230,7 @@ class EngineeringRequirementsAgent:
             "nominal_diameter_dn",
             "thread_standard",
             "thread_gender",
+            "metric_thread",
             "flow_coefficient_kind",
             "flow_coefficient",
             "valve_ways",
@@ -256,6 +259,7 @@ class EngineeringRequirementsAgent:
             "union",
             "thread_standard",
             "thread_gender",
+            "metric_thread",
             "flow_coefficient_kind",
             "flow_coefficient",
             "valve_ways",
@@ -574,6 +578,57 @@ class EngineeringRequirementsAgent:
                 {key: value for key, value in slots.items() if key in self.SHARED_KEYS},
             ).items()
             if self._present(value)
+        }
+        session.project_context = context
+
+    def forget(
+        self,
+        category: str,
+        slot_keys: set[str] | list[str] | tuple[str, ...],
+        session: SessionState,
+    ) -> None:
+        """Remove invalidated facts from every compatibility view of one goal."""
+        if category not in self.CATEGORIES or not slot_keys:
+            return
+        keys = set(slot_keys)
+        context = self._normalise_context(session)
+        goals = dict(context.get("goals") or {})
+        active_goal = context.get("active_goal")
+        goal_ids = [
+            goal_id
+            for goal_id, goal in goals.items()
+            if goal.get("category") == category
+            and (
+                goal_id == active_goal
+                or goal_id
+                == dict(context.get("category_last_goal") or {}).get(category)
+            )
+        ]
+        for goal_id in goal_ids:
+            goal = dict(goals[goal_id])
+            goal["slots"] = {
+                key: value
+                for key, value in dict(goal.get("slots") or {}).items()
+                if key not in keys
+            }
+            goals[goal_id] = goal
+        context["goals"] = goals
+
+        categories = dict(context.get("categories") or {})
+        if category in categories:
+            categories[category] = {
+                key: value
+                for key, value in dict(categories[category]).items()
+                if key not in keys
+            }
+        context["categories"] = categories
+        context["shared_by_scope"] = {
+            scope: {
+                key: value
+                for key, value in dict(values or {}).items()
+                if key not in keys
+            }
+            for scope, values in dict(context.get("shared_by_scope") or {}).items()
         }
         session.project_context = context
 

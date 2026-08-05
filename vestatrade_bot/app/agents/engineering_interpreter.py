@@ -35,6 +35,16 @@ ENGINEERING_INTERPRETER_PROMPT = """
   «метров» означает площадь тёплого пола, а не новую заявку на трубу.
 - Подтверждай уже понятые данные и спрашивай только один следующий недостающий
   параметр. Не повторяй тот же вопрос, если клиент уже дал на него ответ.
+- Определи dialog_act: new_selection для новой задачи, continue для продолжения,
+  refine для уточнения параметра, replace для явной замены («не X, а Y»),
+  return для возврата к прежней ветке, product_question для вопроса о ранее
+  показанном товаре, unknown если действие неясно.
+- Для return укажи target_category. Для вопроса о карточке перечисли только
+  requested_fields: sku, price, stock, url, temperature, thread, power, head,
+  flow, mounting_length, diameter, material, pressure, contours,
+  combustion_chamber или characteristics.
+- Не выбирай SKU и не отвечай по цене/остатку сам: код восстановит показанную
+  карточку из памяти и перечитает актуальный фид.
 
 БЫТОВЫЕ ЕДИНИЦЫ И ИСХОДНЫЕ ФАКТЫ:
 - «Колодец на X колец» -> только well_ring_count=X.
@@ -84,8 +94,11 @@ ENGINEERING_INTERPRETER_PROMPT = """
 {
   "handled": true,
   "continuation": true,
+  "dialog_act": "new_selection|continue|refine|replace|return|product_question|unknown",
   "intent_type": "broad_category|attribute_request|unknown",
-  "category": "pumps|pipes|boilers|water_heaters|other",
+  "category": "pumps|pipes|boilers|water_heaters|hydraulic_accumulators|filters|controls|valves|sewer|radiator_fittings|radiators|fittings|other",
+  "target_category": null,
+  "requested_fields": [],
   "project_scope": "water|warm_floor|heating|general|null",
   "slots": {},
   "slot_evidence": {"slot_name": "дословный фрагмент нового сообщения"},
@@ -128,6 +141,9 @@ class EngineeringInterpretation:
     # dataclass constructor while exposing optional audit metadata.
     slot_evidence: dict[str, str] = field(default_factory=dict)
     slot_provenance: dict[str, str] = field(default_factory=dict)
+    dialog_act: str | None = None
+    target_category: str | None = None
+    requested_fields: list[str] = field(default_factory=list)
 
     @property
     def should_reply_now(self) -> bool:
@@ -141,10 +157,51 @@ class EngineeringInterpretation:
 class EngineeringInterpreterAgent:
     """LLM-first semantic bridge between everyday language and typed slots."""
 
-    _CATEGORIES = {"pumps", "pipes", "boilers", "water_heaters", "other"}
+    _CATEGORIES = {
+        "pumps",
+        "pipes",
+        "boilers",
+        "water_heaters",
+        "hydraulic_accumulators",
+        "filters",
+        "controls",
+        "valves",
+        "sewer",
+        "radiator_fittings",
+        "radiators",
+        "fittings",
+        "other",
+    }
     _SCOPES = {"water", "warm_floor", "heating", "general"}
     _INTENTS = {"broad_category", "attribute_request", "unknown"}
     _MODES = {"clarify", "project_progress", "catalog_search", "none"}
+    _DIALOG_ACTS = {
+        "new_selection",
+        "continue",
+        "refine",
+        "replace",
+        "return",
+        "product_question",
+        "unknown",
+    }
+    _REQUESTED_FIELDS = {
+        "sku",
+        "price",
+        "stock",
+        "url",
+        "temperature",
+        "thread",
+        "power",
+        "head",
+        "flow",
+        "mounting_length",
+        "diameter",
+        "material",
+        "pressure",
+        "contours",
+        "combustion_chamber",
+        "characteristics",
+    }
     _STRING_SLOTS = {
         "water_source",
         "pump_use",
@@ -154,6 +211,17 @@ class EngineeringInterpreterAgent:
         "water_quality",
         "pipe_material",
         "system_type",
+        "reinforcement",
+        "element_type",
+        "boiler_type",
+        "contours",
+        "combustion_chamber",
+        "valve_kind",
+        "application",
+        "thread_type",
+        "metric_thread",
+        "size_inch",
+        "radiator_type",
     }
     _ENUM_STRING_SLOTS = {
         "water_level_reference": {"ambiguous", "from_top", "from_bottom"},
@@ -208,6 +276,14 @@ class EngineeringInterpreterAgent:
         "casing_diameter_mm": (20, 1000),
         "warm_floor_area_m2": (1, 10000),
         "area_m2": (1, 10000),
+        "diameter_mm": (1, 2000),
+        "length_mm": (1, 100000),
+        "angle_deg": (1, 180),
+        "mounting_length_mm": (1, 2000),
+        "head_m": (0.1, 1000),
+        "power_kw": (0.1, 10000),
+        "voltage_v": (1, 1000),
+        "sections": (1, 100),
         "warm_floor_pipe_min_m": (1, 100000),
         "warm_floor_pipe_max_m": (1, 100000),
         "warm_floor_contours": (1, 1000),
@@ -236,6 +312,15 @@ class EngineeringInterpreterAgent:
         "контур",
         "литр",
         "куб",
+        "кран",
+        "клапан",
+        "термоголов",
+        "радиатор",
+        "батаре",
+        "канализац",
+        "отвод",
+        "верни",
+        "напомни",
     )
 
     def __init__(self, llm_client: OpenRouterClient) -> None:
@@ -249,11 +334,15 @@ class EngineeringInterpreterAgent:
     ) -> bool:
         if baseline.intent_type in {
             "exact_sku",
-            "link_request",
             "complectation",
             "handoff_request",
             "out_of_scope",
         }:
+            return False
+        if baseline.intent_type == "link_request" and not any(
+            marker in normalize_text(message)
+            for marker in ["верни", "снова", "обратно", "предыдущ", "перв"]
+        ):
             return False
         if (
             session.pending_question
@@ -261,7 +350,7 @@ class EngineeringInterpreterAgent:
             or session.slots.get("scope_funnel")
         ):
             return True
-        if baseline.category in {"pumps", "pipes", "boilers", "water_heaters"}:
+        if baseline.category in self._CATEGORIES - {"other"}:
             return True
         text = normalize_text(message)
         return any(marker in text for marker in self._ENGINEERING_MARKERS)
@@ -275,8 +364,11 @@ class EngineeringInterpreterAgent:
         fallback = {
             "handled": False,
             "continuation": False,
+            "dialog_act": "unknown",
             "intent_type": None,
             "category": None,
+            "target_category": None,
+            "requested_fields": [],
             "project_scope": None,
             "slots": {},
             "assumptions": [],
@@ -295,6 +387,14 @@ class EngineeringInterpreterAgent:
             "pending_category": session.pending_category,
             "pending_slot_keys": session.pending_slot_keys,
             "recent_dialog": session.history[-6:],
+            "current_product_skus": [card.sku for card in session.last_products],
+            "product_branches": {
+                category: [
+                    snapshot.product_skus
+                    for snapshot in branch.selections[-4:]
+                ]
+                for category, branch in session.product_branches.items()
+            },
             "baseline_intent": {
                 "intent_type": baseline.intent_type,
                 "category": baseline.category,
@@ -365,6 +465,11 @@ class EngineeringInterpreterAgent:
         result = EngineeringInterpretation(
             handled=bool(data.get("handled")),
             continuation=bool(data.get("continuation")),
+            dialog_act=(
+                data.get("dialog_act")
+                if data.get("dialog_act") in self._DIALOG_ACTS
+                else None
+            ),
             intent_type=(
                 data.get("intent_type")
                 if data.get("intent_type") in self._INTENTS
@@ -375,6 +480,18 @@ class EngineeringInterpreterAgent:
                 if data.get("category") in self._CATEGORIES
                 else None
             ),
+            target_category=(
+                data.get("target_category")
+                if data.get("target_category") in self._CATEGORIES
+                else None
+            ),
+            requested_fields=[
+                field
+                for field in self._clean_string_list(
+                    data.get("requested_fields"), limit=12
+                )
+                if field in self._REQUESTED_FIELDS
+            ],
             project_scope=(
                 data.get("project_scope")
                 if data.get("project_scope") in self._SCOPES
@@ -534,6 +651,43 @@ class EngineeringInterpreterAgent:
             return any(marker in text for marker in ["чист", "гряз", "фекал", "песок", "ил"])
         if key == "pipe_material":
             return any(marker in text for marker in ["pex", "pe-rt", "pert", "ppr", "металлопласт"])
+        if key == "reinforcement":
+            return (
+                "алюмин" in text
+                if "алюмин" in normalized_value
+                else "стекловолок" in text
+                if "стекловолок" in normalized_value
+                else normalized_value in text
+            )
+        if key == "element_type":
+            return any(
+                marker in text and marker in normalized_value
+                for marker in ["труб", "отвод", "тройник", "муфт"]
+            )
+        if key == "boiler_type":
+            return (
+                "электр" in text
+                if "электр" in normalized_value
+                else "газ" in text
+                if "газ" in normalized_value
+                else normalized_value in text
+            )
+        if key == "contours":
+            return "контур" in text
+        if key == "combustion_chamber":
+            return "камер" in text
+        if key == "thread_type":
+            return any(marker in text for marker in ["вр", "вн", "нр", "нар", "ff", "fm", "mm"])
+        if key == "metric_thread":
+            return bool(re.search(r"\bm\s*\d{1,3}\s*[xх×]\s*\d", text))
+        if key == "size_inch":
+            return normalized_value in text or normalized_value.replace("/", " / ") in text
+        if key == "radiator_type":
+            return any(marker in text for marker in ["биметалл", "алюмин", "панельн", "стальн"])
+        if key == "valve_kind":
+            return any(marker in text for marker in ["кран", "клапан", "вентил"])
+        if key == "application":
+            return any(marker in text for marker in ["вод", "отоплен", "радиатор", "батаре"])
         if key == "system_type":
             return any(marker in text for marker in ["радиатор", "тепл", "отоплен"])
         return normalized_value in text

@@ -33,7 +33,9 @@ from app.models import (
     HandoffSummary,
     IntentResult,
     Product,
+    ProductBranchState,
     ProductCard,
+    ProductSelectionSnapshot,
     SearchQuery,
     SessionState,
 )
@@ -545,8 +547,10 @@ class ChatOrchestrator:
 
     def _overlay_engineering_interpretation(
         self,
+        message: str,
         intent: IntentResult,
         interpretation: EngineeringInterpretation,
+        session: SessionState,
     ) -> None:
         """Let accepted LLM semantics correct a confident-but-wrong rule route."""
         intent.raw = dict(intent.raw or {})
@@ -561,6 +565,16 @@ class ChatOrchestrator:
         )
         if not (interpretation.output_accepted and interpretation.handled):
             return
+        intent.raw["dialog_act"] = interpretation.dialog_act
+        intent.raw["target_category"] = interpretation.target_category
+        intent.raw["requested_fields"] = list(
+            dict.fromkeys(
+                [
+                    *interpretation.requested_fields,
+                    *list(intent.raw.get("requested_fields") or []),
+                ]
+            )
+        )
         # Explicit rule evidence from the current message is authoritative.
         # The LLM may fill semantic gaps, but it cannot overwrite a number or
         # cancel a topic transition that the user stated in this turn.
@@ -573,6 +587,36 @@ class ChatOrchestrator:
             baseline_category == "other" or baseline_confidence < 0.55
         ):
             intent.category = interpretation.category
+        explicit_rule_category, explicit_rule_score = self.intent_router._detect_category(
+            normalize_text(message)
+        )
+        if (
+            interpretation.dialog_act == "return"
+            and interpretation.target_category in session.product_branches
+            and (
+                explicit_rule_category == "other"
+                or explicit_rule_score < 0.55
+                or explicit_rule_category == interpretation.target_category
+            )
+        ):
+            # The model identifies the conversational action; the branch can
+            # only be restored when its grounded SKU memory actually exists.
+            intent.category = str(interpretation.target_category)
+            intent.is_topic_change = False
+        if (
+            interpretation.dialog_act == "product_question"
+            and session.last_products
+            and (
+                explicit_rule_category == "other"
+                or explicit_rule_score < 0.55
+                or explicit_rule_category == session.category
+            )
+        ):
+            # The model may recognize colloquial card questions such as
+            # ``почём он?``.  Product identity remains grounded exclusively in
+            # the cards actually shown in this session.
+            intent.category = session.category or intent.category
+            intent.is_topic_change = False
         intent.slots = merge_slots(interpretation.slots, baseline_slots)
         if (
             interpretation.project_scope == "warm_floor"
@@ -923,6 +967,8 @@ class ChatOrchestrator:
             )
 
         intent = self.intent_router.route(message, session)
+        intent.raw = dict(intent.raw or {})
+        intent.raw["requested_fields"] = self._requested_card_fields(message)
         # Bind a short reply to the pending question before anything else looks
         # at the slots.  The rule layer stays authoritative; this only runs when
         # the rules read nothing that answers what was actually asked.
@@ -948,15 +994,43 @@ class ChatOrchestrator:
                     llm_requested=True,
                     fallback_reason=str(exc),
                 )
-            self._overlay_engineering_interpretation(intent, engineering_interpretation)
+            self._overlay_engineering_interpretation(
+                message,
+                intent,
+                engineering_interpretation,
+                session,
+            )
         # Exact identities must see the catalogue on the very first request.
         # Keep the preload scoped to identity-shaped turns: small talk and
         # non-catalogue control turns must stay cheap and concurrent.
         if self._needs_catalog_identity_resolution(message, intent):
             self._ensure_products_loaded()
+        category_before_sku_grounding = session.category
         self._ground_catalog_sku_intent(message, intent)
+        if (
+            intent.intent_type == "exact_sku"
+            and category_before_sku_grounding
+            and intent.category in self.engineering_requirements.CATEGORIES
+            and intent.category != category_before_sku_grounding
+        ):
+            # The feed, rather than the probabilistic router, is authoritative
+            # for an exact SKU's category. Treat a cross-category identity as
+            # a real goal switch before persistent slots are merged; otherwise
+            # pump dimensions can poison a valve branch (and vice versa).
+            intent.is_topic_change = True
+            intent.raw["catalog_identity_category_switch"] = {
+                "from": category_before_sku_grounding,
+                "to": intent.category,
+            }
         self._enrich_brand_from_feed(message, intent)
         agents_used.append("IntentRouterAgent")
+
+        # Restore a grounded catalogue referent before topic-change handling can
+        # clear the active compatibility view.  The LLM/rule router determines
+        # the semantic category; the controller resolves that reference only
+        # against cards that were actually shown in this session.
+        if self._restore_product_reference(message, intent, session):
+            agents_used.append("ProductMemoryAgent")
 
         toilet_project_answer = self._maybe_toilet_installation_project(
             message,
@@ -985,6 +1059,21 @@ class ChatOrchestrator:
                 agents_used,
             )
 
+        if (
+            session.pending_category == "radiator_fittings"
+            and intent.slots.get("metric_thread")
+            and any(
+                marker in normalize_text(message)
+                for marker in ["резьб", "клапан", "термоголов", "m30"]
+            )
+        ):
+            # The customer is answering the compatibility question about the
+            # valve connection, not starting a generic shut-off-valve search.
+            intent.category = "radiator_fittings"
+            intent.intent_type = "attribute_request"
+            intent.is_topic_change = False
+            intent.slots["thermostatic_head"] = True
+
         self._stabilize_active_goal(message, intent, session)
         self._ground_builtin_boiler_refinement(message, intent, session)
         self._reconcile_builtin_constraints(intent, session)
@@ -1011,7 +1100,7 @@ class ChatOrchestrator:
 
         # «этот насос», «тот что ты предложил» — это вопрос про показанное, а не смена
         # темы; иначе topic-change стёр бы контекст ещё до ответа агента.
-        if session.last_products and self._references_shown_products(message):
+        if session.last_products and self._references_shown_products(message, intent):
             intent.is_topic_change = False
         if session.last_products and self._looks_like_pump_boiler_compatibility(message):
             # The boiler SKU is the comparison target, not a command to discard
@@ -1089,6 +1178,8 @@ class ChatOrchestrator:
         turn_answered_slot_keys = {
             key for key in intent.slots if not str(key).startswith("_")
         }
+        intent.raw = dict(intent.raw or {})
+        intent.raw["current_turn_slot_keys"] = sorted(turn_answered_slot_keys)
 
         if engineering_interpretation and engineering_interpretation.output_accepted:
             self._persist_engineering_interpretation(
@@ -1100,6 +1191,56 @@ class ChatOrchestrator:
             # directly.  The deterministic requirements gate below chooses
             # the next missing fact and all numbers are rendered from the
             # canonical slots.  A later composer may still improve wording.
+
+        restored_skus = list(
+            (intent.raw or {}).get("product_reference_restored") or []
+        )
+        recall_text = normalize_text(message)
+        if (
+            restored_skus
+            and session.last_products
+            and not self._effective_requested_fields(message, intent)
+            and not any(
+                marker in recall_text
+                for marker in [
+                    "сравн",
+                    "аналог",
+                    "дешев",
+                    "комплект",
+                    "входит",
+                    "к нему",
+                    "к ней",
+                    "подходит",
+                    "совмест",
+                ]
+            )
+        ):
+            # A resolved branch return is already an identity-grounded lookup.
+            # Re-running fuzzy search against a short phrase such as
+            # ``трубу, не отвод`` can only lose that identity or reapply stale
+            # wording constraints.
+            recall_query = SearchQuery(
+                original_text=message,
+                category=intent.category,
+                slots=dict(session.slots),
+            )
+            answer = self.composer.compose_products(
+                session.last_products,
+                recall_query,
+                note="Вернул сохранённую подборку по этой ветке:",
+            )
+            agents_used.extend(["ResponseComposerAgent", "GuardrailsAgent"])
+            answer = self._guard_composed_answer(answer, "products", agents_used)
+            self._append_history(session, message, answer)
+            return self._response(
+                session_id,
+                answer,
+                session.last_products,
+                False,
+                intent,
+                session,
+                agents_used,
+            )
 
         direct_comparison = self._maybe_direct_sku_comparison_response(
             session_id,
@@ -2606,6 +2747,7 @@ class ChatOrchestrator:
         base = dict(session.slots)
         incoming = dict(new_slots)
         explicit = explicit_slots if explicit_slots is not None else new_slots
+        invalidated_keys: set[str] = set()
         if any(
             key in explicit
             for key in {"power_kw", "boiler_type", "boiler_types", "contours", "voltage_v"}
@@ -2643,7 +2785,92 @@ class ChatOrchestrator:
                 base["excluded_features"] = excluded
             else:
                 base.pop("excluded_features", None)
+        explicit_element = normalize_text(str(explicit.get("element_type") or ""))
+        if explicit_element:
+            # Product-kind-specific dimensions are not transferable.  Keeping
+            # pipe length on an elbow or elbow angle on a pipe can make every
+            # valid catalogue item fail otherwise-correct hard filters.
+            if explicit_element != "труба":
+                for key in ["length_mm", "total_length_m"]:
+                    base.pop(key, None)
+                    incoming.pop(key, None)
+                    invalidated_keys.add(key)
+            if explicit_element != "отвод":
+                base.pop("angle_deg", None)
+                incoming.pop("angle_deg", None)
+                invalidated_keys.add("angle_deg")
+            if explicit_element != "муфта":
+                base.pop("coupling_type", None)
+                incoming.pop("coupling_type", None)
+                invalidated_keys.add("coupling_type")
+
+        explicit_boiler_type = normalize_text(
+            str(explicit.get("boiler_type") or "")
+        )
+        previous_boiler_type = normalize_text(
+            str(base.get("boiler_type") or "")
+        )
+        boiler_type_changed = bool(
+            explicit_boiler_type
+            and explicit_boiler_type != previous_boiler_type
+        )
+        if explicit_boiler_type and (
+            explicit_boiler_type != previous_boiler_type
+            or "электр" in explicit_boiler_type
+        ):
+            base.pop("boiler_types", None)
+            incoming.pop("boiler_types", None)
+            invalidated_keys.add("boiler_types")
+            for key in [
+                "heat_sources",
+                "has_gas",
+                "has_electricity",
+                "combustion_chamber",
+                "needs_chimney",
+                "chimney_type",
+                "chimney_size",
+                "gas_type",
+            ]:
+                base.pop(key, None)
+                invalidated_keys.add(key)
+                if key in explicit:
+                    # A separately stated site capability (for example
+                    # ``electric boiler, but gas is also available``) belongs
+                    # to the current turn and must survive replacement of the
+                    # old boiler-specific constraints.
+                    invalidated_keys.discard(key)
+                else:
+                    incoming.pop(key, None)
+            if "электр" in explicit_boiler_type:
+                incoming["has_electricity"] = True
+                invalidated_keys.discard("has_electricity")
+            elif "газ" in explicit_boiler_type:
+                incoming["has_gas"] = True
+                invalidated_keys.discard("has_gas")
+        if boiler_type_changed or (
+            explicit_boiler_type and "газ" in explicit_boiler_type
+        ):
+            # Requirements assessment can be merged more than once in one
+            # turn. Clear stale electric-only constraints on every explicit
+            # gas merge so an earlier pre-merge snapshot cannot resurrect 380 V.
+            for key in ["voltage_v", "phase_count", "current_type"]:
+                base.pop(key, None)
+                invalidated_keys.add(key)
+                if key in explicit:
+                    invalidated_keys.discard(key)
+                else:
+                    incoming.pop(key, None)
+        if invalidated_keys:
+            self.engineering_requirements.forget(
+                session.category or "",
+                invalidated_keys,
+                session,
+            )
         merged_slots = normalize_engineering_slots(merge_slots(base, incoming))
+        if merged_slots.get("project_scope") == "warm_floor":
+            # Compatibility alias used by the deterministic project funnel.
+            # Keep it synchronized whether the scope came from rules or LLM.
+            merged_slots["scope_funnel"] = "warm_floor"
         # Presentation commands apply to one answer only. Persisting
         # ``result_limit=1`` after «назови один» silently restricted every
         # later catalogue request in the same session.
@@ -2826,6 +3053,15 @@ class ChatOrchestrator:
             # A full catalogue name is an identity lookup, even when it contains
             # spaces and therefore is not shaped like an SKU.
             return False
+        # The high-precision identity search requires almost complete coverage
+        # of a distinctive catalogue name/series.  When it already resolves a
+        # grounded card, a generic engineering questionnaire (application,
+        # design temperature, etc.) must not block the customer's explicit
+        # product request.  Applicability advice can still be given after the
+        # card is shown.
+        identity_query = self._build_query(message, intent, session)
+        if self.search_agent.search_by_name(message, identity_query, limit=1):
+            return False
         if (
             category == "pipes"
             and re.search(r"\bpn\s*\d{1,2}\b", text)
@@ -2856,15 +3092,61 @@ class ChatOrchestrator:
             return None
         text = normalize_text(message)
         ordinals = [
-            (["первый", "первого", "1-й", "1й", " 1 ", "первое"], 0),
-            (["второй", "второго", "2-й", "2й", " 2 ", "второе"], 1),
-            (["третий", "третьего", "3-й", "3й", " 3 ", "третье"], 2),
+            (
+                [
+                    "первый",
+                    "первого",
+                    "первому",
+                    "первой",
+                    "первую",
+                    "1-й",
+                    "1й",
+                    "первое",
+                ],
+                0,
+            ),
+            (
+                [
+                    "второй",
+                    "второго",
+                    "второму",
+                    "вторую",
+                    "2-й",
+                    "2й",
+                    "второе",
+                ],
+                1,
+            ),
+            (
+                [
+                    "третий",
+                    "третьего",
+                    "третьему",
+                    "третьей",
+                    "третью",
+                    "3-й",
+                    "3й",
+                    "третье",
+                ],
+                2,
+            ),
         ]
         padded = f" {text} "
         for markers, index in ordinals:
             if any(marker in padded for marker in markers):
                 if index < len(cards):
                     return index
+        stripped = text.strip(" .,!?:;")
+        if stripped in {"1", "2", "3"}:
+            index = int(stripped) - 1
+            return index if index < len(cards) else None
+        numbered_reference = re.search(
+            r"\b(?:вариант|товар|модель|номер)\w*\s*([123])\b",
+            text,
+        )
+        if numbered_reference:
+            index = int(numbered_reference.group(1)) - 1
+            return index if index < len(cards) else None
         for card in cards:
             if normalize_sku_token(card.sku) and normalize_sku_token(card.sku) in normalize_sku_token(message):
                 return cards.index(card)
@@ -3995,7 +4277,7 @@ class ChatOrchestrator:
             return None
         if not (
             re.search(r"\b(он|этот|эта|это|модель|котел)\b", text)
-            or self._references_shown_products(message)
+            or self._references_shown_products(message, intent)
         ):
             return None
 
@@ -7499,7 +7781,67 @@ class ChatOrchestrator:
         if not session.last_products or intent.is_topic_change:
             return False
         text = normalize_text(message)
-        references = self._references_shown_products(message)
+        raw_turn_slot_keys = (intent.raw or {}).get("current_turn_slot_keys")
+        current_turn_slot_keys = set(
+            intent.slots if raw_turn_slot_keys is None else raw_turn_slot_keys
+        )
+        active_category = (
+            intent.category if intent.category != "other" else session.category
+        )
+        selection_keys = {
+            "sku",
+            "brand",
+            "reference_brand",
+            "name_tokens",
+            "required_features",
+            "excluded_features",
+            "required_builtin_parts",
+            "excluded_builtin_parts",
+            "allow_alternatives",
+        }
+        actionable_keys = (
+            self.engineering_requirements.CATEGORY_KEYS.get(
+                active_category or "",
+                set(),
+            )
+            | selection_keys
+        )
+        requested_fields = self._effective_requested_fields(message, intent)
+        ordinal_card_reference = bool(
+            requested_fields
+            and self._select_ordinal_index(message, session.last_products) is not None
+        )
+        grounded_card_reference = (
+            self._references_shown_products(message, intent)
+            or ordinal_card_reference
+        )
+        selection_command = bool(
+            re.search(
+                r"\b(?:покажи|покажите|подбери|подберите|ищу|нужен|нужна|"
+                r"нужны|замени|теперь)\b",
+                text,
+            )
+        )
+        grounded_card_fact_question = bool(
+            grounded_card_reference
+            and requested_fields
+            and not selection_command
+        )
+        if (
+            current_turn_slot_keys.intersection(actionable_keys)
+            and not grounded_card_fact_question
+        ):
+            # An explicit current-turn requirement is a catalogue refinement,
+            # even if the semantic model called the utterance a card question.
+            # It must reach deterministic validation/search instead of being
+            # answered against the previously shown identity.
+            return False
+        references = (
+            grounded_card_reference
+            or bool(
+                (intent.raw or {}).get("dialog_act") == "product_question"
+            )
+        )
         if intent.intent_type in {"exact_sku", "link_request", "complectation"}:
             return False
         # The probabilistic router can label an explicit card follow-up as
@@ -7513,9 +7855,12 @@ class ChatOrchestrator:
             return False
         if self._wants_choose_one(message):
             return False
-        if "только в налич" in text:
+        if intent.slots.get("in_stock") is False:
             # This is a persistent catalogue filter, not a question about the
-            # stock of the card already on screen.
+            # stock of the card already on screen.  False is equally
+            # meaningful here: it explicitly removes an earlier stock filter.
+            return False
+        if intent.slots.get("in_stock") is True and "только в налич" in text:
             return False
         # A stock marker may accompany a new product refinement. Do not answer
         # «только в наличии» about the old card when this turn also changes a
@@ -7756,7 +8101,11 @@ class ChatOrchestrator:
         ]
         return any(marker in text for marker in open_markers) and not self._requested_parts(message)
 
-    def _references_shown_products(self, message: str) -> bool:
+    def _references_shown_products(
+        self,
+        message: str,
+        intent: IntentResult | None = None,
+    ) -> bool:
         # Однозначные ссылки на показанное. Дательные «к нему/к ней» намеренно НЕ
         # включаем — это companion-запрос («насос к нему»), а не вопрос про товар.
         text = normalize_text(message)
@@ -7783,6 +8132,44 @@ class ChatOrchestrator:
             ]
         )
         if explicit_reference:
+            return True
+        requested_fields = self._effective_requested_fields(message, intent)
+        if requested_fields and re.search(
+            r"\b(?:перв\w*|втор\w*|трет\w*|[123](?:-?й|й))\b",
+            text,
+        ) and any(
+            marker in text
+            for marker in [
+                "товар",
+                "вариант",
+                "модель",
+                "кран",
+                "насос",
+                "котел",
+                "котёл",
+                "труб",
+                "радиатор",
+                "бойлер",
+            ]
+        ):
+            return True
+        if requested_fields and (
+            any(
+                marker in text
+                for marker in [
+                    "у него",
+                    "у нее",
+                    "у неё",
+                    "у ней",
+                    "его ",
+                    "ее ",
+                    "её ",
+                    "этот",
+                    "эта ",
+                ]
+            )
+            or re.search(r"\b(?:он|она|оно)\b", text) is not None
+        ):
             return True
         # Short pronoun follow-ups are common after an exact SKU lookup.  Limit
         # them to unambiguous card-fact phrases so unrelated uses of «он/она» do
@@ -7811,6 +8198,46 @@ class ChatOrchestrator:
             ]
         )
 
+    @staticmethod
+    def _requested_card_fields(message: str) -> list[str]:
+        """Canonical card fields explicitly requested in the current turn."""
+        text = normalize_text(message)
+        groups = [
+            ("sku", ["артикул", "sku"]),
+            ("price", ["цен", "стоит", "стоимост", "сколько по деньгам", "почем"]),
+            ("stock", ["налич", "остат", "сколько осталось", "на складе"]),
+            ("url", ["ссылк", "карточк"]),
+            ("temperature", ["температур", "диапазон регулир"]),
+            ("thread", ["резьб", "присоедин"]),
+            ("power", ["мощност", "ватт", "квт"]),
+            ("head", ["напор"]),
+            ("flow", ["производительност", "расход"]),
+            ("mounting_length", ["монтажн", "длин"]),
+            ("diameter", ["диаметр", "размер"]),
+            ("material", ["материал", "армирован"]),
+            ("pressure", ["давлен", "pn"]),
+            ("contours", ["контур"]),
+            ("combustion_chamber", ["камера сгорания", "камерой"]),
+            ("characteristics", ["характерист", "параметр", "описан"]),
+        ]
+        return [name for name, markers in groups if any(marker in text for marker in markers)]
+
+    def _effective_requested_fields(
+        self,
+        message: str,
+        intent: IntentResult | None = None,
+    ) -> list[str]:
+        """Merge grounded rule fields with accepted semantic LLM fields."""
+        semantic = list((intent.raw or {}).get("requested_fields") or []) if intent else []
+        return list(
+            dict.fromkeys(
+                [
+                    *self._requested_card_fields(message),
+                    *semantic,
+                ]
+            )
+        )
+
     def _pump_requested_for_boiler_context(self, message: str, session: SessionState) -> bool:
         text = normalize_text(message)
         if "насос" not in text:
@@ -7825,9 +8252,14 @@ class ChatOrchestrator:
                 return True
         return False
 
-    def _build_context_block(self, session: SessionState) -> str:
+    def _build_context_block(
+        self,
+        session: SessionState,
+        cards: list[ProductCard] | None = None,
+    ) -> str:
         lines: list[str] = []
-        for index, card in enumerate(session.last_products[:3], start=1):
+        context_cards = cards if cards is not None else session.last_products
+        for index, card in enumerate(context_cards[:3], start=1):
             product = self._find_product_by_sku(card.sku)
             stock = card.stock_status
             if card.stock_qty is not None:
@@ -7870,10 +8302,371 @@ class ChatOrchestrator:
         if category and category != "other":
             session.category = category
 
+    def _remember_product_selection(
+        self,
+        session: SessionState,
+        cards: list[ProductCard],
+        intent: IntentResult,
+        agents_used: list[str],
+    ) -> None:
+        """Persist only grounded cards, independently for every product family."""
+        if not cards or not {
+            "FeedSearchAgent",
+            "ProductCardAgent",
+        }.issubset(agents_used):
+            # Context answers repeat already-grounded cards.  They must never
+            # turn an unexecuted correction (for example ``show unavailable``)
+            # into a new selection snapshot.
+            return
+        grouped: dict[str, list[ProductCard]] = {}
+        for card in cards:
+            product = self._find_product_by_sku(card.sku)
+            category = (
+                self.search_agent.canonical_category(product)
+                if product
+                else intent.category
+            )
+            if not category or category == "other":
+                continue
+            grouped.setdefault(category, []).append(card)
+
+        user_message = ""
+        if len(session.history) >= 2 and session.history[-2].get("role") == "user":
+            user_message = session.history[-2].get("content", "")
+        effective_slots = self._normalized_query_slots(
+            merge_slots(session.slots, intent.slots)
+        )
+        selection_keys = {
+            "sku",
+            "brand",
+            "reference_brand",
+            "name_tokens",
+            "required_features",
+            "excluded_features",
+            "required_builtin_parts",
+            "excluded_builtin_parts",
+            "allow_alternatives",
+            "cheap",
+        }
+        for category, category_cards in grouped.items():
+            allowed_keys = (
+                self.engineering_requirements.CATEGORY_KEYS.get(category, set())
+                | self.engineering_requirements.COMMERCIAL_KEYS
+                | self.engineering_requirements.SHARED_KEYS
+                | selection_keys
+            )
+            constraints = {
+                key: value
+                for key, value in effective_slots.items()
+                if key in allowed_keys
+                and not key.startswith("_")
+                and key not in TRANSIENT_QUERY_SLOTS
+            }
+            branch = session.product_branches.setdefault(
+                category,
+                ProductBranchState(),
+            )
+            skus = [normalize_sku_token(card.sku) for card in category_cards]
+            if branch.selections:
+                current = branch.selections[-1]
+                current_skus = [normalize_sku_token(sku) for sku in current.product_skus]
+                if current_skus == skus:
+                    # A price/stock/passport follow-up must not create a fake new
+                    # selection, but useful explicit constraints may enrich it.
+                    if constraints:
+                        current.constraints = merge_slots(
+                            current.constraints,
+                            constraints,
+                        )
+                    continue
+            branch.selections.append(
+                ProductSelectionSnapshot(
+                    category=category,
+                    product_skus=[card.sku for card in category_cards],
+                    constraints=constraints,
+                    user_message=user_message,
+                )
+            )
+            # A bounded referent history is sufficient for conversational
+            # ordinals and avoids unbounded session growth.
+            branch.selections = branch.selections[-12:]
+
+    def _referenced_product_category(
+        self,
+        message: str,
+        intent: IntentResult,
+        session: SessionState,
+    ) -> str | None:
+        text = normalize_text(message)
+        if (
+            "sewer" in session.product_branches
+            and "труб" in text
+            and any(marker in text for marker in ["не отвод", "не тройник", "не муфт"])
+        ):
+            return "sewer"
+        explicit_category, explicit_score = self.intent_router._detect_category(text)
+        if explicit_category != "other" and explicit_score >= 0.55:
+            return explicit_category
+        semantic_target = str((intent.raw or {}).get("target_category") or "")
+        if semantic_target:
+            return semantic_target
+        marker_groups = [
+            ("radiator_fittings", ["термоголов", "радиаторн клап", "термостатическ голов"]),
+            ("pumps", ["насос", "помп"]),
+            ("boilers", ["котел", "котёл", "котл"]),
+            ("sewer", ["канализац", "отвод", "тройник", "муфт"]),
+            ("pipes", ["труб"]),
+            ("valves", ["кран", "вентил"]),
+            ("radiators", ["радиатор", "батаре"]),
+            ("water_heaters", ["бойлер", "водонагрев"]),
+        ]
+        for category, markers in marker_groups:
+            if any(marker in text for marker in markers):
+                return category
+        if intent.category != "other":
+            return intent.category
+        return None
+
+    @staticmethod
+    def _looks_like_product_recall(message: str) -> bool:
+        text = normalize_text(message)
+        ordinal_reference = bool(
+            any(
+                marker in text
+                for marker in ["первый", "первая", "первую", "первого", "предыдущ"]
+            )
+            and any(
+                marker in text
+                for marker in [
+                    "вариант",
+                    "товар",
+                    "модель",
+                    "показан",
+                    "насос",
+                    "котел",
+                    "котёл",
+                    "труб",
+                    "радиатор",
+                    "батаре",
+                    "кран",
+                    "бойлер",
+                    "водонагрев",
+                ]
+            )
+        )
+        return bool(
+            any(
+                marker in text
+                for marker in [
+                    "вернись",
+                    "вернемся",
+                    "вернёмся",
+                    "вернуться",
+                    "обратно к",
+                    "снова к",
+                    "напомни",
+                    "который был",
+                    "что был",
+                ]
+            )
+            or ordinal_reference
+            or ("не отвод" in text and "труб" in text)
+            or ("не кран" in text and "насос" in text)
+        )
+
+    def _snapshot_reference_score(
+        self,
+        snapshot: ProductSelectionSnapshot,
+        message: str,
+        intent: IntentResult,
+        index: int,
+    ) -> float:
+        text = normalize_text(message)
+        evidence_parts = [snapshot.user_message]
+        evidence_parts.extend(snapshot.product_skus)
+        evidence_parts.extend(
+            f"{key} {value}" for key, value in snapshot.constraints.items()
+        )
+        for sku in snapshot.product_skus:
+            product = self._find_product_by_sku(sku)
+            if not product:
+                continue
+            evidence_parts.extend([product.name, product.description or ""])
+            evidence_parts.extend(
+                f"{key} {value}"
+                for key, value in product.attributes_normalized.items()
+            )
+        evidence = normalize_text(" ".join(evidence_parts))
+        score = index * 0.01  # latest is the default when no qualifier exists
+
+        explicit_mm = re.findall(r"(?<!\d)(\d{2,4})\s*мм\b", text)
+        for value in explicit_mm:
+            score += 8.0 if re.search(rf"(?<!\d){value}(?!\d)", evidence) else -8.0
+
+        for key, value in intent.slots.items():
+            if key.startswith("_") or key in TRANSIENT_QUERY_SLOTS:
+                continue
+            normalized_value = normalize_text(str(value))
+            if normalized_value and normalized_value in evidence:
+                score += 3.0
+
+        positive_markers = {
+            "газов": ["газов"],
+            "электр": ["электр"],
+            "алюмин": ["алюмин", "alux"],
+            "стеклов": ["стеклов", "fiber", "fb"],
+            "труб": ["труб"],
+            "отвод": ["отвод"],
+            "насос": ["насос"],
+            "кран": ["кран"],
+        }
+        for message_marker, evidence_markers in positive_markers.items():
+            if message_marker in text:
+                score += 2.0 if any(m in evidence for m in evidence_markers) else -1.0
+        if "не отвод" in text:
+            score += -10.0 if "отвод" in evidence else 4.0
+        if "не труб" in text:
+            score += -10.0 if "труб" in evidence else 4.0
+        return score
+
+    def _restore_product_reference(
+        self,
+        message: str,
+        intent: IntentResult,
+        session: SessionState,
+    ) -> bool:
+        """Resolve a conversational reference against branch-scoped history."""
+        if not (
+            self._looks_like_product_recall(message)
+            or (intent.raw or {}).get("dialog_act") == "return"
+        ):
+            return False
+        category = self._referenced_product_category(message, intent, session)
+        if not category:
+            return False
+        branch = session.product_branches.get(category)
+        if not branch or not branch.selections:
+            return False
+
+        candidates = list(branch.selections)
+        text = normalize_text(message)
+        first_historical_selection = bool(
+            re.search(
+                r"\bперв\w*\s+(?:подборк|поиск|результат|ветк)\w*\b",
+                text,
+            )
+        )
+        if first_historical_selection:
+            snapshot = candidates[0]
+        elif "предыдущ" in text and len(candidates) > 1:
+            snapshot = candidates[-2]
+        else:
+            snapshot = max(
+                enumerate(candidates),
+                key=lambda item: self._snapshot_reference_score(
+                    item[1], message, intent, item[0]
+                ),
+            )[1]
+        products = [
+            product
+            for sku in snapshot.product_skus
+            if (product := self._find_product_by_sku(sku)) is not None
+        ]
+        qualifier_keys = (
+            self.engineering_requirements.CATEGORY_KEYS.get(category, set())
+            | self.engineering_requirements.COMMERCIAL_KEYS
+            | {"brand", "sku", "required_features", "excluded_features"}
+        )
+        qualifier_slots = {
+            key: value
+            for key, value in intent.slots.items()
+            if key in qualifier_keys and key not in TRANSIENT_QUERY_SLOTS
+        }
+        if qualifier_slots:
+            qualified_products = [
+                product
+                for product in products
+                if self.search_agent.matches_constraints(
+                    product,
+                    category,
+                    qualifier_slots,
+                )
+            ]
+            if not qualified_products:
+                # The remembered result set does not contain the explicitly
+                # qualified item.  Let the ordinary search path handle it
+                # instead of restoring unrelated cards from the same page.
+                return False
+            products = qualified_products
+        query = SearchQuery(
+            original_text=message,
+            category=category,
+            slots=dict(snapshot.constraints),
+        )
+        restored_cards = [
+            card
+            for product in products
+            if (card := self.card_agent.build_card(product, query)) is not None
+        ]
+        if not restored_cards:
+            return False
+        if not first_historical_selection:
+            ordinal_index = self._select_ordinal_index(message, restored_cards)
+            if ordinal_index is not None:
+                restored_cards = [restored_cards[ordinal_index]]
+
+        restored_constraints = {
+            key: value
+            for key, value in snapshot.constraints.items()
+            if not key.startswith("_") and key not in TRANSIENT_QUERY_SLOTS
+        }
+        current_turn_slots = dict(intent.slots)
+        if category in self.engineering_requirements.CATEGORIES:
+            self.engineering_requirements.activate_goal(
+                message,
+                category,
+                session,
+                explicit_slots=restored_constraints,
+                returning=True,
+            )
+        else:
+            session.slots = dict(restored_constraints)
+        selected_turn_slots = merge_slots(restored_constraints, current_turn_slots)
+        intent.slots = self._merge_persistent_slots(
+            session,
+            selected_turn_slots,
+            explicit_slots=selected_turn_slots,
+        )
+        session.last_products = restored_cards
+        session.shown_product_skus = [card.sku for card in restored_cards]
+        session.shown_result_signature = None
+        session.pending_complectation_parts = []
+        intent.category = category
+        session.category = category
+        intent.is_topic_change = False
+        intent.raw = dict(intent.raw or {})
+        intent.raw["product_reference_restored"] = [
+            card.sku for card in restored_cards
+        ]
+        # A deliberate return supersedes an unfinished question from the branch
+        # the customer just left.
+        if category in self.engineering_requirements.CATEGORIES:
+            self.engineering_requirements.remember(
+                category,
+                session.slots,
+                session,
+            )
+            self.engineering_requirements.clear_pending_question(session)
+        else:
+            session.clear_pending_question_state()
+        session.question_repeats = 0
+        return True
+
     def _contextual_fallback(
         self,
         message: str,
         cards: list[ProductCard],
+        requested_fields: list[str] | None = None,
     ) -> str:
         """Grounded deterministic answer when a context LLM omits requested facts."""
         if not cards:
@@ -7882,37 +8675,125 @@ class ChatOrchestrator:
                 "что нужно подобрать."
             )
         text = normalize_text(message)
+        requested_fields = requested_fields or self._requested_card_fields(message)
+        attribute_markers = {
+            "temperature": ["температур", "диапазон", "°c", "°с"],
+            "thread": ["резьб", "присоедин"],
+            "power": ["мощност", "потребляем", "квт", "вт"],
+            "head": ["напор"],
+            "flow": ["производительност", "расход", "подач"],
+            "mounting_length": ["монтажн", "длин"],
+            "diameter": ["диаметр", "размер"],
+            "material": ["материал", "армирован"],
+            "pressure": ["давлен", "pn"],
+            "contours": ["контур"],
+            "combustion_chamber": ["камера сгорания", "камера"],
+        }
+        attribute_labels = {
+            "temperature": "температура",
+            "thread": "резьба/присоединение",
+            "power": "мощность",
+            "head": "напор",
+            "flow": "расход/производительность",
+            "mounting_length": "монтажная длина",
+            "diameter": "диаметр/размер",
+            "material": "материал",
+            "pressure": "давление",
+            "contours": "количество контуров",
+            "combustion_chamber": "камера сгорания",
+        }
         lines: list[str] = []
         for card in cards[:3]:
             lines.append(f"{card.name}. Артикул: {card.sku}.")
             details: list[str] = []
-            if any(marker in text for marker in ["характерист", "опис", "отлич", "главн"]):
+            if "characteristics" in requested_fields or any(
+                marker in text for marker in ["отлич", "главн"]
+            ):
                 details.extend(
                     f"{key}: {value}"
                     for key, value in list(card.characteristics.items())[:6]
                 )
-            if any(marker in text for marker in ["цен", "стоит", "сколько"]):
+            if "price" in requested_fields:
                 details.append(f"цена: {card.price:g} {card.currency}")
-            if "налич" in text:
+            if "stock" in requested_fields:
                 stock = card.stock_status
                 if card.stock_qty is not None:
                     stock = f"{stock}, {card.stock_qty} шт."
                 details.append(f"наличие: {stock}")
+
+            product = self._find_product_by_sku(card.sku)
+            grounded_attributes: dict[str, str] = dict(card.characteristics)
+            if product:
+                grounded_attributes.update(product.attributes_normalized)
+            emitted_attributes: set[str] = set()
+            for field in requested_fields:
+                markers = attribute_markers.get(field)
+                if not markers:
+                    continue
+                matches = [
+                    (key, value)
+                    for key, value in grounded_attributes.items()
+                    if value
+                    and any(
+                        marker in normalize_text(str(key))
+                        for marker in markers
+                    )
+                ]
+                for key, value in matches[:2]:
+                    signature = f"{normalize_text(str(key))}:{normalize_text(str(value))}"
+                    if signature in emitted_attributes:
+                        continue
+                    emitted_attributes.add(signature)
+                    details.append(f"{key}: {value}")
+                description_match = False
+                if not matches and product and product.description:
+                    sentences = re.split(r"(?<=[.!?])\s+", product.description)
+                    sentence = next(
+                        (
+                            sentence.strip()
+                            for sentence in sentences
+                            if any(marker in normalize_text(sentence) for marker in markers)
+                        ),
+                        None,
+                    )
+                    if sentence:
+                        details.append(sentence[:260])
+                        description_match = True
+                if not matches and not description_match:
+                    details.append(
+                        f"{attribute_labels.get(field, field)}: в карточке не указано"
+                    )
             if details:
                 lines.append("Основные данные: " + "; ".join(details) + ".")
-            if "ссыл" in text:
+            if "url" in requested_fields:
                 lines.append(f"Ссылка: {card.url}")
         return "\n".join(lines)
 
-    def _is_basic_card_fact_question(self, message: str) -> bool:
+    def _is_basic_card_fact_question(
+        self,
+        message: str,
+        intent: IntentResult | None = None,
+    ) -> bool:
         """Facts copied from one card are safer and clearer without free-form LLM prose."""
         text = normalize_text(message)
         if any(
             marker in text
-            for marker in ["посовет", "что лучше", "что взять", "что выбрать", "почему"]
+            for marker in [
+                "посовет",
+                "рекомендац",
+                "что лучше",
+                "что взять",
+                "что выбрать",
+                "почему",
+                "какой вывод",
+                "вывод можно",
+                "практическ",
+                "оцени",
+                "осторожн",
+            ]
         ):
             return False
-        return any(
+        return bool(self._effective_requested_fields(message, intent)) or any(
             marker in text
             for marker in [
                 "характерист",
@@ -7937,12 +8818,21 @@ class ChatOrchestrator:
         session: SessionState,
         agents_used: list[str],
     ) -> ChatResponse | None:
-        context_block = self._build_context_block(session)
+        context_cards = session.last_products
+        ordinal_index = self._select_ordinal_index(message, context_cards)
+        if ordinal_index is not None:
+            context_cards = [context_cards[ordinal_index]]
+        context_block = self._build_context_block(session, context_cards)
         if not context_block:
             return None
-        fallback = self._contextual_fallback(message, session.last_products)
+        requested_fields = self._effective_requested_fields(message, intent)
+        fallback = self._contextual_fallback(
+            message,
+            context_cards,
+            requested_fields,
+        )
         agents_used.append("ResponseComposerAgent")
-        if self._is_basic_card_fact_question(message):
+        if self._is_basic_card_fact_question(message, intent):
             # A free-form rewrite of basic card facts repeatedly introduced semantic
             # inventions (components, materials and temperature limits).  Keep LLM
             # for advice/comparison, but copy identity and catalogue facts exactly.
@@ -7951,7 +8841,7 @@ class ChatOrchestrator:
             return self._response(
                 session.session_id,
                 fallback,
-                session.last_products,
+                context_cards,
                 False,
                 intent,
                 session,
@@ -7965,7 +8855,7 @@ class ChatOrchestrator:
             normalized_answer = normalize_sku_token(answer)
             if not any(
                 normalize_sku_token(card.sku) in normalized_answer
-                for card in session.last_products
+                for card in context_cards
             ):
                 required_issues.append("LLM context answer omitted requested SKU")
         guard = self.guardrails.validate_context_answer(answer, context_block)
@@ -7977,7 +8867,7 @@ class ChatOrchestrator:
             answer = fallback
         self._append_history(session, message, answer)
         return self._response(
-            session.session_id, answer, session.last_products, False, intent, session, agents_used
+            session.session_id, answer, context_cards, False, intent, session, agents_used
         )
 
     def _maybe_analogs_response(
@@ -10889,6 +11779,11 @@ class ChatOrchestrator:
                 keys.append("operating_temperature_c")
             if "давлен" in text:
                 keys.append("operating_pressure_bar")
+        if category == "radiator_fittings":
+            if "модель термостатического клапана" in text or "резьб" in text:
+                keys.append("metric_thread")
+            if "термоголов" in text:
+                keys.append("thermostatic_head")
             if "диаметр" in text:
                 keys.append("diameter_mm")
             if "материал" in text or "ppr" in text or "pex" in text:
@@ -11240,7 +12135,7 @@ class ChatOrchestrator:
         if session.pending_category == "pumps" and not intent.is_topic_change:
             return True
         if (
-            session.pending_category in {"filters", "controls"}
+            session.pending_category in {"filters", "controls", "radiator_fittings"}
             and intent.category in {session.pending_category, "other"}
             and not intent.is_topic_change
         ):
@@ -11301,7 +12196,7 @@ class ChatOrchestrator:
         if session.pending_category == "pumps" and not intent.is_topic_change:
             intent.category = session.pending_category
         elif (
-            session.pending_category in {"filters", "controls"}
+            session.pending_category in {"filters", "controls", "radiator_fittings"}
             and intent.category in {session.pending_category, "other"}
             and not intent.is_topic_change
         ):
@@ -11360,21 +12255,24 @@ class ChatOrchestrator:
             index = self._select_ordinal_index(message, session.last_products)
             if index is not None:
                 selected = session.last_products[index]
-            elif len(session.last_products) == 1 and any(
-                marker in text
-                for marker in [
-                    "у него",
-                    "у неё",
-                    "у нее",
-                    "этого",
-                    "этой",
-                    "сколько осталось",
-                    "только в налич",
-                    "а в налич",
-                    "он в налич",
-                    "она в налич",
-                    "есть ли",
-                ]
+            elif len(session.last_products) == 1 and (
+                self._references_shown_products(message, intent)
+                or any(
+                    marker in text
+                    for marker in [
+                        "у него",
+                        "у неё",
+                        "у нее",
+                        "этого",
+                        "этой",
+                        "сколько осталось",
+                        "только в налич",
+                        "а в налич",
+                        "он в налич",
+                        "она в налич",
+                        "есть ли",
+                    ]
+                )
             ):
                 selected = session.last_products[0]
         if selected is None:
@@ -11384,6 +12282,12 @@ class ChatOrchestrator:
             # This turn is handled before the normal slot merge, therefore the
             # filter must be made durable explicitly.
             session.slots["in_stock"] = True
+        else:
+            # A yes/no question about the one shown identity is not a catalogue
+            # filter. Prevent the final response guard from hiding the very card
+            # whose verified stock status we are reporting.
+            intent.slots.pop("in_stock", None)
+            intent.flags["in_stock"] = False
         if selected.stock_qty is not None:
             stock = (
                 f"в наличии {selected.stock_qty} шт."
@@ -11398,6 +12302,8 @@ class ChatOrchestrator:
             if "дешев" in text
             else f"По товару {selected.sku} ({selected.name}): {stock}"
         )
+        if "price" in self._effective_requested_fields(message, intent) and "дешев" not in text:
+            answer += f" Цена: {selected.price:g} {selected.currency}."
         if strict_in_stock and not self._card_is_in_stock(selected):
             answer += (
                 " По фильтру «только в наличии» карточку не показываю. "
@@ -11418,9 +12324,21 @@ class ChatOrchestrator:
         if self._wants_choose_one(message):
             return None
         text = normalize_text(message)
-        if not any(
+        requested_fields = set(self._effective_requested_fields(message, intent))
+        if requested_fields - {"sku", "price", "stock", "url"}:
+            # A multi-attribute question belongs to the shared grounded card
+            # answer, which guarantees that every requested field is covered.
+            return None
+        if "price" not in requested_fields and not any(
             marker in text
-            for marker in ["цен", "стоит", "стоимост", "сколько выйдет", "по деньгам"]
+            for marker in [
+                "цен",
+                "стоит",
+                "стоимост",
+                "сколько выйдет",
+                "по деньгам",
+                "почем",
+            ]
         ):
             return None
         cards: list[ProductCard] = []
@@ -11430,6 +12348,12 @@ class ChatOrchestrator:
                 cards.append(card)
         if not cards:
             return None
+        ordinal_index = self._select_ordinal_index(message, session.last_products)
+        if ordinal_index is not None:
+            selected = session.last_products[ordinal_index]
+            if selected not in cards:
+                return None
+            cards = [selected]
         cards.sort(key=lambda card: card.price)
         label = PROJECT_CATEGORY_LABELS.get(intent.category, "Товар").lower()
         lines = [f"По уже показанной подборке цены на {label}:"]
@@ -11694,10 +12618,11 @@ class ChatOrchestrator:
         # even if the router sees the product noun ("кран", "труба") and emits
         # broad_category.  Preserve the card so the grounded follow-up handler
         # can answer from its feed attributes.
-        if session.last_products and self._asks_shown_product_purpose(
-            normalize_text(message)
-        ):
-            return False
+        if session.last_products:
+            if self._asks_shown_product_purpose(normalize_text(message)):
+                return False
+            if self._references_shown_products(message, intent):
+                return False
         if not session.slots or session.topic_changed:
             return False
         if intent.category == "other" or intent.category != session.category:
@@ -12173,6 +13098,17 @@ class ChatOrchestrator:
                 if "GuardrailsAgent" not in agents_used:
                     agents_used.append("GuardrailsAgent")
 
+        # ``last_products`` is only the active view.  Snapshot every grounded
+        # non-empty response into its canonical branch so later topic switches
+        # cannot destroy the referent.  Duplicate follow-ups are coalesced by
+        # SKU and prices/stock are intentionally refreshed on restoration.
+        self._remember_product_selection(session, cards, intent, agents_used)
+        # Some response paths save before calling this final guard/serialization
+        # layer.  Persist after branch memory and stock filtering so stores that
+        # copy on save (Redis/file/database), not only the in-memory store, see
+        # the exact same state returned in debug.
+        self.sessions.save(session)
+
         intent_requested = bool((intent.raw or {}).get("llm_requested"))
         intent_output_accepted = bool((intent.raw or {}).get("llm_output_accepted"))
         response_requested = bool(getattr(self.composer, "last_llm_requested", False))
@@ -12248,6 +13184,10 @@ class ChatOrchestrator:
                 "category": intent.category,
                 "slots": session.slots,
                 "project_context": session.project_context,
+                "product_branch_categories": sorted(session.product_branches),
+                "restored_product_skus": (intent.raw or {}).get(
+                    "product_reference_restored"
+                ),
                 "agents_used": agents_used,
                 "llm_used": transport_succeeded,
                 "llm_requested": intent_requested

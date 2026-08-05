@@ -305,6 +305,13 @@ def _extract_common_dimensions(text: str, category: str, slots: dict[str, Any]) 
             )
 
     if category in THREADED_CATEGORIES:
+        metric_thread = re.search(
+            r"(?<![a-zа-я])m\s*(\d{1,3})\s*[xх×]\s*(\d+(?:[,.]\d+)?)",
+            text,
+        )
+        if metric_thread:
+            pitch = metric_thread.group(2).replace(",", ".")
+            slots["metric_thread"] = f"M{int(metric_thread.group(1))}x{pitch}"
         thread_standard = re.search(
             r"(?<![a-zа-я])(?P<standard>g|rp|rc|r)\s*"
             r"(?P<size>1\s+1/4|1\s+1/2|3/4|1/2|3/8|1/4|2|1)(?![\d/])",
@@ -356,7 +363,12 @@ def _extract_pipe_and_fitting_notation(
 
         if re.search(r"\bevoh\b|(?:кислородн|антидиффузионн)\w*\s+(?:барьер|слой)", text):
             slots["oxygen_barrier"] = True
-        if re.search(r"\b(?:al|aluminium)\b|алюмини\w*\s+(?:слой|фольг)", text):
+        if re.search(
+            r"\b(?:al|aluminium|alux)\b|"
+            r"армир\w*\s+алюминием\b|"
+            r"алюминиев\w*\s+(?:слой|фольг\w*)",
+            text,
+        ):
             slots["reinforcement"] = "алюминий"
         elif re.search(r"\b(?:gf|fb|fiber)\b|стекловолок", text):
             slots["reinforcement"] = "стекловолокно"
@@ -539,6 +551,15 @@ def _extract_heating_and_water_notation(
 
 
 def _extract_radiator_notation(text: str, slots: dict[str, Any]) -> None:
+    if "биметалл" in text:
+        slots["radiator_type"] = "биметаллический"
+    elif "алюмин" in text:
+        slots["radiator_type"] = "алюминиевый"
+    elif "панельн" in text:
+        slots["radiator_type"] = "панельный"
+    elif "стальн" in text:
+        slots["radiator_type"] = "стальной"
+
     center = re.search(
         r"(?:межосев\w*|м\s*[/.-]?\s*о)\D{0,12}"
         r"(\d{2,4})(?:\s*мм)?",

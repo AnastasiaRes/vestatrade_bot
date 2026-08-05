@@ -146,6 +146,22 @@ class SlotFillingAgent:
         return SlotFillingResult(slots=slots)
 
     def _pipes(self, slots: dict) -> SlotFillingResult:
+        warm_floor_scope = bool(
+            slots.get("project_scope") == "warm_floor"
+            or slots.get("scope_funnel") == "warm_floor"
+            or slots.get("has_warm_floor") is True
+        )
+        if warm_floor_scope and not (
+            slots.get("warm_floor_area_m2") or slots.get("area_m2")
+        ):
+            return SlotFillingResult(
+                slots=slots,
+                needs_clarification=True,
+                question=(
+                    "Какая площадь тёплого пола в м²? По ней рассчитаю метраж "
+                    "трубы и количество контуров."
+                ),
+            )
         if not slots.get("pipe_purpose"):
             if slots.get("diameter_mm"):
                 question = (
@@ -1304,6 +1320,17 @@ class SlotFillingAgent:
         return SlotFillingResult(slots=slots)
 
     def _radiator(self, slots: dict) -> SlotFillingResult:
+        if slots.get("thermostatic_head") is True:
+            if not slots.get("metric_thread") and not slots.get("size_inch"):
+                return SlotFillingResult(
+                    slots=slots,
+                    needs_clarification=True,
+                    question=(
+                        "Уточните модель термостатического клапана или резьбу "
+                        "под термоголовку, например M30x1,5."
+                    ),
+                )
+            return SlotFillingResult(slots=slots)
         missing = []
         if not slots.get("connection_form"):
             missing.append("прямое или угловое подключение")
@@ -1322,6 +1349,7 @@ class SlotFillingAgent:
         return SlotFillingResult(slots=slots)
 
     def _radiators(self, slots: dict) -> SlotFillingResult:
+        has_type = bool(slots.get("radiator_type"))
         has_size = any(
             slots.get(key)
             for key in [
@@ -1330,17 +1358,24 @@ class SlotFillingAgent:
                 "length_mm",
                 "sections",
                 "size_inch",
-                "radiator_type_code",
+                "radiator_panel_type",
+                "area_m2",
+                "heat_load_w",
+                "heat_output_w",
             ]
         )
         if not has_size:
+            missing = []
+            if not has_type:
+                missing.append("тип (панельный, биметаллический или алюминиевый)")
+            missing.append(
+                "размер/межосевое расстояние, количество секций или требуемую теплоотдачу"
+            )
             return SlotFillingResult(
                 slots=slots,
                 needs_clarification=True,
                 question=(
-                    "Уточните тип радиатора (панельный, биметаллический или "
-                    "алюминиевый) и размер: высоту/межосевое расстояние, длину "
-                    "или количество секций."
+                    "Уточните для радиатора: " + "; ".join(missing) + "."
                 ),
             )
         return SlotFillingResult(slots=slots)

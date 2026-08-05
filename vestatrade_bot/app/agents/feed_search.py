@@ -602,10 +602,7 @@ class FeedSearchAgent:
             and self.canonical_category(product) != "water_heaters"
         ):
             return False
-        return _product_matches_hard_constraints(
-            product,
-            slots,
-        ) and self._semantic_slots_match(product, category, dict(slots))
+        return self._slots_match(product, dict(slots), category)
 
     def search(self, query: SearchQuery) -> list[Product]:
         if not self.products:
@@ -1186,7 +1183,19 @@ class FeedSearchAgent:
         """Heating controls/actuators, excluding complete valves and appliances."""
         name = normalize_text(product.name)
         type_text = self._attribute_text(product, ["тип товара"])
+        path = normalize_text(product.category_path)
         if self._is_actual_valve(product):
+            return False
+        if (
+            "радиатор" in path
+            and (
+                "термоголов" in f"{name} {type_text}"
+                or (
+                    "термостатическ" in f"{name} {type_text}"
+                    and "голов" in f"{name} {type_text}"
+                )
+            )
+        ):
             return False
         return bool(
             any(
@@ -2756,6 +2765,43 @@ class FeedSearchAgent:
                 return False
         return True
 
+    def _radiator_type_matches(self, product: Product, requested: object) -> bool:
+        """Match the construction family without confusing material details.
+
+        A bimetal card can legitimately mention both steel and aluminium in
+        its description.  The product identity/type fields are therefore the
+        authority; scanning the whole description would make it pass an
+        explicit correction to an aluminium radiator.
+        """
+        expected = normalize_text(str(requested))
+        evidence = normalize_text(
+            " ".join(
+                [
+                    product.name,
+                    product.category_path,
+                    self._attribute_text(
+                        product,
+                        [
+                            "тип товара",
+                            "тип радиатора",
+                            "вид радиатора",
+                            "материал радиатора",
+                            "материал",
+                        ],
+                    ),
+                ]
+            )
+        )
+        if "биметалл" in expected:
+            return "биметалл" in evidence
+        if "алюмин" in expected:
+            return "алюмин" in evidence and "биметалл" not in evidence
+        if "панельн" in expected:
+            return "панельн" in evidence
+        if "стальн" in expected:
+            return "стальн" in evidence and "биметалл" not in evidence
+        return bool(expected and expected in evidence)
+
     def _thermostatic_head_matches(self, product: Product, requested: object) -> bool:
         if isinstance(requested, str):
             wants_thermostatic = normalize_text(requested) not in {
@@ -2949,6 +2995,19 @@ class FeedSearchAgent:
             if expected_gender == "female" and code not in {"ff", "fm"}:
                 return False
             if expected_gender == "male" and code not in {"fm", "mm"}:
+                return False
+        if slots.get("metric_thread"):
+            requested_metric = re.sub(
+                r"[\s,х×]",
+                lambda match: "." if match.group(0) == "," else "x" if match.group(0) in {"х", "×"} else "",
+                normalize_text(str(slots["metric_thread"])),
+            )
+            evidence_metric = re.sub(
+                r"[\s,х×]",
+                lambda match: "." if match.group(0) == "," else "x" if match.group(0) in {"х", "×"} else "",
+                self._structured_text(product),
+            )
+            if requested_metric not in evidence_metric:
                 return False
         if slots.get("ip_rating") and not self._ip_rating_matches(
             product, slots["ip_rating"]
@@ -3303,6 +3362,12 @@ class FeedSearchAgent:
                 ):
                     return False
         if category == "radiators":
+            radiator_type = slots.get("radiator_type")
+            if radiator_type and not self._radiator_type_matches(
+                product,
+                radiator_type,
+            ):
+                return False
             panel_type = slots.get("radiator_panel_type")
             if panel_type is not None:
                 evidence = self._structured_text(product)
@@ -3565,6 +3630,7 @@ class FeedSearchAgent:
                 "pressure_class_bar",
                 "thread_standard",
                 "thread_gender",
+                "metric_thread",
                 "flow_coefficient_kind",
                 "flow_coefficient",
                 "valve_ways",
@@ -3583,6 +3649,7 @@ class FeedSearchAgent:
                 "pressure_class_bar",
                 "thread_standard",
                 "thread_gender",
+                "metric_thread",
                 "flow_coefficient_kind",
                 "flow_coefficient",
                 "valve_ways",
@@ -3590,6 +3657,7 @@ class FeedSearchAgent:
                 "differential_pressure_bar",
             },
             "radiators": {
+                "radiator_type",
                 "radiator_size_mm",
                 "radiator_height_mm",
                 "length_mm",
@@ -3782,6 +3850,13 @@ class FeedSearchAgent:
         sections = slots.get("sections")
         if sections:
             score += 20 if self._dimension_matches(product, int(sections), ["секц"]) else -10
+
+        radiator_type = slots.get("radiator_type")
+        if radiator_type:
+            if self._radiator_type_matches(product, radiator_type):
+                score += 30
+            else:
+                return 0
 
         pump_type = slots.get("pump_type")
         if pump_type:

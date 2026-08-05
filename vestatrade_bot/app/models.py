@@ -132,6 +132,33 @@ class PendingQuestionState(BaseModel):
     intent_type: str | None = None
 
 
+class ProductSelectionSnapshot(BaseModel):
+    """One grounded catalogue selection kept for later conversational recall.
+
+    Product cards are the trusted facts shown to the customer.  ``constraints``
+    contain only the selection hints from that turn and are used to resolve
+    references such as ``the 180 mm pump`` or ``the first pipe``.  Keeping this
+    separate from engineering ``slots`` prevents a valve turn from overwriting
+    the pump the customer may return to later.
+    """
+
+    category: str
+    # Store identities, not cards: prices, stock and attributes must be rebuilt
+    # from the current feed whenever the customer returns to this selection.
+    product_skus: list[str] = Field(default_factory=list)
+    constraints: dict[str, Any] = Field(default_factory=dict)
+    user_message: str = ""
+    updated_at: str = Field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+
+
+class ProductBranchState(BaseModel):
+    """Chronological, category-scoped product referents for one dialogue."""
+
+    selections: list[ProductSelectionSnapshot] = Field(default_factory=list)
+
+
 class SessionState(BaseModel):
     session_id: str
     last_intent: str | None = None
@@ -143,6 +170,10 @@ class SessionState(BaseModel):
     # later "вернёмся к трубам" does not require starting from zero.
     project_context: dict[str, Any] = Field(default_factory=dict)
     last_products: list[ProductCard] = Field(default_factory=list)
+    # Catalogue referents are branch-scoped. ``last_products`` remains the
+    # active compatibility view, while this map survives topic switches and
+    # lets the controller restore a named/qualified previous selection.
+    product_branches: dict[str, ProductBranchState] = Field(default_factory=dict)
     # All cards already emitted for the active catalogue result set. Unlike
     # ``last_products`` this survives pagination so "покажи ещё" cannot repeat
     # page one after page two.

@@ -188,6 +188,18 @@ STOCK_WORDS = [
     "забрать прямо сейчас",
     "самовывоз",
 ]
+ALLOW_UNAVAILABLE_PATTERNS = [
+    r"\b(?:покажи|покажите|подбери|подберите|давай)\b[^.!?]{0,35}"
+    r"\b(?:даже\s+)?(?:если\s+)?(?:сейчас\s+)?нет\b",
+    r"\b(?:можно|покажи|покажите)\b[^.!?]{0,30}\b(?:не\s+в\s+наличии|под\s+заказ)\b",
+    r"\b(?:наличие|остаток|склад)\b[^.!?]{0,20}\bне\s+важн\w*\b",
+    r"\bне\s+обязательно\b[^.!?]{0,20}\b(?:в\s+наличии|на\s+складе)\b",
+    r"\b(?:можно|покажи|покажите|подбери|подберите|давай)\b[^.!?]{0,30}"
+    r"\b(?:те|товар\w*|вариант\w*)\b,?\s+(?:котор\w*\s+)?"
+    r"(?:сейчас\s+)?нет\b",
+    r"\b(?:отсутствующ\w*|товар\w*\s+без\s+остатк\w*)\b[^.!?]{0,18}"
+    r"\b(?:тоже|можно|покажи|покажите)\b",
+]
 CHOOSE_ONE_WORDS = [
     "выбери один",
     "назови один",
@@ -360,12 +372,19 @@ class IntentRouterAgent:
             self._cache[cache_key] = IntentResult(**self._as_dict(result))
         return result
 
+    @staticmethod
+    def _allows_unavailable_stock(text: str) -> bool:
+        """Return whether this turn explicitly removes a stock-only filter."""
+        return any(re.search(pattern, text) for pattern in ALLOW_UNAVAILABLE_PATTERNS)
+
     def _rule_based(self, message: str, session: SessionState | None) -> IntentResult:
         text = normalize_text(message)
         sku_text = collapse_sku_spaces(text)
+        allows_unavailable = self._allows_unavailable_stock(text)
         flags = {
             "cheap": any(word in text for word in CHEAP_WORDS),
-            "in_stock": any(word in text for word in STOCK_WORDS),
+            "in_stock": any(word in text for word in STOCK_WORDS)
+            and not allows_unavailable,
             "small_talk": any(word in text for word in SMALL_TALK),
             "choose_one": any(word in text for word in CHOOSE_ONE_WORDS),
         }
@@ -429,6 +448,17 @@ class IntentRouterAgent:
         ):
             category = "boilers"
             category_score = 0.85
+        if (
+            category == "other"
+            and session
+            and session.category == "radiators"
+            and any(
+                marker in text
+                for marker in ["биметалл", "алюмин", "панельн", "стальн"]
+            )
+        ):
+            category = "radiators"
+            category_score = 0.85
         if category == "other" and session and session.category and self._looks_like_attribute_followup(text):
             category = session.category
             category_score = 0.65
@@ -470,6 +500,23 @@ class IntentRouterAgent:
             category_score = max(category_score, 0.7)
         self._extract_slots(text, category, slots)
 
+        if category == "boilers" and session and session.category == "boilers":
+            # In an active boiler branch the adjective immediately following a
+            # replacement marker identifies the requested appliance. A later
+            # capability clause (``но газ у дома тоже есть``) describes the
+            # site and must not turn the boiler back into a gas model.
+            contextual_type = re.search(
+                r"\b(?:теперь|нет\s*,?|давай|хочу|выбираю|пусть\s+будет)\s+"
+                r"(электрическ\w*|газов\w*)\b",
+                text,
+            )
+            if contextual_type:
+                slots["boiler_type"] = (
+                    "электрический"
+                    if contextual_type.group(1).startswith("электр")
+                    else "газовый"
+                )
+
         if (
             "насос" in text
             and session
@@ -509,6 +556,13 @@ class IntentRouterAgent:
         elif flags["in_stock"]:
             intent_type = "stock_request"
             confidence = max(confidence, 0.8)
+        elif allows_unavailable and session and session.category:
+            # This is an explicit correction of the current catalogue filter.
+            # Keep it out of the low-confidence LLM fallback so a probabilistic
+            # classification cannot discard the deterministic ``False`` value.
+            category = session.category
+            intent_type = "attribute_request"
+            confidence = max(confidence, 0.9)
         elif complectation_request:
             intent_type = "complectation"
             if session and session.category:
@@ -715,6 +769,14 @@ class IntentRouterAgent:
         )
         if complex_heating_project:
             return "boilers", 0.96
+        if (
+            any(marker in text for marker in ["радиатор", "батаре"])
+            and any(marker in text for marker in ["крут", "регулир", "держал"])
+            and "температур" in text
+        ):
+            # Everyday description of a thermostatic head.  It refers to the
+            # radiator valve accessory, not to selection of the radiator body.
+            return "radiator_fittings", 0.97
         if (
             any(marker in text for marker in ["радиатор", "батаре", "биметалл"])
             and not any(
@@ -1033,7 +1095,19 @@ class IntentRouterAgent:
             or "нет газ" in text
         )
         if category == "boilers":
-            if rejects_electric and has_gas:
+            explicit_electric_boiler = bool(
+                re.search(r"\bэлектр\w*\s+кот(?:ел|ёл|л\w*)\b", text)
+                or re.search(r"\bкот(?:ел|ёл|л\w*)\s+электр\w*\b", text)
+            )
+            explicit_gas_boiler = bool(
+                re.search(r"\bгазов\w*\s+кот(?:ел|ёл|л\w*)\b", text)
+                or re.search(r"\bкот(?:ел|ёл|л\w*)\s+газов\w*\b", text)
+            )
+            if explicit_electric_boiler and not explicit_gas_boiler:
+                slots["boiler_type"] = "электрический"
+            elif explicit_gas_boiler and not explicit_electric_boiler:
+                slots["boiler_type"] = "газовый"
+            elif rejects_electric and has_gas:
                 slots["boiler_type"] = "газовый"
             elif rejects_gas:
                 slots["boiler_type"] = "электрический"
@@ -1041,6 +1115,18 @@ class IntentRouterAgent:
                 slots["boiler_type"] = "газовый"
             elif has_electric and not has_gas:
                 slots["boiler_type"] = "электрический"
+            if re.search(
+                r"\b(?:газ(?:а|у|ом)?\b[^.!?]{0,30}\b(?:тоже\s+)?есть|"
+                r"есть\s+газ)\b",
+                text,
+            ):
+                slots["has_gas"] = True
+            if re.search(
+                r"\b(?:электричеств\w*|электроснабжен\w*)\b[^.!?]{0,18}"
+                r"\b(?:есть|подведен\w*|подключен\w*)\b",
+                text,
+            ):
+                slots["has_electricity"] = True
         elif category == "water_heaters":
             self._extract_water_heater_slots(
                 text,
@@ -1405,12 +1491,12 @@ class IntentRouterAgent:
             slots["pump_use"] = "откачка воды"
 
         for marker, element in [
-            ("труба", "труба"),
+            ("труб", "труба"),
             ("отвод", "отвод"),
             ("тройник", "тройник"),
             ("муфт", "муфта"),
         ]:
-            if marker in text:
+            if marker in text and not self._is_negated(text, marker):
                 slots["element_type"] = element
                 break
 
@@ -2102,6 +2188,14 @@ class IntentRouterAgent:
                 slots["secondary_diameter_mm"] = int(branch_pair.group(2))
 
         if category == "radiators":
+            if "биметалл" in text:
+                slots["radiator_type"] = "биметаллический"
+            elif "алюмин" in text:
+                slots["radiator_type"] = "алюминиевый"
+            elif "панельн" in text:
+                slots["radiator_type"] = "панельный"
+            elif "стальн" in text:
+                slots["radiator_type"] = "стальной"
             sections_match = re.search(r"(\d{1,2})\s*секц", text)
             if sections_match:
                 slots["sections"] = int(sections_match.group(1))
@@ -2142,7 +2236,12 @@ class IntentRouterAgent:
             ]
         ):
             slots["relative_cheaper"] = True
-        if any(word in text for word in STOCK_WORDS):
+        if self._allows_unavailable_stock(text):
+            # An explicit relaxation is a real correction, not absence of a
+            # filter.  Persisting False lets it replace an earlier
+            # ``только в наличии`` constraint in the active product branch.
+            slots["in_stock"] = False
+        elif any(word in text for word in STOCK_WORDS):
             slots["in_stock"] = True
 
         if category == "water_heaters" and (
