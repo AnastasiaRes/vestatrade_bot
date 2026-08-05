@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+import pytest
+
 from app.agents.orchestrator import ChatOrchestrator
 from app.agents.utils import normalize_text
 
@@ -275,3 +277,70 @@ def test_recall_of_unseen_central_main_does_not_relabel_well_facts() -> None:
     assert bot.sessions.get(session_id).project_context["active_goal"] == (
         "pumps:pressure"
     )
+
+
+@pytest.mark.parametrize("depth_answer", ["13 метров", "13м", "13 м"])
+def test_bare_depth_answers_fill_pending_well_water_level(
+    depth_answer: str,
+) -> None:
+    bot = ChatOrchestrator(products=[])
+    session_id = f"live-irrigation-depth-{depth_answer}"
+
+    bot.handle_chat(session_id, "Мне нужен насос для полива на дачу")
+    source_pending = list(bot.sessions.get(session_id).pending_slot_keys)
+    source = bot.handle_chat(session_id, "Из колодца")
+    depth = bot.handle_chat(session_id, depth_answer)
+
+    assert source_pending == ["water_source"]
+    assert source.debug["slots"]["pump_use"] == "полив"
+    assert source.debug["slots"]["water_source"] == "колодец"
+    assert bot.sessions.get(session_id).pending_slot_keys == ["horizontal_run_m"]
+    assert depth.debug["slots"]["water_level_depth_m"] == 13
+    assert depth.debug["slots"]["water_level_reference"] == "from_top"
+    assert "расстояние по горизонтали" in normalize_text(depth.answer)
+
+
+def test_irrigation_well_dialog_keeps_context_and_estimates_standard_hose() -> None:
+    bot = ChatOrchestrator(products=[])
+    session_id = "live-irrigation-standard-hose"
+
+    bot.handle_chat(session_id, "Мне нужен насос для полива на дачу")
+    source = bot.handle_chat(session_id, "Из колодца")
+    bot.handle_chat(session_id, "13 метров")
+    horizontal = bot.handle_chat(session_id, "40 метров")
+    repeated = bot.handle_chat(
+        session_id,
+        "Расстояние по горизонтали от колодца до дома или полива 40 метров",
+    )
+    result = bot.handle_chat(
+        session_id,
+        "Посчитай сам, полив стандартным шлангом занимает 30 минут",
+    )
+
+    assert source.debug["slots"]["pump_use"] == "полив"
+    assert bot.sessions.get(session_id).pending_slot_keys == []
+    assert "перепад высоты" in normalize_text(horizontal.answer)
+    assert "уже записал" not in normalize_text(horizontal.answer)
+    assert "40 м уже записал" in normalize_text(repeated.answer)
+    assert "без этого параметра" not in normalize_text(repeated.answer)
+
+    slots = result.debug["slots"]
+    assert result.debug["category"] == "pumps"
+    assert slots["pump_use"] == "полив"
+    assert slots["water_source"] == "колодец"
+    assert slots["water_level_depth_m"] == 13
+    assert slots["horizontal_run_m"] == 40
+    assert slots["lift_height_m"] == 0
+    assert slots["required_flow_l_min"] == 20
+    assert slots["required_flow_m3_h"] == 1.2
+    assert slots["required_pressure_bar"] == 2
+    assert slots["required_head_m"] == 37
+    assert slots["pump_type"] == "колодезный"
+    assert slots["flow_unit_status"] == "estimated_standard_hose"
+
+    answer = normalize_text(result.answer)
+    assert "20 л/мин" in answer
+    assert "1.2 м3/ч" in answer
+    assert "2 бар" in answer
+    assert "37 м" in answer
+    assert "откуда берем воду" not in answer

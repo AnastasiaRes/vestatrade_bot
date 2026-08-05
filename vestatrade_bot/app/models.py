@@ -246,6 +246,7 @@ class SessionState(BaseModel):
             "well.horizontal_distance": ["horizontal_run_m"],
             "well.lift_height": ["lift_height_m"],
             "well.flow": ["required_flow_m3_h"],
+            "well.water_level_depth_m": ["water_level_depth_m"],
             "well.flow_unit_confirmation": ["flow_unit_confirmation"],
             "pumps.flow_unit_confirmation": ["flow_unit_confirmation"],
             "well.water_level_reference": ["water_level_reference"],
@@ -270,12 +271,32 @@ class SessionState(BaseModel):
         if category == "pumps":
             if "сверху" in normalized and "снизу" in normalized:
                 return ["water_level_reference"]
-            if "источник воды" in normalized or (
-                "скваж" in normalized
-                and "колод" in normalized
-                and "водопровод" in normalized
+            if (
+                ("источник" in normalized and "вод" in normalized)
+                or ("откуда" in normalized and "вод" in normalized)
+                or (
+                    "скваж" in normalized
+                    and "колод" in normalized
+                    and "водопровод" in normalized
+                )
             ):
                 return ["water_source"]
+            if (
+                "глубин" in normalized
+                and "от верха" in normalized
+                and "вод" in normalized
+            ):
+                return ["water_level_depth_m"]
+            if any(
+                marker in normalized
+                for marker in [
+                    "перепад высот",
+                    "участок ровн",
+                    "точка выше",
+                    "на какую высоту",
+                ]
+            ):
+                return ["lift_height_m"]
             if "давлен" in normalized and any(
                 marker in normalized
                 for marker in ["на вход", "сейчас", "исходн", "имеетс"]

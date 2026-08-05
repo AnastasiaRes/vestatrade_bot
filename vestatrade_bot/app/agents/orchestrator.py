@@ -54,6 +54,11 @@ from .intent_router import IntentRouterAgent
 from .product_card import ProductCardAgent
 from .ranking import RankingAgent
 from .response_composer import ResponseComposerAgent
+from .slot_answer_resolver import (
+    SLOT_SPECS,
+    PendingAnswerResolver,
+    ResolvedAnswer,
+)
 from .slot_filling import SlotFillingAgent
 from .utils import collapse_sku_spaces, merge_slots, normalize_sku as normalize_sku_token, normalize_text
 
@@ -448,6 +453,7 @@ class ChatOrchestrator:
             ],
         )
         self.engineering_interpreter = EngineeringInterpreterAgent(self.llm_client)
+        self.pending_answer_resolver = PendingAnswerResolver(self.llm_client)
         self.slot_filling = SlotFillingAgent()
         self.engineering_requirements = EngineeringRequirementsAgent(
             self.slot_filling
@@ -914,9 +920,16 @@ class ChatOrchestrator:
             )
 
         intent = self.intent_router.route(message, session)
+        # Bind a short reply to the pending question before anything else looks
+        # at the slots.  The rule layer stays authoritative; this only runs when
+        # the rules read nothing that answers what was actually asked.
+        pending_answer = self._resolve_pending_answer(message, intent, session)
+        if pending_answer.llm_requested:
+            agents_used.append("PendingAnswerResolver")
         engineering_interpretation: EngineeringInterpretation | None = None
         if (
             self.settings.llm_enabled
+            and not self._pending_answer_is_conclusive(pending_answer, message)
             and self.engineering_interpreter.should_interpret(message, intent, session)
         ):
             agents_used.append("EngineeringInterpreterAgent")
@@ -1065,6 +1078,14 @@ class ChatOrchestrator:
             intent.slots.setdefault("pump_type", "циркуляционный")
             intent.slots.setdefault("pump_use", "отопление")
             intent.slots.setdefault("pump_context", "котел")
+
+        # Preserve facts extracted from this message before the engineering
+        # memory merge enriches ``intent.slots`` with older branch facts.  The
+        # pending-question controller must distinguish a genuine new answer
+        # from values that merely came back out of memory.
+        turn_answered_slot_keys = {
+            key for key in intent.slots if not str(key).startswith("_")
+        }
 
         if engineering_interpretation and engineering_interpretation.output_accepted:
             self._persist_engineering_interpretation(
@@ -1715,11 +1736,42 @@ class ChatOrchestrator:
                 pending_category = (
                     intent.category if intent.category != "other" else session.category
                 )
+                expected_slots = self._pending_slot_keys_for_question(
+                    question,
+                    pending_category,
+                )
+                answered_slot_keys = set(turn_answered_slot_keys)
+                answered_other_slot = bool(
+                    answered_slot_keys
+                    and not answered_slot_keys.intersection(expected_slots)
+                )
+                previous_expected_slots = set(
+                    session.pending_question_state.expected_slots
+                    if session.pending_question_state
+                    else session.pending_slot_keys
+                )
+                answered_previous_question = bool(
+                    answered_slot_keys.intersection(previous_expected_slots)
+                )
+                if (
+                    answered_other_slot
+                    and not answered_previous_question
+                    and "horizontal_run_m" in answered_slot_keys
+                    and session.slots.get("horizontal_run_m") is not None
+                ):
+                    distance = float(session.slots["horizontal_run_m"])
+                    question = (
+                        f"Расстояние по горизонтали {distance:g} м уже записал. "
+                        "Сейчас нужен другой параметр. "
+                        + question
+                    )
                 question = self._set_structured_pending_question(
                     session,
                     question=question,
                     category=pending_category,
                     intent_type=intent.intent_type,
+                    expected_slots=expected_slots,
+                    answered_slot_keys=answered_slot_keys,
                 )
                 self._append_history(session, message, question)
                 self.sessions.save(session)
@@ -1924,28 +1976,55 @@ class ChatOrchestrator:
                 ).strip("_")
                 question_id = f"{question_id}.{signature[:64] or 'unknown'}"
             previous_question = session.pending_question_state
+            answered_slot_keys = set(turn_answered_slot_keys)
+            answered_other_slot = bool(
+                answered_slot_keys
+                and not answered_slot_keys.intersection(expected_slots)
+            )
             repeat_count = 0
             if previous_question and previous_question.question_id == question_id:
                 repeat_count = (
                     previous_question.attempts
-                    if session.slots.get("_pending_just_restored")
+                    if (
+                        session.slots.get("_pending_just_restored")
+                        or answered_other_slot
+                    )
                     else previous_question.attempts + 1
                 )
             session.question_repeats = repeat_count
             if repeat_count < 2:
-                answer = self.composer.compose_clarification(
-                    slot_result.question,
-                    small_talk=bool(intent.flags.get("small_talk")),
-                    user_message=message,
-                )
                 agents_used.append("ResponseComposerAgent")
-                answer = self._guard_composed_answer(answer, "clarification", agents_used)
+                if answered_other_slot:
+                    if (
+                        "horizontal_run_m" in answered_slot_keys
+                        and session.slots.get("horizontal_run_m") is not None
+                    ):
+                        distance = float(session.slots["horizontal_run_m"])
+                        answer = (
+                            f"Расстояние по горизонтали {distance:g} м уже записал. "
+                            "Сейчас нужен другой параметр. "
+                            + slot_result.question
+                        )
+                    else:
+                        answer = slot_result.question
+                else:
+                    answer = self.composer.compose_clarification(
+                        slot_result.question,
+                        small_talk=bool(intent.flags.get("small_talk")),
+                        user_message=message,
+                    )
+                    answer = self._guard_composed_answer(
+                        answer,
+                        "clarification",
+                        agents_used,
+                    )
                 answer = self._set_structured_pending_question(
                     session,
                     question=answer,
                     category=pending_category,
                     intent_type=intent.intent_type,
                     expected_slots=expected_slots,
+                    answered_slot_keys=answered_slot_keys,
                 )
                 self._append_history(session, message, answer)
                 self.sessions.save(session)
@@ -9768,6 +9847,9 @@ class ChatOrchestrator:
             query.slots.get("required_flow_m3_h") is not None
             or query.slots.get("required_head_m") is not None
         ):
+            estimated_duty_note = self.composer.compose_pump_estimate_note(query)
+            if estimated_duty_note:
+                notes.append(estimated_duty_note)
             duty = []
             if query.slots.get("required_flow_m3_h") is not None:
                 duty.append(
@@ -10109,7 +10191,13 @@ class ChatOrchestrator:
             intent.slots["pump_type"] = "дренажный"
             intent.slots["pump_use"] = "откачка воды"
         elif any(marker in text for marker in ["скваж", "колод", "водоснаб"]):
-            intent.slots["pump_use"] = "водоснабжение"
+            intent.slots["pump_use"] = (
+                "полив"
+                if normalize_text(str(session.slots.get("pump_use") or ""))
+                == "полив"
+                and "водоснаб" not in text
+                else "водоснабжение"
+            )
         elif "полив" in text:
             intent.slots["pump_use"] = "полив"
         for boiler_only in [
@@ -10500,10 +10588,17 @@ class ChatOrchestrator:
         if category == "pumps":
             if "сверху" in text and "снизу" in text:
                 return ["water_level_reference"]
-            if "источник воды" in text or (
+            if (
+                ("источник" in text and "вод" in text)
+                or ("откуда" in text and "вод" in text)
+                or (
                 "скваж" in text and "колод" in text and "водопровод" in text
+                )
             ):
-                keys.append("water_source")
+                # Long explanatory source questions can also mention heating,
+                # pressure and several pump types.  The answer still belongs
+                # to one slot only: where the water comes from.
+                return ["water_source"]
             if (
                 "направление отсч" in text
                 or ("от верха" in text and "от дна" in text)
@@ -10515,7 +10610,14 @@ class ChatOrchestrator:
                 return ["required_flow_m3_h"]
             if any(
                 marker in text
-                for marker in ["на какую высоту", "высоту выше", "нужно поднять воду"]
+                for marker in [
+                    "на какую высоту",
+                    "высоту выше",
+                    "нужно поднять воду",
+                    "перепад высот",
+                    "участок ровн",
+                    "точка выше",
+                ]
             ):
                 return ["lift_height_m"]
             if any(marker in text for marker in ["для какой задач", "назначен", "отоплен"]):
@@ -10673,6 +10775,127 @@ class ChatOrchestrator:
                 )
         return list(dict.fromkeys(keys))
 
+    # ------------------------------------------------------------------
+    # Pending answer binding
+    # ------------------------------------------------------------------
+
+    _NON_CONSULTING_INTENTS = {
+        "exact_sku",
+        "link_request",
+        "complectation",
+        "handoff_request",
+        "out_of_scope",
+    }
+    # Above this length a reply carries more than a bare parameter, so the
+    # engineering interpreter still gets to read it.
+    _BARE_ANSWER_CHARS = 60
+
+    @staticmethod
+    def _rules_answered_pending(
+        expected_slots: list[str],
+        turn_slots: dict[str, Any],
+    ) -> bool:
+        """Whether the rule layer already read what the question asked for."""
+
+        for key in expected_slots:
+            spec = SLOT_SPECS.get(key)
+            for candidate in {key, spec.target_key if spec else key}:
+                if SessionState._slot_has_answer(turn_slots, candidate):
+                    return True
+        return False
+
+    def _resolve_pending_answer(
+        self,
+        message: str,
+        intent: IntentResult,
+        session: SessionState,
+    ) -> ResolvedAnswer:
+        """Let the model bind a short reply to the question the bot asked.
+
+        Regular expressions stay in charge: this runs only when they read
+        nothing that answers the pending question, which is exactly the case
+        that used to produce an unbreakable repeat loop.  With the LLM off the
+        method is a no-op and behaviour is unchanged.
+        """
+
+        if not self.settings.llm_enabled:
+            return ResolvedAnswer(rejection_reason="LLM disabled")
+        if intent.is_topic_change:
+            return ResolvedAnswer(rejection_reason="topic change")
+        if intent.intent_type in self._NON_CONSULTING_INTENTS:
+            return ResolvedAnswer(rejection_reason="non-consulting intent")
+
+        state = session.pending_question_state
+        question = str((state.text if state else session.pending_question) or "").strip()
+        if not question:
+            return ResolvedAnswer(rejection_reason="no pending question")
+
+        expected = [
+            str(key)
+            for key in (
+                state.expected_slots if state else (session.pending_slot_keys or [])
+            )
+        ]
+        if self._rules_answered_pending(expected, intent.slots):
+            return ResolvedAnswer(rejection_reason="rules already answered")
+
+        category = (
+            (state.category if state and state.category else None)
+            or session.pending_category
+            or session.category
+            or intent.category
+        )
+        try:
+            resolved = self.pending_answer_resolver.resolve(
+                message=message,
+                question=question,
+                expected_slots=expected,
+                category=category,
+            )
+        except Exception as exc:  # pragma: no cover - defensive integration guard
+            logger.exception("Pending answer resolution failed: %s", exc)
+            return ResolvedAnswer(llm_requested=True, rejection_reason=str(exc))
+
+        if not resolved.slots:
+            return resolved
+
+        # The rule layer wins on any key it already filled this turn.
+        for key, value in resolved.slots.items():
+            intent.slots.setdefault(key, value)
+        # A recognised answer is a continuation of the current branch, never a
+        # new topic — mirroring what the rule branches do on a match.
+        intent.is_topic_change = False
+        intent.intent_type = "attribute_request"
+        if intent.category in (None, "other") and category:
+            intent.category = category
+        intent.raw = dict(intent.raw or {})
+        intent.raw.update(
+            {
+                "pending_answer_slot": resolved.slot_key,
+                "pending_answer_evidence": resolved.evidence,
+            }
+        )
+        logger.info(
+            "Pending answer bound to %s from %r",
+            resolved.slot_key,
+            resolved.evidence,
+        )
+        return resolved
+
+    def _pending_answer_is_conclusive(
+        self,
+        resolved: ResolvedAnswer,
+        message: str,
+    ) -> bool:
+        """Whether a bare parameter reply is already fully understood.
+
+        Running the heavy interpreter afterwards would spend a second local
+        generation to re-derive the one fact just extracted, and the customer
+        is waiting on the widget for both.
+        """
+
+        return bool(resolved.accepted and len(str(message).strip()) <= self._BARE_ANSWER_CHARS)
+
     def _set_structured_pending_question(
         self,
         session: SessionState,
@@ -10681,6 +10904,7 @@ class ChatOrchestrator:
         category: str | None,
         intent_type: str | None,
         expected_slots: list[str] | None = None,
+        answered_slot_keys: set[str] | None = None,
     ) -> str:
         expected = list(
             expected_slots
@@ -10706,12 +10930,17 @@ class ChatOrchestrator:
             question_id = f"{question_id}.{signature[:64] or 'unknown'}"
         previous = session.pending_question_state
         repeated = bool(previous and previous.question_id == question_id)
+        answered_other_slot = bool(
+            repeated
+            and answered_slot_keys
+            and not set(answered_slot_keys).intersection(expected)
+        )
         if question_id == "well.water_level_reference" and not repeated:
             session.slots["water_level_reference_question_asked"] = True
         just_restored = bool(session.slots.pop("_pending_just_restored", False))
         attempts = (
             previous.attempts
-            if repeated and previous and just_restored
+            if repeated and previous and (just_restored or answered_other_slot)
             else previous.attempts + 1
             if repeated and previous
             else 0
@@ -10729,7 +10958,9 @@ class ChatOrchestrator:
                 next_question = self._set_structured_pending_question(
                     session,
                     question=(
-                        "На какую высоту выше поверхности воды нужно поднять воду?"
+                        "Есть ли дополнительный перепад высоты от уровня земли "
+                        "у колодца до точки полива? Если участок ровный — "
+                        "ответьте «0 метров»."
                     ),
                     category="pumps",
                     intent_type=intent_type,

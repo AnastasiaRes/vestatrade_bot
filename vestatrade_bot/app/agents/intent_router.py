@@ -1922,7 +1922,7 @@ class IntentRouterAgent:
                 (
                     "horizontal_run_m",
                     r"(?:горизонтальн\w*\s+(?:трасс|участ|длин)|"
-                    r"длин\w*\s+трасс\w*|расстоян\w*)[^\d]{0,18}"
+                    r"длин\w*\s+трасс\w*|расстоян\w*)[^\d]{0,80}"
                     r"(\d+(?:[,.]\d+)?)\s*(?:м|метр)",
                 ),
             ]:
@@ -2857,6 +2857,80 @@ class IntentRouterAgent:
             slots.update(contextual)
 
         if session and result.category == "pumps":
+            previous_pump_use = normalize_text(
+                str(session.slots.get("pump_use") or "")
+            )
+            if (
+                previous_pump_use == "полив"
+                and any(
+                    marker in text
+                    for marker in ["колод", "скваж", "боч", "емкост"]
+                )
+                and not any(
+                    marker in text
+                    for marker in [
+                        "отоплен",
+                        "циркуляц",
+                        "повысит",
+                        "давлен",
+                        "дренаж",
+                        "откач",
+                        "водоснаб",
+                        "для дома",
+                    ]
+                )
+            ):
+                # A short source answer belongs to the existing irrigation
+                # task; naming a well must not silently turn it into domestic
+                # water supply.
+                slots["pump_use"] = "полив"
+
+            estimates_standard_hose = bool(
+                "колод" in normalize_text(
+                    str(
+                        slots.get("water_source")
+                        or session.slots.get("water_source")
+                        or ""
+                    )
+                )
+                and "шлан" in text
+                and any(
+                    marker in text
+                    for marker in [
+                        "посчитай сам",
+                        "рассчитай сам",
+                        "посчитайте сами",
+                        "рассчитайте сами",
+                        "стандартн",
+                    ]
+                )
+            )
+            if estimates_standard_hose:
+                # A duration alone does not define volume, so use a clearly
+                # stated preliminary duty point for one ordinary garden hose.
+                # Twenty litres per minute is a conservative catalogue-sizing
+                # assumption; 2 bar preserves useful pressure at the nozzle.
+                slots["required_flow_l_min"] = 20.0
+                slots["required_flow_m3_h"] = 1.2
+                slots["flow_unit_assumed"] = False
+                slots["flow_unit_status"] = "estimated_standard_hose"
+                slots.setdefault("required_pressure_bar", 2.0)
+                slots.setdefault("lift_height_m", 0.0)
+                assumptions = list(
+                    session.slots.get("engineering_assumptions") or []
+                )
+                for assumption in [
+                    "один стандартный садовый шланг: расход 20 л/мин",
+                    "давление у шланга: 2 бар",
+                    "дополнительный перепад участка: 0 м",
+                ]:
+                    if assumption not in assumptions:
+                        assumptions.append(assumption)
+                slots["engineering_assumptions"] = assumptions
+                result.category = "pumps"
+                result.intent_type = "attribute_request"
+                result.is_topic_change = False
+
             reference = normalize_text(
                 str(session.slots.get("water_level_reference") or "")
             )

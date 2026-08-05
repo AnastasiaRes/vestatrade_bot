@@ -144,6 +144,19 @@ def extract_contextual_short_answer(
 
     if category == "pumps":
         if (
+            "water_level_depth_m" in expected
+            or "explicit_water_level_depth_m" in expected
+            or (
+                "глубин" in pending
+                and "от верха" in pending
+                and "вод" in pending
+            )
+        ):
+            if 0 < number <= 300:
+                slots["explicit_water_level_depth_m"] = number
+                slots["water_level_reference"] = "from_top"
+            return slots
+        if (
             "horizontal_run_m" in expected
             or "расстоян" in pending
             or "до дома" in pending

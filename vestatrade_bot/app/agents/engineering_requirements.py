@@ -103,6 +103,7 @@ class EngineeringRequirementsAgent:
             "horizontal_run_m",
         },
         "pumps": {
+            "engineering_assumptions",
             "pump_use",
             "pump_type",
             "pump_selection_mode",

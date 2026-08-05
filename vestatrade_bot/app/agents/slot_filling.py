@@ -551,7 +551,7 @@ class SlotFillingAgent:
         if (
             slots.get("water_source") == "колодец"
             and normalize_text(str(slots.get("pump_use") or ""))
-            in {"водоснабжение", "подача воды"}
+            in {"водоснабжение", "подача воды", "полив"}
         ):
             return self._well_water_supply(slots)
         if not slots.get("pump_type"):
@@ -947,7 +947,11 @@ class SlotFillingAgent:
         elif not slots.get("horizontal_run_m") and "horizontal_run_m" not in deferred:
             question = "Какое расстояние по горизонтали от колодца до дома или полива?"
         elif slots.get("lift_height_m") is None:
-            question = "На какую высоту выше поверхности воды нужно поднять воду?"
+            question = (
+                "Есть ли дополнительный перепад высоты от уровня земли у колодца "
+                "до точки полива? Если участок ровный — ответьте «0 метров»; "
+                "иначе укажите, на сколько метров точка выше."
+            )
         elif not slots.get("required_flow_m3_h"):
             question = "Какой нужен расход: сколько литров в минуту?"
         elif ambiguous_level:

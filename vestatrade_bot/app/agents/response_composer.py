@@ -729,6 +729,16 @@ class ResponseComposerAgent:
                 "Если захотите, можно отдельно разрешить ослабить одно из условий."
                 f"{hot_water_note}"
             )
+        elif (
+            query.category == "pumps"
+            and slots.get("flow_unit_status") == "estimated_standard_hose"
+        ):
+            estimate = self.compose_pump_estimate_note(query)
+            draft = (
+                f"{estimate}\n\n"
+                "По этим параметрам подходящей позиции в текущем ассортименте не нашёл. "
+                "Можно уточнить фактический расход или передать подбор менеджеру."
+            )
         elif query.category == "water_heaters":
             requested = self._requested_summary(query) or query.original_text
             if slots.get("allow_alternatives") is True:
@@ -769,6 +779,43 @@ class ResponseComposerAgent:
             draft = "Не нашёл подходящие товары в текущем ассортименте. Могу уточнить параметры или передать вопрос менеджеру."
         self.last_draft = draft
         return draft
+
+    @staticmethod
+    def compose_pump_estimate_note(query: SearchQuery) -> str:
+        slots = query.slots
+        if (
+            query.category != "pumps"
+            or slots.get("flow_unit_status") != "estimated_standard_hose"
+        ):
+            return ""
+
+        flow_l_min = float(slots.get("required_flow_l_min") or 20.0)
+        flow_m3_h = float(slots.get("required_flow_m3_h") or flow_l_min * 0.06)
+        pressure_bar = float(slots.get("required_pressure_bar") or 2.0)
+        lift_height_m = float(slots.get("lift_height_m") or 0.0)
+        details = [
+            f"один стандартный садовый шланг — {flow_l_min:g} л/мин "
+            f"({flow_m3_h:g} м³/ч)",
+            f"давление у шланга — {pressure_bar:g} бар",
+            f"дополнительный перепад участка — {lift_height_m:g} м",
+        ]
+        note = (
+            "Предварительно считаю по допущениям: "
+            + "; ".join(details)
+            + ". 30 минут — это продолжительность полива, а не расход: "
+            "если известен фактический объём воды или шлангов несколько, расчёт нужно уточнить."
+        )
+        if slots.get("required_head_m") is not None:
+            note += (
+                " С учётом сохранённых глубины и горизонтальной трассы "
+                f"расчётный ориентир по напору — {float(slots['required_head_m']):g} м."
+            )
+        if normalize_text(str(slots.get("pump_type") or "")) == "колодезный":
+            note += (
+                " При глубине до воды больше 8 м нужен погружной колодезный насос; "
+                "поверхностный насос здесь не подходит."
+            )
+        return note
 
     def compose_alternative_note(self, query: SearchQuery) -> str:
         # Электрических двухконтурных в фиде нет — это типовая ситуация, объясняем по-человечески.
