@@ -1540,6 +1540,11 @@ class IntentRouterAgent:
         if warm_floor_area_match and not rejects_warm_floor:
             raw_area = warm_floor_area_match.group(1) or warm_floor_area_match.group(2)
             slots["warm_floor_area_m2"] = float(raw_area)
+            if not house_area_match:
+                # A local model may duplicate this literal as generic
+                # ``area_m2``.  The wording anchors it to the warm-floor
+                # subsystem, so it cannot replace an already known house area.
+                slots.pop("area_m2", None)
         if house_area_match and not re.search(r"\bдо\s+дом\w*\b", text):
             raw_area = house_area_match.group(1) or house_area_match.group(2)
             slots["area_m2"] = float(raw_area)
@@ -2966,6 +2971,38 @@ class IntentRouterAgent:
             "controls",
         }:
             self._extract_slots(text, result.category, slots)
+
+        if (
+            session
+            and result.category == "sewer"
+            and normalize_text(
+                str(
+                    slots.get("element_type")
+                    or session.slots.get("element_type")
+                    or ""
+                )
+            )
+            == "отвод"
+            and session.slots.get("diameter_mm") is not None
+        ):
+            bare_numbers = [
+                int(value)
+                for value in re.findall(r"(?<!\d)(\d{1,3})(?!\d)", text)
+            ]
+            standard_angles = {15, 22, 30, 45, 67, 87, 88, 90}
+            explicit_diameter = bool(
+                re.search(r"(?:диаметр\w*|\bdn|\bd\s*|ø)\D{0,8}\d|\d+\s*мм\b", text)
+            )
+            if (
+                len(bare_numbers) == 1
+                and bare_numbers[0] in standard_angles
+                and not explicit_diameter
+            ):
+                # ``отвод 110`` -> ``внутренняя, 90`` means angle 90° while
+                # the already confirmed DN110 remains in force. Reconcile it
+                # before any accepted LLM interpretation is persisted.
+                slots["angle_deg"] = bare_numbers[0]
+                slots["diameter_mm"] = session.slots["diameter_mm"]
 
         if session and session.pending_category and not result.is_topic_change:
             contextual = extract_contextual_short_answer(

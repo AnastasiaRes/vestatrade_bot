@@ -54,9 +54,11 @@ def _normalize_warm_floor(slots: dict[str, Any]) -> None:
 
     area_value = _compact_number(area)
     slots["warm_floor_area_m2"] = area_value
-    # ``area_m2`` remains a compatibility view of the active warm-floor goal;
-    # project memory keeps it scoped and will not share it with a boiler goal.
-    if scope == "warm_floor":
+    # ``area_m2`` remains a compatibility view only when no separately stated
+    # house/building area exists.  In a combined boiler + warm-floor request,
+    # overwriting 180 m² of house area with a 60 m² floor subsystem corrupts
+    # both sizing and handoff data.
+    if scope == "warm_floor" and slots.get("area_m2") is None:
         slots["area_m2"] = area_value
     slots["warm_floor_pipe_min_m"] = round(area * 6.5)
     slots["warm_floor_pipe_max_m"] = round(area * 7.0)

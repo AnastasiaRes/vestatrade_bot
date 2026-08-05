@@ -1869,6 +1869,72 @@ class FeedSearchAgent:
             if value is not None
         }
 
+    def pump_reference_slots(self, product: Product) -> dict[str, object]:
+        """Return verified compatibility dimensions for one shown pump."""
+        if self.canonical_category(product) != "pumps":
+            return {}
+
+        pump_type = next(
+            (
+                candidate
+                for candidate in [
+                    "циркуляционный",
+                    "скважинный",
+                    "дренажный",
+                    "поверхностный",
+                    "повысительный",
+                    "насосная станция",
+                ]
+                if self._pump_type_matches(product, candidate)
+            ),
+            None,
+        )
+        head = self._maximum_head_m(product)
+
+        mounting_values: list[float] = []
+        connection_values: list[float] = []
+        for key, value in product.attributes_normalized.items():
+            normalized_key = normalize_text(str(key))
+            numbers = [
+                float(raw.replace(",", "."))
+                for raw in re.findall(r"\d+(?:[,.]\d+)?", str(value))
+            ]
+            if "монтажная длина" in normalized_key:
+                mounting_values.extend(numbers)
+            if any(
+                marker in normalized_key
+                for marker in [
+                    "диаметр условного прохода",
+                    "номинальный диаметр",
+                    "условный диаметр",
+                ]
+            ):
+                connection_values.extend(numbers)
+
+        if not connection_values:
+            name_connection = re.search(
+                r"(?<!\d)(\d{2,3})\s*[/\-]\s*\d",
+                normalize_text(product.name),
+            )
+            if name_connection:
+                connection_values.append(float(name_connection.group(1)))
+
+        values: dict[str, object | None] = {
+            "pump_type": pump_type,
+            "head_m": head,
+            "mounting_length_mm": (
+                int(mounting_values[0])
+                if len(set(mounting_values)) == 1
+                else None
+            ),
+            "connection_size": (
+                int(connection_values[0])
+                if len(set(connection_values)) == 1
+                else None
+            ),
+        }
+        return {key: value for key, value in values.items() if value is not None}
+
     def _water_heater_type_matches(self, product: Product, requested: object) -> bool:
         expected = self._canonical_heater_type(requested)
         actual = self._water_heater_type(product)

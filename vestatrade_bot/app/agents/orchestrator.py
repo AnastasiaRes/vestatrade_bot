@@ -966,6 +966,35 @@ class ChatOrchestrator:
                 agents_used,
             )
 
+        # A short challenge to the immediately preceding sizing warning is a
+        # control continuation, not a fresh power requirement. Handle it
+        # before either LLM sees the quoted number ("раньше 12 советовал") and
+        # can replace the actual 6 kW value stored for the calculation.
+        early_power_followup = self._maybe_boiler_power_followup(message, session)
+        if early_power_followup:
+            intent = IntentResult(
+                intent_type="attribute_request",
+                category="boilers",
+                confidence=1.0,
+            )
+            agents_used.extend(["ResponseComposerAgent", "GuardrailsAgent"])
+            answer = self._guard_composed_answer(
+                early_power_followup,
+                "generic",
+                agents_used,
+            )
+            self._append_history(session, message, answer)
+            self.sessions.save(session)
+            return self._response(
+                session_id,
+                answer,
+                [],
+                False,
+                intent,
+                session,
+                agents_used,
+            )
+
         intent = self.intent_router.route(message, session)
         intent.raw = dict(intent.raw or {})
         intent.raw["requested_fields"] = self._requested_card_fields(message)
@@ -8955,8 +8984,13 @@ class ChatOrchestrator:
             return None
         if not session.last_products and not awaiting_power_alternatives:
             return None
-        blocking_slots = {"sku", "brand", "reference_brand", "old_model"}
-        if blocking_slots.intersection(intent.slots):
+        identity_slots = {"sku", "brand", "reference_brand", "old_model", "name_tokens"}
+        current_turn_slot_keys = set(
+            str(key) for key in (intent.raw or {}).get("current_turn_slot_keys", [])
+        )
+        if identity_slots.intersection(intent.slots).intersection(
+            current_turn_slot_keys
+        ):
             return None
         if intent.category not in {"other", session.category}:
             return None
@@ -8975,13 +9009,20 @@ class ChatOrchestrator:
             session.pending_intent_type = None
             session.pending_category = None
             session.pending_slot_keys = []
-        reference_slots = self._shown_water_heater_reference_slots(session)
+        reference_slots = self._shown_product_reference_slots(session)
         for key, value in reference_slots.items():
             # Current-turn constraints are authoritative. Missing compatibility
             # dimensions, however, must come from the exact shown feed row—not
             # from semantic similarity to the words «покажи аналоги».
             current_slots.setdefault(key, value)
             session.slots.setdefault(key, value)
+        for key in identity_slots - current_turn_slot_keys:
+            # The previous exact SKU identifies the reference product; it must
+            # not remain a hard filter on an analogue/cheaper search. Its
+            # grounded technical dimensions above are the compatibility
+            # boundary instead.
+            current_slots.pop(key, None)
+            session.slots.pop(key, None)
         query = SearchQuery(
             original_text=message,
             category=session.category or "other",
@@ -9173,6 +9214,22 @@ class ChatOrchestrator:
         if product is None:
             return {}
         return self.search_agent.water_heater_reference_slots(product)
+
+    def _shown_product_reference_slots(
+        self,
+        session: SessionState,
+    ) -> dict[str, object]:
+        """Hydrate analogue constraints from the one exact shown feed row."""
+        if len(session.last_products) != 1:
+            return {}
+        product = self._find_product_by_sku(session.last_products[0].sku)
+        if product is None:
+            return {}
+        if session.category == "water_heaters":
+            return self.search_agent.water_heater_reference_slots(product)
+        if session.category == "pumps":
+            return self.search_agent.pump_reference_slots(product)
+        return {}
 
     def _maybe_comparison_answer(self, message: str, session: SessionState) -> str | None:
         if len(session.last_products) < 2:
@@ -12487,6 +12544,16 @@ class ChatOrchestrator:
             return None
         text = normalize_text(message)
         if not any(marker in text for marker in ["точн", "раньше", "советов", "почему"]):
+            return None
+        last_assistant = next(
+            (
+                normalize_text(str(entry.get("content") or ""))
+                for entry in reversed(session.history)
+                if entry.get("role") == "assistant"
+            ),
+            "",
+        )
+        if not any(marker in last_assistant for marker in ["не хват", "недостат"]):
             return None
         required = area_m2 / 10.0
         if power_kw + 0.4 >= required:

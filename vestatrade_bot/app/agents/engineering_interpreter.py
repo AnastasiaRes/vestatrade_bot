@@ -882,6 +882,15 @@ class EngineeringInterpreterAgent:
                 re.search(r"тепл\w*\s+пол|теплого\s+пол", text)
             )
         if key == "area_m2":
+            if re.search(r"тепл\w*\s+пол|теплого\s+пол", text) and not re.search(
+                r"\b(?:дом|коттедж|площад\w*\s+дом\w*|общ\w*\s+площад\w*)\b",
+                text,
+            ):
+                # ``тёплый пол 60 м²`` is a subsystem area, even though the
+                # literal number and square-metre unit also look valid for the
+                # generic house-area slot.  Keep the two engineering facts
+                # independent before they ever reach persistent memory.
+                return False
             return key in pending or bool(
                 re.search(r"площад|кв\.?\s*м|м\s*(?:2|²)|квадрат", text)
             )

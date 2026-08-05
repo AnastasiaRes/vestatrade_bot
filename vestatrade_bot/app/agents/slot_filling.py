@@ -184,11 +184,17 @@ class SlotFillingAgent:
         purpose = normalize_text(str(slots.get("pipe_purpose") or ""))
         service = normalize_text(str(slots.get("pipe_service") or ""))
         if "отоплен" in purpose and not service:
+            diameter_prefix = (
+                f"Диаметр {slots['diameter_mm']} мм записал. "
+                if slots.get("diameter_mm")
+                else ""
+            )
             return SlotFillingResult(
                 slots=slots,
                 needs_clarification=True,
                 question=(
-                    "Для какого участка отопления нужна труба: петля тёплого пола, "
+                    diameter_prefix
+                    + "Для какого участка отопления нужна труба: петля тёплого пола, "
                     "радиаторная разводка/магистраль или обвязка котла? Также укажите "
                     "максимальную температуру и рабочее давление системы."
                 ),
@@ -214,13 +220,19 @@ class SlotFillingAgent:
             normalize_text(str(slots.get("water_temperature") or "")) == "горячая"
             and not service
         ):
+            diameter_suffix = (
+                f" Диаметр {slots['diameter_mm']} мм уже записал."
+                if slots.get("diameter_mm")
+                else " Также укажите расчётный диаметр."
+            )
             return SlotFillingResult(
                 slots=slots,
                 needs_clarification=True,
                 question=(
                     "Для какого участка ГВС нужна труба: обычная разводка внутри дома, "
-                    "рециркуляция или ввод? Укажите максимальную температуру, рабочее "
-                    "давление и расчётный диаметр."
+                    "рециркуляция или ввод? Укажите максимальную температуру и рабочее "
+                    "давление."
+                    + diameter_suffix
                 ),
             )
         if hot_or_heating and (

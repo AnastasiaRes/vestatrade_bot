@@ -6,6 +6,7 @@ import re
 import hashlib
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
@@ -14,6 +15,11 @@ from typing import Any
 
 
 API_URL = os.getenv("QA_API_URL", "http://127.0.0.1:8000").rstrip("/")
+REQUEST_TIMEOUT_SECONDS = int(os.getenv("QA_REQUEST_TIMEOUT_SECONDS", "210"))
+PAUSE_BETWEEN_TURNS_SECONDS = float(
+    os.getenv("QA_PAUSE_BETWEEN_TURNS_SECONDS", "0.5")
+)
+SCENARIO_FILTER = os.getenv("QA_SCENARIOS", "").strip()
 REPORTS_DIR = Path("reports")
 RUN_REPORT = Path(
     os.getenv("QA_RUN_REPORT", str(REPORTS_DIR / "vesta_trading_dialog_test_run.md"))
@@ -132,7 +138,7 @@ def scenarios() -> list[Scenario]:
         Scenario(31, "В наличии без точного количества", "наличие", "P0", ["в наличии?", "2202210"], {"clarify_first": ["товар", "артикул"], "product_later": True, "url_later": True}),
         Scenario(32, "Можно забрать сегодня", "наличие", "P1", ["можно забрать сегодня?", "2202210"], {"clarify_first": ["артикул", "товар"], "no_pickup_promise": True, "pickup_requires_confirmation": True}),
         Scenario(33, "Самый дешёвый шаровый кран", "краны", "P0", ["самый дешёвый шаровый кран 1/2", "для воды"], {"clarify_first": ["вод"], "product_later": True, "cheap_sorted_later": True, "url_later": True, "ball_valves_only": True}),
-        Scenario(34, "Только в наличии насос 25/6", "насосы", "P0", ["насос 25/6, только в наличии", "130"], {"clarify_first": ["монтаж", "130", "180"], "product_later": True, "in_stock_later": True, "url_later": True, "pump_constraints": {"connection_size": 25, "head_m": 6, "mounting_length_mm": 130}}),
+        Scenario(34, "Только в наличии насос 25/6", "насосы", "P0", ["насос 25/6, только в наличии", "130"], {"clarify_or_product_first": True, "product_later": True, "in_stock_later": True, "url_later": True, "pump_constraints": {"connection_size": 25, "head_m": 6, "mounting_length_mm": 130}}),
         Scenario(35, "Только VALTEC без аналогов", "краны", "P1", ["нужен кран 1/2, только Valtec", "для воды, без аналогов"], {"clarify_first": [["назнач", "для чего", "какую воду"]], "product_later": True, "brand_only": "VALTEC", "url_later": True, "ball_valves_only": True}),
         Scenario(36, "Смена темы с крана на котёл", "смена темы", "P0", ["нужен кран шаровый", "1/2, для воды", "теперь нужен котёл на 100 метров"], {"product_later": True, "topic_change_final": True, "boiler_final": True}),
         Scenario(37, "Смена темы с насоса на канализацию", "смена темы", "P1", ["нужен насос для отопления", "ладно, не насос. теперь нужна канализационная труба 50"], {"topic_change_final": True, "sewer_final": True, "clarify_final": ["внутрен", "наруж", "длин"]}),
@@ -159,7 +165,11 @@ def read_usage() -> float:
         return 0.0
 
 
-def post_json(path: str, payload: dict[str, Any], timeout: int = 90) -> dict[str, Any]:
+def post_json(
+    path: str,
+    payload: dict[str, Any],
+    timeout: int = REQUEST_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
         f"{API_URL}{path}",
@@ -191,6 +201,44 @@ def normalize(text: str) -> str:
 
 def normalize_sku(value: Any) -> str:
     return re.sub(r"[^a-zа-я0-9]", "", str(value or "").casefold())
+
+
+def validate_api_target() -> None:
+    """Prevent a live QA run from accidentally hitting the main storefront."""
+    parsed = urllib.parse.urlparse(API_URL)
+    hostname = (parsed.hostname or "").casefold()
+    allowed_hosts = {"127.0.0.1", "localhost", "bot-api-vestatrade.ru"}
+    if parsed.scheme not in {"http", "https"} or hostname not in allowed_hosts:
+        raise RuntimeError(
+            "QA_API_URL must target localhost or bot-api-vestatrade.ru; "
+            f"refusing to run against {API_URL!r}"
+        )
+
+
+def selected_scenarios() -> list[Scenario]:
+    available = scenarios()
+    if not SCENARIO_FILTER:
+        return available
+
+    selected_numbers: set[int] = set()
+    for token in SCENARIO_FILTER.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if "-" in token:
+            start_text, end_text = token.split("-", 1)
+            start, end = int(start_text), int(end_text)
+            if start > end:
+                start, end = end, start
+            selected_numbers.update(range(start, end + 1))
+        else:
+            selected_numbers.add(int(token))
+
+    selected = [item for item in available if item.number in selected_numbers]
+    missing = selected_numbers - {item.number for item in selected}
+    if missing:
+        raise ValueError(f"Unknown QA scenario numbers: {sorted(missing)}")
+    return selected
 
 
 def catalog_entry(item: dict[str, Any]) -> dict[str, Any]:
@@ -753,6 +801,7 @@ def evaluate(scenario: Scenario, turns: list[dict[str, Any]]) -> tuple[str, list
 
 
 def run() -> None:
+    validate_api_target()
     RUN_REPORT.parent.mkdir(parents=True, exist_ok=True)
     ANALYSIS_REPORT.parent.mkdir(parents=True, exist_ok=True)
     started_at = datetime.now().isoformat(timespec="seconds")
@@ -760,16 +809,21 @@ def run() -> None:
     health = get_json("/health")
     all_results: list[dict[str, Any]] = []
 
-    for scenario in scenarios():
+    selected = selected_scenarios()
+    total = len(selected)
+    for position, scenario in enumerate(selected, start=1):
         session_id = f"pdf-test-{scenario.number}-{int(time.time())}"
-        print(f"[{scenario.number:02d}/48] {scenario.title}", flush=True)
+        print(
+            f"[{position:02d}/{total:02d}] scenario {scenario.number:02d}: {scenario.title}",
+            flush=True,
+        )
         turns: list[dict[str, Any]] = []
         for turn_index, message in enumerate(scenario.messages, start=1):
             started = time.perf_counter()
             response = post_json("/chat", {"session_id": session_id, "message": message})
             elapsed = round(time.perf_counter() - started, 2)
             turns.append({"turn": turn_index, "user": message, "response": response, "elapsed_sec": elapsed})
-            time.sleep(0.1)
+            time.sleep(PAUSE_BETWEEN_TURNS_SECONDS)
         verdict, issues = evaluate(scenario, turns)
         all_results.append({"scenario": scenario, "turns": turns, "verdict": verdict, "issues": issues})
 

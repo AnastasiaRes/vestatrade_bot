@@ -20,14 +20,17 @@ class RankingAgent:
             ranked = self._filter_weak_boilers(ranked, query)
 
         if query.cheap:
-            # Цена — сам запрос («подешевле»), но товар в наличии всё равно выше.
+            # Цена — сам запрос («подешевле»). Keep stock as the first safety
+            # boundary and use the preferred brand only as a final tie-breaker;
+            # otherwise an expensive VALTEC card can precede a cheaper,
+            # equally compatible in-stock pump and fail the card guard.
             ranked.sort(
                 key=lambda product: (
                     *self._explicit_boiler_power_priority(product, query),
-                    not self._default_preferred_brand(product, query),
                     not product.is_in_stock,
                     product.price is None,
                     product.price or float("inf"),
+                    not self._default_preferred_brand(product, query),
                 )
             )
             return ranked
