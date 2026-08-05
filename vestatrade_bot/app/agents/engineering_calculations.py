@@ -18,6 +18,9 @@ DERIVED_ENGINEERING_SLOTS = {
     "required_flow_m3_h",
     "required_head_m",
     "calculated_static_head_m",
+    "geometric_lift_m",
+    "horizontal_loss_allowance_m",
+    "outlet_pressure_head_m",
     "warm_floor_pipe_min_m",
     "warm_floor_pipe_max_m",
     "warm_floor_contours",
@@ -191,12 +194,27 @@ def _normalize_required_head(slots: dict[str, Any]) -> None:
         if slots.get("required_head_calculated") is True:
             slots.pop("required_head_m", None)
             slots.pop("calculated_static_head_m", None)
+            slots.pop("geometric_lift_m", None)
+            slots.pop("horizontal_loss_allowance_m", None)
+            slots.pop("outlet_pressure_head_m", None)
             slots.pop("head_includes_outlet_pressure", None)
         return
 
-    static_head = water_level + lift + horizontal / 10.0
+    geometric_lift = water_level + lift
+    horizontal_loss_allowance = horizontal / 10.0
+    static_head = geometric_lift + horizontal_loss_allowance
     pressure_bar = _nonnegative_float(slots.get("required_pressure_bar"))
-    required_head = static_head + (pressure_bar or 0.0) * 10.0
+    outlet_pressure_head = (pressure_bar or 0.0) * 10.0
+    required_head = static_head + outlet_pressure_head
+    slots["geometric_lift_m"] = round(geometric_lift, 3)
+    slots["horizontal_loss_allowance_m"] = round(
+        horizontal_loss_allowance,
+        3,
+    )
+    slots["outlet_pressure_head_m"] = round(outlet_pressure_head, 3)
+    # Backwards-compatible aggregate used by existing search and tests.  It is
+    # geometric lift plus the agreed horizontal-loss allowance, not purely
+    # geometric head; user-facing copy uses the explicit components above.
     slots["calculated_static_head_m"] = round(static_head, 3)
     slots["required_head_m"] = round(required_head, 3)
     slots["required_head_calculated"] = True

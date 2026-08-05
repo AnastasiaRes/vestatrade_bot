@@ -91,6 +91,103 @@ def test_genuine_project_followups_still_build_the_cart(orchestrator) -> None:
     assert response.products
 
 
+def test_warm_floor_updates_do_not_replay_the_whole_cart(orchestrator) -> None:
+    session_id = "warm-floor-compact-updates"
+
+    opening = orchestrator.handle_chat(
+        session_id,
+        "Нужен водяной тёплый пол",
+    )
+    assert "площад" in opening.answer.lower()
+    assert "электричес" not in opening.answer.lower()
+
+    initial = orchestrator.handle_chat(session_id, "80 м²")
+    assert initial.products
+    assert orchestrator.sessions.get(session_id).slots.get("project_cart")
+
+    insulation = orchestrator.handle_chat(session_id, "Утеплитель уже есть")
+    assert insulation.products == []
+    assert BUNDLE_MARKER not in insulation.answer
+    assert "утеплитель" in insulation.answer.lower()
+    assert "источник тепла" in insulation.answer.lower()
+
+    corrected = orchestrator.handle_chat(
+        session_id,
+        "Нет, площадь не 80, а 100 м²",
+    )
+    assert corrected.products == []
+    assert BUNDLE_MARKER not in corrected.answer
+    assert "650–700" in corrected.answer
+    assert "9 контур" in corrected.answer
+
+    heat_source = orchestrator.handle_chat(session_id, "Газовый котёл")
+    assert heat_source.products == []
+    assert BUNDLE_MARKER not in heat_source.answer
+    assert "газовый котел" in heat_source.answer.lower().replace("ё", "е")
+    assert "автоматик" in heat_source.answer.lower()
+
+    refreshed = orchestrator.handle_chat(
+        session_id,
+        "Покажи обновлённую подборку",
+    )
+    assert refreshed.products
+    assert "артикул" in refreshed.answer.lower()
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Собери комплект с автоматикой",
+        "Покажи обновлённую подборку с автоматикой",
+    ],
+)
+def test_explicit_warm_floor_cart_refresh_rebuilds_after_slot_delta(
+    orchestrator,
+    message,
+) -> None:
+    session_id = f"warm-floor-explicit-refresh-{hash(message)}"
+    orchestrator.handle_chat(session_id, "Нужен водяной тёплый пол")
+    orchestrator.handle_chat(session_id, "80 м²")
+
+    refreshed = orchestrator.handle_chat(session_id, message)
+
+    assert refreshed.debug["slots"]["warm_floor_automation_needed"] is True
+    assert refreshed.products
+    assert "FeedSearchAgent" in refreshed.debug["agents_used"]
+
+
+def test_switch_to_electric_floor_invalidates_water_floor_cart(
+    orchestrator,
+) -> None:
+    session_id = "warm-floor-switch-to-electric"
+    orchestrator.handle_chat(session_id, "Нужен водяной тёплый пол")
+    water_cart = orchestrator.handle_chat(session_id, "80 м²")
+    assert water_cart.products
+    assert water_cart.debug["slots"].get("project_cart")
+
+    switched = orchestrator.handle_chat(
+        session_id,
+        "Нет, пол будет электрический",
+    )
+    session = orchestrator.sessions.get(session_id)
+
+    assert switched.debug["slots"]["warm_floor_type"] == "электрический"
+    assert switched.products == []
+    assert "project_cart" not in switched.debug["slots"]
+    assert "электричес" in switched.answer.lower()
+    assert "труба для чего" not in switched.answer.lower()
+    assert session.pending_slot_keys == []
+
+    summary = orchestrator.handle_chat(
+        session_id,
+        "Покажи обновлённую подборку",
+    )
+    assert summary.products == []
+    assert "project_cart" not in summary.debug["slots"]
+    assert "электричес" in summary.answer.lower()
+    assert "PUMP-25-40" not in summary.answer
+
+
 def test_cart_omits_pump_already_built_into_the_boiler() -> None:
     # Arderia E9's own card states "Встроенный циркуляционный насос", yet the
     # cart used to list a separate 3844 RUB pump beside it — selling hardware

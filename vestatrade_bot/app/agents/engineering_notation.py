@@ -124,6 +124,39 @@ def extract_contextual_short_answer(
     pending = normalize_text(pending_question)
     expected = set(pending_slot_keys or [])
     slots: dict[str, Any] = {}
+
+    # Pressure is role-sensitive: the same bare ``1 бар`` means inlet
+    # pressure after an inlet question and target pressure after an outlet
+    # question.  Bind it to the structured pending slot before the generic
+    # pump parser has a chance to treat every unqualified pressure as target.
+    pressure_match = re.fullmatch(
+        r"\s*(?:давлен\w*\s*)?(\d{1,3}(?:[,.]\d+)?)\s*"
+        r"(?:бар(?:а|ов)?|bar|атм(?:осфер\w*)?)\s*",
+        text,
+    )
+    if category == "pumps" and pressure_match:
+        pressure = float(pressure_match.group(1).replace(",", "."))
+        if (
+            "inlet_pressure_bar" in expected
+            or any(
+                marker in pending
+                for marker in ["на вход", "сейчас", "исходн", "имеетс"]
+            )
+        ):
+            if 0 <= pressure <= 25:
+                slots["inlet_pressure_bar"] = pressure
+            return slots
+        if (
+            "required_pressure_bar" in expected
+            or any(
+                marker in pending
+                for marker in ["после насос", "получить", "нужно", "требуем"]
+            )
+        ):
+            if 0 < pressure <= 25:
+                slots["required_pressure_bar"] = pressure
+            return slots
+
     number_match = re.fullmatch(
         r"\s*(\d{1,4}(?:[,.]\d+)?)\s*"
         r"(?:м\b|метр(?:а|ов)?)?\s*",

@@ -74,6 +74,87 @@ def test_household_pump_dialog_advances_through_central_main_parameters() -> Non
     assert "источник воды какой" not in normalize_text(flow.answer)
 
 
+def test_bare_pressures_follow_the_pending_central_main_question() -> None:
+    bot = ChatOrchestrator(products=[])
+    session_id = "live-central-main-bare-pressure-roles"
+
+    bot.handle_chat(session_id, "Мне нужно подобрать насос")
+    bot.handle_chat(session_id, "Вода для дома")
+    source = bot.handle_chat(session_id, "Центральный водопровод")
+
+    assert source.debug["slots"]["pump_type"] == "повысительный"
+    assert bot.sessions.get(session_id).pending_slot_keys == [
+        "inlet_pressure_bar"
+    ]
+
+    inlet = bot.handle_chat(session_id, "1 бар")
+    inlet_slots = inlet.debug["slots"]
+
+    assert inlet_slots["inlet_pressure_bar"] == 1
+    assert "required_pressure_bar" not in inlet_slots
+    assert bot.sessions.get(session_id).pending_slot_keys == [
+        "required_pressure_bar"
+    ]
+    assert "после насоса" in normalize_text(inlet.answer)
+
+    required = bot.handle_chat(session_id, "3 бара")
+    required_slots = required.debug["slots"]
+
+    assert required_slots["inlet_pressure_bar"] == 1
+    assert required_slots["required_pressure_bar"] == 3
+    assert bot.sessions.get(session_id).pending_slot_keys == [
+        "required_flow_m3_h"
+    ]
+
+    flow = bot.handle_chat(session_id, "30 литров в минуту")
+    assert flow.debug["slots"]["required_flow_m3_h"] == 1.8
+
+    recalled = bot.handle_chat(
+        session_id,
+        "Напомни, какие параметры этого насоса ты сохранил",
+    )
+    recall_text = normalize_text(recalled.answer)
+
+    assert "давление на входе 1 бар" in recall_text
+    assert "требуемое давление после насоса 3 бар" in recall_text
+    assert "расход 30 л/мин" in recall_text
+
+    for recall_message in [
+        "Покажи сохранённые данные",
+        "Какие данные уже зафиксированы?",
+    ]:
+        variant = bot.handle_chat(session_id, recall_message)
+        variant_text = normalize_text(variant.answer)
+        assert "давление на входе 1 бар" in variant_text
+        assert "требуемое давление после насоса 3 бар" in variant_text
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Какие параметры нужны для насоса?",
+        "Скажи, какие параметры нужны для насоса?",
+        "Покажи, какие параметры нужны для насоса?",
+        "Покажи, какие насосы есть",
+        "Напомни, какие параметры нужны для подбора насоса?",
+        "Скажи, какие данные сохранить для подбора насоса",
+        "Покажи сохранённый насос",
+        "Скажи цену насоса, который я уже сообщал",
+    ],
+)
+def test_engineering_requirements_question_is_not_mistaken_for_recall(
+    message: str,
+) -> None:
+    bot = ChatOrchestrator(products=[])
+
+    response = bot.handle_chat(
+        "live-not-a-recall",
+        message,
+    )
+
+    assert "вот что зафиксировал" not in normalize_text(response.answer)
+
+
 def test_well_total_rings_and_water_rings_are_kept_as_separate_facts() -> None:
     bot = ChatOrchestrator(products=[])
     session_id = "live-ambiguous-well-rings"
@@ -192,6 +273,10 @@ def test_watery_warm_floor_opening_keeps_area_question_for_bare_metres() -> None
     assert pending.pending_slot_keys == ["warm_floor_area_m2"]
     assert pending.pending_question_id == "warm_floor.area"
 
+    opening = normalize_text(bot.sessions.get(session_id).pending_question or "")
+    assert "площад" in opening
+    assert "электричес" not in opening
+
     response = bot.handle_chat(session_id, "240 метров")
     slots = response.debug["slots"]
 
@@ -300,6 +385,33 @@ def test_bare_depth_answers_fill_pending_well_water_level(
     assert "расстояние по горизонтали" in normalize_text(depth.answer)
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        (
+            "Нужен насос для полива из колодца. "
+            "Расстояние от верха до воды 13 м"
+        ),
+        (
+            "Нужен насос для полива из колодца. "
+            "От верха до воды 13 м, до полива пока не знаю"
+        ),
+    ],
+)
+def test_water_level_distance_is_not_duplicated_as_horizontal_run(
+    message: str,
+) -> None:
+    bot = ChatOrchestrator(products=[])
+    response = bot.handle_chat(
+        f"live-no-depth-horizontal-duplication-{hash(message)}",
+        message,
+    )
+
+    assert response.debug["slots"]["water_level_depth_m"] == 13
+    assert "horizontal_run_m" not in response.debug["slots"]
+    assert "расстояние по горизонтали" in normalize_text(response.answer)
+
+
 def test_irrigation_well_dialog_keeps_context_and_estimates_standard_hose() -> None:
     bot = ChatOrchestrator(products=[])
     session_id = "live-irrigation-standard-hose"
@@ -344,3 +456,39 @@ def test_irrigation_well_dialog_keeps_context_and_estimates_standard_hose() -> N
     assert "2 бар" in answer
     assert "37 м" in answer
     assert "откуда берем воду" not in answer
+
+
+def test_irrigation_well_accepts_several_facts_in_one_natural_turn() -> None:
+    bot = ChatOrchestrator(products=[])
+    session_id = "live-irrigation-multiple-facts"
+
+    result = bot.handle_chat(
+        session_id,
+        (
+            "Нужен насос для полива из колодца. От верха до воды 13 м, "
+            "до полива 40 м. Посчитай сам: полив стандартным шлангом "
+            "занимает 30 минут."
+        ),
+    )
+    slots = result.debug["slots"]
+
+    assert result.debug["category"] == "pumps"
+    assert slots["pump_use"] == "полив"
+    assert slots["water_source"] == "колодец"
+    assert slots["water_level_depth_m"] == 13
+    assert slots["horizontal_run_m"] == 40
+    assert slots["geometric_lift_m"] == 13
+    assert slots["horizontal_loss_allowance_m"] == 4
+    assert slots["outlet_pressure_head_m"] == 20
+    assert slots["required_head_m"] == 37
+
+    recalled = bot.handle_chat(
+        session_id,
+        "Напомни, какие параметры колодца и полива ты сохранил",
+    )
+    recall_text = normalize_text(recalled.answer)
+
+    assert "глубина до зеркала воды 13 м" in recall_text
+    assert "расстояние до дома/полива 40 м" in recall_text
+    assert "геометрический подъем 13 м" in recall_text
+    assert "итоговый расчетный требуемый напор 37 м" in recall_text

@@ -443,6 +443,55 @@ def test_question_without_declared_slots_still_resolves_from_the_category():
     assert resolved.slots["explicit_water_level_depth_m"] == 13
 
 
+def test_pump_fallback_candidates_keep_both_pressure_roles():
+    resolver = PendingAnswerResolver(StubLLMClient())
+
+    keys = [spec.key for spec in resolver._candidates([], "pumps")]
+
+    assert "inlet_pressure_bar" in keys
+    assert "required_pressure_bar" in keys
+
+
+@pytest.mark.parametrize(
+    ("message", "expected_slot", "wrong_slot", "value"),
+    [
+        (
+            "Мне нужно 3 бара после насоса",
+            "inlet_pressure_bar",
+            "inlet_pressure_bar",
+            3,
+        ),
+        (
+            "Давление сейчас 1 бар",
+            "required_pressure_bar",
+            "required_pressure_bar",
+            1,
+        ),
+    ],
+)
+def test_resolver_rejects_pressure_role_opposite_to_explicit_wording(
+    message,
+    expected_slot,
+    wrong_slot,
+    value,
+):
+    resolver = PendingAnswerResolver(
+        FixedLLMStub(
+            {"slot": wrong_slot, "value": value, "evidence": message}
+        )
+    )
+
+    resolved = resolver.resolve(
+        message=message,
+        question="Уточните давление в барах",
+        expected_slots=[expected_slot],
+        category="pumps",
+    )
+
+    assert resolved.slots == {}
+    assert not resolved.accepted
+
+
 def test_resolver_is_skipped_when_rules_already_read_the_answer():
     client = StubLLMClient()
     orchestrator = _orchestrator(client)

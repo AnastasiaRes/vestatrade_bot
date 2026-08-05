@@ -172,6 +172,9 @@ class EngineeringInterpreterAgent:
         "water_column_depth_m",
         "dynamic_water_level_m",
         "required_head_m",
+        "geometric_lift_m",
+        "horizontal_loss_allowance_m",
+        "outlet_pressure_head_m",
         "required_flow_m3_h",
         "warm_floor_pipe_min_m",
         "warm_floor_pipe_max_m",
@@ -196,6 +199,7 @@ class EngineeringInterpreterAgent:
         "dynamic_water_level_m": (0.1, 300),
         "lift_height_m": (0, 300),
         "horizontal_run_m": (0, 5000),
+        "inlet_pressure_bar": (0, 25),
         "required_pressure_bar": (0.1, 25),
         "required_head_m": (0.1, 300),
         "required_flow_l_min": (0.1, 10000),
@@ -458,10 +462,17 @@ class EngineeringInterpreterAgent:
                 and not isinstance(value, bool)
             ):
                 number = float(value)
+                numeric_evidence = None
+                if isinstance(slot_evidence, dict):
+                    numeric_evidence = self._clean_text(
+                        slot_evidence.get(key),
+                        240,
+                    )
                 if limits[0] <= number <= limits[1] and self._numeric_slot_is_grounded(
                     key,
                     number,
                     message=message,
+                    evidence=numeric_evidence,
                     pending_slot_keys=pending_slot_keys or (),
                 ):
                     cleaned[key] = (
@@ -598,9 +609,14 @@ class EngineeringInterpreterAgent:
         value: float,
         *,
         message: str,
+        evidence: str | None = None,
         pending_slot_keys: list[str] | tuple[str, ...],
     ) -> bool:
-        text = normalize_text(message)
+        # Slot-specific evidence is already checked as a literal fragment of
+        # the current message by ``_slot_metadata_is_grounded``.  Prefer it so
+        # two quantities in one sentence cannot be swapped by the model.
+        message_text = normalize_text(message)
+        text = normalize_text(evidence or message)
         if not text:
             # Preserve compatibility for direct helper calls.  The production
             # path always passes the current message.
@@ -621,8 +637,58 @@ class EngineeringInterpreterAgent:
                     text,
                 )
             )
-        if key == "required_pressure_bar":
-            return bool(re.search(r"\b(?:бар\w*|атм\w*)\b", text))
+        if key in {"inlet_pressure_bar", "required_pressure_bar"}:
+            message_inlet_marked = bool(
+                re.search(
+                    r"(?:на\s+вход\w*|входн\w*\s+давлен\w*|"
+                    r"исходн\w*\s+давлен\w*|сейчас|имеетс\w*)",
+                    message_text,
+                )
+            )
+            message_required_marked = bool(
+                re.search(
+                    r"(?:нужн\w*|требуем\w*|целев\w*|"
+                    r"после\s+насос\w*|на\s+выход\w*)",
+                    message_text,
+                )
+            )
+            if (
+                not evidence
+                and message_inlet_marked
+                and message_required_marked
+                and len(self._stated_numbers(message_text)) >= 2
+            ):
+                # With two pressure facts the whole sentence is not evidence
+                # for either individual slot: otherwise a model can swap the
+                # two literal numbers and still pass grounding.  Deterministic
+                # extraction remains authoritative when the model omits
+                # slot-specific evidence.
+                return False
+            if not re.search(r"\b(?:бар\w*|атм\w*)\b", text):
+                return False
+            inlet_marked = bool(
+                re.search(
+                    r"(?:на\s+вход\w*|входн\w*\s+давлен\w*|"
+                    r"исходн\w*\s+давлен\w*|сейчас|имеетс\w*)",
+                    text,
+                )
+            )
+            required_marked = bool(
+                re.search(
+                    r"(?:нужн\w*|требуем\w*|целев\w*|"
+                    r"после\s+насос\w*|на\s+выход\w*)",
+                    text,
+                )
+            )
+            if key == "inlet_pressure_bar":
+                return inlet_marked or (
+                    key in pending and not required_marked
+                )
+            return required_marked or (
+                key in pending and not inlet_marked
+            ) or (
+                not inlet_marked and not required_marked and not pending
+            )
         if key == "well_yield_m3_h":
             return "дебит" in text and self._has_m3_per_hour_unit(text)
         if key == "casing_diameter_mm":

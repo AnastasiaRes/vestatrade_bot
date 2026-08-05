@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from app.agents.engineering_interpreter import (
     ENGINEERING_INTERPRETER_PROMPT,
     EngineeringInterpreterAgent,
@@ -256,3 +258,99 @@ def test_water_level_reference_accepts_only_meaning_supported_by_message() -> No
     }
     assert fabricated_direction.slots == {}
     assert explicit_direction.slots == {"water_level_reference": "from_top"}
+
+
+def test_pressure_roles_are_grounded_by_pending_question_and_wording() -> None:
+    inlet = _interpret(
+        "Давление сейчас 1 бар",
+        {
+            "inlet_pressure_bar": 1,
+            "required_pressure_bar": 1,
+        },
+        pending=["inlet_pressure_bar"],
+    )
+    required = _interpret(
+        "Нужно 3 бара после насоса",
+        {
+            "inlet_pressure_bar": 3,
+            "required_pressure_bar": 3,
+        },
+        pending=["required_pressure_bar"],
+    )
+
+    assert inlet.slots == {"inlet_pressure_bar": 1}
+    assert required.slots == {"required_pressure_bar": 3}
+
+
+def test_explicit_pressure_role_overrides_opposite_pending_slot() -> None:
+    required_while_waiting_for_inlet = _interpret(
+        "Мне нужно 3 бара после насоса",
+        {
+            "inlet_pressure_bar": 3,
+            "required_pressure_bar": 3,
+        },
+        pending=["inlet_pressure_bar"],
+    )
+    inlet_while_waiting_for_required = _interpret(
+        "Давление сейчас 1 бар",
+        {
+            "inlet_pressure_bar": 1,
+            "required_pressure_bar": 1,
+        },
+        pending=["required_pressure_bar"],
+    )
+
+    assert required_while_waiting_for_inlet.slots == {
+        "required_pressure_bar": 3
+    }
+    assert inlet_while_waiting_for_required.slots == {
+        "inlet_pressure_bar": 1
+    }
+
+
+def test_slot_evidence_prevents_llm_from_swapping_two_pressures() -> None:
+    message = "Давление сейчас 1 бар, нужно 3 бара после насоса"
+    swapped = _interpret(
+        message,
+        {
+            "inlet_pressure_bar": 3,
+            "required_pressure_bar": 1,
+        },
+        evidence={
+            "inlet_pressure_bar": "нужно 3 бара после насоса",
+            "required_pressure_bar": "Давление сейчас 1 бар",
+        },
+        provenance={
+            "inlet_pressure_bar": "current_message",
+            "required_pressure_bar": "current_message",
+        },
+    )
+
+    assert swapped.slots == {}
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        None,
+        {"inlet_pressure_bar": "нужно 3 бара после насоса"},
+    ],
+)
+def test_two_pressure_facts_require_evidence_for_each_slot(
+    evidence,
+) -> None:
+    message = "Давление сейчас 1 бар, нужно 3 бара после насоса"
+    swapped = _interpret(
+        message,
+        {
+            "inlet_pressure_bar": 3,
+            "required_pressure_bar": 1,
+        },
+        evidence=evidence,
+        provenance={
+            "inlet_pressure_bar": "current_message",
+            "required_pressure_bar": "current_message",
+        },
+    )
+
+    assert swapped.slots == {}

@@ -478,6 +478,9 @@ def test_well_head_is_recalculated_from_confirmed_geometry() -> None:
     bot.handle_chat(session_id, "до дома 25 метров")
     lifted = bot.handle_chat(session_id, "поднять ещё на 4 метра")
 
+    assert lifted.debug["slots"]["geometric_lift_m"] == pytest.approx(5.8)
+    assert lifted.debug["slots"]["horizontal_loss_allowance_m"] == pytest.approx(2.5)
+    assert lifted.debug["slots"]["outlet_pressure_head_m"] == pytest.approx(0)
     assert lifted.debug["slots"]["calculated_static_head_m"] == pytest.approx(8.3)
     assert lifted.debug["slots"]["required_head_m"] == pytest.approx(8.3)
     assert lifted.debug["slots"]["required_head_calculated"] is True

@@ -846,7 +846,7 @@ class SlotFillingAgent:
             return SlotFillingResult(slots=slots)
 
         if slots.get("pump_type") == "повысительный":
-            if not slots.get("inlet_pressure_bar"):
+            if slots.get("inlet_pressure_bar") is None:
                 return SlotFillingResult(
                     slots=slots,
                     needs_clarification=True,
@@ -854,7 +854,7 @@ class SlotFillingAgent:
                         "Какое давление сейчас на входе из центрального водопровода, в барах?"
                     ),
                 )
-            if not slots.get("required_pressure_bar"):
+            if slots.get("required_pressure_bar") is None:
                 return SlotFillingResult(
                     slots=slots,
                     needs_clarification=True,
@@ -912,7 +912,7 @@ class SlotFillingAgent:
             known.append(f"расход ~{float(slots['required_flow_m3_h']):g} м³/ч")
         if slots.get("required_head_m") and slots.get("required_head_calculated"):
             head_text = f"{float(slots['required_head_m']):g}".replace(".", ",")
-            known.append(f"расчётный геометрический напор ~{head_text} м")
+            known.append(f"расчётный требуемый напор ~{head_text} м")
         prefix = "Принял: " + "; ".join(known) + ". " if known else ""
 
         ambiguous_level = slots.get("water_level_reference") == "ambiguous"

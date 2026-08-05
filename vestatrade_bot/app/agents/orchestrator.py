@@ -297,11 +297,14 @@ BATHROOM_FUNNEL = (
     "трубы, краны, насосы, канализацию и арматуру. Начнём с водоснабжения, "
     "канализации или тёплого пола?"
 )
+WARM_FLOOR_AREA_FOLLOWUP = (
+    "Окей, собираем комплект для тёплого пола по одному параметру за шаг. "
+    "Какая площадь тёплого пола в м²?"
+)
 WARM_FLOOR_ALL_FOLLOWUP = (
-    "Окей, собираем комплект для тёплого пола. Чтобы не гадать: какая площадь "
-    "тёплого пола в м² и это водяной тёплый пол от котла или электрический? "
-    "Если пока не знаете — могу дать типовой список комплекта и начать с "
-    "универсальных позиций из каталога."
+    WARM_FLOOR_AREA_FOLLOWUP
+    + " Если тип ещё не выбран, следующим "
+    "шагом отдельно уточню, водяной он или электрический."
 )
 HEATING_ALL_FOLLOWUP = (
     "Окей, собираем отопление как систему. Для старта нужны 2 вещи: площадь "
@@ -5283,14 +5286,14 @@ class ChatOrchestrator:
             self._reset_project_context_if_scope_changed(explicit_scope, session)
         self._update_project_state(message, intent, session)
         area = self._project_area_from_text(text)
+        active_project_scope = str(
+            explicit_scope
+            or session.slots.get("project_scope")
+            or session.slots.get("scope_funnel")
+            or ""
+        )
         if area is not None:
-            active_scope = str(
-                explicit_scope
-                or session.slots.get("project_scope")
-                or session.slots.get("scope_funnel")
-                or ""
-            )
-            if active_scope == "warm_floor":
+            if active_project_scope == "warm_floor":
                 session.slots["warm_floor_area_m2"] = area
             elif not (
                 session.slots.get("complex_engineering_request")
@@ -5300,7 +5303,21 @@ class ChatOrchestrator:
             ):
                 session.slots["area_m2"] = area
 
-        if self._wants_project_cart_summary(text) and not explicit_scope:
+        warm_floor_update_keys = {
+            "warm_floor_area_m2",
+            "warm_floor_type",
+            "floor_insulation_ready",
+            "warm_floor_heat_source",
+            "warm_floor_automation_needed",
+        }.intersection(intent.slots)
+        if active_project_scope == "warm_floor" and area is not None:
+            warm_floor_update_keys.add("warm_floor_area_m2")
+
+        if (
+            self._wants_project_cart_summary(text)
+            and not explicit_scope
+            and not warm_floor_update_keys
+        ):
             in_stock_only = bool(
                 intent.flags.get("in_stock") or intent.slots.get("in_stock")
             )
@@ -5385,6 +5402,16 @@ class ChatOrchestrator:
         )
         if not scope:
             return None
+        if scope == "warm_floor" and area is not None:
+            warm_floor_update_keys.add("warm_floor_area_m2")
+        compact_warm_floor_update = bool(
+            scope == "warm_floor"
+            and session.slots.get("project_cart")
+            and warm_floor_update_keys
+            and not self._wants_project_cart_summary(text)
+            and not self._wants_project_selection(text)
+            and not self._wants_more_project_components(text)
+        )
         if session.slots.get("project_cart") and self._wants_more_project_components(text):
             cards = self._project_cart_cards(session) or session.last_products
             answer = self._compose_project_next_steps(scope, cards)
@@ -5465,6 +5492,35 @@ class ChatOrchestrator:
                 session,
             )
 
+        if (
+            scope == "warm_floor"
+            and session.slots.get("warm_floor_type") == "электрический"
+        ):
+            # A water-floor basket is incompatible after an explicit switch
+            # to electric heating.  Invalidate it before any later summary can
+            # replay its circulation pump, valves or hydronic pipe.  The
+            # electric branch is an informative terminal state, not a pending
+            # pipe-purpose question.
+            session.slots.pop("project_cart", None)
+            session.last_products = []
+            session.shown_product_skus = []
+            session.shown_result_signature = None
+            session.clear_pending_question_state()
+            answer = self._project_clarification(scope, session, text) or (
+                "Тёплый пол зафиксировал как электрический."
+            )
+            agents_used.extend(["GuardrailsAgent", "ResponseComposerAgent"])
+            self._append_history(session, message, answer)
+            return self._response(
+                session_id,
+                answer,
+                [],
+                False,
+                intent,
+                session,
+                agents_used,
+            )
+
         clarification = self._project_clarification(scope, session, text)
         if clarification:
             agents_used.append("ResponseComposerAgent")
@@ -5514,7 +5570,23 @@ class ChatOrchestrator:
         session.last_intent = "project_cart"
         session.category = self._primary_session_category(list(cards_by_category)) or session.category
         session.clear_pending_question_state()
-        answer = self._compose_project_selection_answer(scope, cards_by_category, session)
+        if compact_warm_floor_update:
+            # Keep the catalogue basket current internally, but do not resend
+            # the same long cards after every one-line design answer.  Product
+            # presentation is a separate action and can be requested via
+            # ``покажи/собери обновлённую подборку``.
+            answer = self._compose_warm_floor_parameter_ack(
+                session,
+                warm_floor_update_keys,
+            )
+            response_cards: list[ProductCard] = []
+        else:
+            answer = self._compose_project_selection_answer(
+                scope,
+                cards_by_category,
+                session,
+            )
+            response_cards = cards
         if scope == "warm_floor":
             followup = self._warm_floor_followup_question(session)
             if followup:
@@ -5529,7 +5601,15 @@ class ChatOrchestrator:
         agents_used.append("ProductCardAgent")
         agents_used.append("ResponseComposerAgent")
         self._append_history(session, message, answer)
-        return self._response(session_id, answer, cards, False, intent, session, agents_used)
+        return self._response(
+            session_id,
+            answer,
+            response_cards,
+            False,
+            intent,
+            session,
+            agents_used,
+        )
 
     def _explicit_project_scope_from_text(self, text: str) -> str | None:
         if "тепл" in text and "пол" in text and not self._negates_warm_floor(text):
@@ -5745,9 +5825,16 @@ class ChatOrchestrator:
         summary_markers = [
             "собери артикул",
             "собрать артикул",
+            "собери обновленную подборк",
+            "собери обновлённую подборк",
             "список артикул",
             "артикулы списком",
             "артикулы с тем",
+            "покажи подборк",
+            "покажи обновленную подборк",
+            "покажи обновлённую подборк",
+            "обновленную подборк",
+            "обновлённую подборк",
             "как корзин",
             "в корзин",
             "корзин",
@@ -5800,6 +5887,8 @@ class ChatOrchestrator:
         if self._wants_project_selection(text) or self._wants_project_cart_summary(text):
             return True
         if any(marker in text for marker in ["водяной", "электрический пол", "от котла"]):
+            return True
+        if "электр" in text and re.search(r"\bпол(?:а|у|ом|е)?\b", text):
             return True
         return bool(re.search(r"\d{2,4}\s*(?:м2|м²|квадрат|кв\.?\s*м|кв\b)", text))
 
@@ -5921,10 +6010,22 @@ class ChatOrchestrator:
         session: SessionState,
         text: str,
     ) -> str | None:
+        if (
+            scope == "warm_floor"
+            and session.slots.get("warm_floor_type") == "электрический"
+        ):
+            return (
+                "В текущем ассортименте не вижу электрических нагревательных "
+                "матов или кабеля и терморегуляторов. Не буду подставлять "
+                "вместо них трубы и насос водяного пола; наличие "
+                "электрического комплекта нужно уточнить у менеджера."
+            )
         if scope == "warm_floor" and not (
             session.slots.get("warm_floor_area_m2")
             or session.slots.get("area_m2")
         ):
+            if session.slots.get("warm_floor_type"):
+                return WARM_FLOOR_AREA_FOLLOWUP
             if "что нужно" in text:
                 return WARM_FLOOR_FUNNEL
             return WARM_FLOOR_ALL_FOLLOWUP
@@ -5955,12 +6056,6 @@ class ChatOrchestrator:
             return (
                 "Площадь учёл. Уточните ещё один обязательный параметр: тёплый пол водяной "
                 "от котла или электрический? Не буду подставлять насос и трубы без выбора типа."
-            )
-        if scope == "warm_floor" and session.slots.get("warm_floor_type") == "электрический":
-            return (
-                "В текущем ассортименте не вижу электрических нагревательных матов или кабеля и "
-                "терморегуляторов. Не буду подставлять вместо них трубы и насос водяного пола; "
-                "наличие электрического комплекта нужно уточнить у менеджера."
             )
         if scope == "heating" and not (
             session.slots.get("area_m2")
@@ -6004,6 +6099,49 @@ class ChatOrchestrator:
                 "сервоприводы на коллекторе?"
             )
         return None
+
+    @staticmethod
+    def _compose_warm_floor_parameter_ack(
+        session: SessionState,
+        updated_keys: set[str],
+    ) -> str:
+        """Acknowledge a design delta without replaying the product basket."""
+
+        lines: list[str] = []
+        slots = normalize_engineering_slots(session.slots)
+        if "warm_floor_area_m2" in updated_keys and slots.get(
+            "warm_floor_area_m2"
+        ) is not None:
+            area = float(slots["warm_floor_area_m2"])
+            pipe_min = int(slots["warm_floor_pipe_min_m"])
+            pipe_max = int(slots["warm_floor_pipe_max_m"])
+            contours = int(slots["warm_floor_contours"])
+            collectors = int(slots["warm_floor_collector_count"])
+            lines.append(
+                f"Площадь обновил: {area:g} м². Пересчитал ориентир: "
+                f"{pipe_min}–{pipe_max} м трубы 16x2, {contours} контуров, "
+                f"коллекторных узлов — {collectors}."
+            )
+        if "floor_insulation_ready" in updated_keys:
+            lines.append(
+                "Утеплитель/маты уже есть."
+                if slots.get("floor_insulation_ready") is True
+                else "Утеплитель/маты ещё нужно предусмотреть."
+            )
+        if "warm_floor_heat_source" in updated_keys and slots.get(
+            "warm_floor_heat_source"
+        ):
+            lines.append(
+                "Источник тепла зафиксировал: "
+                f"{slots['warm_floor_heat_source']}."
+            )
+        if "warm_floor_automation_needed" in updated_keys:
+            lines.append(
+                "Покомнатную автоматику включаю в требования."
+                if slots.get("warm_floor_automation_needed") is True
+                else "Покомнатную автоматику в требования не включаю."
+            )
+        return " ".join(lines) or "Параметр тёплого пола обновил."
 
     def _project_cards_by_category(
         self,
@@ -9977,15 +10115,27 @@ class ChatOrchestrator:
             intent.intent_type = "attribute_request"
             intent.is_topic_change = False
             intent.slots["project_scope"] = "warm_floor"
+        electric_floor_choice = bool(
+            "электр" in text
+            and re.search(r"\bпол(?:а|у|ом|е)?\b", text)
+            and "кот" not in text
+        )
         if warm_floor_scope and (
-            "водян" in text or "от котл" in text or ("кот" in text and "газ" in text)
+            "водян" in text
+            or "от котл" in text
+            or ("кот" in text and "газ" in text)
+            or electric_floor_choice
         ):
             intent.category = "pipes"
             intent.intent_type = "attribute_request"
             intent.is_topic_change = False
             intent.slots["project_scope"] = "warm_floor"
-            intent.slots["warm_floor_type"] = "водяной"
-            if "газ" in text and "кот" in text:
+            intent.slots["warm_floor_type"] = (
+                "электрический" if electric_floor_choice else "водяной"
+            )
+            if electric_floor_choice:
+                intent.slots.pop("warm_floor_heat_source", None)
+            elif "газ" in text and "кот" in text:
                 intent.slots["warm_floor_heat_source"] = "газовый котёл"
             elif "электр" in text and "кот" in text:
                 intent.slots["warm_floor_heat_source"] = "электрический котёл"
@@ -10093,12 +10243,14 @@ class ChatOrchestrator:
             elif "давлен" in text or "напор" in text:
                 intent.slots.pop("pump_type", None)
                 intent.slots["pump_use"] = "повышение давления"
+            elif "полив" in text:
+                # The purpose outranks the source: ``насос для полива из
+                # колодца`` is an irrigation goal, not domestic water supply.
+                intent.slots.pop("pump_type", None)
+                intent.slots["pump_use"] = "полив"
             elif any(marker in text for marker in ["водоснаб", "скваж", "колод"]):
                 intent.slots.pop("pump_type", None)
                 intent.slots["pump_use"] = "водоснабжение"
-            elif "полив" in text:
-                intent.slots.pop("pump_type", None)
-                intent.slots["pump_use"] = "полив"
             for boiler_only in [
                 "boiler_type",
                 "contours",
@@ -10456,12 +10608,50 @@ class ChatOrchestrator:
                 "что я уже сообщ",
                 "напомни что мы",
                 "какие данные запомнил",
+                "какие параметры запомнил",
+                "какие параметры сохранил",
+                "какие данные сохранил",
+                "какие данные зафиксировал",
             ]
         )
-        # Punctuation between ``напомни`` and ``что`` is common in natural
-        # speech and is removed neither by normalize_text nor by browsers.
+        # Treat recall as a read-only meta-intent.  Require both a recall verb
+        # and a state/data object so an ordinary engineering question such as
+        # ``какие параметры нужны?`` does not accidentally enter this branch.
+        reminder_recall_phrase = bool(
+            re.search(
+                r"\bнапомни\b[^.?!]{0,60}"
+                r"\b(?:что|какие|параметр\w*|данн\w*|исходн\w*)\b",
+                text,
+            )
+        ) and not bool(
+            re.search(r"\b(?:нужн\w*|требу\w*|уточн\w*)\b", text)
+        )
+        recall_object = r"(?:параметр\w*|данн\w*|исходн\w*|что)"
+        past_memory_state = (
+            r"(?:запомн(?:ил|ила|или|ен\w*|ён\w*)|"
+            r"сохран(?:ил|ила|или|ен\w*|ён\w*)|"
+            r"зафиксир(?:овал|овала|овали|ован\w*)|"
+            r"уже\s+зна\w*)"
+        )
+        show_or_say_recall_phrase = bool(
+            re.search(
+                rf"\b(?:покажи|скажи)\b[^.?!]{{0,60}}(?:"
+                rf"\b{recall_object}\b[^.?!]{{0,35}}\b{past_memory_state}\b|"
+                rf"\b{past_memory_state}\b[^.?!]{{0,35}}\b{recall_object}\b)",
+                text,
+            )
+        )
+        what_recall_phrase = bool(
+            re.search(
+                rf"\b(?:что|какие)\b[^.?!]{{0,60}}"
+                rf"\b{past_memory_state}\b",
+                text,
+            )
+        )
         natural_recall_phrase = bool(
-            re.search(r"\bнапомни\b[^а-я0-9]{0,8}\bчто\b", text)
+            reminder_recall_phrase
+            or show_or_say_recall_phrase
+            or what_recall_phrase
         )
         if not (known_recall_phrase or natural_recall_phrase):
             return None
@@ -10534,6 +10724,8 @@ class ChatOrchestrator:
             add("Столб воды", "water_column_depth_m", " м")
         add("Расстояние до дома/полива", "horizontal_run_m", " м")
         add("Дополнительная высота подъёма", "lift_height_m", " м")
+        add("Давление на входе", "inlet_pressure_bar", " бар")
+        add("Требуемое давление после насоса", "required_pressure_bar", " бар")
         flow_status = str(slots.get("flow_unit_status") or "")
         if flow_status == "assumed" and slots.get("required_flow_l_min") is not None:
             add("Заявленный объём (время не подтверждено)", "required_flow_l_min", " л")
@@ -10542,7 +10734,25 @@ class ChatOrchestrator:
         else:
             add("Расход", "required_flow_l_min", " л/мин")
         if slots.get("required_head_calculated"):
-            add("Расчётный геометрический напор", "required_head_m", " м")
+            if slots.get("head_includes_outlet_pressure"):
+                add("Геометрический подъём", "geometric_lift_m", " м")
+                add(
+                    "Допуск потерь горизонтальной трассы",
+                    "horizontal_loss_allowance_m",
+                    " м",
+                )
+                add(
+                    "Напор для требуемого давления",
+                    "outlet_pressure_head_m",
+                    " м",
+                )
+                add(
+                    "Итоговый расчётный требуемый напор",
+                    "required_head_m",
+                    " м",
+                )
+            else:
+                add("Расчётный требуемый напор", "required_head_m", " м")
         else:
             add("Требуемый напор", "required_head_m", " м")
         add("Площадь тёплого пола", "warm_floor_area_m2", " м²")
@@ -10894,7 +11104,15 @@ class ChatOrchestrator:
         is waiting on the widget for both.
         """
 
-        return bool(resolved.accepted and len(str(message).strip()) <= self._BARE_ANSWER_CHARS)
+        numeric_facts = re.findall(
+            r"(?<!\d)\d+(?:[,.]\d+)?(?!\d)",
+            normalize_text(message),
+        )
+        return bool(
+            resolved.accepted
+            and len(str(message).strip()) <= self._BARE_ANSWER_CHARS
+            and len(numeric_facts) <= 1
+        )
 
     def _set_structured_pending_question(
         self,

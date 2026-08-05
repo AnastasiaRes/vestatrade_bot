@@ -255,6 +255,7 @@ CATEGORY_SLOTS: dict[str, tuple[str, ...]] = {
         "horizontal_run_m",
         "lift_height_m",
         "required_flow_m3_h",
+        "inlet_pressure_bar",
         "required_pressure_bar",
     ),
     "pipes": ("warm_floor_area_m2",),
@@ -318,7 +319,7 @@ class ResolvedAnswer:
 class PendingAnswerResolver:
     """Match a customer's reply to the parameter the pending question asked."""
 
-    _MAX_CANDIDATES = 8
+    _MAX_CANDIDATES = 12
 
     def __init__(self, llm_client: Any) -> None:
         self.llm_client = llm_client
@@ -445,6 +446,32 @@ class PendingAnswerResolver:
             return None
         if not self._number_present(value, message):
             return None
+        if spec.key in {"inlet_pressure_bar", "required_pressure_bar"}:
+            text = normalize_text(message)
+            inlet_marked = bool(
+                re.search(
+                    r"(?:на\s+вход\w*|входн\w*\s+давлен\w*|"
+                    r"исходн\w*\s+давлен\w*|сейчас|имеетс\w*)",
+                    text,
+                )
+            )
+            required_marked = bool(
+                re.search(
+                    r"(?:нужн\w*|требуем\w*|целев\w*|"
+                    r"после\s+насос\w*|на\s+выход\w*)",
+                    text,
+                )
+            )
+            # A structured pending slot disambiguates a neutral ``3 бара``,
+            # but it cannot overrule the role the customer states explicitly.
+            # A turn naming both roles carries more than one fact and must be
+            # handled by the deterministic/full interpreter path.
+            if inlet_marked and required_marked:
+                return None
+            if inlet_marked and spec.key != "inlet_pressure_bar":
+                return None
+            if required_marked and spec.key != "required_pressure_bar":
+                return None
         if spec.integer:
             if abs(value - round(value)) > 1e-9:
                 return None

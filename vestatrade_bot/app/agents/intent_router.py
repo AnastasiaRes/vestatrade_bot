@@ -1378,6 +1378,12 @@ class IntentRouterAgent:
             slots["symptom"] = "слабый напор"
             if "дом" in text:
                 slots["application"] = "дом"
+        elif category == "pumps" and "полив" in text:
+            # The stated purpose is more specific than the source.  A request
+            # such as ``для полива из колодца`` must remain an irrigation goal
+            # instead of being relabelled as domestic water supply merely
+            # because the same sentence contains ``колодец``.
+            slots["pump_use"] = "полив"
         elif category == "pumps" and ("скваж" in text or "колод" in text):
             slots["pump_use"] = "водоснабжение"
         elif category == "pumps" and (
@@ -1395,8 +1401,6 @@ class IntentRouterAgent:
             slots["pump_use"] = "водоснабжение"
             if "дом" in text:
                 slots["application"] = "дом"
-        elif category == "pumps" and "полив" in text:
-            slots["pump_use"] = "полив"
         elif category == "pumps" and ("откач" in text or "дренаж" in text):
             slots["pump_use"] = "откачка воды"
 
@@ -1673,7 +1677,7 @@ class IntentRouterAgent:
                 rings = self._household_count(ring_match.group(1))
                 if rings:
                     slots["water_source"] = "колодец"
-                    slots["pump_use"] = "водоснабжение"
+                    slots.setdefault("pump_use", "водоснабжение")
                     slots["well_ring_count"] = rings
                     slots["ring_height_assumed"] = True
             water_level_match = re.search(
@@ -1685,7 +1689,7 @@ class IntentRouterAgent:
                 rings = self._household_count(water_level_match.group(1))
                 if rings:
                     slots["water_source"] = "колодец"
-                    slots["pump_use"] = "водоснабжение"
+                    slots.setdefault("pump_use", "водоснабжение")
                     slots["water_level_ring_count"] = rings
                     if re.search(
                         r"(?:от\s+(?:верха|края|поверхност\w*)|"
@@ -1734,7 +1738,7 @@ class IntentRouterAgent:
                 rings = self._household_count(ambiguous_water_rings.group(1))
                 if rings:
                     slots["water_source"] = "колодец"
-                    slots["pump_use"] = "водоснабжение"
+                    slots.setdefault("pump_use", "водоснабжение")
                     slots["water_level_ring_count"] = rings
                     slots["water_level_reference"] = "ambiguous"
                     slots["ring_height_assumed"] = True
@@ -1773,7 +1777,7 @@ class IntentRouterAgent:
                 slots["water_level_reference"] = "from_bottom"
 
             explicit_water_level = re.search(
-                r"(?:от\s+(?:верха|края)\s+колодц\w*\s+до\s+"
+                r"(?:от\s+(?:верха|края)(?:\s+колодц\w*)?\s+до\s+"
                 r"(?:поверхност\w*\s+вод\w*|вод\w*|зеркал\w*)|"
                 r"глубин\w*\s+до\s+(?:поверхност\w*\s+)?вод\w*)"
                 r"[^\d]{0,24}(\d+(?:[,.]\d+)?)\s*(?:м\b|метр\w*)",
@@ -1919,29 +1923,46 @@ class IntentRouterAgent:
                     r"дом\w*\s+выше)[^\d]{0,18}"
                     r"(\d+(?:[,.]\d+)?)\s*(?:м|метр)",
                 ),
-                (
-                    "horizontal_run_m",
-                    r"(?:горизонтальн\w*\s+(?:трасс|участ|длин)|"
-                    r"длин\w*\s+трасс\w*|расстоян\w*)[^\d]{0,80}"
-                    r"(\d+(?:[,.]\d+)?)\s*(?:м|метр)",
-                ),
             ]:
                 match = re.search(pattern, text)
                 if match:
                     slots[key] = float(match.group(1).replace(",", "."))
 
-            if "horizontal_run_m" not in slots:
-                household_distance = re.search(
-                    r"(?:от\s+(?:колодц\w*|скважин\w*)\s+)?"
-                    r"до\s+(?:дом\w*|точк\w*\s+полив\w*|полив\w*)"
-                    r"[^\d]{0,15}(\d+(?:[,.]\d+)?)\s*(?:м\b|метр\w*)|"
-                    r"(?<!\d)(\d+(?:[,.]\d+)?)\s*(?:м\b|метр\w*)"
-                    r"[^.!?]{0,18}до\s+(?:дом\w*|полив\w*)",
+            # Prefer the value *after* a destination anchor.  Combining both
+            # word orders in one regex made ``13 м, до полива 40 м`` match the
+            # earlier ``13 м до полива`` fragment and bind the water depth as
+            # the horizontal run.
+            household_distance_after = re.search(
+                r"(?:от\s+(?:колодц\w*|скважин\w*)\s+)?"
+                r"до\s+(?:дом\w*|точк\w*\s+полив\w*|полив\w*)"
+                r"[^\d]{0,15}(\d+(?:[,.]\d+)?)\s*(?:м\b|метр\w*)",
+                text,
+            )
+            household_distance_before = re.search(
+                r"(?<!\d)(\d+(?:[,.]\d+)?)\s*(?:м\b|метр\w*)"
+                r"[^,;.!?]{0,18}до\s+(?:дом\w*|полив\w*)",
+                text,
+            )
+            if household_distance_after:
+                slots["horizontal_run_m"] = float(
+                    household_distance_after.group(1).replace(",", ".")
+                )
+            elif household_distance_before and "horizontal_run_m" not in slots:
+                slots["horizontal_run_m"] = float(
+                    household_distance_before.group(1).replace(",", ".")
+                )
+            elif "horizontal_run_m" not in slots:
+                generic_horizontal = re.search(
+                    r"(?:горизонтальн\w*\s+(?:трасс|участ|длин)|"
+                    r"длин\w*\s+трасс\w*|"
+                    r"расстоян\w*\s+по\s+горизонтал\w*)[^\d]{0,80}"
+                    r"(\d+(?:[,.]\d+)?)\s*(?:м|метр)",
                     text,
                 )
-                if household_distance:
-                    raw_distance = household_distance.group(1) or household_distance.group(2)
-                    slots["horizontal_run_m"] = float(raw_distance.replace(",", "."))
+                if generic_horizontal:
+                    slots["horizontal_run_m"] = float(
+                        generic_horizontal.group(1).replace(",", ".")
+                    )
 
             if "фекал" in text:
                 slots["water_quality"] = "фекальная"
@@ -2854,6 +2875,11 @@ class IntentRouterAgent:
                 session.pending_question,
                 session.pending_slot_keys,
             )
+            if "inlet_pressure_bar" in contextual:
+                # Generic pump parsing treats an unqualified ``N бар`` as a
+                # target.  The structured question is stronger evidence and
+                # makes the two roles mutually exclusive for this turn.
+                slots.pop("required_pressure_bar", None)
             slots.update(contextual)
 
         if session and result.category == "pumps":
