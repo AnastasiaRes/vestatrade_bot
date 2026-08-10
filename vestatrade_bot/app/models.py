@@ -13,6 +13,22 @@ def model_to_dict(model: BaseModel) -> dict[str, Any]:
     return model.dict()
 
 
+class ProductDocument(BaseModel):
+    """Structured, source-preserving evidence extracted from a product file.
+
+    ``filename`` intentionally contains only the source basename.  This keeps
+    cached product JSON portable between machines and avoids leaking a local
+    absolute path into prompts or API responses.  ``text`` is the same bounded
+    extraction that feeds the legacy ``Product.docs_text`` field.
+    """
+
+    filename: str
+    document_kind: str = "technical_document"
+    text: str
+    page_count: int | None = None
+    section_pages: dict[str, int] = Field(default_factory=dict)
+
+
 class Product(BaseModel):
     sku: str
     name: str
@@ -26,6 +42,10 @@ class Product(BaseModel):
     stock_qty: int | None = None
     attributes_normalized: dict[str, str] = Field(default_factory=dict)
     description: str | None = None
+    # Keep documents source-separated so answers can state which passport or
+    # instruction supports a fact.  The default makes old cached Product JSON
+    # (which only contains ``docs_text``) fully backwards compatible.
+    documents: list[ProductDocument] = Field(default_factory=list)
     docs_text: str | None = None
     updated_at: str = Field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
@@ -290,6 +310,10 @@ class SessionState(BaseModel):
                 "тепл" in normalized or "пол" in normalized
             ):
                 return ["warm_floor_area_m2"]
+            if "материал" in normalized and "прокладк" in normalized:
+                # The question offers the laying method whenever the material
+                # is undecided, so either answer closes it.
+                return ["pipe_material", "installation_method"]
             if "водяной" in normalized and "электрическ" in normalized:
                 return ["warm_floor_type"]
             if "утепл" in normalized or "пирог пола" in normalized:
@@ -300,6 +324,13 @@ class SessionState(BaseModel):
                 return ["warm_floor_automation_needed"]
 
         if category == "pumps":
+            if (
+                "диаметр" in normalized
+                and any(marker in normalized for marker in ["шланг", "напорн", "труб"])
+            ):
+                return ["discharge_diameter_mm"]
+            if "размер частиц" in normalized:
+                return ["solids_mm"]
             if "сверху" in normalized and "снизу" in normalized:
                 return ["water_level_reference"]
             if (

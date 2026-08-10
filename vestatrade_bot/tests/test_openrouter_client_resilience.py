@@ -17,10 +17,14 @@ _ENDPOINT = "http://ollama.test/v1/chat/completions"
 
 
 class _Budget:
+    def __init__(self) -> None:
+        self.record_count = 0
+
     def can_call(self) -> bool:
         return True
 
     def record_call(self, **_kwargs) -> float:
+        self.record_count += 1
         return 0.0
 
 
@@ -51,6 +55,7 @@ class _FakeHTTPClient:
     def post(self, *_args, **_kwargs) -> httpx.Response:
         with self.factory.lock:
             self.factory.post_count += 1
+            self.factory.payloads.append(_kwargs.get("json") or {})
             outcome = self.factory.outcomes.popleft()
         if isinstance(outcome, Exception):
             raise outcome
@@ -63,6 +68,7 @@ class _ClientFactory:
     def __init__(self, outcomes: list[Outcome]) -> None:
         self.outcomes = deque(outcomes)
         self.timeouts: list[httpx.Timeout] = []
+        self.payloads: list[dict] = []
         self.post_count = 0
         self.lock = Lock()
 
@@ -98,6 +104,21 @@ def _client() -> OpenRouterClient:
             "llm_timeout_seconds": 30.0,
             "llm_request_timeout_seconds": 180.0,
             "llm_max_retries": 3,
+            "llm_retry_delay_seconds": 0.0,
+        }
+    )
+    return OpenRouterClient(settings=settings, budget_manager=_Budget())
+
+
+def _openrouter_client() -> OpenRouterClient:
+    settings = get_settings().model_copy(
+        update={
+            "llm_provider": "openrouter",
+            "openrouter_api_key": "test-key",
+            "openrouter_model": "qwen/test-model",
+            "llm_timeout_seconds": 30.0,
+            "llm_request_timeout_seconds": 180.0,
+            "llm_max_retries": 0,
             "llm_retry_delay_seconds": 0.0,
         }
     )
@@ -281,6 +302,9 @@ def test_response_after_turn_deadline_falls_back_deterministically(monkeypatch) 
     assert "180s" in (result.fallback_reason or "")
     assert "budget" in (result.fallback_reason or "")
     assert factory.post_count == 1
+    # The HTTP request succeeded and may already have been billed even though
+    # its content missed the customer-facing deadline.
+    assert client.budget.record_count == 1
 
 
 def test_exhausted_turn_budget_skips_downstream_llm_agent(monkeypatch) -> None:
@@ -304,3 +328,69 @@ def test_exhausted_turn_budget_skips_downstream_llm_agent(monkeypatch) -> None:
     assert downstream.llm_used is False
     assert "budget" in (downstream.fallback_reason or "")
     assert factory.post_count == 1
+
+
+def test_openrouter_json_agents_request_structured_output(monkeypatch) -> None:
+    response = httpx.Response(
+        200,
+        request=httpx.Request("POST", OpenRouterClient.openrouter_endpoint),
+        json={
+            "choices": [{"message": {"content": '{"kind":"other"}'}}],
+            "usage": {},
+        },
+    )
+    factory = _ClientFactory([response])
+    monkeypatch.setattr(client_module.httpx, "Client", factory)
+
+    parsed, used = _openrouter_client().complete_json(
+        "TurnClassifierAgent",
+        [{"role": "user", "content": "test"}],
+        {"kind": "other"},
+    )
+
+    assert used is True
+    assert parsed == {"kind": "other"}
+    assert factory.payloads[0]["response_format"] == {"type": "json_object"}
+    assert factory.payloads[0]["provider"] == {"require_parameters": True}
+
+
+def test_ollama_json_agents_request_structured_output(monkeypatch) -> None:
+    response = httpx.Response(
+        200,
+        request=httpx.Request("POST", _ENDPOINT),
+        json={
+            "choices": [{"message": {"content": '{"kind":"other"}'}}],
+            "usage": {},
+        },
+    )
+    factory = _ClientFactory([response])
+    monkeypatch.setattr(client_module.httpx, "Client", factory)
+
+    parsed, used = _client().complete_json(
+        "TurnClassifierAgent",
+        [{"role": "user", "content": "test"}],
+        {"kind": "other"},
+    )
+
+    assert used is True
+    assert parsed == {"kind": "other"}
+    assert factory.payloads[0]["response_format"] == {"type": "json_object"}
+    assert "provider" not in factory.payloads[0]
+
+
+def test_plain_openrouter_generation_does_not_force_json_mode(monkeypatch) -> None:
+    response = httpx.Response(
+        200,
+        request=httpx.Request("POST", OpenRouterClient.openrouter_endpoint),
+        json={"choices": [{"message": {"content": "plain text"}}], "usage": {}},
+    )
+    factory = _ClientFactory([response])
+    monkeypatch.setattr(client_module.httpx, "Client", factory)
+
+    result = _openrouter_client().complete(
+        "ResponseComposerAgent",
+        [{"role": "user", "content": "test"}],
+    )
+
+    assert result.content == "plain text"
+    assert "response_format" not in factory.payloads[0]

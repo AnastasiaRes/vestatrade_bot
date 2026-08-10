@@ -5,6 +5,8 @@ import re
 from app.models import IntentResult, SessionState, SlotFillingResult
 
 from .engineering_calculations import normalize_engineering_slots
+from .numeric_semantics import extract_total_length_m as parse_total_length_m
+from .slot_answer_resolver import bind_local_refusals
 from .utils import merge_slots, normalize_text
 
 
@@ -151,6 +153,21 @@ class SlotFillingAgent:
             or slots.get("scope_funnel") == "warm_floor"
             or slots.get("has_warm_floor") is True
         )
+        concrete_warm_floor_pipe = bool(
+            warm_floor_scope
+            and slots.get("pipe_material")
+            and slots.get("diameter_mm")
+            and slots.get("wall_thickness_mm")
+            and slots.get("total_length_m")
+        )
+        if warm_floor_scope:
+            slots.setdefault("pipe_purpose", "отопление")
+            slots.setdefault("pipe_service", "петля тёплого пола")
+        if concrete_warm_floor_pipe:
+            # A customer who already specified PE-RT 16x2 and the total metreage
+            # is buying a concrete pipe, not asking us to design the whole floor.
+            # Area/contour design can be offered separately after the exact search.
+            return SlotFillingResult(slots=slots)
         if warm_floor_scope and not (
             slots.get("warm_floor_area_m2") or slots.get("area_m2")
         ):
@@ -212,6 +229,23 @@ class SlotFillingAgent:
                 ),
             )
 
+        if (
+            normalize_text(str(slots.get("water_temperature") or "")) == "горячая"
+            and not service
+            and normalize_text(str(slots.get("pipe_material") or "")) == "ppr"
+            and not slots.get("diameter_mm")
+        ):
+            return SlotFillingResult(
+                slots=slots,
+                needs_clarification=True,
+                question=(
+                    "По описанию это PPR (полипропиленовая труба под раструбную сварку). "
+                    "Для начала уточните участок: обычная разводка от стояка к кранам "
+                    "в квартире, рециркуляция ГВС или ввод в дом? Остальные размеры и "
+                    "режимы соберём следующим шагом — угадывать диаметр не нужно."
+                ),
+            )
+
         hot_or_heating = bool(
             "отоплен" in purpose
             or normalize_text(str(slots.get("water_temperature") or "")) == "горячая"
@@ -225,20 +259,69 @@ class SlotFillingAgent:
                 if slots.get("diameter_mm")
                 else " Также укажите расчётный диаметр."
             )
+            # The question asks for three things at once, so a customer who
+            # answers one of them and sees the identical text come back assumes
+            # nothing was heard and types it again.  Name what is already
+            # recorded and ask only for what is still missing.
+            recorded = []
+            if slots.get("operating_temperature_c"):
+                recorded.append(
+                    f"температура {float(slots['operating_temperature_c']):g} °C"
+                )
+            if slots.get("operating_pressure_bar"):
+                recorded.append(
+                    f"давление {float(slots['operating_pressure_bar']):g} бар"
+                )
+            missing = []
+            if not slots.get("operating_temperature_c"):
+                missing.append("максимальную температуру")
+            if not slots.get("operating_pressure_bar"):
+                missing.append("рабочее давление")
+            prefix = f"Записал: {', '.join(recorded)}. " if recorded else ""
+            ask_params = (
+                f" Укажите также {' и '.join(missing)}." if missing else ""
+            )
             return SlotFillingResult(
                 slots=slots,
                 needs_clarification=True,
                 question=(
-                    "Для какого участка ГВС нужна труба: обычная разводка внутри дома, "
-                    "рециркуляция или ввод? Укажите максимальную температуру и рабочее "
-                    "давление."
+                    prefix
+                    + "Для какого участка ГВС нужна труба: обычная разводка внутри "
+                    "дома, рециркуляция или ввод?"
+                    + ask_params
                     + diameter_suffix
                 ),
             )
-        if hot_or_heating and (
-            not slots.get("operating_temperature_c")
-            or not slots.get("operating_pressure_bar")
+        if (
+            "водоснаб" in purpose
+            and service == "разводка внутри дома"
+            and not slots.get("diameter_mm")
         ):
+            return SlotFillingResult(
+                slots=slots,
+                needs_clarification=True,
+                question=(
+                    "Для новой разводки от стояка диаметр не угадывают по цвету трубы. "
+                    "Перечислите точки водоразбора (душ, раковина, кухня, унитаз), "
+                    "какие из них могут работать одновременно, и примерную длину до "
+                    "самой дальней точки. Давление и максимальную температуру лучше "
+                    "взять из проекта/у управляющей организации, а не назначать на глаз."
+                ),
+            )
+        # Спрашиваем только то, что действительно не названо и от чего клиент не
+        # отказался. Раньше текст был жёсткой строкой с обоими параметрами, и
+        # клиент, назвавший температуру, слышал просьбу назвать её снова.
+        deferred_keys = set(slots.get("deferred_slot_keys") or [])
+        param_labels = (
+            ("operating_temperature_c", "максимальную температуру теплоносителя/воды"),
+            ("operating_pressure_bar", "рабочее давление"),
+        )
+        still_needed = [
+            label
+            for key, label in param_labels
+            if not slots.get(key) and key not in deferred_keys
+        ]
+        if hot_or_heating and still_needed:
             known = []
             if slots.get("operating_temperature_c"):
                 known.append(
@@ -254,13 +337,22 @@ class SlotFillingAgent:
                 needs_clarification=True,
                 question=(
                     prefix
-                    + "Укажите недостающие расчётные параметры: максимальную температуру "
-                    "теплоносителя/воды и рабочее давление. По одному слову «горячая» или "
+                    + "Укажите недостающие расчётные параметры: "
+                    + " и ".join(still_needed)
+                    + ". По одному слову «горячая» или "
                     "«отопление» безопасно выбрать конкретную трубу нельзя."
                     + (
-                        " Также нужен расчётный диаметр."
+                        " Диаметр вы не обязаны угадывать: для новой разводки его "
+                        "определяют по одновременному расходу, длине и допустимым потерям "
+                        "давления; для замены можно прислать маркировку или измерить "
+                        "наружный диаметр существующей трубы."
                         if not slots.get("diameter_mm")
-                        else ""
+                        and "diameter_mm" in deferred_keys
+                        else (
+                            " Также нужен расчётный диаметр."
+                            if not slots.get("diameter_mm")
+                            else ""
+                        )
                     )
                 ),
             )
@@ -281,7 +373,15 @@ class SlotFillingAgent:
             )
 
         if not slots.get("diameter_mm"):
-            if slots.get("required_flow_m3_h") and slots.get("horizontal_run_m"):
+            if "diameter_mm" in deferred_keys:
+                question = (
+                    "Диаметр не буду угадывать. Если меняете существующую трубу, "
+                    "пришлите маркировку или измерьте её наружный диаметр штангенциркулем. "
+                    "Для новой разводки нужны одновременный расход по точкам, длина и "
+                    "схема трассы, допустимые потери давления. Это замена существующей "
+                    "трубы или новая разводка?"
+                )
+            elif slots.get("required_flow_m3_h") and slots.get("horizontal_run_m"):
                 question = (
                     "Диаметр ещё не задан. Для его расчёта дополнительно нужны допустимые "
                     "потери давления и схема трассы; без гидравлического расчёта диаметр "
@@ -298,7 +398,14 @@ class SlotFillingAgent:
                 question=question,
             )
 
-        if hot_or_heating and not slots.get("pipe_material"):
+        # The question below offers the laying method as an alternative when the
+        # material is undecided.  Gating only on ``pipe_material`` refused the
+        # very answer it invited, so «скрытая» re-asked the same question.
+        if (
+            hot_or_heating
+            and not slots.get("pipe_material")
+            and not slots.get("installation_method")
+        ):
             return SlotFillingResult(
                 slots=slots,
                 needs_clarification=True,
@@ -435,15 +542,8 @@ class SlotFillingAgent:
         )
 
     def _extract_total_length_m(self, text: str) -> int | None:
-        import re
-
-        match = re.search(r"(?<!\d)(\d{1,3})(?:\s*)(?:метр|метров|метра)\b", text)
-        if not match:
-            return None
-        value = int(match.group(1))
-        if value <= 0:
-            return None
-        return value
+        value = parse_total_length_m(text)
+        return int(value) if value is not None and float(value).is_integer() else value
 
     def _extract_mm_value(
         self,
@@ -544,6 +644,8 @@ class SlotFillingAgent:
         slots.setdefault("pump_type", "циркуляционный")
 
     def _pumps(self, slots: dict, text: str) -> SlotFillingResult:
+        explicitly_unknown = self._remember_explicit_pump_refusals(slots, text)
+        deferred = self._prune_filled_pump_deferred_slots(slots)
         # The purpose answer offered by this very funnel must be actionable.
         # Previously ``откачка воды`` was stored only as ``pump_use`` while the
         # next branch required ``pump_type`` and repeated the same question.
@@ -584,6 +686,18 @@ class SlotFillingAgent:
             return self._well_water_supply(slots)
         if not slots.get("pump_type"):
             if slots.get("pump_replacement"):
+                if "old_model" in deferred:
+                    return SlotFillingResult(
+                        slots=slots,
+                        needs_clarification=True,
+                        question=(
+                            "Понял, маркировка старого насоса неизвестна — не буду "
+                            "просить её повторно. Где он работал: в системе отопления, "
+                            "скважине/колодце, на откачке воды или на повышении давления? "
+                            "По назначению определю тип насоса и дальше попрошу только "
+                            "измеримые параметры подключения."
+                        ),
+                    )
                 return SlotFillingResult(
                     slots=slots,
                     needs_clarification=True,
@@ -735,9 +849,44 @@ class SlotFillingAgent:
                 missing.append("монтажную длину 130 или 180 мм")
             if not slots.get("connection_size"):
                 missing.append("присоединение (например 25 или 32)")
-            has_any_core_param = len(missing) < 2
+            has_any_core_param = any(
+                slots.get(key)
+                for key in ("head_m", "required_head_m", "mounting_length_mm", "connection_size")
+            )
             if missing:
-                if self._does_not_know_params(text):
+                known_prefix = self._circulation_pump_known_prefix(slots)
+                if slots.get("pump_selection_mode") == "замена":
+                    marking_unknown = "old_model" in deferred
+                    marking_note = (
+                        "Маркировку оставил неизвестной и больше её не повторяю. "
+                        if marking_unknown
+                        else (
+                            "Если маркировка читается, можно вместо замеров прислать её целиком. "
+                            if not slots.get("old_model")
+                            else ""
+                        )
+                    )
+                    return SlotFillingResult(
+                        slots=slots,
+                        needs_clarification=True,
+                        question=(
+                            known_prefix
+                            + marking_note
+                            + "Для замены не хватает только: "
+                            + "; ".join(missing)
+                            + ". Монтажную длину измеряют между плоскостями "
+                            "подключений; присоединение часто указано как DN25/DN32."
+                        ),
+                    )
+                # A bare «не знаю» means the customer needs help with the
+                # whole question.  A named refusal (for example only the flow)
+                # must not erase the head and dimensions supplied in the same
+                # message.
+                if (
+                    self._does_not_know_params(text)
+                    and not explicitly_unknown
+                    and not has_any_core_param
+                ):
                     if slots.get("pump_param_help_given"):
                         return SlotFillingResult(
                             slots=slots,
@@ -755,23 +904,37 @@ class SlotFillingAgent:
                         needs_clarification=True,
                         question=(
                             "Не страшно, монтажную длину можно посмотреть на старом насосе "
-                            "или измерить расстояние между гайками подключения — часто бывает "
-                            "130 или 180 мм. Напор обычно пишется в маркировке насоса: например "
+                            "или измерить между присоединительными плоскостями корпуса, "
+                            "не включая накидные гайки и переходники — часто бывает 130 или "
+                            "180 мм. Напор обычно пишется в маркировке насоса: например "
                             "25-40 или 25-60. Если старого насоса нет, для нового подбора "
                             "нужны расчётный расход (м³/ч), напор (м) и схема: радиаторы, "
                             "тёплый пол или комбинированная система."
                         ),
                     )
                 if has_any_core_param:
+                    missing_for_new_selection = list(missing)
+                    if not slots.get("required_flow_m3_h"):
+                        missing_for_new_selection.append("расчётный расход в м³/ч")
+                    if not slots.get("system_type"):
+                        missing_for_new_selection.append(
+                            "схема системы: радиаторы, тёплый пол или оба контура"
+                        )
+                    flow_note = (
+                        " Расход не угадываю: его можно взять из расчёта системы "
+                        "или определить со специалистом по тепловой нагрузке и перепаду температур."
+                        if "required_flow_m3_h" in deferred
+                        else ""
+                    )
                     return SlotFillingResult(
                         slots=slots,
                         needs_clarification=True,
                         question=(
-                            "Для точного подбора циркуляционного насоса ещё уточните: "
-                            + "; ".join(missing)
-                            + ". По возможности также укажите присоединение (обычно 25 или 32); "
-                            "для новой системы — расчётный расход; для замены можно просто "
-                            "прислать полную маркировку старого насоса."
+                            known_prefix
+                            + "Для точного нового подбора не хватает только: "
+                            + "; ".join(missing_for_new_selection)
+                            + "."
+                            + flow_note
                         ),
                     )
                 return SlotFillingResult(
@@ -825,16 +988,20 @@ class SlotFillingAgent:
                 missing.append("нужное давление в доме")
             if not slots.get("required_flow_m3_h"):
                 missing.append("требуемый расход")
-            if not slots.get("required_head_m"):
+            if (
+                not slots.get("required_head_m")
+                and not slots.get("discharge_diameter_mm")
+            ):
                 missing.append(
-                    "расчётный напор с учётом подъёма, давления и потерь в трубе"
+                    "внутренний диаметр напорной трубы; для ПНД можно наружный диаметр и SDR"
                 )
             if missing:
                 return SlotFillingResult(
                     slots=slots,
                     needs_clarification=True,
                     question=(
-                        "Глубины скважины недостаточно для выбора насоса. Уточните: "
+                        "Одной глубины скважины недостаточно. Чтобы я рассчитал "
+                        "расчётный напор, величину потерь в трассе и рабочую точку, уточните: "
                         + "; ".join(missing[:3])
                         + (
                             ". Затем проверим остальные данные и рабочую точку насоса."
@@ -849,12 +1016,20 @@ class SlotFillingAgent:
             missing = []
             if not slots.get("water_quality"):
                 missing.append("какая вода: чистая, грязная или фекальная")
-            if not slots.get("required_head_m"):
-                missing.append(
-                    "требуемый напор с учётом подъёма и потерь в отводе"
-                )
-            if not slots.get("horizontal_run_m"):
+            if (
+                slots.get("water_quality") in {"грязная", "фекальная"}
+                and slots.get("solids_mm") is None
+            ):
+                missing.append("максимальный размер частиц в воде")
+            if slots.get("required_head_m") is None and slots.get("lift_height_m") is None:
+                missing.append("вертикальный подъём до точки сброса")
+            if slots.get("required_head_m") is None and slots.get("horizontal_run_m") is None:
                 missing.append("длину горизонтального отвода")
+            if (
+                slots.get("required_head_m") is None
+                and slots.get("discharge_diameter_mm") is None
+            ):
+                missing.append("внутренний диаметр шланга или напорной трубы")
             if not slots.get("required_flow_m3_h"):
                 missing.append("нужную производительность")
             if missing:
@@ -864,17 +1039,67 @@ class SlotFillingAgent:
                     question=(
                         "Для дренажного насоса уточните: "
                         + "; ".join(missing[:3])
-                        + (
-                            ". Для грязной воды также важен размер частиц."
-                            if not slots.get("solids_mm")
-                            else "."
-                        )
+                        + ". По этим данным я рассчитаю предварительный напор; "
+                        "модель затем нужно проверить по Q–H-кривой."
+                    ),
+                )
+            return SlotFillingResult(slots=slots)
+
+        if slots.get("pump_type") == "канализационная насосная установка":
+            missing = []
+            if not slots.get("connected_fixtures"):
+                missing.append(
+                    "какие приборы подключаются: унитаз, раковина, душ, ванна или техника"
+                )
+            if slots.get("lift_height_m") is None:
+                missing.append("вертикальный подъём от установки до точки сброса")
+            if slots.get("horizontal_run_m") is None:
+                missing.append("длину горизонтального напорного участка")
+            if not slots.get("diameter_mm"):
+                missing.append("диаметр существующей или проектной напорной трубы")
+            if missing:
+                return SlotFillingResult(
+                    slots=slots,
+                    needs_clarification=True,
+                    question=(
+                        "КНС/санитарный насос нельзя выбирать только по слову «санузел»: "
+                        "нужно проверить допустимые стоки, число входов и рабочую точку. "
+                        "Уточните: "
+                        + "; ".join(missing[:3])
+                        + "."
                     ),
                 )
             return SlotFillingResult(slots=slots)
 
         if slots.get("pump_type") == "повысительный":
+            if not slots.get("water_source"):
+                return SlotFillingResult(
+                    slots=slots,
+                    needs_clarification=True,
+                    question=(
+                        "Уточните источник слабого напора: центральный водопровод, "
+                        "скважина или колодец? Причины и схема повышения давления "
+                        "для них различаются."
+                    ),
+                )
             if slots.get("inlet_pressure_bar") is None:
+                if slots.get("symptom") or any(
+                    marker in text
+                    for marker in ["еле теч", "слабо теч", "плохо теч", "манометр"]
+                ):
+                    return SlotFillingResult(
+                        slots=slots,
+                        needs_clarification=True,
+                        question=(
+                            "До покупки насоса исключите местное ограничение: сравните напор "
+                            "на всех точках, проверьте, полностью ли открыт вводной кран, и "
+                            "очистите доступные сетки-аэраторы и фильтр грубой очистки без "
+                            "разборки опломбированных узлов. Затем попросите сантехника или "
+                            "водоснабжающую организацию измерить динамическое давление на "
+                            "вводе именно в слабый вечерний период. Какое давление получится "
+                            "на вводе, в барах?"
+                        ),
+                    )
                 return SlotFillingResult(
                     slots=slots,
                     needs_clarification=True,
@@ -1032,6 +1257,96 @@ class SlotFillingAgent:
             "не могу сказать",
         ]
         return any(marker in text for marker in markers)
+
+    @staticmethod
+    def _pump_parameter_is_present(slots: dict, key: str) -> bool:
+        """Whether a deferred pump fact has since received a real answer.
+
+        ``head_m`` is a pump-marking capability while ``required_head_m`` is a
+        calculated duty point, but either one resolves a generic dialogue
+        question about the head.  Flow has the same raw/canonical pair.  This
+        equivalence is deliberately limited to dialogue deferrals; catalogue
+        filtering keeps the engineering meanings separate.
+        """
+
+        equivalents = {
+            "head_m": ("head_m", "required_head_m"),
+            "required_head_m": ("head_m", "required_head_m"),
+            "required_flow_m3_h": ("required_flow_m3_h", "required_flow_l_min"),
+            "required_flow_l_min": ("required_flow_m3_h", "required_flow_l_min"),
+        }
+        keys = equivalents.get(key, (key,))
+        return any(
+            candidate in slots
+            and slots[candidate] is not None
+            and slots[candidate] not in ("", [], {})
+            for candidate in keys
+        )
+
+    def _prune_filled_pump_deferred_slots(self, slots: dict) -> set[str]:
+        """Remove stale refusal markers once the customer supplies the value."""
+
+        deferred = {
+            str(key)
+            for key in slots.get("deferred_slot_keys") or []
+            if not self._pump_parameter_is_present(slots, str(key))
+        }
+        if deferred:
+            slots["deferred_slot_keys"] = sorted(deferred)
+        else:
+            slots.pop("deferred_slot_keys", None)
+        return deferred
+
+    @staticmethod
+    def _explicitly_unknown_pump_fields(text: str) -> set[str]:
+        """Return only pump fields explicitly tied to an uncertainty phrase.
+
+        Scoping to a comma/disjunctive clause is important for mixed replies:
+        ``расход не знаю, напор 6 м, длина 180 мм`` refuses only the
+        flow.  A whole-message ``не знаю`` check used to discard the two
+        valid facts and answer as though the head were also absent.
+        """
+
+        field_patterns = {
+            "required_flow_m3_h": re.compile(
+                r"\b(?:расход|производительност|подач)\w*\b"
+            ),
+            "head_m": re.compile(r"\bнапор\w*\b"),
+            "mounting_length_mm": re.compile(
+                r"\b(?:монтажн\w*\s+длин\w*|межосев\w*|длин\w*)\b"
+            ),
+            "connection_size": re.compile(
+                r"\b(?:присоедин\w*|подключен\w*|диаметр\w*|dn)\b"
+            ),
+            "old_model": re.compile(
+                r"\b(?:маркировк\w*|модел\w*|шильдик\w*)\b"
+            ),
+            "system_type": re.compile(r"\b(?:схем\w*|тип\w*\s+систем\w*)\b"),
+        }
+        return set(bind_local_refusals(text, field_patterns))
+
+    def _remember_explicit_pump_refusals(self, slots: dict, text: str) -> set[str]:
+        unknown = self._explicitly_unknown_pump_fields(text)
+        if not unknown:
+            return set()
+        deferred = {str(key) for key in slots.get("deferred_slot_keys") or []}
+        deferred.update(unknown)
+        slots["deferred_slot_keys"] = sorted(deferred)
+        return unknown
+
+    @staticmethod
+    def _circulation_pump_known_prefix(slots: dict) -> str:
+        known: list[str] = []
+        head = slots.get("head_m") or slots.get("required_head_m")
+        if head:
+            known.append(f"напор {float(head):g} м")
+        if slots.get("mounting_length_mm"):
+            known.append(
+                f"монтажная длина {int(slots['mounting_length_mm'])} мм"
+            )
+        if slots.get("connection_size"):
+            known.append(f"присоединение {slots['connection_size']}")
+        return "Записал: " + "; ".join(known) + ". " if known else ""
 
     def _boilers(self, slots: dict) -> SlotFillingResult:
         pair_relation = normalize_text(
@@ -1276,6 +1591,13 @@ class SlotFillingAgent:
             slots.pop("orientation", None)
 
     def _valves(self, slots: dict, text: str) -> SlotFillingResult:
+        if "унитаз" in text and any(
+            marker in text for marker in ["перекры", "ручк", "подвод", "перед"]
+        ):
+            slots.setdefault("valve_kind", "угловой кран")
+            slots.setdefault("application", "вода")
+            slots.setdefault("water_temperature", "холодная")
+            slots.setdefault("installation_context", "перед унитазом")
         if "дренаж" in text and "кран" in text:
             slots["valve_kind"] = "дренажный кран"
         elif "обратн" in text and "клапан" in text:
@@ -1299,6 +1621,19 @@ class SlotFillingAgent:
         has_size = bool(
             slots.get("diameter_mm") or slots.get("size_inch") or slots.get("connection_size")
         )
+
+        if slots.get("installation_context") == "перед унитазом":
+            return SlotFillingResult(
+                slots=slots,
+                needs_clarification=True,
+                question=(
+                    "По описанию это обычно угловой запорный кран перед гибкой "
+                    "подводкой бачка. Полдюйма может относиться только к одной стороне: "
+                    "уточните, какая резьба выходит из стены (наружная или внутренняя) "
+                    "и какой размер гайки подводки — 1/2 или 3/8. Лучше сверить "
+                    "маркировку шланга или прислать фото соединений."
+                ),
+            )
 
         missing = []
         if not slots.get("application"):

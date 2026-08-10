@@ -218,6 +218,7 @@ class OpenRouterClient:
         temperature: float = 0.1,
         max_tokens: int = 500,
         model: str | None = None,
+        json_mode: bool = False,
     ) -> LLMResult:
         self._telemetry.fallback_reason = None
         if self._request_budget_exhausted():
@@ -244,7 +245,38 @@ class OpenRouterClient:
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+        if json_mode and self.settings.llm_provider in {"ollama", "openrouter"}:
+            # Both OpenRouter and Ollama's OpenAI-compatible endpoint support
+            # JSON mode. Prompt-only JSON instructions can still produce prose,
+            # Python sets or truncated objects, so structured routing belongs
+            # to the transport contract rather than an agent convention.
+            payload["response_format"] = {"type": "json_object"}
+        if json_mode and self.settings.llm_provider == "openrouter":
+            # OpenRouter must route only to backends that accept this parameter.
+            # This field is provider-specific and is not sent to local Ollama.
+            payload["provider"] = {"require_parameters": True}
         prompt_chars = len(json.dumps(messages, ensure_ascii=False))
+
+        reservation_id: str | None = None
+        reserve_call = getattr(self.budget, "reserve_call", None)
+        if callable(reserve_call):
+            reservation_id = reserve_call(
+                agent=agent,
+                model=model_name,
+                prompt_chars=prompt_chars,
+                max_tokens=max_tokens,
+            )
+            if reservation_id is None:
+                return self._fallback("daily LLM budget has no unreserved headroom")
+
+        def release_reservation() -> None:
+            nonlocal reservation_id
+            if reservation_id is None:
+                return
+            release = getattr(self.budget, "release_reservation", None)
+            if callable(release):
+                release(reservation_id)
+            reservation_id = None
 
         last_error: Exception | None = None
         for attempt in range(self.settings.llm_max_retries + 1):
@@ -256,6 +288,7 @@ class OpenRouterClient:
                         TimeoutError("LLM request budget exhausted"),
                         circuit_permit,
                     )
+                release_reservation()
                 return self._request_budget_fallback()
             # A local model should be allowed to use the entire remaining
             # turn budget.  Fast connection/write/pool limits still detect an
@@ -274,21 +307,31 @@ class OpenRouterClient:
                     response.raise_for_status()
                     data = response.json()
                     self._close_half_open_circuit(endpoint, circuit_permit)
-                if self._request_budget_exhausted():
-                    return self._request_budget_fallback()
                 content = (
                     data.get("choices", [{}])[0]
                     .get("message", {})
                     .get("content")
                 )
                 usage = data.get("usage") or {}
-                cost = self.budget.record_call(
-                    agent=agent,
-                    model=model_name,
-                    prompt_chars=prompt_chars,
-                    completion_chars=len(content or ""),
-                    usage=usage,
-                )
+                try:
+                    cost = self.budget.record_call(
+                        agent=agent,
+                        model=model_name,
+                        prompt_chars=prompt_chars,
+                        completion_chars=len(content or ""),
+                        usage=usage,
+                        reservation_id=reservation_id,
+                    )
+                    reservation_id = None
+                except Exception as exc:  # pragma: no cover - filesystem failure
+                    logger.warning("Could not record paid LLM usage: %s", exc)
+                    release_reservation()
+                    cost = 0.0
+                # The provider has already completed (and may have charged)
+                # this request. Account for it before discarding content that
+                # arrived after the customer-facing turn deadline.
+                if self._request_budget_exhausted():
+                    return self._request_budget_fallback()
                 return LLMResult(
                     content=content,
                     llm_used=True,
@@ -326,6 +369,7 @@ class OpenRouterClient:
                 if self._request_budget_exhausted():
                     if self.settings.llm_provider == "ollama":
                         self._open_circuit(endpoint, exc, circuit_permit)
+                    release_reservation()
                     return self._request_budget_fallback()
                 if attempt < self.settings.llm_max_retries:
                     self._wait_before_retry(attempt)
@@ -359,6 +403,7 @@ class OpenRouterClient:
                 )
         if isinstance(last_error, (ValueError, KeyError)):
             self._close_half_open_circuit(endpoint, circuit_permit)
+        release_reservation()
         return self._fallback(f"{self.settings.llm_provider} request failed: {last_error}")
 
     def complete_json(
@@ -370,7 +415,17 @@ class OpenRouterClient:
     ) -> tuple[dict[str, Any], bool]:
         self._telemetry.json_output_accepted = False
         result = self.complete(
-            agent=agent, messages=messages, temperature=0.0, max_tokens=600, model=model
+            agent=agent,
+            messages=messages,
+            temperature=0.0,
+            # The engineering interpreter returns a typed object with evidence
+            # and provenance. Live OpenRouter runs showed that 1000 tokens can
+            # still truncate a valid Qwen object mid-string.  Keep enough room
+            # for the complete contract; schema validation below remains the
+            # authority and rejects prose or malformed output.
+            max_tokens=1600,
+            model=model,
+            json_mode=True,
         )
         if not result.llm_used or not result.content:
             return fallback, False

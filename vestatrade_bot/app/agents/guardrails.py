@@ -234,6 +234,7 @@ class GuardrailsAgent:
             part
             for part in requested_parts
             if not self._part_confirmed(text, normalize_text(part))
+            and not self._name_confirms_included_part(product.name, part)
         ]
         if missing:
             return GuardrailsResult(
@@ -246,6 +247,53 @@ class GuardrailsAgent:
                 ),
             )
         return GuardrailsResult(ok=True)
+
+    @staticmethod
+    def _name_confirms_included_part(name: str, part: str) -> bool:
+        """Read explicit ``с гайками``/``с адаптером`` qualifiers in a title.
+
+        A title is catalogue evidence for the named configuration, but a bare
+        keyword is not: ``насос`` in a pump title obviously does not mean that
+        another pump is inside the box.  Only the grammatical ``with`` form is
+        accepted here.
+        """
+
+        title = normalize_text(name)
+        canonical = normalize_text(part)
+        stems = {
+            "гайки": r"гайк\w*",
+            "кронштейн": r"кронштейн\w*",
+            "датчик": r"датчик\w*",
+            "адаптер": r"адаптер\w*",
+            "прокладки": r"прокладк\w*",
+        }
+        target = stems.get(canonical)
+        return bool(
+            target
+            and (
+                re.search(
+                    rf"\bс\s+(?:присоединительн\w*\s+)?{target}",
+                    title,
+                )
+                or re.search(rf"\bс\b[^,;()]{{0,70}}\b{target}", title)
+            )
+        )
+
+    def list_name_confirmed_package_parts(self, product: Product) -> list[str]:
+        """Return only shipment qualifiers stated explicitly in the card title."""
+
+        labels = (
+            ("гайки", "присоединительные гайки"),
+            ("кронштейн", "кронштейн"),
+            ("датчик", "датчик"),
+            ("адаптер", "адаптер"),
+            ("прокладки", "прокладки"),
+        )
+        return [
+            label
+            for part, label in labels
+            if self._name_confirms_included_part(product.name, part)
+        ]
 
     def builtin_part_states(
         self,

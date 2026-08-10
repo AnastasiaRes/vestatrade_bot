@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from math import ceil
+from math import ceil, log10, pi
 from typing import Any
 
 
@@ -20,6 +20,8 @@ DERIVED_ENGINEERING_SLOTS = {
     "calculated_static_head_m",
     "geometric_lift_m",
     "horizontal_loss_allowance_m",
+    "hydraulic_loss_m",
+    "local_loss_allowance_m",
     "outlet_pressure_head_m",
     "warm_floor_pipe_min_m",
     "warm_floor_pipe_max_m",
@@ -171,10 +173,22 @@ def _normalize_flow(slots: dict[str, Any]) -> None:
 
 
 def _normalize_required_head(slots: dict[str, Any]) -> None:
-    """Build a transparent preliminary head from confirmed well geometry."""
+    """Build a transparent preliminary head from confirmed hydraulic facts.
+
+    For a borehole or drainage route, friction is calculated only when flow,
+    route length and the discharge pipe's internal diameter are known.  This
+    avoids the unsafe shortcut of asking a novice to invent a ready-made head
+    or treating horizontal metres as a fixed 1:10 conversion regardless of
+    flow and pipe size.  The result is still preliminary: the selected pump
+    must be checked at the same Q/H point on its manufacturer curve.
+    """
 
     source = str(slots.get("water_source") or "").strip().lower()
-    if "колод" not in source and source != "well":
+    pump_type = str(slots.get("pump_type") or "").strip().lower()
+    is_well = "колод" in source or source == "well"
+    is_borehole = "скваж" in source or "скваж" in pump_type
+    is_drainage = "дренаж" in pump_type
+    if not (is_well or is_borehole or is_drainage):
         return
     explicit_head = _positive_float(slots.get("head_m"))
     if explicit_head is not None:
@@ -192,6 +206,8 @@ def _normalize_required_head(slots: dict[str, Any]) -> None:
     )
     horizontal = _nonnegative_float(slots.get("horizontal_run_m"))
     lift = _nonnegative_float(slots.get("lift_height_m"))
+    if is_drainage:
+        water_level = 0.0
     if water_level is None or horizontal is None or lift is None:
         if slots.get("required_head_calculated") is True:
             slots.pop("required_head_m", None)
@@ -203,16 +219,62 @@ def _normalize_required_head(slots: dict[str, Any]) -> None:
         return
 
     geometric_lift = water_level + lift
-    horizontal_loss_allowance = horizontal / 10.0
+    flow_m3_h = _positive_float(slots.get("required_flow_m3_h"))
+    discharge_diameter_mm = _positive_float(slots.get("discharge_diameter_mm"))
+    discharge_sdr = _positive_float(slots.get("discharge_sdr"))
+    internal_diameter_mm: float | None = None
+    if discharge_diameter_mm is not None:
+        if discharge_sdr is not None and discharge_sdr > 2:
+            internal_diameter_mm = discharge_diameter_mm * (1.0 - 2.0 / discharge_sdr)
+            slots["discharge_internal_diameter_mm"] = round(internal_diameter_mm, 2)
+            slots["discharge_diameter_basis"] = "наружный диаметр и SDR"
+        else:
+            internal_diameter_mm = discharge_diameter_mm
+            slots["discharge_internal_diameter_mm"] = round(internal_diameter_mm, 2)
+            slots["discharge_diameter_basis"] = "принят как внутренний диаметр"
+
+    hydraulic_loss: float | None = None
+    if flow_m3_h is not None and internal_diameter_mm is not None:
+        hydraulic_loss = _darcy_weisbach_loss_m(
+            flow_m3_h=flow_m3_h,
+            internal_diameter_mm=internal_diameter_mm,
+            route_length_m=horizontal,
+        )
+
+    if is_borehole or is_drainage:
+        if hydraulic_loss is None:
+            if slots.get("required_head_calculated") is True:
+                slots.pop("required_head_m", None)
+                slots.pop("required_head_calculated", None)
+            return
+        horizontal_loss_allowance = hydraulic_loss
+        slots["head_calculation_method"] = "Darcy–Weisbach, предварительно"
+    elif hydraulic_loss is not None:
+        horizontal_loss_allowance = hydraulic_loss
+        slots["head_calculation_method"] = "Darcy–Weisbach, предварительно"
+    else:
+        # Compatibility for the established household-well estimator.  It is
+        # intentionally named an allowance, not an exact friction calculation.
+        horizontal_loss_allowance = horizontal / 10.0
+        slots["head_calculation_method"] = "укрупнённый допуск 1 м на 10 м трассы"
+
+    local_loss_allowance = (
+        max(0.5, horizontal_loss_allowance * 0.15)
+        if hydraulic_loss is not None and horizontal > 0
+        else 0.0
+    )
     static_head = geometric_lift + horizontal_loss_allowance
     pressure_bar = _nonnegative_float(slots.get("required_pressure_bar"))
-    outlet_pressure_head = (pressure_bar or 0.0) * 10.0
-    required_head = static_head + outlet_pressure_head
+    outlet_pressure_head = (pressure_bar or 0.0) * 10.197
+    required_head = static_head + local_loss_allowance + outlet_pressure_head
     slots["geometric_lift_m"] = round(geometric_lift, 3)
     slots["horizontal_loss_allowance_m"] = round(
         horizontal_loss_allowance,
         3,
     )
+    if hydraulic_loss is not None:
+        slots["hydraulic_loss_m"] = round(hydraulic_loss, 3)
+    slots["local_loss_allowance_m"] = round(local_loss_allowance, 3)
     slots["outlet_pressure_head_m"] = round(outlet_pressure_head, 3)
     # Backwards-compatible aggregate used by existing search and tests.  It is
     # geometric lift plus the agreed horizontal-loss allowance, not purely
@@ -220,7 +282,43 @@ def _normalize_required_head(slots: dict[str, Any]) -> None:
     slots["calculated_static_head_m"] = round(static_head, 3)
     slots["required_head_m"] = round(required_head, 3)
     slots["required_head_calculated"] = True
+    slots["head_calculation_preliminary"] = True
     slots["head_includes_outlet_pressure"] = pressure_bar is not None
+
+
+def _darcy_weisbach_loss_m(
+    *,
+    flow_m3_h: float,
+    internal_diameter_mm: float,
+    route_length_m: float,
+) -> float | None:
+    """Approximate straight-pipe loss for water in a smooth plastic line."""
+
+    diameter_m = internal_diameter_mm / 1000.0
+    if diameter_m <= 0 or route_length_m < 0:
+        return None
+    flow_m3_s = flow_m3_h / 3600.0
+    area_m2 = pi * diameter_m**2 / 4.0
+    velocity = flow_m3_s / area_m2
+    if velocity <= 0:
+        return 0.0
+    kinematic_viscosity = 1.004e-6  # water near 20 °C
+    reynolds = velocity * diameter_m / kinematic_viscosity
+    if reynolds <= 0:
+        return None
+    if reynolds < 2300:
+        friction_factor = 64.0 / reynolds
+    else:
+        roughness_m = 1.5e-6  # smooth PE/PPR preliminary assumption
+        friction_factor = 0.25 / (
+            log10(
+                roughness_m / (3.7 * diameter_m)
+                + 5.74 / (reynolds**0.9)
+            )
+            ** 2
+        )
+    gravity = 9.80665
+    return friction_factor * (route_length_m / diameter_m) * velocity**2 / (2 * gravity)
 
 
 def _positive_float(value: Any) -> float | None:

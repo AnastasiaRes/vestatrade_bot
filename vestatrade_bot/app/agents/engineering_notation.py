@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .numeric_semantics import extract_piece_length_mm, extract_temperature_c
 from .utils import normalize_text
 
 
@@ -124,6 +125,18 @@ def extract_contextual_short_answer(
     pending = normalize_text(pending_question)
     expected = set(pending_slot_keys or [])
     slots: dict[str, Any] = {}
+
+    if category in {"pipes", "sewer"} and (
+        "length_mm" in expected
+        or "длина одной" in pending
+        or "длина одного" in pending
+        or "длина трубы" in pending
+        or "длина отрезка" in pending
+    ):
+        piece_length_mm = extract_piece_length_mm(text, allow_bare=True)
+        if piece_length_mm is not None:
+            slots["length_mm"] = piece_length_mm
+        return slots
 
     # Pressure is role-sensitive: the same bare ``1 бар`` means inlet
     # pressure after an inlet question and target pressure after an outlet
@@ -247,7 +260,20 @@ def _extract_common_dimensions(text: str, category: str, slots: dict[str, Any]) 
         if diameter:
             slots["diameter_mm"] = int(diameter.group(1))
 
-        pn = re.search(r"\b(?:pn|ру)\s*-?\s*(\d{1,3}(?:[,.]\d+)?)\b", text)
+        pn_matches = list(
+            re.finditer(r"\b(?:pn|ру)\s*-?\s*(\d{1,3}(?:[,.]\d+)?)\b", text)
+        )
+        pn = next(
+            (
+                match
+                for match in reversed(pn_matches)
+                if not re.search(
+                    r"(?:\bне\b|\bбез\b)\s*$",
+                    text[max(0, match.start() - 16) : match.start()],
+                )
+            ),
+            None,
+        )
         if not pn:
             pn = re.search(
                 r"(?:номинальн\w*|условн\w*)\s+давлен\w*[^\d]{0,12}"
@@ -277,20 +303,9 @@ def _extract_common_dimensions(text: str, category: str, slots: dict[str, Any]) 
                 slots["wall_thickness_mm"] = wall
 
     if category in {"pipes", "valves", "radiator_fittings"}:
-        temperature = re.search(
-            r"(?:\b(?:t|темп\w*|температур\w*)\s*(?:=|:)?\s*)"
-            r"(-?\d{1,3}(?:[,.]\d+)?)\s*(?:°?\s*[cс]|градус\w*)?\b",
-            text,
-        )
-        if not temperature:
-            temperature = re.search(
-                r"(?<!\d)(-?\d{1,3}(?:[,.]\d+)?)\s*(?:°\s*[cс]|градус\w*|[cс]\b)",
-                text,
-            )
-        if temperature:
-            slots["operating_temperature_c"] = float(
-                temperature.group(1).replace(",", ".")
-            )
+        temperature_c = extract_temperature_c(text)
+        if temperature_c is not None and -80 <= temperature_c <= 300:
+            slots["operating_temperature_c"] = temperature_c
 
         pressure = re.search(
             r"(?:\b(?:p|давлен\w*)\s*(?:=|:)?\s*)"
@@ -361,8 +376,23 @@ def _extract_pipe_and_fitting_notation(
         elif re.search(r"\b(?:пвх|pvc)\b", text):
             slots["pipe_material"] = "pvc"
 
-        if re.search(r"\bevoh\b|(?:кислородн|антидиффузионн)\w*\s+(?:барьер|слой)", text):
-            slots["oxygen_barrier"] = True
+        oxygen_barrier_mentioned = bool(
+            re.search(
+                r"\bevoh\b|(?:кислородн|антидиффузионн)\w*\s+(?:барьер|слой)",
+                text,
+            )
+        )
+        if oxygen_barrier_mentioned:
+            oxygen_barrier_rejected = bool(
+                re.search(
+                    r"\bбез\s+(?:слоя\s+)?(?:evoh|кислородн\w*\s+барьер\w*|"
+                    r"антидиффузионн\w*\s+сло\w*)\b|"
+                    r"\b(?:evoh|кислородн\w*\s+барьер\w*)[^.!?]{0,18}"
+                    r"\bне\s+(?:нужен|требуется)\b",
+                    text,
+                )
+            )
+            slots["oxygen_barrier"] = not oxygen_barrier_rejected
         if re.search(
             r"\b(?:al|aluminium|alux)\b|"
             r"армир\w*\s+алюминием\b|"

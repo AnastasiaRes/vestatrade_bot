@@ -357,11 +357,13 @@ def _builtin_part_state_from_text(text: str, part: str) -> bool | None:
         return None
 
     negative_patterns = (
-        rf"(?:\bбез\b|\bне\s+входит\b|\bне\s+включен\w*\b|"
+        # ``не входит в комплект поставки`` is package evidence, not proof
+        # that a component is absent from inside the assembled product.  Only
+        # explicit construction wording is allowed to establish False here.
+        rf"(?:\bбез\b|"
         rf"\bне\s+встроен\w*\b|\bне\s+предусмотрен\w*\b|"
         rf"\bотсутств\w*\b)(?:\s+\w+){{0,5}}\s+{target}",
-        rf"{target}(?:\s+\w+){{0,8}}\s+(?:\bнет\b|\bне\s+входит\b|"
-        rf"\bне\s+включен\w*\b|\bне\s+встроен\w*\b|"
+        rf"{target}(?:\s+\w+){{0,8}}\s+(?:\bнет\b|\bне\s+встроен\w*\b|"
         rf"\bне\s+предусмотрен\w*\b|\bотсутств\w*\b)",
         rf"{target}(?:[^.!?]{{0,140}})(?:приобрета\w*|поставля\w*)\s+отдельно",
         rf"(?:приобрета\w*|поставля\w*)\s+отдельно(?:[^.!?]{{0,100}}){target}",
@@ -403,18 +405,31 @@ def _builtin_part_state_from_text(text: str, part: str) -> bool | None:
 
 
 def _builtin_part_state(product: Product, part: str) -> bool | None:
-    text = " ".join(
+    card_text = " ".join(
         [
             product.name,
             product.description or "",
-            product.docs_text or "",
             " ".join(
                 f"{key} {value}"
                 for key, value in product.attributes_normalized.items()
             ),
         ]
     )
-    return _builtin_part_state_from_text(text, part)
+    states = [_builtin_part_state_from_text(card_text, part)]
+    if product.documents:
+        states.extend(
+            _builtin_part_state_from_text(document.text, part)
+            for document in product.documents
+        )
+    elif product.docs_text:
+        # Backwards compatibility for old caches without structured sources.
+        states.append(_builtin_part_state_from_text(product.docs_text, part))
+    grounded = {state for state in states if state is not None}
+    if len(grounded) != 1:
+        # No evidence or a source conflict: fail closed instead of allowing an
+        # arbitrary concatenation order to choose the answer.
+        return None
+    return grounded.pop()
 
 
 def _builtin_part_confirmed(product: Product, part: str) -> bool:
@@ -2170,11 +2185,14 @@ class FeedSearchAgent:
             product,
             ["назначен", "применен", "рабочая среда"],
         )
-        primary = normalize_text(" ".join([product.name, explicit]))
+        primary = normalize_text(
+            " ".join([product.name, product.category_path, explicit])
+        )
         purpose_markers = [
             "отопл",
             "теплый пол",
             "водоснаб",
+            "водосн",
             "горяч",
             "холод",
             "хол/",
@@ -2241,21 +2259,36 @@ class FeedSearchAgent:
                     "pe-xa/al/pe",
                 ]
             )
-        if any(marker in expected for marker in ["pex", "pe-x", "сшит"]):
-            if any(
+        multilayer_metal_polymer = bool(
+            any(
                 marker in evidence
-                for marker in ["pex-al", "pe-x/al", "металлопласт", "металлополимер"]
-            ):
+                for marker in [
+                    "pex-al",
+                    "pe-x/al",
+                    "pe-xa/al",
+                    "pe-xb/al",
+                    "pe-xc/al",
+                    "pe-rt/al",
+                    "pert-al",
+                    "металлопласт",
+                    "металлополимер",
+                ]
+            )
+            or re.search(
+                r"\bpe\s*-?\s*x[abc]?\s*/\s*al\b|"
+                r"\bpe\s*-?\s*rt\s*/\s*al\b",
+                evidence,
+            )
+        )
+        if any(marker in expected for marker in ["pex", "pe-x", "сшит"]):
+            if multilayer_metal_polymer:
                 return False
             return any(
                 marker in evidence
                 for marker in ["pex", "pe-x", "pe xa", "pe-xa", "сшит"]
             )
         if any(marker in expected for marker in ["pe-rt", "pert", "пе-рт"]):
-            if any(
-                marker in evidence
-                for marker in ["pex-al", "pe-x/al", "металлопласт", "металлополимер"]
-            ):
+            if multilayer_metal_polymer:
                 return False
             return any(marker in evidence for marker in ["pe-rt", "pert", "пе-рт"])
         if expected in {"pvc", "пвх"} or "поливинилхлор" in expected:
@@ -2280,7 +2313,14 @@ class FeedSearchAgent:
         if "вод" in expected:
             return any(
                 marker in evidence
-                for marker in ["водоснаб", "питьев", "для воды", "хвс", "гвс"]
+                for marker in [
+                    "водоснаб",
+                    "водосн",
+                    "питьев",
+                    "для воды",
+                    "хвс",
+                    "гвс",
+                ]
             )
         return bool(expected and expected in evidence)
 
@@ -2532,7 +2572,10 @@ class FeedSearchAgent:
                 or (has_water_supply_evidence and has_heating_evidence)
             )
         if "холод" in expected:
-            return any(marker in evidence for marker in ["холод", "хвс"])
+            return any(
+                marker in evidence
+                for marker in ["холод", "хол/водосн", "хол/", "хвс"]
+            )
         return bool(expected and expected in evidence)
 
     def _effective_query_slots(self, query: SearchQuery | None) -> dict:
@@ -2775,16 +2818,28 @@ class FeedSearchAgent:
     ) -> bool:
         """Keep safety/compatibility dimensions strict on the alternatives path."""
         category = query.category
-        if category == "sewer":
-            element_type = normalize_text(str(slots.get("element_type") or ""))
-            is_pipe = "труб" in element_type
+        if category in {"pipes", "sewer"}:
+            # Diameter and factory item length describe a different product,
+            # not a merely less relevant analogue.  The primary path checks
+            # these in ``_slots_match``; keep them just as strict when the
+            # caller asks for nearest alternatives.
             diameter = slots.get("diameter_mm")
-            if diameter and not is_pipe and not self._dimension_matches(
+            if diameter and not self._dimension_matches(
                 product,
                 int(diameter),
                 ["диаметр", "размер"],
             ):
                 return False
+            length = slots.get("length_mm")
+            if length and not self._dimension_matches(
+                product,
+                int(length),
+                ["длина"],
+            ):
+                return False
+        if category == "sewer":
+            element_type = normalize_text(str(slots.get("element_type") or ""))
+            is_pipe = "труб" in element_type
             secondary = slots.get("secondary_diameter_mm")
             if secondary and not self._fitting_dimension_matches(product, int(secondary)):
                 return False
@@ -2974,7 +3029,11 @@ class FeedSearchAgent:
                 float(number.replace(",", "."))
                 for number in re.findall(r"-?\d+(?:[,.]\d+)?", normalize_text(str(value)))
             )
-        name_match = re.search(name_pattern, normalize_text(product.name))
+        # Parenthesised pipe dimensions such as ``16(2,0)`` mean outside
+        # diameter and wall thickness.  ``normalize_text`` removes parentheses,
+        # so preserve that separator as ``x`` before applying typed patterns.
+        normalized_name = normalize_text(product.name.replace("(", "x"))
+        name_match = re.search(name_pattern, normalized_name)
         if name_match:
             values.append(float(name_match.group(1).replace(",", ".")))
         return any(abs(value - expected) <= tolerance for value in values)

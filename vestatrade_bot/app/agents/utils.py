@@ -18,6 +18,9 @@ def normalize_text(text: str | None) -> str:
     # слово и его падежные формы к каноническому термину до классификации,
     # извлечения слотов и поиска по ассортименту.
     text = re.sub(r"\bканашк(?:а|и|у|е|ой|ою)?\b", "канализация", text)
+    # «Гребёнка» — монтажное название коллектора. Приводим к каноническому
+    # термину здесь же, чтобы и категоризация, и поиск по фиду видели одно слово.
+    text = re.sub(r"\bгребенк(?:а|и|у|е|ой|ою)?\b", "коллектор", text)
     # Preserve engineering symbols used as semantic separators/units.  They
     # remain harmless for ordinary lexical search but let the notation layer
     # distinguish ``ΔT``, ``Ø20``, ``16×2`` and Cyrillic ``°С`` reliably.

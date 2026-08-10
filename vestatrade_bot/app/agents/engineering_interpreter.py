@@ -9,6 +9,7 @@ from typing import Any
 from app.models import IntentResult, SessionState
 from app.openrouter_client import OpenRouterClient
 
+from .numeric_semantics import numeric_slot_has_compatible_context
 from .utils import normalize_text
 
 
@@ -27,6 +28,9 @@ ENGINEERING_INTERPRETER_PROMPT = """
   толкования нового ответа.
 - Для каждого slot верни короткую дословную цитату из нового сообщения в
   slot_evidence и источник current_message или pending_answer в slot_provenance.
+- Единица измерения относится только к своему числу и типу величины: градусы не
+  являются ценой, бар — диаметром, а части дробного размера/маркировки не
+  являются отдельными температурами, давлениями или длинами.
 
 КРИТИЧЕСКИЙ КОНТЕКСТ:
 - Не сбрасывай текущую ветку без явной просьбы клиента сменить тему.
@@ -284,6 +288,11 @@ class EngineeringInterpreterAgent:
         "power_kw": (0.1, 10000),
         "voltage_v": (1, 1000),
         "sections": (1, 100),
+        "operating_temperature_c": (-80, 300),
+        "operating_pressure_bar": (0.1, 1000),
+        "pressure_class_bar": (0.1, 1000),
+        "max_price": (0.01, 1_000_000_000),
+        "min_price": (0.01, 1_000_000_000),
         "warm_floor_pipe_min_m": (1, 100000),
         "warm_floor_pipe_max_m": (1, 100000),
         "warm_floor_contours": (1, 1000),
@@ -781,6 +790,15 @@ class EngineeringInterpreterAgent:
         ):
             return False
 
+        if not numeric_slot_has_compatible_context(
+            key,
+            value,
+            message=message,
+            evidence=evidence,
+            pending_slot_keys=pending_slot_keys,
+        ):
+            return False
+
         pending = set(pending_slot_keys)
         if key == "required_flow_l_min":
             # A bare amount of litres is not a flow.  Even a pending flow
@@ -907,8 +925,11 @@ class EngineeringInterpreterAgent:
     @classmethod
     def _stated_numbers(cls, text: str) -> list[float]:
         numbers = [
-            float(token.replace(",", "."))
-            for token in re.findall(r"(?<![a-zа-я\d])\d+(?:[,.]\d+)?", text)
+            float(token.replace(" ", "").replace(",", "."))
+            for token in re.findall(
+                r"(?<![a-zа-я\d])(?:\d{1,3}(?: \d{3})+|\d+)(?:[,.]\d+)?",
+                text,
+            )
         ]
         word_values = {
             "ноль": 0,

@@ -135,16 +135,27 @@ class ProductCardAgent:
     # «other», где нет карты RELEVANT_ATTRS) именно они занимали все три слота,
     # и сравнение «чем отличаются» сопоставляло названия вместо параметров.
     IDENTITY_ATTRS = ("полное наименование", "штрихкод", "артикул")
+    INTERNAL_PROVENANCE_ATTRS = (
+        "источник диапазона мощности",
+        "источник документа",
+        "файл паспорта",
+        "страница паспорта",
+    )
 
     def _is_identity_attribute(self, key: str) -> bool:
         key_text = normalize_text(str(key))
         return any(marker in key_text for marker in self.IDENTITY_ATTRS)
+
+    def is_internal_provenance_attribute(self, key: str) -> bool:
+        key_text = normalize_text(str(key))
+        return any(marker in key_text for marker in self.INTERNAL_PROVENANCE_ATTRS)
 
     def _pick_characteristics(self, product: Product, query: SearchQuery) -> dict[str, str]:
         attrs = {
             key: value
             for key, value in product.attributes_normalized.items()
             if not self._is_identity_attribute(key)
+            and not self.is_internal_provenance_attribute(key)
         }
         if not attrs:
             return {}

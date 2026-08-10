@@ -263,6 +263,59 @@ def test_warm_floor_short_answers_keep_scope_and_recalculate_correction() -> Non
         )
 
 
+def test_warm_floor_nonexpert_yes_to_room_control_advances_live_dialog(
+    sample_products,
+) -> None:
+    bot = ChatOrchestrator(products=sample_products)
+    session_id = "live-warm-floor-nonexpert-automation"
+
+    bot.handle_chat(
+        session_id,
+        "Я вообще не разбираюсь. Хочу, чтобы пол дома был тёплым. Что понадобится?",
+    )
+    area = bot.handle_chat(session_id, "Около 85 квадратов.")
+    bot.handle_chat(session_id, "Водяной, газовый котёл уже есть.")
+    insulation = bot.handle_chat(
+        session_id,
+        "Пока только голая плита, утеплителя ещё нет.",
+    )
+    pending_before_automation = list(
+        bot.sessions.get(session_id).pending_slot_keys
+    )
+    automation = bot.handle_chat(
+        session_id,
+        "Да, хочу отдельно регулировать температуру в комнатах.",
+    )
+    summary = bot.handle_chat(
+        session_id,
+        "Теперь собери итог: что удалось подобрать, а что ещё нужно рассчитать?",
+    )
+
+    slots = automation.debug["slots"]
+    assert slots["warm_floor_area_m2"] == 85
+    assert slots["warm_floor_pipe_min_m"] == 552
+    assert slots["warm_floor_pipe_max_m"] == 595
+    assert slots["warm_floor_contours"] == 7
+    assert slots["floor_insulation_ready"] is False
+    assert slots["warm_floor_heat_source"] == "газовый котёл"
+    assert pending_before_automation == ["warm_floor_automation_needed"], (
+        insulation.answer,
+        pending_before_automation,
+    )
+    assert "warm_floor_automation_needed" in slots, automation.debug
+    assert slots["warm_floor_automation_needed"] is True
+    assert "diameter_mm" not in area.debug["slots"]
+    assert "diameter_mm" not in slots
+    assert "покомнатную автоматику включаю" in normalize_text(automation.answer)
+    assert "нужна покомнатная автоматика" not in normalize_text(automation.answer)
+    assert "warm_floor_automation_needed" not in bot.sessions.get(
+        session_id
+    ).pending_slot_keys
+    assert "теплопотери" in normalize_text(summary.answer)
+    assert "q–h" in summary.answer.lower()
+    assert "предварительный кандидат" in normalize_text(summary.answer)
+
+
 def test_watery_warm_floor_opening_keeps_area_question_for_bare_metres() -> None:
     bot = ChatOrchestrator(products=[])
     session_id = "live-warm-floor-bare-metres"
@@ -446,7 +499,7 @@ def test_irrigation_well_dialog_keeps_context_and_estimates_standard_hose() -> N
     assert slots["required_flow_l_min"] == 20
     assert slots["required_flow_m3_h"] == 1.2
     assert slots["required_pressure_bar"] == 2
-    assert slots["required_head_m"] == 37
+    assert slots["required_head_m"] == pytest.approx(37.394)
     assert slots["pump_type"] == "колодезный"
     assert slots["flow_unit_status"] == "estimated_standard_hose"
 
@@ -454,7 +507,7 @@ def test_irrigation_well_dialog_keeps_context_and_estimates_standard_hose() -> N
     assert "20 л/мин" in answer
     assert "1.2 м3/ч" in answer
     assert "2 бар" in answer
-    assert "37 м" in answer
+    assert "37.394 м" in answer
     assert "откуда берем воду" not in answer
 
 
@@ -479,8 +532,9 @@ def test_irrigation_well_accepts_several_facts_in_one_natural_turn() -> None:
     assert slots["horizontal_run_m"] == 40
     assert slots["geometric_lift_m"] == 13
     assert slots["horizontal_loss_allowance_m"] == 4
-    assert slots["outlet_pressure_head_m"] == 20
-    assert slots["required_head_m"] == 37
+    # 1 bar is about 10.197 m of water column, not exactly 10 m.
+    assert slots["outlet_pressure_head_m"] == pytest.approx(20.394)
+    assert slots["required_head_m"] == pytest.approx(37.394)
 
     recalled = bot.handle_chat(
         session_id,
@@ -491,4 +545,4 @@ def test_irrigation_well_accepts_several_facts_in_one_natural_turn() -> None:
     assert "глубина до зеркала воды 13 м" in recall_text
     assert "расстояние до дома/полива 40 м" in recall_text
     assert "геометрический подъем 13 м" in recall_text
-    assert "итоговый расчетный требуемый напор 37 м" in recall_text
+    assert "итоговый расчетный требуемый напор 37.394 м" in recall_text

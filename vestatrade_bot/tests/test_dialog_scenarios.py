@@ -282,7 +282,7 @@ def test_project_more_question_does_not_repeat_same_selection(orchestrator) -> N
     response = orchestrator.handle_chat("wf-more", "а еще что нужно?")
 
     assert response.answer != selected.answer
-    assert "Повторять тот же список не буду" in response.answer
+    assert "В предварительной подборке уже есть" in response.answer
     assert "PEX" in response.answer and "PE-RT" in response.answer
 
 
@@ -602,17 +602,16 @@ def test_sewer_scope_only_followup_is_remembered(orchestrator) -> None:
     assert "внутренняя или наружная" not in followup.answer.lower()
 
 
-def test_sewer_no_exact_match_shows_safe_alternatives(orchestrator) -> None:
+def test_sewer_no_exact_match_does_not_change_explicit_pipe_size(orchestrator) -> None:
     response = orchestrator.handle_chat(
         "s2e",
         "нужна наружная канализационная труба 75 длина 1000 мм",
     )
 
-    assert response.products
+    assert response.products == []
     assert response.need_handoff is False
-    assert "Точного совпадения" in response.answer
-    assert "альтернатив" in response.answer.lower()
-    assert response.products[0].sku in {"OUT-50-1000", "OUT-110-1000"}
+    assert "точного совпадения" in response.answer.lower()
+    assert "75" in response.answer
 
 
 def test_sewer_strictly_respects_scope_diameter_and_length(orchestrator) -> None:
@@ -1032,8 +1031,16 @@ def test_drainage_pump_purpose_and_package_do_not_use_boiler_template(sample_pro
     answer = response.answer.lower()
 
     assert "откачать воду" in answer
-    assert "поплавковый выключатель" in answer
-    assert "руководство по эксплуатации" in answer
+    # The attached manufacturer passport is authoritative over the synthetic
+    # legacy docs_text above. Its package section lists these items; the float
+    # appears in a later construction drawing, not in the box list.
+    assert "пластиковый штуцер" in answer
+    assert "паспорт" in answer
+    assert "упаковка" in answer
+    assert "согласно паспорту изделия" in answer
+    assert ".pdf" not in answer
+    assert "стр. 6" not in answer
+    assert "поплавковый выключатель" not in answer
     assert "в котёл" not in answer
     assert "циркуляционный насос" not in answer
     assert [product.sku for product in response.products] == ["68/2/8"]
@@ -1187,12 +1194,19 @@ def test_boiler_consultation_remembers_shorthand_area_and_uses_passport(sample_p
     assert final.products and final.products[0].sku == "2201376"
     assert "5–28 кВт" in final.answer
     assert "техническому паспорту" in final.answer.lower()
+    assert ".pdf" not in final.answer.lower()
+    assert "стр. 16" not in final.answer.lower()
     assert "фид" not in final.answer.lower()
 
     enriched = next(product for product in bot.search_agent.products if product.sku == "2201376")
     assert enriched.attributes_normalized["теплопроизводительность отопления, мин., квт"] == "5"
     assert enriched.attributes_normalized["теплопроизводительность отопления, макс., квт"] == "28"
     assert "стр. 16" in enriched.attributes_normalized["источник диапазона мощности"]
+    card = bot.card_agent.build_card(
+        enriched,
+        SearchQuery(original_text="котёл", category="boilers"),
+    )
+    assert "источник диапазона мощности" not in card.characteristics
 
 
 def test_repeated_boiler_filter_keeps_existing_selection(sample_products) -> None:

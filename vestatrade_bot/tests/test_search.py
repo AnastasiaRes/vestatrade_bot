@@ -829,6 +829,7 @@ def test_ppr_in_message_is_a_hard_material_constraint_for_alternatives() -> None
     )
 
     assert agent.search(query) == []
-    assert [product.sku for product in agent.search_alternatives(query)] == [
-        "VTp.700.FB25.20"
-    ]
+    # Diameter is a compatibility constraint, not a soft preference. A 20 mm
+    # pipe is not an alternative to an explicitly requested 16 mm pipe unless
+    # the customer first agrees to change the system size.
+    assert agent.search_alternatives(query) == []

@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 import logging
+import math
 from contextlib import nullcontext
 import re
 from threading import RLock, local
@@ -32,6 +33,7 @@ from app.models import (
     ChatResponse,
     HandoffSummary,
     IntentResult,
+    PendingQuestionState,
     Product,
     ProductBranchState,
     ProductCard,
@@ -62,6 +64,7 @@ from .slot_answer_resolver import (
     ResolvedAnswer,
 )
 from .slot_filling import SlotFillingAgent
+from .turn_classifier import TurnClassifierAgent
 from .utils import collapse_sku_spaces, merge_slots, normalize_sku as normalize_sku_token, normalize_text
 
 
@@ -104,6 +107,15 @@ HUMAN_ROLE_MARKERS = [
     "живого",
     "реальный",
     "реального",
+    # Frequent mobile typos, kept as role-specific stems so unrelated words
+    # such as «центрального» cannot trigger a human handoff.
+    "минедж",
+    "кансульт",
+    "сатруд",
+    "прадав",
+    "адмнистр",
+    "опиратор",
+    "челавек",
 ]
 
 CONTACT_INTENT_MARKERS = [
@@ -124,6 +136,9 @@ CONTACT_INTENT_MARKERS = [
     "имейл",
     "куда позвонить",
     "куда написать",
+    "свез",
+    "связатсь",
+    "кантакт",
 ]
 
 GENERIC_CONTACT_MARKERS = [
@@ -132,6 +147,7 @@ GENERIC_CONTACT_MARKERS = [
     "какой телефон",
     "номер телефона",
     "контакты",
+    "кантакты",
 ]
 
 TRANSFER_INTENT_MARKERS = [
@@ -151,6 +167,12 @@ TRANSFER_INTENT_MARKERS = [
     "нужна",
     "хочу",
     "можно",
+    "пазов",
+    "соеден",
+    "периключ",
+    "хачу",
+    "даит",
+    "нужин",
 ]
 
 TRANSIENT_QUERY_SLOTS = {
@@ -459,6 +481,7 @@ class ChatOrchestrator:
         )
         self.engineering_interpreter = EngineeringInterpreterAgent(self.llm_client)
         self.pending_answer_resolver = PendingAnswerResolver(self.llm_client)
+        self.turn_classifier = TurnClassifierAgent(self.llm_client)
         self.slot_filling = SlotFillingAgent()
         self.engineering_requirements = EngineeringRequirementsAgent(
             self.slot_filling
@@ -692,6 +715,30 @@ class ChatOrchestrator:
         self.composer.set_state(session.category, session.slots, last_summary, docs_excerpt)
         agents_used: list[str] = []
 
+        confirmed_requirement = self._confirmed_requirement_answer(message, session)
+        if confirmed_requirement:
+            confirmed_intent = IntentResult(
+                intent_type="attribute_request",
+                category=(
+                    "pipes"
+                    if session.slots.get("project_scope") == "warm_floor"
+                    else session.category or "other"
+                ),
+                confidence=1.0,
+            )
+            agents_used.append("EngineeringRequirementsAgent")
+            self._append_history(session, message, confirmed_requirement)
+            self.sessions.save(session)
+            return self._response(
+                session_id,
+                confirmed_requirement,
+                [],
+                False,
+                confirmed_intent,
+                session,
+                agents_used,
+            )
+
         recall_category = self._engineering_recall_category(message)
         recall_text = normalize_text(message)
         if (
@@ -807,6 +854,26 @@ class ChatOrchestrator:
             return self._response(
                 session_id,
                 electrical_safety,
+                [],
+                False,
+                intent,
+                session,
+                agents_used,
+            )
+
+        heating_diagnostic = self._maybe_heating_circulation_diagnostic_answer(message)
+        if heating_diagnostic:
+            intent = IntentResult(
+                intent_type="diagnostic_advice",
+                category="pumps",
+                confidence=1.0,
+            )
+            agents_used.extend(["ResponseComposerAgent", "GuardrailsAgent"])
+            self._append_history(session, message, heating_diagnostic)
+            self.sessions.save(session)
+            return self._response(
+                session_id,
+                heating_diagnostic,
                 [],
                 False,
                 intent,
@@ -1340,18 +1407,35 @@ class ChatOrchestrator:
             return self._response(session_id, meta_answer, session.last_products, False, intent, session, agents_used)
 
         if intent.intent_type == "link_request":
-            selected_index = self._select_ordinal_index(message, session.last_products)
+            link_cards, grounding_failure = self._ground_link_request_cards(
+                message,
+                intent,
+                session,
+            )
+            if grounding_failure:
+                agents_used.extend(["ProductMemoryAgent", "GuardrailsAgent"])
+                self._append_history(session, message, grounding_failure)
+                return self._response(
+                    session_id,
+                    grounding_failure,
+                    [],
+                    False,
+                    intent,
+                    session,
+                    agents_used,
+                )
+            selected_index = self._select_ordinal_index(message, link_cards)
             link_text = normalize_text(message)
             include_name = "назван" in link_text or "итог" in link_text
             answer = self.composer.compose_link_answer(
-                session.last_products,
+                link_cards,
                 selected_index,
                 include_name=include_name,
             )
-            if selected_index is not None and 0 <= selected_index < len(session.last_products):
-                response_cards = [session.last_products[selected_index]]
+            if selected_index is not None and 0 <= selected_index < len(link_cards):
+                response_cards = [link_cards[selected_index]]
             else:
-                response_cards = session.last_products
+                response_cards = link_cards
             agents_used.append("ResponseComposerAgent")
             answer = self._guard_composed_answer(answer, "link", agents_used)
             self._append_history(session, message, answer)
@@ -1381,7 +1465,7 @@ class ChatOrchestrator:
                 agents_used,
             )
 
-        term_answer = self._maybe_term_explanation(message)
+        term_answer = self._maybe_term_explanation(message, intent)
         if term_answer:
             agents_used.append("ResponseComposerAgent")
             answer = self._guard_composed_answer(term_answer, "generic", agents_used)
@@ -1659,6 +1743,28 @@ class ChatOrchestrator:
             session.pending_slot_keys = []
             target_card, ambiguous = self._resolve_shown_product_card(message, session)
             if ambiguous:
+                if self._should_answer_complectation_for_all(
+                    message,
+                    session,
+                    ["комплектация"],
+                ):
+                    answer = self._compose_package_overview(session.last_products)
+                    self._remember_all_card_complectation_scope(session)
+                    session.pending_question = None
+                    session.pending_intent_type = None
+                    session.pending_complectation_parts = []
+                    agents_used.extend(["GuardrailsAgent", "ResponseComposerAgent"])
+                    self._append_history(session, message, answer)
+                    self.sessions.save(session)
+                    return self._response(
+                        session_id,
+                        answer,
+                        session.last_products,
+                        False,
+                        intent,
+                        session,
+                        agents_used,
+                    )
                 answer = self._complectation_target_question(session.last_products)
                 session.pending_question = answer
                 session.pending_intent_type = "complectation"
@@ -1670,6 +1776,7 @@ class ChatOrchestrator:
                     session_id, answer, session.last_products, False, intent, session, agents_used
                 )
             if target_card:
+                session.slots.pop("last_complectation_scope_skus", None)
                 session.last_products = [target_card]
                 answer = self._compose_passport_package_answer(target_card)
                 agents_used.extend(["GuardrailsAgent", "ResponseComposerAgent"])
@@ -1880,6 +1987,33 @@ class ChatOrchestrator:
         # missing hydraulic/temperature inputs and recommend a plausible but
         # wrong pipe or pump.
         requirements_result: Any | None = None
+        # Пока ждётся параметр, правила считают любую реплику либо ответом на
+        # вопрос, либо шумом — и вопрос «а как подобрать диаметр?» получал тот же
+        # вопрос назад. Спрашиваем модель, ЧЕМ является ход, и перехватываем
+        # только просьбы объяснить. Без LLM классификатор возвращает unknown,
+        # и весь существующий пайплайн работает как раньше.
+        price_range = self._maybe_price_range_answer(message, intent, session, agents_used)
+        if price_range is not None:
+            self._append_history(session, message, price_range)
+            self.sessions.save(session)
+            return self._response(
+                session_id, price_range, [], False, intent, session, agents_used
+            )
+
+        explanation = self._maybe_explain_requested_topic(message, intent, session, agents_used)
+        if explanation is not None:
+            self._append_history(session, message, explanation)
+            self.sessions.save(session)
+            return self._response(
+                session_id,
+                explanation,
+                session.last_products,
+                False,
+                intent,
+                session,
+                agents_used,
+            )
+
         if self._should_preflight_engineering_requirements(message, intent, session):
             requirements_result = self.engineering_requirements.assess(
                 message,
@@ -2150,20 +2284,25 @@ class ChatOrchestrator:
                 question_id = f"{question_id}.{signature[:64] or 'unknown'}"
             previous_question = session.pending_question_state
             answered_slot_keys = set(turn_answered_slot_keys)
-            answered_other_slot = bool(
-                answered_slot_keys
-                and not answered_slot_keys.intersection(expected_slots)
-            )
             repeat_count = 0
             if previous_question and previous_question.question_id == question_id:
+                made_progress = self._answer_made_progress(
+                    previous_question,
+                    answered_slot_keys,
+                    fallback_expected=expected_slots,
+                )
                 repeat_count = (
                     previous_question.attempts
                     if (
                         session.slots.get("_pending_just_restored")
-                        or answered_other_slot
+                        or made_progress
                     )
                     else previous_question.attempts + 1
                 )
+            answered_other_slot = bool(
+                answered_slot_keys
+                and not answered_slot_keys.intersection(expected_slots)
+            )
             session.question_repeats = repeat_count
             if repeat_count < 2:
                 agents_used.append("ResponseComposerAgent")
@@ -2202,6 +2341,55 @@ class ChatOrchestrator:
                 self._append_history(session, message, answer)
                 self.sessions.save(session)
                 return self._response(session_id, answer, [], False, intent, session, agents_used)
+            if pending_category == "pumps":
+                pump_type = normalize_text(str(session.slots.get("pump_type") or ""))
+                if pump_type == "циркуляционный":
+                    next_steps = (
+                        "Для замены пришлите фото шильдика старого насоса и измерьте "
+                        "монтажную длину между присоединительными плоскостями корпуса. "
+                        "Для нового подбора нужен расчётный расход и напор системы."
+                    )
+                elif pump_type == "дренажный":
+                    next_steps = (
+                        "Нужны качество воды и размер частиц, вертикальный подъём, длина "
+                        "отвода и желаемая производительность."
+                    )
+                elif pump_type == "канализационная насосная установка":
+                    next_steps = (
+                        "Нужны подключаемые сантехнические приборы, вертикальный подъём, "
+                        "длина напорного участка и его диаметр."
+                    )
+                else:
+                    next_steps = (
+                        "Для водоснабжения сначала измеряют уровень воды или входное "
+                        "давление, высоту подъёма, длину трассы и одновременный расход."
+                    )
+                answer = (
+                    "Не буду показывать случайный насос только ради завершения диалога: "
+                    "ошибка по типу или рабочей точке может дать слабую подачу, шум или "
+                    "повредить оборудование. "
+                    + next_steps
+                    + " Если этих данных сейчас нет, можно продолжить после замеров или "
+                    "попросить специалиста снять их на объекте."
+                )
+                session.pending_question = None
+                session.pending_intent_type = None
+                session.pending_category = None
+                session.pending_slot_keys = []
+                session.pending_question_state = None
+                session.question_repeats = 0
+                agents_used.extend(["EngineeringRequirementsAgent", "GuardrailsAgent"])
+                self._append_history(session, message, answer)
+                self.sessions.save(session)
+                return self._response(
+                    session_id,
+                    answer,
+                    [],
+                    False,
+                    intent,
+                    session,
+                    agents_used,
+                )
             # Один и тот же вопрос уже задавали дважды — меняем тактику:
             # показываем типовой вариант по текущим данным вместо зацикливания.
             session.slots["allow_basic_option"] = True
@@ -2333,11 +2521,15 @@ class ChatOrchestrator:
                     return self._response(session_id, answer, cards, False, intent, session, agents_used)
 
             answer = self.composer.compose_no_match(query)
+            if query.category == "pumps":
+                calculation_note = self._compose_query_note(query, [], [])
+                if calculation_note:
+                    answer = calculation_note + "\n" + answer
             answer = self._guard_composed_answer(answer, "generic", agents_used)
             self._append_history(session, message, answer)
             self.sessions.save(session)
             agents_used.append("ResponseComposerAgent")
-            return self._response(session_id, answer, [], True, intent, session, agents_used)
+            return self._response(session_id, answer, [], False, intent, session, agents_used)
 
         agents_used.append("RankingAgent")
         ranked = self.ranking_agent.rank(products, query)
@@ -2556,14 +2748,24 @@ class ChatOrchestrator:
             # «Какие из предложенных имеют встроенный насос?» — вопрос про ВСЕ
             # показанные товары. Просить выбрать одну модель здесь неуместно:
             # клиент как раз и хочет сравнить их по этому узлу.
-            if len(session.last_products) > 1 and self._asks_about_all_shown(message):
-                answer = self._compose_builtin_part_overview(
-                    session.last_products, requested_parts
+            if len(session.last_products) > 1 and self._should_answer_complectation_for_all(
+                message,
+                session,
+                requested_parts,
+            ):
+                answer = (
+                    self._compose_package_overview(session.last_products)
+                    if requested_parts == ["комплектация"]
+                    else self._compose_builtin_part_overview(
+                        session.last_products,
+                        requested_parts,
+                    )
                 )
                 agents_used.extend(["GuardrailsAgent", "ResponseComposerAgent"])
                 session.pending_question = None
                 session.pending_intent_type = None
                 session.pending_complectation_parts = []
+                self._remember_all_card_complectation_scope(session)
                 self._append_history(session, message, answer)
                 return self._response(
                     session.session_id,
@@ -2592,6 +2794,7 @@ class ChatOrchestrator:
                     agents_used,
                 )
             if target_card:
+                session.slots.pop("last_complectation_scope_skus", None)
                 target_product = self._find_product_by_sku(target_card.sku)
 
         if not target_product:
@@ -2674,6 +2877,37 @@ class ChatOrchestrator:
             target_product,
             requested_parts,
         )
+        if (
+            resolved_category == "boilers"
+            and self._asks_if_separate_pump_needed_for_shown_boiler(message, session)
+            and part_states.get("насос") is True
+        ):
+            answer = (
+                f"Отдельный насос для обычного котлового контура обычно не нужен: "
+                f"у {target_card.sku} по карточке уже встроен циркуляционный насос. "
+                "Дополнительный насос рассматривают для отдельного гидравлического "
+                "контура — например, тёплого пола через смесительный узел, бойлера "
+                "или нескольких зон — либо когда его необходимость подтверждает "
+                "расчёт расхода и гидравлических потерь. Если опишете схему, проверю "
+                "это отдельно."
+            )
+            agents_used.extend(["GuardrailsAgent", "ResponseComposerAgent"])
+            session.pending_question = None
+            session.pending_intent_type = None
+            session.pending_complectation_parts = []
+            session.last_products = [target_card]
+            session.slots["last_complectation_parts"] = requested_parts
+            session.slots["last_complectation_sku"] = target_card.sku
+            self._append_history(session, message, answer)
+            return self._response(
+                session.session_id,
+                answer,
+                [target_card],
+                False,
+                intent,
+                session,
+                agents_used,
+            )
         explicitly_not_included = [
             part for part, state in part_states.items() if state is False
         ]
@@ -2832,6 +3066,19 @@ class ChatOrchestrator:
                 base.pop("coupling_type", None)
                 incoming.pop("coupling_type", None)
                 invalidated_keys.add("coupling_type")
+
+        # «Водяной от котла» inside an active underfloor-heating calculation
+        # names the heat source, not a request to replace the loop pipe with a
+        # boiler-binding pipe.  A real topic switch carries a different scope.
+        if (
+            normalize_text(str(base.get("project_scope") or base.get("scope_funnel") or ""))
+            == "warm_floor"
+            and "петл" in normalize_text(str(base.get("pipe_service") or ""))
+            and normalize_text(str(incoming.get("pipe_service") or "")) == "обвязка котла"
+            and normalize_text(str(incoming.get("project_scope") or "warm_floor"))
+            == "warm_floor"
+        ):
+            incoming["pipe_service"] = base["pipe_service"]
 
         explicit_boiler_type = normalize_text(
             str(explicit.get("boiler_type") or "")
@@ -3479,7 +3726,7 @@ class ChatOrchestrator:
         nominal_dn, thread, source = self._pump_connection_facts(product)
         if nominal_dn and thread:
             source_text = (
-                "По привязанному паспорту"
+                "Согласно паспорту изделия"
                 if source == "passport"
                 else "По карточке и маркировке"
             )
@@ -4487,6 +4734,7 @@ class ChatOrchestrator:
             self.composer.compose_choose_one(
                 card,
                 query,
+                candidate_count=len(candidates),
             ),
             card,
         )
@@ -4858,14 +5106,13 @@ class ChatOrchestrator:
                 + " Её максимальная мощность выше предварительного ориентира, поэтому без "
                 "минимальной мощности и расчёта теплопотерь не называю эту модель оптимальной."
             )
-        minimum, maximum, source = passport_range
+        minimum, maximum, _source = passport_range
         min_text = f"{minimum:g}".replace(".", ",")
         max_text = f"{maximum:g}".replace(".", ",")
-        source_note = f" ({source})" if source else ""
         return (
             introduction
             + f" По техническому паспорту её теплопроизводительность в режиме отопления "
-            f"регулируется примерно от {min_text} до {max_text} кВт{source_note}, поэтому "
+            f"регулируется примерно от {min_text} до {max_text} кВт, поэтому "
             f"котёл не работает постоянно на всех {rated_power:g} кВт. При этом в тёплую "
             f"погоду потребность здания может опускаться ниже {min_text} кВт — тогда возможны "
             "более частые включения и выключения."
@@ -5552,6 +5799,7 @@ class ChatOrchestrator:
     ) -> ChatResponse | None:
         text = normalize_text(message)
         concrete_product_slots = {
+            "pump_type",
             "diameter_mm",
             "size_inch",
             "head_m",
@@ -5574,6 +5822,22 @@ class ChatOrchestrator:
                 "все для",
             ]
         )
+        concrete_pipe_purchase = bool(
+            intent.category == "pipes"
+            and intent.slots.get("pipe_material")
+            and intent.slots.get("diameter_mm")
+            and intent.slots.get("total_length_m")
+            and (
+                intent.slots.get("wall_thickness_mm")
+                or intent.slots.get("length_mm")
+            )
+        )
+        if concrete_pipe_purchase and not explicit_whole_project:
+            # ``PE-RT 16x2, 600 m for a water floor`` is an exact pipe purchase.
+            # The router legitimately records the warm-floor project scope, but
+            # that current-turn scope must not force the user back to floor area
+            # before the concrete catalogue search.
+            return None
         if (
             not session.slots.get("project_scope")
             and intent.category in {"pipes", "pumps", "valves", "sewer", "radiator_fittings", "radiators", "fittings"}
@@ -5614,13 +5878,16 @@ class ChatOrchestrator:
             ):
                 session.slots["area_m2"] = area
 
+        current_turn_slot_keys = set(
+            (intent.raw or {}).get("current_turn_slot_keys") or intent.slots
+        )
         warm_floor_update_keys = {
             "warm_floor_area_m2",
             "warm_floor_type",
             "floor_insulation_ready",
             "warm_floor_heat_source",
             "warm_floor_automation_needed",
-        }.intersection(intent.slots)
+        }.intersection(current_turn_slot_keys)
         if active_project_scope == "warm_floor" and area is not None:
             warm_floor_update_keys.add("warm_floor_area_m2")
 
@@ -5923,6 +6190,14 @@ class ChatOrchestrator:
         )
 
     def _explicit_project_scope_from_text(self, text: str) -> str | None:
+        if (
+            re.search(r"(?<![a-zа-я])кнс(?![a-zа-я])", text)
+            or "канализационная насосная установ" in text
+            or ("санитарн" in text and "насос" in text)
+        ):
+            # This names one pump installation even when the same sentence
+            # says «для санузла»; use the pump duty-point funnel.
+            return None
         if "тепл" in text and "пол" in text and not self._negates_warm_floor(text):
             return "warm_floor"
         if ("вод" in text or "водоснаб" in text) and "канализац" in text:
@@ -6894,13 +7169,21 @@ class ChatOrchestrator:
                 f"- {html.unescape(card.name)} — арт. {card.sku}, "
                 f"{card.price:g} {card.currency}, {self._card_stock_text(card)}."
             )
-        if cards:
+        if cards and scope != "warm_floor":
             currency = cards[0].currency
             lines.append(f"Ориентир по сумме, если считать по 1 шт. каждого артикула: {total:g} {currency}.")
-        lines.append(
-            "Количество по трубам, канализации и расходникам нужно считать отдельно по метражу/схеме; "
-            "я не буду выдумывать количество без этих данных."
-        )
+        if scope == "warm_floor":
+            lines.append(
+                "Итоговую стоимость пока не суммирую: для трубы нужно подтвердить единицу "
+                "цены и количество бухт, а для остальных узлов — фактическое количество. "
+                "Не буду выдумывать количество без схемы и расчёта."
+            )
+            lines.append(self._project_missing_note(scope) or "")
+        else:
+            lines.append(
+                "Количество по трубам, канализации и расходникам нужно считать отдельно по метражу/схеме; "
+                "я не буду выдумывать количество без этих данных."
+            )
         return "\n".join(lines)
 
     def _compose_project_component_focus(
@@ -6930,8 +7213,11 @@ class ChatOrchestrator:
         cards: list[ProductCard],
     ) -> str:
         if cards:
-            skus = ", ".join(card.sku for card in cards)
-            lines = [f"В текущей подборке уже есть: {skus}. Повторять тот же список не буду."]
+            lines = ["В предварительной подборке уже есть:"]
+            lines.extend(
+                f"- {html.unescape(card.name)} — арт. {card.sku}."
+                for card in cards
+            )
         else:
             lines = ["Товарных позиций в текущей подборке пока нет."]
         note = self._project_missing_note(scope)
@@ -6950,7 +7236,14 @@ class ChatOrchestrator:
                 "Для петли тёплого пола нужна предназначенная для неё гибкая труба PEX, PE-RT "
                 "или металлопластик; обычную PPR не подставляю вместо неё. Также нужны "
                 "коллектор, смесительный узел, теплоизоляция, демпферная лента, крепёж и автоматика. "
-                "Если совместимых позиций в ассортименте нет, я не ставлю им выдуманные артикулы."
+                "Если совместимых позиций в ассортименте нет, я не ставлю им выдуманные артикулы.\n"
+                "До окончательной спецификации нужно рассчитать или подтвердить: теплопотери и "
+                "шаг укладки по каждой комнате; схему и фактическую длину каждой петли; расходы "
+                "по контурам и балансировку коллектора; температуру подачи и параметры "
+                "смесительного узла; суммарный расход и напор по Q–H-кривой насоса; размеры "
+                "присоединений и количества фитингов, утепления, ленты, крепежа, термостатов и "
+                "сервоприводов. Показанный насос — предварительный кандидат, а не подтверждённая "
+                "рабочая точка."
             )
         if scope == "bathroom":
             return (
@@ -7242,8 +7535,22 @@ class ChatOrchestrator:
             "что брать",
             "плюсы и минус",
             "за и против",
+            # «что дешевле в эксплуатации», «что выгоднее», «зачем нужна группа
+            # безопасности» — тоже консультация. Голое «дешевле» намеренно НЕ
+            # берём: оно есть в «нужен насос подешевле», а это запрос товара.
+            "что дешевле",
+            "дешевле в эксплуатац",
+            "что выгоднее",
+            "выгоднее в эксплуатац",
+            "зачем нужн",
+            "зачем нужна",
+            "для чего нужн",
+            "стоит ли",
         ]
-        if not any(marker in text for marker in consult_markers):
+        # «Чем газовый котёл лучше электрического?» — слова разнесены, поэтому
+        # одной подстрокой такое не поймать.
+        comparative = bool(re.search(r"\bчем\b.{0,40}\b(?:лучше|хуже|выгоднее|надежнее)", text))
+        if not comparative and not any(marker in text for marker in consult_markers):
             return None
 
         pending = normalize_text(session.pending_question or "")
@@ -7330,6 +7637,35 @@ class ChatOrchestrator:
             str(session.slots.get("pump_type") or "")
         ) != "циркуляционный":
             return answer
+        if category == "pipes":
+            material = normalize_text(str(session.slots.get("pipe_material") or ""))
+            service = normalize_text(str(session.slots.get("pipe_service") or ""))
+            diameter = self._float_slot(session.slots.get("diameter_mm"))
+            if "тепл" in service and "пол" in service:
+                # A generic ball-valve hint is unrelated to a concrete loop
+                # pipe and can encourage a mismatched connection system.
+                return answer
+            if diameter is not None and any(
+                marker in material for marker in ["пэ100", "pe100", "пнд", "hdpe"]
+            ):
+                hint = (
+                    "Для этой ПЭ100/ПНД-трубы фитинги подбирают по тому же наружному "
+                    f"диаметру {diameter:g} мм: например, компрессионную муфту или "
+                    "переход на резьбу — уже по схеме подключения в доме."
+                )
+            elif diameter is not None:
+                hint = (
+                    f"Сопутствующие фитинги нужно брать для той же трубной системы "
+                    f"и диаметра {diameter:g} мм; резьбовой размер крана определяется "
+                    "переходом и не равен диаметру трубы автоматически."
+                )
+            else:
+                hint = COMPANION_HINTS.get(category)
+            flag = f"companion_hint_{category}"
+            if not hint or session.slots.get(flag):
+                return answer
+            session.slots[flag] = True
+            return f"{answer}\n\n{hint}"
         hint = COMPANION_HINTS.get(category)
         if not hint:
             return answer
@@ -7511,7 +7847,21 @@ class ChatOrchestrator:
             # ``поддержание давления`` describes a pressure vessel; fuzzy
             # matching must not turn it into the human role ``поддержка``.
             return False
-        return self._has_marker(text, HUMAN_ROLE_MARKERS, fuzzy_threshold=76)
+        core_roles = [
+            marker
+            for marker in HUMAN_ROLE_MARKERS
+            if marker not in {"живой", "живого", "реальный", "реального"}
+        ]
+        # Qualifiers are human intent only together with an actual role.  A
+        # fuzzy comparison previously read «центрального водопровода» as
+        # «реального» and opened a manager handoff on an ordinary pump query.
+        if re.search(
+            r"\b(?:жив\w*|реальн\w*)\b[^.!?]{0,24}"
+            r"\b(?:человек|менеджер|оператор|консультант|специалист|сотрудник|продавец)\w*\b",
+            text,
+        ):
+            return True
+        return self._has_marker(text, core_roles, fuzzy_threshold=82)
 
     def _has_marker(self, text: str, markers: list[str], fuzzy_threshold: int = 82) -> bool:
         if any(marker in text for marker in markers):
@@ -8006,6 +8356,33 @@ class ChatOrchestrator:
             count=1,
             flags=re.IGNORECASE,
         )
+        # Many passports use an unnumbered list such as ``Насос – 1 шт.``.
+        # Parse it before looking for ``1.`` rows: a later section like
+        # ``4. Общий вид`` may contain numbered callouts which are not box
+        # contents.  Stop at the next warning/major section when extraction has
+        # flattened page boundaries.
+        package_body = re.split(
+            r"\s+(?:ВНИМАНИЕ!?|Не\s+допускается|"
+            r"(?:Рис\.?\s*\d+)|(?:[4-9]|\d{2,})\.\s+[A-ZА-ЯЁ])",
+            body,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0]
+        dash_rows = list(
+            re.finditer(
+                r"(?:^|\s)([A-ZА-ЯЁ][A-Za-zА-Яа-яЁё0-9 /().,+\-]{1,100}?)"
+                r"\s*[–—-]\s*(\d+)\s*(шт\.?|комплект\w*)\b",
+                package_body,
+                flags=re.IGNORECASE,
+            )
+        )
+        if dash_rows:
+            return [
+                f"{' '.join(row.group(1).split()).strip(' .;:')} — "
+                f"{int(row.group(2))} {row.group(3).rstrip('.')}"
+                for row in dash_rows
+            ]
+
         numbered = list(re.finditer(r"(?<![\d.])(\d{1,2})\.\s+", body))
         items: list[str] = []
         expected = 1
@@ -8079,10 +8456,37 @@ class ChatOrchestrator:
         plain = " ".join(plain.split()).strip(" .;:")
         return [plain] if plain else []
 
+    def _passport_package_evidence(
+        self,
+        product: Product,
+    ) -> tuple[list[str], str | None, int | None]:
+        """Return package items together with internal source provenance.
+
+        Filename and page remain available for diagnostics and audits, but are
+        deliberately not rendered in customer-facing answers.
+        """
+
+        for document in product.documents:
+            items = self._passport_package_items(document.text)
+            if items:
+                return (
+                    items,
+                    document.filename,
+                    document.section_pages.get("комплект поставки"),
+                )
+        if product.docs_text:
+            return self._passport_package_items(product.docs_text), None, None
+        return [], None, None
+
     def _compose_passport_package_answer(self, card: ProductCard) -> str:
         product = self._find_product_by_sku(card.sku)
         if not product or not product.docs_text:
             components = self.guardrails.list_builtin_components(product) if product else []
+            title_package = (
+                self.guardrails.list_name_confirmed_package_parts(product)
+                if product
+                else []
+            )
             known = ""
             if components:
                 known = (
@@ -8090,27 +8494,61 @@ class ChatOrchestrator:
                     + ", ".join(components)
                     + ". Это не перечень содержимого коробки."
                 )
+            title_confirmation = ""
+            if title_package:
+                title_confirmation = (
+                    " Название карточки прямо подтверждает поставку с: "
+                    + ", ".join(title_package)
+                    + "."
+                )
             return (
                 f"Для {card.sku} не вижу привязанного паспорта с подтверждённым составом "
                 "поставки. Не буду смешивать встроенные узлы изделия с содержимым коробки; "
-                f"полную комплектацию нужно уточнить у менеджера.{known} Карточка: {card.url}"
+                f"полную комплектацию нужно уточнить у менеджера.{title_confirmation}"
+                f"{known} Карточка: {card.url}"
             )
-        items = self._passport_package_items(product.docs_text)
+        items, _, _ = self._passport_package_evidence(product)
         if not items:
+            title_package = self.guardrails.list_name_confirmed_package_parts(product)
+            title_confirmation = (
+                " При этом название карточки прямо подтверждает поставку с: "
+                + ", ".join(title_package)
+                + "."
+                if title_package
+                else ""
+            )
             return (
-                f"В привязанном паспорте для {card.sku} не нахожу явного перечня комплекта "
-                "поставки. Не буду дополнять его по общим знаниям; уточните состав у менеджера. "
+                f"В доступном паспорте изделия {card.sku} не нахожу явного перечня комплекта "
+                "поставки. Не буду дополнять его по общим знаниям; уточните полный состав "
+                f"у менеджера.{title_confirmation} "
                 f"Карточка: {card.url}"
             )
         lines = [
-            f"По привязанному паспорту для {card.sku} в комплект поставки входят:"
+            f"Согласно паспорту изделия, в комплект поставки {card.sku} входят:"
         ]
         lines.extend(f"- {item}." for item in items)
         lines.append(
-            "Это именно комплект поставки; встроенные узлы изделия перечисляются отдельно. "
-            f"Карточка товара: {card.url}"
+            "Это именно комплект поставки; встроенные узлы изделия перечисляются отдельно."
+            f" Карточка товара: {card.url}"
         )
         return "\n".join(lines)
+
+    def _compose_package_overview(self, cards: list[ProductCard]) -> str:
+        """Report shipment contents per visible identity without guessing one.
+
+        An open plural comparison is more useful than asking the customer to
+        choose a model merely to learn what each box contains.  Every block is
+        still rendered by the same passport-grounded function used for a
+        single product.
+        """
+
+        blocks = ["Проверил комплект поставки по каждой показанной модели:"]
+        for index, card in enumerate(cards[:3], start=1):
+            blocks.append(
+                f"{index}. {card.name} (артикул {card.sku})\n"
+                + self._compose_passport_package_answer(card)
+            )
+        return "\n\n".join(blocks)
 
     def _is_open_complectation_question(self, message: str) -> bool:
         """Package/passport question with no request for one specific built-in part."""
@@ -8281,6 +8719,32 @@ class ChatOrchestrator:
                 return True
         return False
 
+    def _asks_if_separate_pump_needed_for_shown_boiler(
+        self,
+        message: str,
+        session: SessionState,
+    ) -> bool:
+        """Distinguish a necessity check from a command to select a new pump."""
+
+        if not session.last_products:
+            return False
+        text = normalize_text(message)
+        necessity = bool(
+            re.search(
+                r"(?:насос[^.!?]{0,45}(?:к\s+нему|для\s+него|к\s+котл\w*|"
+                r"для\s+котл\w*)[^.!?]{0,25}(?:нужен|нужно|требуется)|"
+                r"(?:нужен|нужно|требуется)\s+ли[^.!?]{0,45}насос)",
+                text,
+            )
+        )
+        if not necessity:
+            return False
+        return any(
+            (product := self._find_product_by_sku(card.sku)) is not None
+            and self.search_agent.canonical_category(product) == "boilers"
+            for card in session.last_products
+        )
+
     def _build_context_block(
         self,
         session: SessionState,
@@ -8301,9 +8765,21 @@ class ChatOrchestrator:
             if product:
                 components = self.guardrails.list_builtin_components(product)
                 if components:
-                    lines.append(f"   Встроенные узлы (по карточке): {', '.join(components)}")
-                if product.docs_text:
-                    lines.append(f"   Паспорт (выдержка): {self._passport_snippet(product.docs_text)}")
+                    lines.append(
+                        "   Встроенные узлы (по карточке/описанию/привязанной документации): "
+                        + ", ".join(components)
+                    )
+                if product.documents:
+                    document = product.documents[0]
+                    lines.append(
+                        "   Привязанный паспорт изделия (выдержка): "
+                        f"{self._passport_snippet(document.text)}"
+                    )
+                elif product.docs_text:
+                    lines.append(
+                        "   Привязанный паспорт изделия (выдержка): "
+                        f"{self._passport_snippet(product.docs_text)}"
+                    )
                 elif product.description:
                     lines.append(f"   Описание: {product.description[:500]}")
             lines.append(f"   Ссылка: {card.url}")
@@ -8691,6 +9167,205 @@ class ChatOrchestrator:
         session.question_repeats = 0
         return True
 
+    def _ground_link_request_cards(
+        self,
+        message: str,
+        intent: IntentResult,
+        session: SessionState,
+    ) -> tuple[list[ProductCard], str | None]:
+        """Return only cards grounded in the category named by a link turn.
+
+        ``last_products`` is an active view, not a global referent.  If a
+        customer returns to a category whose earlier search produced no cards,
+        that view may still contain products from the branch they just left.
+        A URL is an identity claim, so category agreement is mandatory: the
+        named branch must either have been restored by
+        :meth:`_restore_product_reference` or already be the active branch.
+        """
+        text = normalize_text(message)
+        explicit_category, explicit_score = self.intent_router._detect_category(text)
+        wants_all_shown = bool(
+            re.search(r"\b(?:все|всё|оба|обе|кажд\w*)\b", text)
+            and any(marker in text for marker in ["ссыл", "показан", "товар", "вариант"])
+        )
+
+        target_category = self._referenced_product_category(
+            message,
+            intent,
+            session,
+        )
+        if target_category == "other":
+            target_category = None
+        # A mixed project result is one grounded active view.  An unqualified
+        # request for *all* shown links refers to that whole view, not to the
+        # category that merely happens to be active in the session.  Keep the
+        # category fallback for singular/ambiguous requests so stale cards still
+        # cannot cross an engineering branch boundary.
+        if wants_all_shown and (
+            explicit_category == "other" or explicit_score < 0.55
+        ):
+            target_category = None
+        elif not target_category and session.category not in {None, "other"}:
+            target_category = session.category
+
+        explicitly_named_return = bool(
+            target_category
+            and explicit_category == target_category
+            and explicit_score >= 0.55
+            and self._looks_like_product_recall(message)
+        )
+        if (
+            explicitly_named_return
+            and target_category != session.category
+            and target_category in self.engineering_requirements.CATEGORIES
+        ):
+            # Product history and engineering facts are separate memories.  A
+            # failed catalogue search has no product snapshot, but its typed
+            # requirements are still a valid branch to return to.  Activate it
+            # without carrying SKU/pump dimensions from the branch being left.
+            current_turn_keys = set(
+                (intent.raw or {}).get("current_turn_slot_keys") or []
+            )
+            allowed_keys = (
+                self.engineering_requirements.CATEGORY_KEYS.get(
+                    target_category,
+                    set(),
+                )
+                | self.engineering_requirements.COMMERCIAL_KEYS
+                | self.engineering_requirements.SHARED_KEYS
+            )
+            explicit_slots = {
+                key: value
+                for key, value in intent.slots.items()
+                if key in current_turn_keys and key in allowed_keys
+            }
+            self.engineering_requirements.activate_goal(
+                message,
+                target_category,
+                session,
+                explicit_slots=explicit_slots,
+                returning=True,
+            )
+            self.engineering_requirements.clear_pending_question(session)
+            intent.category = target_category
+            intent.is_topic_change = False
+
+        cards = list(session.last_products)
+        branch = (
+            session.product_branches.get(target_category)
+            if target_category
+            else None
+        )
+        branch_has_products = bool(
+            branch
+            and any(snapshot.product_skus for snapshot in branch.selections)
+        )
+
+        if not cards:
+            if target_category and (
+                self._looks_like_product_recall(message)
+                or session.category == target_category
+            ):
+                return [], self._missing_link_branch_answer(
+                    target_category,
+                    branch_has_products=branch_has_products,
+                )
+            return [], None
+
+        cards_with_categories: list[tuple[ProductCard, str | None]] = []
+        for card in cards:
+            product = self._find_product_by_sku(card.sku)
+            category = (
+                self.search_agent.canonical_category(product)
+                if product
+                else None
+            )
+            cards_with_categories.append((card, category))
+
+        if not target_category:
+            known_categories = {
+                category
+                for _, category in cards_with_categories
+                if category and category != "other"
+            }
+            if wants_all_shown or len(known_categories) <= 1:
+                return cards, None
+        else:
+            matching_cards = [
+                card
+                for card, category in cards_with_categories
+                if category == target_category
+            ]
+            restored_skus = {
+                normalize_sku_token(sku)
+                for sku in (intent.raw or {}).get(
+                    "product_reference_restored",
+                    [],
+                )
+            }
+            restored_target = bool(restored_skus) and all(
+                normalize_sku_token(card.sku) in restored_skus
+                for card in matching_cards
+            )
+            active_target = session.category == target_category
+            if matching_cards and (restored_target or active_target):
+                # A project response can contain several product families.  A
+                # category-qualified link request may expose only its matching
+                # family; ordinals are then evaluated inside that family.
+                if len(matching_cards) != len(cards):
+                    session.last_products = matching_cards
+                    session.shown_product_skus = [
+                        card.sku for card in matching_cards
+                    ]
+                    session.shown_result_signature = None
+                return matching_cards, None
+
+        stale_categories = sorted(
+            {
+                category
+                for _, category in cards_with_categories
+                if category and category != "other"
+            }
+        )
+        intent.raw = dict(intent.raw or {})
+        intent.raw["link_grounding_failure"] = {
+            "target_category": target_category,
+            "active_card_categories": stale_categories,
+            "branch_has_products": branch_has_products,
+        }
+        # The attempted branch switch has no grounded active cards.  Keep the
+        # historical snapshots intact, but clear the incompatible view so a
+        # later pronoun/card question cannot leak the same product either.
+        session.last_products = []
+        session.shown_product_skus = []
+        session.shown_result_signature = None
+        session.pending_complectation_parts = []
+        return [], self._missing_link_branch_answer(
+            target_category,
+            branch_has_products=branch_has_products,
+        )
+
+    @staticmethod
+    def _missing_link_branch_answer(
+        category: str | None,
+        *,
+        branch_has_products: bool,
+    ) -> str:
+        label = PROJECT_CATEGORY_LABELS.get(category or "", "Эта категория")
+        if branch_has_products:
+            return (
+                f"Не могу однозначно определить, какой ранее показанный товар "
+                f"из категории «{label}» вы имеете в виду, поэтому ссылку из "
+                "другой категории не подставляю. "
+                "Уточните артикул или ключевой параметр — найду нужную карточку."
+            )
+        return (
+            f"Ранее по категории «{label}» подходящая карточка не была показана: "
+            "прошлый поиск не дал результата. Поэтому ссылку из другой категории не "
+            "подставляю. Могу повторить поиск — напишите ключевые параметры "
+            "или артикул."
+        )
+
     def _contextual_fallback(
         self,
         message: str,
@@ -8763,6 +9438,7 @@ class ChatOrchestrator:
                     (key, value)
                     for key, value in grounded_attributes.items()
                     if value
+                    and not self.card_agent.is_internal_provenance_attribute(key)
                     and any(
                         marker in normalize_text(str(key))
                         for marker in markers
@@ -9497,183 +10173,65 @@ class ChatOrchestrator:
             "оставь один",
             "один вариант",
         ]
-        return any(marker in text for marker in markers)
+        if any(marker in text for marker in markers):
+            return True
+        # Natural spoken choice request: «какой из предложенных вы бы выбрали?».
+        # It is semantically the same as «выбери один», but an exact phrase
+        # table missed it and the generic «почему» branch answered with a bare
+        # list of slots instead of making a grounded recommendation.
+        return bool(
+            re.search(
+                r"\b(?:какой|который)\b[^?]{0,90}\b"
+                r"(?:выбра(?:л|ла|ли|ть)|взя(?:л|ла|ли|ть)|посоветовал\w*)\b",
+                text,
+            )
+            or re.search(
+                r"\b(?:вы|ты)\s+бы\s+"
+                r"(?:выбра(?:л|ла|ли)|взя(?:л|ла|ли)|посоветовал\w*)\b",
+                text,
+            )
+        )
 
-    def _maybe_term_explanation(self, message: str) -> str | None:
+    def _maybe_term_explanation(
+        self,
+        message: str,
+        intent: IntentResult,
+    ) -> str | None:
         text = normalize_text(message)
-        asks = any(marker in text for marker in ["что такое", "что значит", "не понимаю", "объясни"])
+        asks = any(
+            marker in text
+            for marker in [
+                "что такое",
+                "что значит",
+                "что означает",
+                "не понимаю",
+                "объясни",
+                "как называется",
+            ]
+        )
+        asks = asks or bool(
+            re.search(r"\bкак\s+(?:это\s+)?называ(?:ется|ют)\b", text)
+        )
         if not asks:
             return None
-        explanations: list[tuple[str, list[str], str]] = [
-            (
-                "ГВС / ХВС",
-                ["гвс", "хвс", "г в с", "х в с"],
-                "ГВС — горячее водоснабжение, ХВС — холодное водоснабжение. "
-                "Это разные назначения: при подборе труб и арматуры нужно отдельно "
-                "учитывать температуру, давление, материал и участок системы.",
-            ),
-            (
-                "гидроаккумулятор",
-                ["гидроаккумулятор", "гидробак", "га "],
-                "это мембранный бак именно для системы водоснабжения: он создаёт запас "
-                "воды, сглаживает колебания давления и уменьшает число пусков насоса. "
-                "Его не делят на «паровой и водяной» и не подменяют расширительным "
-                "баком отопления; объём рассчитывают по насосу и настройкам давления.",
-            ),
-            (
-                "БКН",
-                ["бкн"],
-                "бойлер косвенного нагрева — накопительный бак, который обычно греется "
-                "теплоносителем от котла через теплообменник. Объём и мощность змеевика "
-                "подбирают под расход ГВС и возможности котла.",
-            ),
-            (
-                "ЭВН",
-                ["эвн"],
-                "электрический водонагреватель. Сокращение само по себе не задаёт все "
-                "параметры: нужно уточнить накопительный он или проточный, объём/расход, "
-                "мощность и способ установки.",
-            ),
-            (
-                "Ду / DN и Ру / PN",
-                ["ду", "dn", "ру", "pn"],
-                "Ду (DN) — условный проход, то есть номинальный размер соединения; "
-                "Ру (PN) — номинальный класс давления при установленных стандартом "
-                "условиях. Это не гарантирует пригодность при любой температуре — "
-                "нужно сверять паспорт и рабочую точку.",
-            ),
-            (
-                "Q / H насоса",
-                ["q=", "q =", "h=", "h =", "q ", "h "],
-                "Q — расход, обычно в м³/ч; H — напор в метрах. Насос выбирают по "
-                "совместной рабочей точке Q–H на его кривой, а не по двум независимым "
-                "максимальным значениям.",
-            ),
-            (
-                "ЗКС / ОКС",
-                ["зкс", "окс"],
-                "ЗКС — закрытая камера сгорания, ОКС — открытая. Это обязательная "
-                "характеристика котла, связанная с подачей воздуха и дымоудалением; "
-                "дымоход подбирают к точной модели по паспорту.",
-            ),
-            (
-                "межосевое расстояние",
-                ["м/о", "межосев"],
-                "это расстояние между осями верхнего и нижнего подключений радиатора. "
-                "Запись «м/о 500» означает 500 мм и должна совпасть со схемой подключения.",
-            ),
-            (
-                "монтажная длина",
-                ["монтажн"],
-                "это расстояние между гайками насоса, то есть сколько места он занимает в трубе. "
-                "Частые варианты для циркуляционных насосов — 130 или 180 мм.",
-            ),
-            (
-                "напор",
-                ["напор"],
-                "это способность насоса поднимать или проталкивать воду. В карточках часто указан в метрах: "
-                "например 4 м или 6 м.",
-            ),
-            (
-                "присоединение",
-                ["присоедин"],
-                "это размер подключения к трубе или резьбе. Для насосов часто встречается 25 или 32, "
-                "для кранов — 1/2 или 3/4.",
-            ),
-            (
-                "американка",
-                ["американк"],
-                "это разъёмное соединение с накидной гайкой. С ним кран или узел проще снять без разборки всей трубы.",
-            ),
-            (
-                "термоголовка",
-                ["термоголов"],
-                "это регулятор на радиаторном клапане, который помогает поддерживать температуру в комнате.",
-            ),
-            (
-                "одноконтурный котёл",
-                ["одноконтурн"],
-                "работает только на отопление. Для горячей воды к нему понадобится отдельный бойлер.",
-            ),
-            (
-                "двухконтурный котёл",
-                ["двухконтурн"],
-                "даёт и отопление, и горячую воду — отдельный бойлер не нужен.",
-            ),
-            (
-                "контур",
-                ["контур"],
-                "в котле один контур обычно работает на отопление, два контура — на отопление и горячую воду.",
-            ),
-            (
-                "закрытая камера сгорания",
-                ["закрытая камера", "закрытой камер", "камера сгорания", "коаксиал"],
-                "котёл с закрытой камерой берёт воздух с улицы через коаксиальный дымоход "
-                "(труба в трубе), а не из помещения. Это снижает зависимость горения от "
-                "воздуха в комнате, но не отменяет требования к помещению, вентиляции, "
-                "дымоходу и монтажу специалистом.",
-            ),
-            (
-                "армированная труба",
-                ["армиров"],
-                "это полипропиленовая труба, усиленная стекловолокном или алюминием. "
-                "Армирование уменьшает температурное удлинение, но само по себе не "
-                "доказывает пригодность для конкретного отопления или ГВС: проверяют "
-                "паспортный режим температуры/давления и систему соединений.",
-            ),
-            (
-                "pn",
-                ["pn"],
-                "это номинальный класс давления при заданных стандартом условиях. "
-                "При горячей воде допустимое давление может быть ниже, поэтому конкретную "
-                "трубу проверяют по её температурно-ресурсной диаграмме и паспорту.",
-            ),
-            (
-                "котёл",
-                ["котел", "котл"],
-                "это прибор, который греет теплоноситель системы отопления, а двухконтурный "
-                "ещё готовит ГВС. Тип, мощность и схему нельзя выбирать только по площади: "
-                "нужны теплопотери, топливо/электропитание, требование ГВС, дымоудаление и "
-                "диапазон модуляции; оценка по площади бывает лишь предварительным ориентиром.",
-            ),
-            (
-                "насос",
-                ["насос", "помпа"],
-                "это устройство, которое прокачивает воду. Циркуляционный гоняет воду отопления по кругу, "
-                "повысительный усиливает слабый напор, дренажный откачивает воду, скважинный поднимает её "
-                "из скважины.",
-            ),
-            (
-                "труба PPR",
-                ["труба", "ppr", "полипропилен"],
-                "PPR — это полипропиленовые трубы для водоснабжения и отопления, соединяются пайкой. "
-                "Для горячей воды и отопления берут PN20 или армированные (стекловолокном/алюминием).",
-            ),
-            (
-                "шаровой кран",
-                ["кран", "вентиль"],
-                "это запорная арматура: перекрывает поток одним поворотом ручки. Вариант с американкой "
-                "позволяет снять узел без разборки трубы.",
-            ),
-            (
-                "канализация",
-                ["канализац"],
-                "внутренняя (серые трубы, система HT) собирает стоки внутри дома, наружная (рыжая, KG) "
-                "идёт под землёй от дома до септика или колодца.",
-            ),
-            (
-                "радиаторная арматура",
-                ["радиатор", "батаре"],
-                "это клапаны и термоголовки для подключения батареи: термоголовка автоматически держит "
-                "заданную температуру, запорный клапан просто перекрывает поток.",
-            ),
-        ]
-        for term, roots, explanation in explanations:
-            if any(root in text for root in roots):
-                return self.composer.compose_term_explanation(term, explanation)
-        if any(marker in text for marker in ["что такое", "что значит"]) or text.startswith("объясни"):
-            return self.composer.compose_term_consult(message)
-        return None
+        describes_unnamed_product = bool(
+            intent.category != "other"
+            and re.search(
+                r"\b(?:не\s+знаю|не\s+помню|не\s+понимаю)\b"
+                r"[^.?!]{0,45}\bкак\s+(?:это\s+|такой\s+|такая\s+|"
+                r"такое\s+)?называ(?:ется|ют)\b",
+                text,
+            )
+        )
+        if describes_unnamed_product:
+            # «Не знаю, как называется такой насос/серая штука» is a product
+            # description, not a glossary question.  Keep the router's typed
+            # slots and continue through requirements and catalogue search.
+            return None
+        # The typed glossary in ResponseComposer is the single active source
+        # for known engineering terms. Known entries never pass through free
+        # LLM rewriting; only an unknown term may use its cautious fallback.
+        return self.composer.compose_term_consult(message)
 
     def _maybe_engineering_risk_answer(self, message: str) -> str | None:
         text = normalize_text(message)
@@ -10443,6 +11001,28 @@ class ChatOrchestrator:
             return None
         state = session.slots.get("sink_flow")
         mentions_sink = any(marker in text for marker in ["под раковин", "под мойк"])
+        explicit_sewer_pipe = bool(
+            mentions_sink
+            and (
+                "канализац" in text
+                or re.search(r"\bтруб\w*\b", text)
+                or (
+                    "сер" in text
+                    and "пластик" in text
+                    and (
+                        re.search(r"\b\d{2,3}\s*мм\b", text)
+                        or any(
+                            marker in text
+                            for marker in ["длин", "полметра", "треснул"]
+                        )
+                    )
+                )
+            )
+        )
+        if explicit_sewer_pipe:
+            # A typed sewer-pipe description is more specific than the broad
+            # undersink menu. Preserve its dimensions for the ordinary funnel.
+            return None
         drain_markers = ["слив", "сифон", "водослив"]
         valve_markers = ["кран", "вентиль", "подводк", "смесител"]
         vague_markers = ["фигн", "штук", "эта", "это", "что то", "что-то"]
@@ -10510,6 +11090,49 @@ class ChatOrchestrator:
             session.pending_intent_type = None
         return None
 
+    @staticmethod
+    def _maybe_heating_circulation_diagnostic_answer(message: str) -> str | None:
+        """Give ordered, non-invasive checks before suggesting a stronger pump."""
+
+        text = normalize_text(message)
+        has_heating_symptom = bool(
+            any(marker in text for marker in ["радиатор", "батаре"])
+            and any(
+                marker in text
+                for marker in [
+                    "плохо гре",
+                    "чуть тепл",
+                    "чуть тёпл",
+                    "холодн",
+                    "не гре",
+                ]
+            )
+        )
+        asks_diagnosis = any(
+            marker in text
+            for marker in [
+                "что проверить",
+                "с чего начать",
+                "что сначала",
+                "в чем причина",
+                "в чём причина",
+            ]
+        )
+        if not has_heating_symptom or not asks_diagnosis:
+            return None
+        return (
+            "До покупки более мощного насоса проверьте систему по порядку. "
+            "1) Посмотрите ошибки котла и давление/температуру по его штатной индикации — "
+            "допустимые значения берите из паспорта модели. 2) Сравните температуру подачи "
+            "и обратки и убедитесь, что штатный насос работает без ошибки. 3) Проверьте, "
+            "открыты ли запорные и термостатические клапаны, нет ли воздуха в радиаторах "
+            "и загрязнения доступного фильтра. 4) Если одни ветки горячие, а другие "
+            "холодные, нужна проверка балансировки и гидравлики. Не вскрывайте котёл и "
+            "газовую часть самостоятельно; при ошибке, ненормальном давлении или отсутствии "
+            "циркуляции нужен сервисный специалист. Напишите модель котла, показания "
+            "давления и температуры подачи/обратки и одинаково ли ведут себя все радиаторы."
+        )
+
     def _maybe_water_emergency_answer(
         self,
         message: str,
@@ -10558,11 +11181,42 @@ class ChatOrchestrator:
             "теплонос",
             "кипяток",
         ]
+        # «Еле течёт», «слабый напор», «не течёт» — это НЕДОСТАТОК воды, а не
+        # протечка. Без этого исключения «на втором этаже вода еле течёт из
+        # крана» запускало сценарий затопления: «перекройте вводной кран,
+        # звоните в аварийную службу». Те же формулировки уже описаны как
+        # симптом слабого напора в intent_router.SYMPTOM_KEYWORDS.
+        weak_flow = any(
+            marker in text
+            for marker in [
+                "еле течет",
+                "еле течёт",
+                "еле идет",
+                "еле идёт",
+                "слабо течет",
+                "слабо течёт",
+                "плохо течет",
+                "плохо течёт",
+                "чуть течет",
+                "чуть течёт",
+                "не течет",
+                "не течёт",
+                "слабый напор",
+                "слабенький напор",
+                "низкий напор",
+                "плохой напор",
+                "нет напора",
+                "низкое давление",
+                "тонкой струйк",
+                "струйкой",
+            ]
+        )
         looks_like_leak = any(marker in text for marker in flood_markers) or (
             any(marker in text for marker in rupture_markers)
             and any(marker in text for marker in water_fixture_markers)
         ) or (
-            any(marker in text for marker in ["течет", "течёт", "льется", "льётся"])
+            not weak_flow
+            and any(marker in text for marker in ["течет", "течёт", "льется", "льётся"])
             and any(marker in text for marker in water_fixture_markers)
         )
 
@@ -10923,15 +11577,62 @@ class ChatOrchestrator:
                     "давления по диаграмме/паспорту конкретной трубы."
                 )
         if query.category == "pipes" and query.slots.get("total_length_m"):
-            notes.append(
-                f"Общий метраж {float(query.slots['total_length_m']):g} м учёл как требуемое количество, "
-                "а не как диаметр. В карточке не указаны длина одного отрезка и единица цены, "
-                "поэтому стоимость всего метража не умножаю без уточнения."
-            )
+            total_length = float(query.slots["total_length_m"])
+            package_lengths = {
+                length
+                for product in (products or [])
+                if (length := self._pipe_package_length_m(product)) is not None
+            }
+            if len(package_lengths) == 1:
+                package_length = package_lengths.pop()
+                packages = max(1, math.ceil(total_length / package_length))
+                package_word = self._russian_package_word(packages)
+                note = (
+                    f"Общий метраж {total_length:g} м учёл как требуемое количество, "
+                    f"а не как диаметр. В карточке указана бухта {package_length:g} м: "
+                    f"теоретический минимум — {packages} {package_word}."
+                )
+                if (
+                    query.slots.get("project_scope") == "warm_floor"
+                    or query.slots.get("pipe_service") == "петля тёплого пола"
+                ):
+                    note += (
+                        " Фактическое число бухт сверяют с раскладкой контуров и запасом: "
+                        "каждую петлю в стяжке планируют цельной, без скрытых соединений."
+                    )
+                note += (
+                    " Единица цены в фиде не подтверждена, поэтому итоговую стоимость "
+                    "всего метража без уточнения не умножаю."
+                )
+                notes.append(note)
+            else:
+                notes.append(
+                    f"Общий метраж {total_length:g} м учёл как требуемое количество, "
+                    "а не как диаметр. В карточке не указаны длина одного отрезка и "
+                    "единица цены, поэтому стоимость всего метража не умножаю без уточнения."
+                )
         if query.category == "pumps" and (
             query.slots.get("required_flow_m3_h") is not None
             or query.slots.get("required_head_m") is not None
         ):
+            if query.slots.get("required_head_calculated"):
+                method = query.slots.get("head_calculation_method") or "предварительный расчёт"
+                calculation_bits = [
+                    f"метод: {method}",
+                    f"геометрический подъём {float(query.slots.get('geometric_lift_m') or 0):g} м",
+                    f"потери по длине {float(query.slots.get('horizontal_loss_allowance_m') or 0):g} м",
+                ]
+                if query.slots.get("discharge_internal_diameter_mm") is not None:
+                    calculation_bits.append(
+                        "внутренний диаметр линии "
+                        f"{float(query.slots['discharge_internal_diameter_mm']):g} мм"
+                    )
+                notes.append(
+                    "Расчёт напора предварительный ("
+                    + "; ".join(calculation_bits)
+                    + "). Местные сопротивления и фактический внутренний диаметр "
+                    "нужно подтвердить по трассе."
+                )
             estimated_duty_note = self.composer.compose_pump_estimate_note(query)
             if estimated_duty_note:
                 notes.append(estimated_duty_note)
@@ -10980,6 +11681,37 @@ class ChatOrchestrator:
         if query.slots.get("choose_one"):
             notes.append("Выбираю один основной вариант из подходящих товаров.")
         return "\n".join(notes) if notes else None
+
+    @staticmethod
+    def _pipe_package_length_m(product: Product) -> float | None:
+        """Read an explicitly labelled coil length from trusted card fields."""
+
+        evidence_parts = [product.name]
+        evidence_parts.extend(
+            str(value)
+            for key, value in product.attributes_normalized.items()
+            if any(
+                marker in normalize_text(key)
+                for marker in ["длина бухты", "длина в бухте", "метраж бухты"]
+            )
+        )
+        evidence = normalize_text(" ".join(evidence_parts))
+        match = re.search(
+            r"\bбухт\w*\s*(?:по\s*)?(\d+(?:[,.]\d+)?)\s*(?:м\b|метр\w*)",
+            evidence,
+        )
+        if not match:
+            return None
+        length = float(match.group(1).replace(",", "."))
+        return length if 0 < length <= 5000 else None
+
+    @staticmethod
+    def _russian_package_word(count: int) -> str:
+        if count % 10 == 1 and count % 100 != 11:
+            return "бухта"
+        if count % 10 in {2, 3, 4} and count % 100 not in {12, 13, 14}:
+            return "бухты"
+        return "бухт"
 
     def _looks_like_affirmation(self, message: str) -> bool:
         text = normalize_text(message).strip()
@@ -11037,6 +11769,25 @@ class ChatOrchestrator:
             session.slots.get("project_scope") == "warm_floor"
             or session.slots.get("scope_funnel") == "warm_floor"
         )
+        warm_floor_area_turn = bool(
+            re.search(
+                r"\d{1,4}(?:[,.]\d+)?\s*"
+                r"(?:м2|м²|кв(?:\.?\s*м)?|квадрат\w*)\b",
+                text,
+            )
+        )
+        explicit_pipe_dimension = bool(
+            re.search(
+                r"(?:диаметр\w*|\b(?:dn|ду|дн)\s*\d|[øф]\s*\d|"
+                r"\d{1,3}\s*(?:мм\b|[xх×*]\s*\d))",
+                text,
+            )
+        )
+        if warm_floor_scope and warm_floor_area_turn and not explicit_pipe_dimension:
+            # A permissive pipe-size extractor used to read «85 квадратов» as
+            # 85 mm because the active category is pipes. Area and diameter
+            # are different physical dimensions; never persist that weak guess.
+            intent.slots.pop("diameter_mm", None)
         pending_asks_floor_area = bool(
             warm_floor_scope
             and "площад" in normalize_text(session.pending_question or "")
@@ -11538,6 +12289,87 @@ class ChatOrchestrator:
             return "boilers"
         return None
 
+    def _confirmed_requirement_answer(
+        self,
+        message: str,
+        session: SessionState,
+    ) -> str | None:
+        """Answer from canonical session facts before consulting product cards.
+
+        Calculated project facts and requirements stated by the customer have
+        higher provenance than a product card.  In particular, a question such
+        as ``сколько контуров?`` after a warm-floor calculation asks about our
+        stored calculation, not whether a pump card happens to contain an
+        attribute named ``contours``.
+        """
+
+        text = normalize_text(message)
+        slots = normalize_engineering_slots(dict(session.slots))
+
+        asks_pipe_quantity = bool(
+            "труб" in text
+            and any(marker in text for marker in ["сколько", "метраж", "какой объем", "какой объём"])
+        )
+        asks_contour_quantity = bool(
+            "контур" in text
+            and any(marker in text for marker in ["сколько", "количеств"])
+        )
+        warm_floor_context = bool(
+            slots.get("project_scope") == "warm_floor"
+            or slots.get("has_warm_floor")
+            or slots.get("warm_floor_area_m2") is not None
+        )
+        if warm_floor_context and (asks_pipe_quantity or asks_contour_quantity):
+            facts: list[str] = []
+            pipe_min = self._float_slot(slots.get("warm_floor_pipe_min_m"))
+            pipe_max = self._float_slot(slots.get("warm_floor_pipe_max_m"))
+            contours = self._float_slot(slots.get("warm_floor_contours"))
+            if asks_pipe_quantity:
+                if pipe_min is not None and pipe_max is not None:
+                    facts.append(f"трубы — ориентировочно {pipe_min:g}–{pipe_max:g} м")
+                elif pipe_min is not None:
+                    facts.append(f"трубы — ориентировочно от {pipe_min:g} м")
+            if asks_contour_quantity and contours is not None:
+                facts.append(f"контуров — {contours:g}")
+            if facts:
+                area = self._float_slot(slots.get("warm_floor_area_m2"))
+                basis = f" для {area:g} м²" if area is not None else ""
+                return (
+                    f"По сохранённому предварительному расчёту{basis}: "
+                    + "; ".join(facts)
+                    + ". Это ориентир для комплектации; окончательные длины петель "
+                    "проверяют по плану укладки и гидравлическому расчёту."
+                )
+
+        personal_recall = bool(
+            re.search(
+                r"\b(?:я\s+)?(?:просил\w*|выбрал\w*|указал\w*|называл\w*|говорил\w*)\b",
+                text,
+            )
+            and re.search(r"\b(?:какой|какая|какое|какую|что)\b", text)
+        )
+        if not personal_recall or "тип" not in text:
+            return None
+
+        # Render the requirement the customer supplied, never a type inferred
+        # from the first product currently on screen.
+        if slots.get("boiler_type"):
+            qualifiers = [str(slots["boiler_type"])]
+            if slots.get("contours"):
+                qualifiers.append(str(slots["contours"]))
+            return f"Вы просили {' '.join(qualifiers)} котёл."
+        typed_requirements = (
+            ("pump_type", "насос"),
+            ("heater_type", "водонагреватель"),
+            ("radiator_type", "радиатор"),
+            ("pipe_material", "трубу"),
+            ("element_type", "изделие"),
+        )
+        for key, noun in typed_requirements:
+            if slots.get(key):
+                return f"Вы просили {slots[key]} {noun}."
+        return "В сохранённых требованиях тип пока не указан."
+
     def _engineering_recall_answer(
         self,
         message: str,
@@ -11789,6 +12621,13 @@ class ChatOrchestrator:
                 keys.append("required_flow_m3_h")
             if "присоедин" in text:
                 keys.append("connection_size")
+            if (
+                "диаметр" in text
+                and any(marker in text for marker in ["шланг", "напорн", "труб"])
+            ):
+                keys.append("discharge_diameter_mm")
+            if "размер частиц" in text:
+                keys.append("solids_mm")
             if "динамическ" in text:
                 keys.append("dynamic_water_level_m")
             if "статическ" in text:
@@ -11828,7 +12667,17 @@ class ChatOrchestrator:
                 keys.append("warm_floor_automation_needed")
             if "для чего" in text or "назначен" in text:
                 keys.append("pipe_purpose")
-            if any(marker in text for marker in ["участ", "петл", "магистрал", "обвяз"]):
+            # A material question lists «петля тёплого пола» among the ways the
+            # pipe may be laid.  Reading that as a request for ``pipe_service``
+            # pointed the question at an already answered slot, which emptied
+            # ``expected`` and made ``sync_pending_question_state`` drop the
+            # question altogether — the bot asked and instantly forgot.
+            material_question = "материал" in text or "систем" in text and "соединен" in text
+            if material_question:
+                # The question itself offers the laying method as an
+                # alternative answer, so both close it.
+                keys.extend(["pipe_material", "installation_method"])
+            elif any(marker in text for marker in ["участ", "петл", "магистрал", "обвяз"]):
                 keys.append("pipe_service")
             if "холодн" in text and "горяч" in text:
                 keys.append("water_temperature")
@@ -11975,15 +12824,11 @@ class ChatOrchestrator:
         """Let the model bind a short reply to the question the bot asked.
 
         Regular expressions stay in charge: this runs only when they read
-        nothing that answers the pending question, which is exactly the case
-        that used to produce an unbreakable repeat loop.  With the LLM off the
-        method is a no-op and behaviour is unchanged.
+        nothing that answers the pending question. Explicit enum/boolean
+        choices are grounded locally; genuinely free-form replies may use the
+        LLM when it is enabled.
         """
 
-        if not self.settings.llm_enabled:
-            return ResolvedAnswer(rejection_reason="LLM disabled")
-        if intent.is_topic_change:
-            return ResolvedAnswer(rejection_reason="topic change")
         if intent.intent_type in self._NON_CONSULTING_INTENTS:
             return ResolvedAnswer(rejection_reason="non-consulting intent")
 
@@ -11998,25 +12843,55 @@ class ChatOrchestrator:
                 state.expected_slots if state else (session.pending_slot_keys or [])
             )
         ]
-        if self._rules_answered_pending(expected, intent.slots):
-            return ResolvedAnswer(rejection_reason="rules already answered")
-
         category = (
             (state.category if state and state.category else None)
             or session.pending_category
             or session.category
             or intent.category
         )
-        try:
-            resolved = self.pending_answer_resolver.resolve(
-                message=message,
-                question=question,
-                expected_slots=expected,
-                category=category,
+        if self._rules_answered_pending(expected, intent.slots):
+            return ResolvedAnswer(rejection_reason="rules already answered")
+
+        resolved = self.pending_answer_resolver.resolve_local(
+            message=message,
+            expected_slots=expected,
+            category=category,
+        )
+        if intent.is_topic_change and (
+            resolved is None
+            or self._is_new_product_request(normalize_text(message))
+        ):
+            return ResolvedAnswer(rejection_reason="topic change")
+        if resolved is None:
+            if not self.settings.llm_enabled:
+                return ResolvedAnswer(rejection_reason="LLM disabled")
+            # Отказ по одному параметру нужно снять даже когда правила уже
+            # заполнили другие слоты этого хода: «радиаторная разводка, 70
+            # градусов, давление не знаю» — здесь два значения и один отказ.
+            self._defer_refused_slots(
+                session,
+                self.pending_answer_resolver.detect_refusals(
+                    message=message,
+                    expected_slots=expected,
+                    category=category,
+                ),
             )
-        except Exception as exc:  # pragma: no cover - defensive integration guard
-            logger.exception("Pending answer resolution failed: %s", exc)
-            return ResolvedAnswer(llm_requested=True, rejection_reason=str(exc))
+            try:
+                resolved = self.pending_answer_resolver.resolve(
+                    message=message,
+                    question=question,
+                    expected_slots=expected,
+                    category=category,
+                )
+            except Exception as exc:  # pragma: no cover - defensive integration guard
+                logger.exception("Pending answer resolution failed: %s", exc)
+                return ResolvedAnswer(llm_requested=True, rejection_reason=str(exc))
+
+        # Клиент прямо отказался от параметра («не знаю расход»). Помечаем его
+        # отложенным, чтобы воронка спрашивала следующее, а не повторяла то же:
+        # раньше отказ приходил тем же пустым результатом, что и «реплика не про
+        # параметры», и различить их было невозможно.
+        self._defer_refused_slots(session, resolved.refused)
 
         if not resolved.slots:
             return resolved
@@ -12066,6 +12941,217 @@ class ChatOrchestrator:
             and len(numeric_facts) <= 1
         )
 
+    @staticmethod
+    def _answer_made_progress(
+        previous: PendingQuestionState | None,
+        answered_slot_keys: set[str] | None,
+        *,
+        fallback_expected: list[str] | None = None,
+    ) -> bool:
+        """Whether this turn advanced the question that is being re-asked.
+
+        The reference must be the slots the question was *still waiting for
+        when it was asked* — ``previous.expected_slots``.  Recomputing the
+        expectation after the answer has already been merged into the session
+        removes exactly the slot the customer just filled, so every reply looks
+        like an answer to some unrelated question and the repeat counter never
+        advances.  That froze ``attempts`` at zero and made the loop breaker
+        below unreachable for any question that asks for several parameters at
+        once.
+
+        Repeating a value the session already holds is not progress: the slot
+        is no longer in ``expected_slots``, so the counter advances and the
+        dialogue escalates instead of asking the same thing forever.
+        """
+
+        if not answered_slot_keys:
+            return False
+        awaited = (
+            list(previous.expected_slots)
+            if previous is not None
+            else list(fallback_expected or [])
+        )
+        if not awaited:
+            return False
+        return bool(set(answered_slot_keys).intersection(awaited))
+
+    @staticmethod
+    def _defer_refused_slots(session: SessionState, refused: list[str]) -> None:
+        """Помечает отказанные параметры отложенными.
+
+        Клиент прямо сказал, что не знает параметр — воронка должна спрашивать
+        следующее, а не повторять то же. Раньше отказ приходил тем же пустым
+        результатом, что и «реплика не про параметры», и различить их было нельзя.
+        """
+        if not refused:
+            return
+        deferred = list(session.slots.get("deferred_slot_keys") or [])
+        for key in refused:
+            if key not in deferred:
+                deferred.append(key)
+        session.slots["deferred_slot_keys"] = deferred
+
+    def _maybe_price_range_answer(
+        self,
+        message: str,
+        intent: IntentResult,
+        session: SessionState,
+        agents_used: list[str],
+    ) -> str | None:
+        """Answer «сколько стоит труба 25 мм?» with a real range from the feed.
+
+        Такой вопрос уходил в воронку («для чего она, где проложена»), и покупатель
+        не видел ни одной цены. Подходящих труб 25 мм в фиде много и с разной
+        ценой, поэтому одну назвать нельзя — но диапазон по найденным позициям
+        назвать можно, он взят из карточек, а не придуман.
+        """
+        text = normalize_text(message)
+        asks_price = any(
+            marker in text
+            for marker in ["сколько стоит", "сколько стоят", "цена", "цену", "почем", "по чем"]
+        )
+        if not asks_price:
+            return None
+        # Про уже показанные товары и про конкретный артикул отвечают другие ветки,
+        # там цена точная и диапазон не нужен.
+        if session.last_products or intent.slots.get("sku"):
+            return None
+
+        query = self._build_query(message, intent, session)
+        if query.sku or query.category == "other" or not self._is_searchable(query):
+            return None
+        if not self._ensure_products_loaded():
+            return None
+        # ``SearchQuery.limit`` is a presentation limit (30 by default), while
+        # a quoted catalogue range/count is an aggregate.  Search the complete
+        # current feed and discard one-turn presentation instructions so the
+        # maximum price and stock count cannot disappear beyond page one.
+        aggregate_slots = {
+            key: value
+            for key, value in query.slots.items()
+            if key not in TRANSIENT_QUERY_SLOTS
+        }
+        aggregate_query = query.model_copy(
+            update={
+                "slots": aggregate_slots,
+                "limit": max(1, len(self.search_agent.products)),
+            }
+        )
+        products = [
+            product
+            for product in self.search_agent.search(aggregate_query)
+            if product.price is not None
+        ]
+        if len(products) < 2:
+            return None
+
+        prices = sorted(product.price for product in products)
+        in_stock = sum(1 for product in products if product.is_in_stock)
+        agents_used.extend(["FeedSearchAgent", "ResponseComposerAgent"])
+        low, high = prices[0], prices[-1]
+        currency = products[0].currency
+        subject = self._price_range_subject(query)
+        if low == high:
+            head = f"{subject} — {low:g} {currency}."
+        else:
+            head = f"{subject} — от {low:g} до {high:g} {currency}."
+        reason = (
+            "производителя, армирования и исполнения"
+            if query.category in {"pipes", "sewer", "fittings"}
+            else "производителя, мощности и исполнения"
+            if query.category == "boilers"
+            else "производителя и исполнения"
+        )
+        return (
+            f"{head} Разброс зависит от {reason}; "
+            f"подходящих позиций в каталоге {len(products)}, из них в наличии {in_stock}. "
+            "Чтобы назвать точную цену, уточните назначение и участок системы — "
+            "подберу конкретный артикул."
+        )
+
+    def _price_range_subject(self, query: SearchQuery) -> str:
+        """Human label for what the range covers, built only from stated slots."""
+        labels = {
+            "pipes": "Труба",
+            "pumps": "Насос",
+            "boilers": "Котёл",
+            "valves": "Кран",
+            "sewer": "Канализационная труба",
+            "fittings": "Фитинг",
+            "radiators": "Радиатор",
+            "radiator_fittings": "Радиаторная арматура",
+        }
+        parts = [labels.get(query.category, "Товар")]
+        if query.slots.get("diameter_mm"):
+            parts.append(f"{float(query.slots['diameter_mm']):g} мм")
+        elif query.slots.get("size_inch"):
+            parts.append(f'{query.slots["size_inch"]}"')
+        if query.brand:
+            parts.append(str(query.brand))
+        return " ".join(parts)
+
+    def _maybe_explain_requested_topic(
+        self,
+        message: str,
+        intent: IntentResult,
+        session: SessionState,
+        agents_used: list[str],
+    ) -> str | None:
+        """Answer «объясни/научи» instead of returning the pending question.
+
+        Guarded on both sides. The turn must *look* like a question (cheap check,
+        so a misclassification cannot swallow a product request), and the answer
+        goes through the composer path that forbids product facts — a definition
+        must never carry an article, price or stock claim.
+        """
+        text = normalize_text(message)
+        if not text:
+            return None
+        if intent.category != "other" and any(
+            marker in text
+            for marker in [
+                "что измерить",
+                "что замерить",
+                "что надо измерить",
+                "что нужно измерить",
+                "какие данные нужны",
+                "диаметр не знаю",
+            ]
+        ):
+            # This is a request for help answering the active selection
+            # question, not a glossary term.  Let the typed requirements layer
+            # explain which measurements a specialist would collect.
+            return None
+        looks_like_question = "?" in message or any(
+            marker in text
+            for marker in [
+                "как ",
+                "что такое",
+                "что значит",
+                "зачем",
+                "почему",
+                "чем отлич",
+                "объясни",
+                "расскажи",
+            ]
+        )
+        if not looks_like_question:
+            return None
+
+        turn = self.turn_classifier.classify(
+            message=message,
+            pending_question=session.pending_question,
+            shown_products=[card.name for card in session.last_products],
+        )
+        if not turn.wants_explanation:
+            return None
+
+        agents_used.extend(["TurnClassifierAgent", "ResponseComposerAgent"])
+        answer = self.composer.compose_term_consult(message)
+        # Тот же guard, что и для остальных LLM-ответов: он отклоняет выдуманные
+        # артикулы, цены и утверждения о наличии.
+        return self._guard_composed_answer(answer, "generic", agents_used)
+
     def _set_structured_pending_question(
         self,
         session: SessionState,
@@ -12100,17 +13186,17 @@ class ChatOrchestrator:
             question_id = f"{question_id}.{signature[:64] or 'unknown'}"
         previous = session.pending_question_state
         repeated = bool(previous and previous.question_id == question_id)
-        answered_other_slot = bool(
-            repeated
-            and answered_slot_keys
-            and not set(answered_slot_keys).intersection(expected)
+        made_progress = self._answer_made_progress(
+            previous if repeated else None,
+            answered_slot_keys,
+            fallback_expected=expected,
         )
         if question_id == "well.water_level_reference" and not repeated:
             session.slots["water_level_reference_question_asked"] = True
         just_restored = bool(session.slots.pop("_pending_just_restored", False))
         attempts = (
             previous.attempts
-            if repeated and previous and (just_restored or answered_other_slot)
+            if repeated and previous and (just_restored or made_progress)
             else previous.attempts + 1
             if repeated and previous
             else 0
@@ -12159,17 +13245,38 @@ class ChatOrchestrator:
                 "вопрос. Без него окончательный подбор насоса не подтверждаю."
             )
         visible_question = question
-        if repeated and attempts == 1:
+        # Эскалируем только когда покупатель получает ДОСЛОВНО тот же вопрос.
+        # Сравниваем по вхождению: в сохранённом тексте мог быть префикс прошлой
+        # попытки. Там, где формулировка сама меняется от попытки к попытке
+        # (например, помощь по параметрам насоса), ничего не добавляем.
+        # Сравниваем с ИСХОДНОЙ формулировкой прошлой попытки, а не с сохранённым
+        # видимым текстом: тот уже содержит префикс, из-за чего эскалация
+        # сбрасывалась и покупатель снова получал голый вопрос.
+        last_bare = normalize_text(str(session.slots.get("_last_bare_question") or ""))
+        verbatim_repeat = bool(repeated and last_bare and normalize_text(question) == last_bare)
+        session.slots["_last_bare_question"] = question
+        if verbatim_repeat and attempts >= 3:
+            # Дальше повторять уже нечего: перестаём переспрашивать вовсе и даём
+            # покупателю выход, а не одну и ту же стену текста.
             visible_question = (
-                "Чтобы продолжить без догадок, нужен именно этот параметр. "
+                "Вижу, что этого параметра сейчас нет под рукой. Чтобы не буксовать, "
+                "предлагаю передать задачу менеджеру — он подберёт с учётом того, что "
+                "уже известно. Напишите «передай менеджеру». Если параметр появится, "
+                "сразу вернёмся к подбору."
+            )
+        elif verbatim_repeat and attempts == 2:
+            # Третий раз одно и то же — вместо повтора объясняем, что мешает, и
+            # даём конкретные пути. Товары при этом не показываем: подставлять
+            # случайную позицию без ключевого параметра нельзя.
+            visible_question = (
+                "Не буду подставлять случайный товар, пока этот параметр не известен. "
+                "Его обычно можно посмотреть в паспорте изделия или на шильдике, либо "
+                "замерить на месте. Если данных нет совсем — напишите «передай "
+                "менеджеру», и я оформлю задачу с тем, что уже известно. "
                 + question
             )
-        elif repeated and attempts >= 2:
-            visible_question = (
-                "Без этого параметра точный подбор пока невозможен. Если данных сейчас "
-                "нет, можно отложить ветку; для продолжения всё же нужно уточнить: "
-                + question
-            )
+        elif verbatim_repeat and attempts == 1:
+            visible_question = "Уточню ещё раз, без этого не подберу точно. " + question
         session.set_pending_question_state(
             text=visible_question,
             expected_slots=expected,
@@ -12805,6 +13912,8 @@ class ChatOrchestrator:
         if not session.last_products:
             return False
         text = normalize_text(message)
+        if self._asks_if_separate_pump_needed_for_shown_boiler(message, session):
+            return True
         if IntentRouterAgent._is_builtin_selection_constraint(
             text,
             session.category or "boilers",
@@ -13060,6 +14169,57 @@ class ChatOrchestrator:
             ]
         )
 
+    def _should_answer_complectation_for_all(
+        self,
+        message: str,
+        session: SessionState,
+        requested_parts: list[str],
+    ) -> bool:
+        """Whether the active complectation scope is the whole visible set.
+
+        The first open ``комплект поставки`` question establishes a comparison
+        scope when no singular model was named.  A subsequent ``а гайки есть?``
+        then stays in that scope instead of asking the customer to choose the
+        same model twice.
+        """
+
+        if len(session.last_products) <= 1:
+            return False
+        if self._asks_about_all_shown(message):
+            return True
+        current_skus = [card.sku for card in session.last_products]
+        remembered = session.slots.get("last_complectation_scope_skus")
+        if isinstance(remembered, list) and remembered == current_skus:
+            return True
+
+        text = normalize_text(message)
+        open_shipment_question = bool(
+            requested_parts == ["комплектация"]
+            and "комплект поставки" in text
+        )
+        singular_reference = any(
+            marker in text
+            for marker in [
+                "этого насоса",
+                "этого котла",
+                "этой модели",
+                "данной модели",
+                "у него",
+                "у нее",
+                "у неё",
+                "в нем",
+                "в нём",
+                "конкретной модели",
+            ]
+        )
+        return open_shipment_question and not singular_reference
+
+    @staticmethod
+    def _remember_all_card_complectation_scope(session: SessionState) -> None:
+        session.slots["last_complectation_scope_skus"] = [
+            card.sku for card in session.last_products
+        ]
+
     def _compose_builtin_part_overview(
         self,
         cards: list[ProductCard],
@@ -13071,14 +14231,31 @@ class ChatOrchestrator:
         lines = [f"Проверил по карточкам показанных моделей ({part_label}):"]
         for card in cards:
             product = self._find_product_by_sku(card.sku)
-            components = self.guardrails.list_builtin_components(product) if product else []
-            confirmed = [
-                part
-                for part in parts
-                if any(part in component for component in components)
-            ]
+            states = (
+                self.guardrails.builtin_part_states(product, parts)
+                if product
+                else {}
+            )
+            confirmed: list[str] = []
+            explicitly_absent: list[str] = []
+            for part in parts:
+                state = states.get(part)
+                if state is True:
+                    confirmed.append(part)
+                elif state is False:
+                    explicitly_absent.append(part)
+                elif product and self.guardrails.validate_complectation_answer(
+                    product,
+                    [part],
+                ).ok:
+                    confirmed.append(part)
             if confirmed:
                 lines.append(f"- {card.sku} — {card.name}: да, подтверждено — {', '.join(confirmed)}.")
+            elif explicitly_absent:
+                lines.append(
+                    f"- {card.sku} — {card.name}: нет, карточка прямо указывает, "
+                    f"что отдельно или не встроены — {', '.join(explicitly_absent)}."
+                )
             else:
                 lines.append(
                     f"- {card.sku} — {card.name}: в карточке подтверждения нет; "
@@ -13114,6 +14291,28 @@ class ChatOrchestrator:
         session.history.append({"role": "user", "content": user_message})
         session.history.append({"role": "assistant", "content": answer})
         session.history = session.history[-20:]
+
+    @staticmethod
+    def _sanitize_customer_answer(answer: str) -> str:
+        """Render model text safely for the plain-text website widget.
+
+        The widget intentionally uses ``textContent`` and does not render
+        Markdown.  Prompts alone cannot guarantee that a hosted model will not
+        emit ``**bold**`` or backticks, so presentation cleanup belongs at the
+        single serialization boundary shared by every response path.
+        """
+
+        text = str(answer or "")
+        text = re.sub(
+            r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)",
+            r"\1: \2",
+            text,
+        )
+        text = re.sub(r"\*\*(.+?)\*\*", r"\1", text, flags=re.DOTALL)
+        text = re.sub(r"__(.+?)__", r"\1", text, flags=re.DOTALL)
+        text = text.replace("```", "").replace("`", "")
+        text = re.sub(r"(?m)^\s{0,3}#{1,6}\s+", "", text)
+        return text.strip()
 
     def _response(
         self,
@@ -13164,6 +14363,30 @@ class ChatOrchestrator:
                     session.history[-1]["content"] = answer
                 if "GuardrailsAgent" not in agents_used:
                     agents_used.append("GuardrailsAgent")
+
+        history_source_answer = answer
+        if (
+            cards
+            and "FeedSearchAgent" in agents_used
+            and all(not self._card_is_in_stock(card) for card in cards)
+        ):
+            warning = (
+                "Важно: у всех найденных позиций сейчас нет подтверждённого "
+                "положительного остатка. Показываю их справочно; для покупки "
+                "нужно подобрать доступный аналог или уточнить поставку у менеджера."
+            )
+            if not normalize_text(answer).startswith(normalize_text(warning)):
+                answer = f"{warning}\n{answer}"
+            if "GuardrailsAgent" not in agents_used:
+                agents_used.append("GuardrailsAgent")
+
+        answer = self._sanitize_customer_answer(answer)
+        if (
+            session.history
+            and session.history[-1].get("role") == "assistant"
+            and session.history[-1].get("content") == history_source_answer
+        ):
+            session.history[-1]["content"] = answer
 
         # ``last_products`` is only the active view.  Snapshot every grounded
         # non-empty response into its canonical branch so later topic switches

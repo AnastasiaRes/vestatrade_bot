@@ -18,6 +18,7 @@ import pytest
 from app.agents.orchestrator import ChatOrchestrator
 from app.agents.slot_answer_resolver import PendingAnswerResolver
 from app.config import get_settings
+from app.models import IntentResult, SessionState
 
 
 class StubLLMClient:
@@ -109,6 +110,72 @@ def _orchestrator(client: StubLLMClient) -> ChatOrchestrator:
     orchestrator = ChatOrchestrator(llm_client=client)
     orchestrator.pending_answer_resolver = PendingAnswerResolver(client)
     return orchestrator
+
+
+@pytest.mark.parametrize(
+    ("slot_key", "reply", "expected"),
+    [
+        (
+            "warm_floor_automation_needed",
+            "Да, хочу отдельно регулировать температуру в комнатах.",
+            True,
+        ),
+        ("warm_floor_automation_needed", "Нет, без автоматики.", False),
+        ("floor_insulation_ready", "Утеплитель уже есть.", True),
+        (
+            "floor_insulation_ready",
+            "Пока только голая плита, утеплителя ещё нет.",
+            False,
+        ),
+    ],
+)
+def test_unambiguous_warm_floor_choice_is_bound_without_llm(
+    slot_key: str,
+    reply: str,
+    expected: bool,
+) -> None:
+    client = StubLLMClient()
+    resolved = PendingAnswerResolver(client).resolve(
+        message=reply,
+        question="Уточните параметр тёплого пола",
+        expected_slots=[slot_key],
+        category="pipes",
+    )
+
+    assert resolved.slots == {slot_key: expected}
+    assert resolved.accepted is True
+    assert client.calls == []
+
+
+def test_explicit_new_product_request_wins_over_pending_warm_floor_yes() -> None:
+    client = StubLLMClient()
+    orchestrator = _orchestrator(client)
+    session = SessionState(
+        session_id="warm-floor-real-topic-change",
+        category="pipes",
+        slots={"project_scope": "warm_floor"},
+    )
+    session.set_pending_question_state(
+        text="Нужна покомнатная автоматика?",
+        expected_slots=["warm_floor_automation_needed"],
+        category="pipes",
+    )
+    intent = IntentResult(
+        intent_type="attribute_request",
+        category="pumps",
+        slots={"pump_type": "циркуляционный"},
+        is_topic_change=True,
+    )
+
+    resolved = orchestrator._resolve_pending_answer(
+        "Да, теперь нужен насос",
+        intent,
+        session,
+    )
+
+    assert resolved.slots == {}
+    assert resolved.rejection_reason == "topic change"
+    assert "warm_floor_automation_needed" not in intent.slots
 
 
 # Phrasings the rule layer still misses even after the question→slot table was

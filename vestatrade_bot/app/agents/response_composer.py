@@ -187,27 +187,333 @@ class ResponseComposerAgent:
         self.last_draft = fallback
         return fallback
 
+    # Проверенные определения. Живой прогон показал, что модель уверенно
+    # выдумывает нишевые сокращения: на «что значит ВР/ВР?» она ответила
+    # «врезное/врезное… крепится фитингами, а не резьбой» — то есть прямо
+    # противоположное. Промпт «если не уверен — скажи» не помог, потому что
+    # модель не была не уверена. Поэтому известный термин отвечается
+    # детерминированно, ровно как цена берётся из фида, а не из памяти модели.
+    MOUNTING_LENGTH_DEFINITION = (
+        "Монтажная длина — размер face-to-face: расстояние по оси изделия между "
+        "плоскостями подключений, то есть двумя присоединительными плоскостями. "
+        "Для циркуляционного насоса её измеряют "
+        "от одной присоединительной плоскости корпуса до другой, без учёта накидных "
+        "гаек, переходников и длины труб. Типовые значения — 130 или 180 мм; точный "
+        "размер нужно сверять по паспорту изделия."
+    )
+
+    CLOSED_CIRCULATION_HEAD_DEFINITION = (
+        "Напор циркуляционного насоса в закрытой системе выбирают по суммарным "
+        "гидравлическим потерям расчётного циркуляционного кольца при требуемом расходе: "
+        "в трубах, арматуре, теплообменниках и других элементах. Геометрическую высоту "
+        "здания к напору не прибавляют: в замкнутом контуре статические столбы "
+        "теплоносителя взаимно уравновешиваются."
+    )
+
+    GENERAL_PUMP_HEAD_DEFINITION = (
+        "Напор — удельная энергия, которую насос передаёт жидкости; обычно её выражают "
+        "в метрах водяного столба. Для подъёма воды или водоснабжения учитывают "
+        "геометрический подъём, требуемое давление в точке разбора и гидравлические "
+        "потери. В закрытой циркуляционной системе геометрическую высоту не прибавляют: "
+        "напор насоса определяют по гидравлическим потерям расчётного кольца."
+    )
+
+    BOILER_CONTOUR_DEFINITION = (
+        "Контур котла — функциональный тракт нагрева внутри котла. Одноконтурный котёл "
+        "обслуживает отопление, а двухконтурный дополнительно готовит горячую воду для "
+        "ГВС во втором тракте. Это не то же самое, что отдельная трубная петля тёплого пола."
+    )
+
+    WARM_FLOOR_CONTOUR_DEFINITION = (
+        "Контур тёплого пола — отдельная петля трубы: она выходит из подающего коллектора, "
+        "проходит по своей зоне пола и возвращается в обратный коллектор. Длину и число "
+        "таких петель определяют расчётом по площади, шагу укладки и допустимым "
+        "гидравлическим потерям. Это не «контурность» котла."
+    )
+
+    AMBIGUOUS_CONTOUR_DEFINITION = (
+        "Слово «контур» используют в двух разных смыслах. У котла это функциональный "
+        "тракт отопления или ГВС; у тёплого пола — отдельная трубная петля от подающего "
+        "коллектора к обратному. Уточните, речь о контуре котла или о петле тёплого пола."
+    )
+
+    TERM_GLOSSARY: tuple[tuple[tuple[str, ...], str], ...] = (
+        (
+            ("вр/вр", "вр-вр", "вр вр", "ff", "вн.-вн", "вн-вн"),
+            "ВР/ВР — внутренняя резьба с обеих сторон (обозначают ещё «вн.-вн.» или ff). "
+            "То есть в оба конца детали вкручивается наружная резьба ответной трубы или фитинга.",
+        ),
+        (
+            ("вр/нр", "вр-нр", "вн/нр", "вн.-нар", "fm", "мама-папа", "мама папа"),
+            "ВР/НР — с одной стороны внутренняя резьба, с другой наружная "
+            "(обозначают «вн.-нар.» или fm; на монтажном сленге «мама-папа»).",
+        ),
+        (
+            ("нр/нр", "нр-нр", "нар.-нар", "mm"),
+            "НР/НР — наружная резьба с обеих сторон (обозначают «нар.-нар.» или mm).",
+        ),
+        (
+            ("монтажная длина", "монтажную длину", "монтажной длины"),
+            MOUNTING_LENGTH_DEFINITION,
+        ),
+        (
+            ("полнопроходн", "полный проход"),
+            "Полнопроходной — проход внутри детали равен внутреннему диаметру трубы, "
+            "поток не сужается. Противоположность — редуцированный (неполнопроходной), "
+            "у него проход меньше и сопротивление выше.",
+        ),
+        (
+            ("американк", "полусгон"),
+            "Американка — разъёмное резьбовое соединение с накидной гайкой. Позволяет снять "
+            "прибор или насос, не разбирая трубопровод.",
+        ),
+        (
+            ("гребенк", "коллектор"),
+            "Гребёнка (коллектор) — узел, который распределяет теплоноситель по нескольким "
+            "контурам и позволяет регулировать каждый отдельно. Используется в тёплых полах "
+            "и лучевой разводке.",
+        ),
+        (
+            ("дюймовк",),
+            "Дюймовка — труба или резьба размером 1 дюйм. Полдюйма — 1/2, три четверти — 3/4.",
+        ),
+        (
+            ("группа безопасност",),
+            "Группа безопасности — блок из предохранительного клапана, автоматического "
+            "воздухоотводчика и манометра. Защищает закрытую систему от превышения давления "
+            "и убирает воздух.",
+        ),
+        (
+            ("гидроаккумулятор", "гидробак"),
+            "Гидроаккумулятор — мембранный бак системы водоснабжения: он создаёт "
+            "небольшой запас воды, сглаживает перепады давления и уменьшает число "
+            "пусков насоса. Его не делят на «паровой и водяной» и не подменяют "
+            "расширительным баком отопления; объём выбирают по насосу, расходу и "
+            "настройкам давления.",
+        ),
+        (
+            ("котел", "котёл"),
+            "Котёл — теплогенератор системы отопления: он нагревает теплоноситель, "
+            "а двухконтурная модель дополнительно готовит горячую воду. Тип и мощность "
+            "выбирают по расчётным теплопотерям, доступному энергоносителю, задаче ГВС, "
+            "дымоудалению и допустимой схеме подключения, а не только по площади.",
+        ),
+        (
+            ("бкн",),
+            "БКН — бойлер косвенного нагрева: накопительный бак, который обычно "
+            "нагревается теплоносителем от котла через теплообменник. Его объём и "
+            "мощность змеевика выбирают по расходу горячей воды и возможностям котла.",
+        ),
+        (
+            ("эвн",),
+            "ЭВН — электрический водонагреватель. Сокращение не говорит, накопительный "
+            "он или проточный, поэтому для подбора ещё нужны объём либо расход, мощность "
+            "и способ установки.",
+        ),
+        (
+            ("расширительный бак", "расширительного бака"),
+            "Расширительный бак компенсирует тепловое расширение теплоносителя: при нагреве "
+            "объём воды растёт, и излишек уходит в бак, а не поднимает давление в системе.",
+        ),
+        (
+            ("хвс",),
+            "ХВС — холодное водоснабжение. ГВС — горячее водоснабжение.",
+        ),
+        (
+            ("гвс",),
+            "ГВС — горячее водоснабжение. ХВС, соответственно, холодное.",
+        ),
+        (
+            ("закрытая камера", "открытая камера", "камера сгорания"),
+            "Камера сгорания: открытая берёт воздух из помещения и требует дымохода с "
+            "естественной тягой; закрытая забирает воздух с улицы через коаксиальную трубу "
+            "и работает с принудительным отводом.",
+        ),
+        (
+            ("межосевое",),
+            "Межосевое расстояние — расстояние между центрами верхнего и нижнего "
+            "подключений радиатора, обычно 350 или 500 мм. По нему подбирают замену.",
+        ),
+        (
+            (" pn", "pn20", "pn25", "pn10"),
+            "PN — номинальный класс давления при заданных стандартом условиях. "
+            "Он не гарантирует ту же допустимую нагрузку при высокой температуре: "
+            "для ГВС и отопления нужно проверять температурно-ресурсную диаграмму и "
+            "паспорт конкретной трубы, а не выбирать только по большему числу PN.",
+        ),
+        (
+            ("sdr",),
+            "SDR — отношение наружного диаметра трубы к толщине стенки. Чем меньше SDR, тем "
+            "толще стенка и выше допустимое давление.",
+        ),
+        (
+            ("обратный клапан",),
+            "Обратный клапан пропускает воду только в одну сторону и не даёт ей идти назад — "
+            "например, из системы обратно в водопровод.",
+        ),
+    )
+
+    def _glossary_definition(self, message: str) -> str | None:
+        text = normalize_text(message)
+        pump_marking = self._pump_marking_definition(text)
+        if pump_marking:
+            return pump_marking
+        best: tuple[int, str] | None = None
+        for spellings, definition in self.TERM_GLOSSARY:
+            for spelling in spellings:
+                needle = normalize_text(spelling)
+                if needle and needle in text:
+                    # Более длинное совпадение точнее: «вр/вр» важнее, чем «вр/нр»,
+                    # а «монтажная длина» важнее, чем «напор».
+                    if best is None or len(needle) > best[0]:
+                        best = (len(needle), definition)
+        typed_definition = self._typed_engineering_definition(text)
+        if typed_definition and (best is None or typed_definition[0] > best[0]):
+            best = typed_definition
+        return best[1] if best else None
+
+    @staticmethod
+    def _pump_marking_definition(text: str) -> str | None:
+        """Explain common circulation-pump notation without delegating numbers to an LLM."""
+        match = re.search(
+            r"(?<!\d)(?P<connection>15|20|25|32|40|50)\s*[/\-]\s*"
+            r"(?P<head>4|5|6|7|8|10|12)(?:0)?\s*[-/ ]\s*"
+            r"(?P<length>130|180)(?!\d)",
+            text,
+        )
+        if not match:
+            return None
+        # The three-part shape itself is specific enough to a common wet-rotor
+        # circulation-pump size.  Customers often give only a brand and model
+        # (``Wilo Star-RS 25/6-180``) and never repeat the word ``pump``.  Requiring
+        # that noun sent the critical numbers to a free-form LLM, which can swap
+        # connection, head and mounting length.
+        connection = int(match.group("connection"))
+        head = int(match.group("head"))
+        length = int(match.group("length"))
+        return (
+            f"В распространённой маркировке циркуляционного насоса "
+            f"{connection}/{head}-{length}: {connection} — номинальный размер "
+            f"присоединения (обычно DN {connection}, точную резьбу проверяют отдельно); "
+            f"{head} — класс максимального напора около {head} м, а не расход; "
+            f"{length} — монтажная длина {length} мм между присоединительными "
+            "плоскостями корпуса. Это расшифровка типоразмера, а не достаточный расчёт "
+            "подбора: рабочую точку проверяют по требуемым расходу и напору на Q–H-кривой. "
+            "У конкретной серии обозначение нужно сверить по карточке и паспорту производителя."
+        )
+
+    def _typed_engineering_definition(self, text: str) -> tuple[int, str] | None:
+        """Resolve domain terms whose meaning depends on the named system.
+
+        A flat substring glossary cannot safely explain these terms: ``head``
+        is calculated differently for an open lift and a closed circulation
+        loop, while ``circuit`` means different physical objects for a boiler
+        and for underfloor heating.  Resolve that type before falling back to
+        the ordinary one-definition glossary.
+        """
+
+        wants_instant_hot_water = bool(
+            any(marker in text for marker in ["горяч", "гвс"])
+            and any(marker in text for marker in ["дальн", "последн", "удален", "удалён"])
+            and any(
+                marker in text
+                for marker in [
+                    "сразу",
+                    "без ожид",
+                    "не ждать",
+                    "не сливать",
+                    "долго ждать",
+                ]
+            )
+        )
+        if "рециркуляц" in text or wants_instant_hot_water:
+            return (
+                len("рециркуляция горячей воды"),
+                "Это называется рециркуляцией ГВС: горячая вода движется по подающей "
+                "и обратной линии, поэтому у удалённой точки её не приходится долго "
+                "сливать. Для такой схемы проверяют наличие обратной линии, источник "
+                "нагрева, длину трассы, теплоизоляцию, допустимость рециркуляции для "
+                "оборудования и рассчитывают небольшой циркуляционный насос; одной "
+                "покупкой насоса отсутствие обратной линии не исправить.",
+            )
+
+        if "напор" in text:
+            closed_circulation = any(
+                marker in text
+                for marker in [
+                    "циркуляц",
+                    "замкнут",
+                    "закрыт",
+                    "кольц",
+                    "систем отоплен",
+                    "контур отоплен",
+                ]
+            )
+            return (
+                len("напор"),
+                (
+                    self.CLOSED_CIRCULATION_HEAD_DEFINITION
+                    if closed_circulation
+                    else self.GENERAL_PUMP_HEAD_DEFINITION
+                ),
+            )
+
+        if "контур" not in text:
+            return None
+        warm_floor = bool(
+            ("тепл" in text and "пол" in text)
+            or "петл" in text
+            or ("коллектор" in text and "кот" not in text)
+        )
+        if warm_floor:
+            return len("контур теплого пола"), self.WARM_FLOOR_CONTOUR_DEFINITION
+        boiler = any(
+            marker in text
+            for marker in [
+                "котел",
+                "котл",
+                "одноконтур",
+                "двухконтур",
+                "гвс",
+            ]
+        )
+        if boiler:
+            specificity = max(
+                [
+                    len(marker)
+                    for marker in [
+                        "контур котла",
+                        "одноконтур",
+                        "двухконтур",
+                        "контур",
+                    ]
+                    if marker in text
+                ],
+                default=len("контур"),
+            )
+            return specificity, self.BOILER_CONTOUR_DEFINITION
+        return len("контур"), self.AMBIGUOUS_CONTOUR_DEFINITION
+
     def compose_term_consult(self, user_message: str) -> str:
+        definition = self._glossary_definition(user_message)
+        if definition:
+            draft = (
+                definition
+                + " Если нужно, подберу подходящие позиции из ассортимента — опишите задачу."
+            )
+            self.last_draft = draft
+            return draft
         fallback = (
             "Точное значение этого термина не подскажу без проверки — не хочу вводить в "
             "заблуждение. Могу объяснить базовые понятия: монтажная длина, напор, контуры "
             "котла, типы труб и кранов. Или опишите задачу — подберу товар из ассортимента: "
             "трубы, насосы, котлы, краны, канализация, радиаторная арматура."
         )
-        return self._llm_smart_reply(
-            agent="ResponseComposerAgent.term_consult",
-            user_message=user_message,
-            fallback_draft=fallback,
-            situation=(
-                "Клиент спрашивает значение термина или просит что-то объяснить. Объясни "
-                "простыми словами в 2–4 предложениях, без выдумок: если термин из твоей "
-                "области — объясни по памятке и общим знаниям сантехники; если не уверен — "
-                "честно скажи и предложи уточнить у менеджера. ЗАПРЕЩЕНО утверждать, что "
-                "какой-то товар есть или отсутствует в ассортименте или наличии — это "
-                "проверяется только подбором по каталогу. В конце одним предложением "
-                "предложи помощь с подбором. Не задавай технических вопросов для подбора."
-            ),
-        )
+        # An unknown engineering word is not a safe place for model improvisation.
+        # The LLM still interprets intent and polishes low-risk dialogue, while
+        # definitions and numeric notation come only from the verified glossary.
+        self.last_draft = fallback
+        return fallback
 
     def _llm_smart_reply(
         self,
@@ -496,17 +802,43 @@ class ResponseComposerAgent:
         card: ProductCard,
         query: SearchQuery | None = None,
         alternative: ProductCard | None = None,
+        candidate_count: int | None = None,
     ) -> str:
-        reasons = []
-        if card.stock_status:
-            reasons.append(f"наличие: {card.stock_status}")
-        if card.price is not None:
-            reasons.append(f"цена {card.price:g} {card.currency}")
+        unverified_pump_duty = bool(
+            query
+            and query.category == "pumps"
+            and query.slots.get("required_flow_m3_h") is not None
+            and query.slots.get("required_head_m") is not None
+        )
+        if unverified_pump_duty:
+            draft = (
+                "Не могу корректно рекомендовать один насос только по его максимальной "
+                "подаче и максимальному напору: эти значения не достигаются одновременно. "
+                f"Ближайший кандидат для проверки по Q–H-кривой: {card.sku} — {card.name}, "
+                f"{card.price:g} {card.currency}, наличие: {card.stock_status}. "
+                "Подтвердить модель можно лишь если её кривая проходит через требуемую "
+                f"рабочую точку. Карточка: {card.url}"
+            )
+            self.last_draft = draft
+            return draft
+
+        reasons: list[str] = []
         if query and query.slots:
             slot_reasons = self._requested_summary(query)
             if slot_reasons:
-                reasons.append(f"совпадает с параметрами: {slot_reasons}")
-        reason_text = "; ".join(reasons) or "он лучше всего совпадает с текущим подбором"
+                reasons.append(f"учитывает заданные параметры: {slot_reasons}")
+        verified = self._verified_choice_characteristics(card, query)
+        if verified:
+            reasons.append("по карточке: " + "; ".join(verified))
+        if query and (
+            query.cheap
+            or query.slots.get("max_price") is not None
+            or query.slots.get("min_price") is not None
+        ):
+            reasons.append(f"цена {card.price:g} {card.currency} соответствует ценовому условию")
+        if query and query.slots.get("in_stock") and card.stock_status:
+            reasons.append(f"наличие: {card.stock_status}")
+        reason_text = "; ".join(reasons) or "это ближайшее подтверждённое совпадение в текущей подборке"
         strict_single = bool(
             query
             and (
@@ -524,14 +856,23 @@ class ResponseComposerAgent:
         else:
             alt_line = "Альтернатива: могу показать вариант дешевле или с запасом по характеристикам."
         sizing_warning = self._boiler_sizing_warning([card], query) if query else None
-        first_line = (
-            f"Рекомендую ближайшую к вашим параметрам модель: {card.sku} — {card.name}. "
-            f"Цена {card.price:g} {card.currency}, наличие: {card.stock_status}."
-            if sizing_warning
-            else (
-                f"Рекомендую: {card.sku} — {card.name}. Цена {card.price:g} {card.currency}, "
-                f"наличие: {card.stock_status}."
+        if candidate_count == 1:
+            choice_context = (
+                "Из найденной подборки сейчас остался один ближайший вариант"
+                if sizing_warning
+                else "Из найденной подборки сейчас один вариант, прошедший заданные фильтры"
             )
+        elif candidate_count and candidate_count > 1:
+            choice_context = f"Сравнил {candidate_count} найденных варианта"
+        else:
+            choice_context = (
+                "Это ближайший к вашим параметрам вариант"
+                if sizing_warning
+                else "Выбираю по подтверждённым параметрам карточки"
+            )
+        first_line = (
+            f"{choice_context}. Рекомендую: {card.sku} — {card.name}. "
+            f"Цена {card.price:g} {card.currency}, наличие: {card.stock_status}."
         )
         draft_lines = [first_line]
         if sizing_warning:
@@ -549,6 +890,86 @@ class ResponseComposerAgent:
         self.last_draft = draft
         return draft
 
+    @staticmethod
+    def _verified_choice_characteristics(
+        card: ProductCard,
+        query: SearchQuery | None,
+    ) -> list[str]:
+        """Return category-relevant facts already grounded in the product card.
+
+        A sales recommendation must explain the engineering fit, not merely say
+        that the row is cheap or in stock.  This helper never invents a reason:
+        it can only render fields emitted by ``ProductCardAgent``.
+        """
+
+        category = query.category if query else "other"
+        priorities: dict[str, tuple[str, ...]] = {
+            "boilers": (
+                "тип котла",
+                "количество контуров",
+                "мощност",
+                "диапазон мощности",
+                "камера",
+            ),
+            "pumps": (
+                "тип насоса",
+                "напор",
+                "производительност",
+                "расход",
+                "монтажная длина",
+                "присоедин",
+            ),
+            "pipes": (
+                "назначение",
+                "материал",
+                "армир",
+                "диаметр",
+                "температур",
+                "давлен",
+            ),
+            "sewer": ("тип товара", "назначение", "диаметр", "длина"),
+            "valves": (
+                "назначение",
+                "диаметр",
+                "размер",
+                "тип резьбы",
+                "тип присоединения",
+                "давлен",
+                "температур",
+            ),
+            "radiator_fittings": (
+                "назначение",
+                "диаметр",
+                "резьб",
+                "тип присоединения",
+            ),
+            "water_heaters": (
+                "тип водонагревателя",
+                "объем",
+                "мощност",
+                "способ нагрева",
+                "монтаж",
+            ),
+            "radiators": ("тип радиатора", "межосев", "секц", "мощност"),
+        }
+        markers = priorities.get(category, ())
+        if not markers:
+            return []
+        items = list(card.characteristics.items())
+        chosen: list[str] = []
+        used_keys: set[str] = set()
+        for marker in markers:
+            for key, value in items:
+                normalized_key = normalize_text(str(key))
+                if normalized_key in used_keys or marker not in normalized_key:
+                    continue
+                chosen.append(f"{key}: {value}")
+                used_keys.add(normalized_key)
+                break
+            if len(chosen) >= 4:
+                break
+        return chosen
+
     def _choose_one_caveat(
         self,
         query: SearchQuery | None,
@@ -557,13 +978,24 @@ class ResponseComposerAgent:
         category = query.category if query else "other"
         if category == "boilers":
             if query and card and self._boiler_sizing_warning([card], query):
-                return (
+                caveat = (
                     "мощность заметно выше ориентировочного диапазона для указанной площади — "
                     "до покупки нужен расчёт теплопотерь и проверка минимальной мощности/модуляции."
                 )
+                if query.slots.get("contours") == "одноконтурный":
+                    caveat += (
+                        " Если нужна горячая вода от котла, потребуется отдельный бойлер "
+                        "либо двухконтурная модель."
+                    )
+                return caveat
+            if query and query.slots.get("contours") == "одноконтурный":
+                return (
+                    "если нужна горячая вода от котла, потребуется отдельный бойлер либо "
+                    "двухконтурная модель; мощность всё равно подтверждают расчётом теплопотерь."
+                )
             return (
-                "если площадь заметно больше или нужна горячая вода (двухконтурная схема) — "
-                "лучше взять модель мощнее, уточните детали."
+                "если расчётные теплопотери, требование по ГВС или доступное подключение "
+                "отличаются — тип и мощность нужно пересчитать до покупки."
             )
         if category == "pumps":
             return (
@@ -581,7 +1013,15 @@ class ResponseComposerAgent:
                 "другого расчётного объёма или присоединения — он не является заменой."
             )
         if category in {"pipes", "sewer"}:
-            return "если нужен другой диаметр или назначение — уточните, подберу заново."
+            return (
+                "если отличаются участок системы, материал, диаметр, рабочие температура/давление "
+                "или способ прокладки — нужна другая позиция."
+            )
+        if category in {"valves", "radiator_fittings"}:
+            return (
+                "если не совпадают среда, размер, тип резьбы или допустимые температура/давление — "
+                "соединение нельзя считать совместимым."
+            )
         return "если параметры вашей задачи отличаются от указанных — сверьте характеристики в карточке."
 
     def _boiler_sizing_warning(
@@ -887,6 +1327,19 @@ class ResponseComposerAgent:
             elif "привет" in normalized:
                 prefix = "Здравствуйте. "
         draft = f"{prefix}{question}"
+        if any(
+            marker in question
+            for marker in [
+                "Для дренажного насоса уточните:",
+                "КНС/санитарный насос нельзя выбирать",
+                "Чтобы я рассчитал расчётный напор",
+            ]
+        ):
+            # These questions encode the minimum hydraulic safety gate.  A style
+            # rewrite must not replace particle size/lift/route with the motor
+            # power, nor imply that a pump is selected before its Q-H check.
+            self.last_draft = draft
+            return draft
         if "м²" in question and "примерно на" in question:
             # The acknowledgement is part of conversational memory. A stylistic
             # rewrite must not turn "котёл на 100" back into a context-free question.
@@ -927,6 +1380,14 @@ class ResponseComposerAgent:
                     f"Ориентир по мощности для {area:g} м² предварительный; точный подбор "
                     "зависит от теплопотерь здания."
                 )
+        elif query.category == "pumps" and (
+            query.slots.get("required_flow_m3_h") is not None
+            or query.slots.get("required_head_m") is not None
+        ):
+            lines.append(
+                "Нашёл только предварительных кандидатов по предельным параметрам; "
+                "это не подтверждённый подбор по рабочей точке Q–H:"
+            )
         else:
             lines.append("Нашёл подходящие варианты:")
 
