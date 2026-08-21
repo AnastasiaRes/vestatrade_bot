@@ -33,16 +33,19 @@ from app.models import (
     ChatResponse,
     HandoffSummary,
     IntentResult,
+    LastSearchOutcome,
     PendingQuestionState,
     Product,
     ProductBranchState,
     ProductCard,
+    ProductFocusState,
+    ProductRelationContext,
     ProductSelectionSnapshot,
     SearchQuery,
     SessionState,
 )
 from app.openrouter_client import OpenRouterClient
-from app.session_store import InMemorySessionStore
+from app.session_store import SessionStore, build_session_store
 
 from .consultant import ConsultantAgent
 from .engineering_calculations import normalize_engineering_slots
@@ -55,9 +58,11 @@ from .feed_search import FeedSearchAgent
 from .guardrails import GuardrailsAgent
 from .handoff import HandoffAgent
 from .intent_router import IntentRouterAgent
+from .product_constraints import normalize_thread_pair
 from .product_card import ProductCardAgent
 from .ranking import RankingAgent
 from .response_composer import ResponseComposerAgent
+from .sku_suggestions import resolve_sku_suggestion
 from .slot_answer_resolver import (
     SLOT_SPECS,
     PendingAnswerResolver,
@@ -465,12 +470,16 @@ class ChatOrchestrator:
         settings: Settings | None = None,
         products: list[Product] | None = None,
         llm_client: OpenRouterClient | None = None,
-        session_store: InMemorySessionStore | None = None,
+        session_store: SessionStore | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.feed_loader = FeedLoader(self.settings)
         self.llm_client = llm_client or OpenRouterClient(self.settings)
-        self.sessions = session_store or InMemorySessionStore()
+        self.sessions = session_store or build_session_store(
+            self.settings.session_store_url,
+            ttl_seconds=self.settings.session_ttl_seconds,
+            lock_timeout_seconds=self.settings.session_lock_timeout_seconds,
+        )
         self.intent_router = IntentRouterAgent(
             self.llm_client,
             catalog_brands=[
@@ -554,15 +563,28 @@ class ChatOrchestrator:
         # may proceed in parallel.  This preserves session history without the
         # latency penalty of a process-wide chat lock.
         with self._session_lock(session_id):
-            request_budget = getattr(self.llm_client, "request_budget", None)
-            budget_scope = request_budget() if callable(request_budget) else nullcontext()
-            with budget_scope:
-                self._request_agents.composer = ResponseComposerAgent(self.llm_client)
-                self._request_agents.consultant = ConsultantAgent(
-                    self.llm_client,
-                    model=self.settings.llm_model_strong,
-                )
-                return self._handle_chat(session_id, message)
+            # Third-party/test stores created before the shared-store contract
+            # may not implement distributed locking.  Keep them compatible;
+            # the process-local lock above still serializes their turns.
+            turn_lock = getattr(self.sessions, "turn_lock", None)
+            shared_lock = turn_lock(session_id) if callable(turn_lock) else nullcontext()
+            with shared_lock:
+                # Capture state while holding the distributed lock so a failed
+                # turn cannot overwrite a successful concurrent worker turn.
+                before_turn = self.sessions.snapshot(session_id)
+                request_budget = getattr(self.llm_client, "request_budget", None)
+                budget_scope = request_budget() if callable(request_budget) else nullcontext()
+                try:
+                    with budget_scope:
+                        self._request_agents.composer = ResponseComposerAgent(self.llm_client)
+                        self._request_agents.consultant = ConsultantAgent(
+                            self.llm_client,
+                            model=self.settings.llm_model_strong,
+                        )
+                        return self._handle_chat(session_id, message)
+                except Exception:
+                    self.sessions.restore(before_turn)
+                    raise
 
     def _session_lock(self, session_id: str) -> RLock:
         with self._session_locks_guard:
@@ -689,6 +711,96 @@ class ChatOrchestrator:
                 canonical,
                 session,
             )
+
+    def _record_current_turn_slot_provenance(
+        self,
+        message: str,
+        intent: IntentResult,
+        session: SessionState,
+        *,
+        pending_answer: ResolvedAnswer,
+        engineering_interpretation: EngineeringInterpretation | None,
+        catalog_grounded_keys: set[str] | None = None,
+    ) -> None:
+        """Record which slots are grounded in *this* user message.
+
+        ``IntentRouterAgent`` may use dialogue history to classify an
+        elliptical turn.  That context is useful for choosing a category, but
+        an LLM can also copy a previous constraint into ``intent.slots``.  A
+        copied constraint must never become evidence that changes a positional
+        referent (for example, turning "the first shown" into "the first shown
+        butterfly valve").
+
+        Keep the provenance on ``intent.raw`` so identity resolution runs on
+        current-turn evidence before the ordinary session merge.  Direct unit
+        callers that construct an ``IntentResult`` themselves remain
+        backwards compatible: the resolver falls back to all supplied slots
+        only when this marker is absent.
+        """
+
+        provenance: dict[str, dict[str, str]] = {}
+
+        # Re-run only the deterministic extractor.  It is cheap, makes no
+        # network call and returns facts found in the current message rather
+        # than values copied from the dialogue context.
+        try:
+            rule_result = self.intent_router._rule_based(message, session)
+        except Exception:  # pragma: no cover - defensive for custom routers
+            rule_result = None
+        if rule_result is not None:
+            for key, value in rule_result.slots.items():
+                if key in intent.slots and intent.slots.get(key) == value:
+                    provenance[key] = {
+                        "source": "deterministic_rule",
+                        "evidence": message,
+                    }
+
+        if pending_answer.accepted:
+            for key in pending_answer.slots:
+                if key in intent.slots:
+                    provenance[key] = {
+                        "source": "pending_answer",
+                        "evidence": pending_answer.evidence or message,
+                    }
+
+        if (
+            engineering_interpretation is not None
+            and engineering_interpretation.output_accepted
+        ):
+            for key in engineering_interpretation.slots:
+                if key not in intent.slots:
+                    continue
+                provenance[key] = {
+                    "source": engineering_interpretation.slot_provenance.get(
+                        key,
+                        "engineering_interpreter",
+                    ),
+                    "evidence": engineering_interpretation.slot_evidence.get(
+                        key,
+                        message,
+                    ),
+                }
+
+        for key in catalog_grounded_keys or set():
+            if key in intent.slots:
+                provenance[key] = {
+                    "source": "catalog_message_match",
+                    "evidence": message,
+                }
+
+        explicit_keys = sorted(
+            key
+            for key in provenance
+            if key in intent.slots and not str(key).startswith("_")
+        )
+        intent.raw = dict(intent.raw or {})
+        intent.raw["current_turn_slot_provenance"] = provenance
+        intent.raw["explicit_current_slot_keys"] = explicit_keys
+        intent.raw["context_only_slot_keys"] = sorted(
+            key
+            for key in intent.slots
+            if not str(key).startswith("_") and key not in explicit_keys
+        )
 
     def _handle_chat(self, session_id: str, message: str) -> ChatResponse:
         session = self.sessions.get(session_id)
@@ -1062,6 +1174,54 @@ class ChatOrchestrator:
                 agents_used,
             )
 
+        no_match_confirmation = self._confirm_last_no_match(message, session)
+        if no_match_confirmation is not None:
+            intent, answer = no_match_confirmation
+            agents_used.extend(
+                ["ProductMemoryAgent", "ResponseComposerAgent", "GuardrailsAgent"]
+            )
+            answer = self._guard_composed_answer(answer, "generic", agents_used)
+            self._append_history(session, message, answer)
+            if session.last_search_outcome is not None:
+                session.last_search_outcome.answer_text = answer
+                session.last_search_outcome.history_length = len(session.history)
+            self.sessions.save(session)
+            return self._response(
+                session_id,
+                answer,
+                [],
+                False,
+                intent,
+                session,
+                agents_used,
+            )
+
+        thread_confirmation = self._maybe_thread_constraint_confirmation(
+            message,
+            session,
+        )
+        if thread_confirmation is not None:
+            intent = IntentResult(
+                intent_type="attribute_request",
+                category=session.category or "valves",
+                confidence=1.0,
+                slots=dict(session.slots),
+                raw={"grounded_thread_confirmation": True},
+            )
+            cards = list(session.last_products)
+            agents_used.extend(["ProductMemoryAgent", "GuardrailsAgent"])
+            self._append_history(session, message, thread_confirmation)
+            self.sessions.save(session)
+            return self._response(
+                session_id,
+                thread_confirmation,
+                cards,
+                False,
+                intent,
+                session,
+                agents_used,
+            )
+
         intent = self.intent_router.route(message, session)
         intent.raw = dict(intent.raw or {})
         intent.raw["requested_fields"] = self._requested_card_fields(message)
@@ -1101,6 +1261,7 @@ class ChatOrchestrator:
         # non-catalogue control turns must stay cheap and concurrent.
         if self._needs_catalog_identity_resolution(message, intent):
             self._ensure_products_loaded()
+        slots_before_catalog_grounding = dict(intent.slots)
         category_before_sku_grounding = session.category
         self._ground_catalog_sku_intent(message, intent)
         if (
@@ -1119,6 +1280,20 @@ class ChatOrchestrator:
                 "to": intent.category,
             }
         self._enrich_brand_from_feed(message, intent)
+        catalog_grounded_keys = {
+            key
+            for key in {"sku", "brand"}
+            if key in intent.slots
+            and slots_before_catalog_grounding.get(key) != intent.slots.get(key)
+        }
+        self._record_current_turn_slot_provenance(
+            message,
+            intent,
+            session,
+            pending_answer=pending_answer,
+            engineering_interpretation=engineering_interpretation,
+            catalog_grounded_keys=catalog_grounded_keys,
+        )
         agents_used.append("IntentRouterAgent")
 
         # Restore a grounded catalogue referent before topic-change handling can
@@ -1127,6 +1302,29 @@ class ChatOrchestrator:
         # against cards that were actually shown in this session.
         if self._restore_product_reference(message, intent, session):
             agents_used.append("ProductMemoryAgent")
+
+        # Read-only card facts outrank generic category and complectation
+        # heuristics.  In particular, an exact SKU may be focused even though
+        # its out-of-stock card was intentionally hidden in the previous
+        # response, so ``last_products`` alone is not a sufficient guard.
+        priority_context_cards = self._focused_product_cards(session)
+        if self._is_priority_card_fact_request(message, intent, session):
+            intent.raw = dict(intent.raw or {})
+            intent.raw["product_control"] = "card_fact"
+            intent.is_topic_change = False
+            if session.product_focus is not None and session.product_focus.category:
+                intent.category = session.product_focus.category
+                session.category = session.product_focus.category
+            priority_context_response = self._answer_from_context(
+                message,
+                intent,
+                session,
+                agents_used,
+                context_cards=priority_context_cards,
+            )
+            if priority_context_response is not None:
+                self.sessions.save(session)
+                return priority_context_response
 
         toilet_project_answer = self._maybe_toilet_installation_project(
             message,
@@ -1207,10 +1405,26 @@ class ChatOrchestrator:
             # shown pump long enough to read its passport connection facts.
             intent.is_topic_change = False
 
+        has_product_relation_context = bool(
+            self._focused_product_cards(session) or session.product_relation
+        )
+        if has_product_relation_context and (
+            self._looks_like_comparison_request(normalize_text(message))
+            or self._looks_like_analog_request(message, intent)
+        ):
+            # Analogue/comparison is a control operation over a grounded
+            # result, not a new product-family request.  Preserve the source
+            # long enough for the dedicated handler below.
+            intent.is_topic_change = False
+
         # Вопрос про уже показанный товар («что входит в комплект», «проверь
         # документацию», «есть ли там насос») — это запрос к карточке, а не новый
         # подбор. Перенаправляем в комплектацию, иначе уходит в LLM/подбор насоса.
-        if self._looks_like_card_question(message, session):
+        if (
+            self._looks_like_card_question(message, session)
+            and not self._looks_like_analog_request(message, intent)
+            and not self._looks_like_comparison_request(normalize_text(message))
+        ):
             intent.intent_type = "complectation"
             if session.category:
                 intent.category = session.category
@@ -1248,6 +1462,8 @@ class ChatOrchestrator:
                 session.pending_question_state = None
                 session.question_repeats = 0
             session.last_products = []
+            session.product_focus = None
+            session.product_relation = None
             session.shown_product_skus = []
             session.shown_result_signature = None
             session.topic_changed = True
@@ -1259,6 +1475,8 @@ class ChatOrchestrator:
         if self._should_restart_category_context(message, intent, session):
             session.slots = {}
             session.last_products = []
+            session.product_focus = None
+            session.product_relation = None
             session.shown_product_skus = []
             session.shown_result_signature = None
 
@@ -1271,8 +1489,17 @@ class ChatOrchestrator:
         # memory merge enriches ``intent.slots`` with older branch facts.  The
         # pending-question controller must distinguish a genuine new answer
         # from values that merely came back out of memory.
+        explicit_current_slot_keys = (intent.raw or {}).get(
+            "explicit_current_slot_keys"
+        )
         turn_answered_slot_keys = {
-            key for key in intent.slots if not str(key).startswith("_")
+            key
+            for key in (
+                intent.slots
+                if explicit_current_slot_keys is None
+                else explicit_current_slot_keys
+            )
+            if not str(key).startswith("_")
         }
         intent.raw = dict(intent.raw or {})
         intent.raw["current_turn_slot_keys"] = sorted(turn_answered_slot_keys)
@@ -1449,6 +1676,70 @@ class ChatOrchestrator:
                 session,
                 agents_used,
             )
+
+        # Explicit relation controls run before generic terminology,
+        # complectation and engineering-funnel heuristics.  A relation context
+        # means that an otherwise elliptical ``compare them`` is grounded in
+        # the stored source SKU and its analogue identities.
+        relation_text = normalize_text(message)
+        explicit_concept_comparison = bool(
+            "газов" in relation_text and "электр" in relation_text
+        )
+        priority_comparison = bool(
+            self._looks_like_comparison_request(relation_text)
+            and not explicit_concept_comparison
+            and (
+                session.product_relation is not None
+                or self._references_shown_products(message, intent)
+                or len(relation_text.split()) <= 7
+            )
+        )
+        if priority_comparison:
+            comparison_result = self._maybe_comparison_answer(message, session)
+            if comparison_result is not None:
+                comparison_answer, comparison_cards = comparison_result
+                intent.raw = dict(intent.raw or {})
+                intent.raw["product_control"] = "comparison"
+                agents_used.extend(["ResponseComposerAgent", "GuardrailsAgent"])
+                answer = self._guard_composed_answer(
+                    comparison_answer,
+                    "generic",
+                    agents_used,
+                )
+                self._append_history(session, message, answer)
+                self.sessions.save(session)
+                return self._response(
+                    session_id,
+                    answer,
+                    comparison_cards,
+                    False,
+                    intent,
+                    session,
+                    agents_used,
+                )
+
+        cheapest_card_fact = bool(
+            self._effective_requested_fields(message, intent)
+            and any(
+                marker in relation_text
+                for marker in [
+                    "самого дешевого",
+                    "самого дешёвого",
+                    "у дешевого",
+                    "у дешёвого",
+                ]
+            )
+        )
+        if self._looks_like_analog_request(message, intent) and not cheapest_card_fact:
+            analogs_response = self._maybe_analogs_response(
+                message,
+                intent,
+                session,
+                agents_used,
+            )
+            if analogs_response is not None:
+                self.sessions.save(session)
+                return analogs_response
 
         warm_floor_pipe_answer = self._maybe_warm_floor_pipe_answer(message)
         if warm_floor_pipe_answer:
@@ -1814,6 +2105,14 @@ class ChatOrchestrator:
             answer = self._guard_composed_answer(choose_answer, "link", agents_used)
             chosen_cards = [chosen_card]
             session.last_products = chosen_cards
+            chosen_product = self._find_product_by_sku(chosen_card.sku)
+            if chosen_product is not None:
+                self._set_product_focus(
+                    session,
+                    chosen_product,
+                    origin="chosen",
+                )
+            session.product_relation = None
             self._append_history(session, message, answer)
             self.sessions.save(session)
             return self._response(
@@ -1838,14 +2137,23 @@ class ChatOrchestrator:
                 session_id, answer, cards, False, intent, session, agents_used
             )
 
-        comparison_answer = self._maybe_comparison_answer(message, session)
-        if comparison_answer:
+        comparison_result = self._maybe_comparison_answer(message, session)
+        if comparison_result:
+            comparison_answer, comparison_cards = comparison_result
+            intent.raw = dict(intent.raw or {})
+            intent.raw["product_control"] = "comparison"
             agents_used.append("ResponseComposerAgent")
             answer = self._guard_composed_answer(comparison_answer, "generic", agents_used)
             self._append_history(session, message, answer)
             self.sessions.save(session)
             return self._response(
-                session_id, answer, session.last_products, False, intent, session, agents_used
+                session_id,
+                answer,
+                comparison_cards,
+                False,
+                intent,
+                session,
+                agents_used,
             )
 
         yes_no_complectation = self._maybe_yes_no_complectation_followup(message, session)
@@ -2043,9 +2351,11 @@ class ChatOrchestrator:
                 pending_category = (
                     intent.category if intent.category != "other" else session.category
                 )
-                expected_slots = self._pending_slot_keys_for_question(
-                    question,
-                    pending_category,
+                expected_slots = list(requirements_result.expected_slots) or (
+                    self._pending_slot_keys_for_question(
+                        question,
+                        pending_category,
+                    )
                 )
                 answered_slot_keys = set(turn_answered_slot_keys)
                 answered_other_slot = bool(
@@ -2266,9 +2576,11 @@ class ChatOrchestrator:
             pending_category = (
                 intent.category if intent.category != "other" else session.category
             )
-            expected_slots = self._pending_slot_keys_for_question(
-                slot_result.question,
-                pending_category,
+            expected_slots = list(slot_result.expected_slots) or (
+                self._pending_slot_keys_for_question(
+                    slot_result.question,
+                    pending_category,
+                )
             )
             question_id = SessionState._default_question_id(
                 pending_category,
@@ -2419,6 +2731,21 @@ class ChatOrchestrator:
             direct_products or self._safe_search(query),
             query,
         )
+        if products:
+            # A successful strict lookup supersedes any earlier empty-result
+            # fact, even when the old result belonged to the same category.
+            session.last_search_outcome = None
+        if query.sku and products:
+            # Product identity is a dialogue fact even when a commercial
+            # filter suppresses its card from this response.  Keep it outside
+            # ``last_products`` so a following price/stock/analogue turn is
+            # still grounded in the exact catalogue row.
+            self._set_product_focus(
+                session,
+                products[0],
+                origin="exact_sku",
+            )
+            session.product_relation = None
         if (
             query.sku
             and query.in_stock_only
@@ -2449,6 +2776,70 @@ class ChatOrchestrator:
                 agents_used,
             )
         if not products:
+            if query.sku and (intent.raw or {}).get("explicit_sku_marker"):
+                suggestion_result = resolve_sku_suggestion(
+                    query.sku,
+                    self.search_agent.products,
+                )
+                if suggestion_result.status == "unique":
+                    suggestion = suggestion_result.candidates[0]
+                    answer = (
+                        f"Точный артикул {query.sku} в каталоге не найден. "
+                        f"Возможно, вы имели в виду {suggestion.sku} — "
+                        f"{suggestion.name}? Подтвердите точный артикул, "
+                        "и я покажу карточку."
+                    )
+                    intent.raw = dict(intent.raw or {})
+                    intent.raw["suggested_sku"] = suggestion.sku
+                    agents_used.append("ResponseComposerAgent")
+                    self._append_history(session, message, answer)
+                    self.sessions.save(session)
+                    return self._response(
+                        session_id,
+                        answer,
+                        [],
+                        False,
+                        intent,
+                        session,
+                        agents_used,
+                    )
+                if suggestion_result.status == "ambiguous":
+                    candidates = list(suggestion_result.candidates)
+                    visible_candidates = candidates[:5]
+                    candidate_text = "; ".join(
+                        f"{candidate.sku} — {candidate.name}"
+                        for candidate in visible_candidates
+                    )
+                    remaining = len(candidates) - len(visible_candidates)
+                    remaining_text = (
+                        f"; и ещё {remaining} похожих артикулов"
+                        if remaining > 0
+                        else ""
+                    )
+                    answer = (
+                        f"Точный артикул {query.sku} в каталоге не найден. "
+                        "Есть несколько одинаково похожих вариантов: "
+                        f"{candidate_text}{remaining_text}. "
+                        "Уточните последнюю цифру, название серии или модель; "
+                        "случайный товар выбирать не буду."
+                    )
+                    intent.raw = dict(intent.raw or {})
+                    intent.raw["sku_suggestion_status"] = "ambiguous"
+                    intent.raw["suggested_skus"] = [
+                        candidate.sku for candidate in candidates
+                    ]
+                    agents_used.append("ResponseComposerAgent")
+                    self._append_history(session, message, answer)
+                    self.sessions.save(session)
+                    return self._response(
+                        session_id,
+                        answer,
+                        [],
+                        False,
+                        intent,
+                        session,
+                        agents_used,
+                    )
             if query.category == "boilers" and query.slots.get("power_kw") is not None:
                 # An empty strict search means that no boiler satisfies the
                 # remaining hard constraints. Do not relax type, voltage,
@@ -2460,6 +2851,7 @@ class ChatOrchestrator:
                     agents_used,
                 )
                 self._append_history(session, message, answer)
+                self._remember_no_exact_match(session, query, answer)
                 self.sessions.save(session)
                 agents_used.append("ResponseComposerAgent")
                 return self._response(
@@ -2517,6 +2909,7 @@ class ChatOrchestrator:
                     session.shown_result_signature = self._boiler_power_result_signature(query)
                     self._remember_result_category(session, cards)
                     self._append_history(session, message, answer)
+                    self._remember_no_exact_match(session, query, answer)
                     self.sessions.save(session)
                     return self._response(session_id, answer, cards, False, intent, session, agents_used)
 
@@ -2527,6 +2920,7 @@ class ChatOrchestrator:
                     answer = calculation_note + "\n" + answer
             answer = self._guard_composed_answer(answer, "generic", agents_used)
             self._append_history(session, message, answer)
+            self._remember_no_exact_match(session, query, answer)
             self.sessions.save(session)
             agents_used.append("ResponseComposerAgent")
             return self._response(session_id, answer, [], False, intent, session, agents_used)
@@ -2581,6 +2975,7 @@ class ChatOrchestrator:
                         self._boiler_power_result_signature(query)
                     )
                     self._append_history(session, message, answer)
+                    self._remember_no_exact_match(session, query, answer)
                     self.sessions.save(session)
                     agents_used.append("ResponseComposerAgent")
                     return self._response(
@@ -2599,6 +2994,7 @@ class ChatOrchestrator:
                     agents_used,
                 )
                 self._append_history(session, message, answer)
+                self._remember_no_exact_match(session, query, answer)
                 self.sessions.save(session)
                 agents_used.append("ResponseComposerAgent")
                 return self._response(
@@ -3058,7 +3454,11 @@ class ChatOrchestrator:
                     base.pop(key, None)
                     incoming.pop(key, None)
                     invalidated_keys.add(key)
-            if explicit_element != "отвод":
+            # Both a pipe elbow (``отвод``) and a threaded/PPR elbow
+            # (``угольник``) carry a geometric angle.  Dropping the latter
+            # here silently disabled the hard angle constraint between router
+            # and retrieval even though both layers understood ``angle_deg``.
+            if explicit_element not in {"отвод", "угольник"}:
                 base.pop("angle_deg", None)
                 incoming.pop("angle_deg", None)
                 invalidated_keys.add("angle_deg")
@@ -3329,15 +3729,12 @@ class ChatOrchestrator:
             # A full catalogue name is an identity lookup, even when it contains
             # spaces and therefore is not shaped like an SKU.
             return False
-        # The high-precision identity search requires almost complete coverage
-        # of a distinctive catalogue name/series.  When it already resolves a
-        # grounded card, a generic engineering questionnaire (application,
-        # design temperature, etc.) must not block the customer's explicit
-        # product request.  Applicability advice can still be given after the
-        # card is shown.
-        identity_query = self._build_query(message, intent, session)
-        if self.search_agent.search_by_name(message, identity_query, limit=1):
-            return False
+        # A fuzzy/high-coverage name hit is not an identity boundary.  Generic
+        # catalogue phrases such as "internal sewer pipe 50" can match one
+        # arbitrary length when the lookup is limited to one result.  Only an
+        # exact full catalogue name (handled above) or an exact SKU may bypass
+        # blocking engineering requirements; fuzzy retrieval always runs
+        # after the missing-slot gate.
         if (
             category == "pipes"
             and re.search(r"\bpn\s*\d{1,2}\b", text)
@@ -4723,7 +5120,11 @@ class ChatOrchestrator:
             if not candidates:
                 # Let the normal catalogue path search beyond the stale cards.
                 return None
-        card = candidates[0]
+        card = (
+            min(candidates, key=lambda candidate: candidate.price)
+            if "дешев" in text
+            else candidates[0]
+        )
         query = SearchQuery(
             original_text=message,
             category=session.category or "other",
@@ -5859,6 +6260,7 @@ class ChatOrchestrator:
         explicit_scope = self._explicit_project_scope_from_text(text)
         if explicit_scope:
             self._reset_project_context_if_scope_changed(explicit_scope, session)
+        project_state_before = dict(session.slots)
         self._update_project_state(message, intent, session)
         area = self._project_area_from_text(text)
         active_project_scope = str(
@@ -5888,6 +6290,24 @@ class ChatOrchestrator:
             "warm_floor_heat_source",
             "warm_floor_automation_needed",
         }.intersection(current_turn_slot_keys)
+        # Some project facts are deterministic derivatives of current-turn
+        # slots rather than raw router slots (``boiler_type=gas`` becomes
+        # ``warm_floor_heat_source=gas boiler``).  Compare the project state
+        # around this turn so those facts still count as compact updates even
+        # though provenance correctly excludes them from the user's literal
+        # slot set.
+        warm_floor_update_keys.update(
+            key
+            for key in {
+                "warm_floor_area_m2",
+                "warm_floor_type",
+                "floor_insulation_ready",
+                "warm_floor_heat_source",
+                "warm_floor_automation_needed",
+            }
+            if project_state_before.get(key) != session.slots.get(key)
+            and key in session.slots
+        )
         if active_project_scope == "warm_floor" and area is not None:
             warm_floor_update_keys.add("warm_floor_area_m2")
 
@@ -8685,6 +9105,10 @@ class ChatOrchestrator:
             ("pressure", ["давлен", "pn"]),
             ("contours", ["контур"]),
             ("combustion_chamber", ["камера сгорания", "камерой"]),
+            (
+                "heating_method",
+                ["способ нагрева", "вид нагрева", "тип нагрева"],
+            ),
             ("characteristics", ["характерист", "параметр", "описан"]),
         ]
         return [name for name, markers in groups if any(marker in text for marker in markers)]
@@ -8807,6 +9231,82 @@ class ChatOrchestrator:
         if category and category != "other":
             session.category = category
 
+    def _set_product_focus(
+        self,
+        session: SessionState,
+        product: Product,
+        *,
+        origin: str,
+    ) -> None:
+        """Persist one catalogue identity independently from visible cards."""
+
+        category = self.search_agent.canonical_category(product)
+        session.product_focus = ProductFocusState(
+            sku=product.sku,
+            category=category if category != "other" else session.category,
+            origin=origin,
+        )
+
+    def _card_for_sku(
+        self,
+        sku: str,
+        *,
+        category: str | None = None,
+    ) -> ProductCard | None:
+        """Rebuild a current-feed card for a remembered identity."""
+
+        product = self._find_product_by_sku(sku)
+        if product is None:
+            return None
+        canonical_category = self.search_agent.canonical_category(product)
+        query = SearchQuery(
+            original_text=sku,
+            category=(
+                canonical_category
+                if canonical_category != "other"
+                else category or "other"
+            ),
+            slots={},
+        )
+        return self.card_agent.build_card(product, query)
+
+    def _focused_product_cards(self, session: SessionState) -> list[ProductCard]:
+        """Return the active cards or the stable exact-product focus."""
+
+        if session.last_products:
+            return list(session.last_products)
+        if session.product_focus is None:
+            return []
+        card = self._card_for_sku(
+            session.product_focus.sku,
+            category=session.product_focus.category,
+        )
+        return [card] if card is not None else []
+
+    def _update_product_focus_after_grounded_response(
+        self,
+        session: SessionState,
+        cards: list[ProductCard],
+        intent: IntentResult,
+        agents_used: list[str],
+    ) -> None:
+        """Advance focus on a new selection without overwriting analogue source."""
+
+        if not {
+            "FeedSearchAgent",
+            "ProductCardAgent",
+        }.issubset(agents_used):
+            return
+        if (intent.raw or {}).get("product_control") == "analog":
+            return
+        session.product_relation = None
+        if len(cards) != 1:
+            session.product_focus = None
+            return
+        product = self._find_product_by_sku(cards[0].sku)
+        if product is not None:
+            self._set_product_focus(session, product, origin="shown")
+
     def _remember_product_selection(
         self,
         session: SessionState,
@@ -8871,30 +9371,222 @@ class ChatOrchestrator:
                 category,
                 ProductBranchState(),
             )
-            skus = [normalize_sku_token(card.sku) for card in category_cards]
-            if branch.selections:
-                current = branch.selections[-1]
-                current_skus = [normalize_sku_token(sku) for sku in current.product_skus]
-                if current_skus == skus:
-                    # A price/stock/passport follow-up must not create a fake new
-                    # selection, but useful explicit constraints may enrich it.
-                    if constraints:
-                        current.constraints = merge_slots(
-                            current.constraints,
-                            constraints,
-                        )
-                    continue
-            branch.selections.append(
-                ProductSelectionSnapshot(
-                    category=category,
-                    product_skus=[card.sku for card in category_cards],
-                    constraints=constraints,
-                    user_message=user_message,
+            # Older persisted sessions predate explicit display metadata.  Seed
+            # their immutable first display from the oldest retained snapshot
+            # before appending the next event.
+            if branch.first_display is None and branch.selections:
+                branch.first_display = branch.selections[0].model_copy(deep=True)
+            existing_indexes = [
+                snapshot.display_index
+                for snapshot in branch.selections
+                if snapshot.display_index is not None
+            ]
+            display_index = max(
+                branch.next_display_index,
+                (max(existing_indexes) + 1) if existing_indexes else len(branch.selections),
+            )
+            snapshot = ProductSelectionSnapshot(
+                category=category,
+                # Preserve the response order verbatim.  This is presentation
+                # identity, not a set; ordinal references depend on it.
+                product_skus=[card.sku for card in category_cards],
+                constraints=constraints,
+                user_message=user_message,
+                display_index=display_index,
+            )
+            if branch.first_display is None:
+                branch.first_display = snapshot.model_copy(deep=True)
+            branch.selections.append(snapshot)
+            branch.next_display_index = display_index + 1
+            # A bounded referent history is sufficient for conversational
+            # recency.  ``first_display`` separately preserves the oldest
+            # ordered identities, so trimming cannot change "the very first".
+            branch.selections = branch.selections[-12:]
+
+    def _remember_no_exact_match(
+        self,
+        session: SessionState,
+        query: SearchQuery,
+        answer: str,
+    ) -> None:
+        """Persist an empty strict result as a short-lived grounded fact."""
+
+        control_slots = {
+            "allow_alternatives",
+            "allow_basic_option",
+            "fallback_after_repeat",
+        }
+        constraints = {
+            key: value
+            for key, value in self._normalized_query_slots(query.slots).items()
+            if not key.startswith("_")
+            and key not in TRANSIENT_QUERY_SLOTS
+            and key not in control_slots
+        }
+        session.last_search_outcome = LastSearchOutcome(
+            category=query.category,
+            constraints=constraints,
+            original_text=query.original_text,
+            sku=query.sku,
+            brand=query.brand,
+            history_length=len(session.history),
+            answer_text=answer,
+        )
+
+    def _confirm_last_no_match(
+        self,
+        message: str,
+        session: SessionState,
+    ) -> tuple[IntentResult, str] | None:
+        """Answer an immediate confirmation from the stored empty result.
+
+        This runs before routing so product notation such as ``PPR 20x1/2``
+        cannot turn a fitting confirmation into a new pipe-selection goal.
+        Only the immediately preceding grounded answer is eligible, and a new
+        numeric value invalidates the shortcut.
+        """
+
+        outcome = session.last_search_outcome
+        if outcome is None or outcome.status != "no_exact_match":
+            return None
+        if outcome.history_length != len(session.history):
+            return None
+        if not session.history or session.history[-1].get("role") != "assistant":
+            return None
+        if normalize_text(session.history[-1].get("content", "")) != normalize_text(
+            outcome.answer_text
+        ):
+            return None
+
+        text = normalize_text(message)
+        confirms_absence = bool(
+            "точн" in text
+            and any(
+                marker in text
+                for marker in [
+                    "нет",
+                    "не найден",
+                    "не нашел",
+                    "не нашёл",
+                    "отсутств",
+                ]
+            )
+            and (
+                message.rstrip().endswith("?")
+                or any(
+                    marker in text
+                    for marker in ["то есть", "получается", "значит", "верно", "правильно"]
                 )
             )
-            # A bounded referent history is sufficient for conversational
-            # ordinals and avoids unbounded session growth.
-            branch.selections = branch.selections[-12:]
+        )
+        if not confirms_absence:
+            return None
+        if any(
+            marker in text
+            for marker in [
+                "а есть",
+                "покажи",
+                "подбери",
+                "аналог",
+                "вместо",
+                "замени",
+                "другой",
+                "другая",
+            ]
+        ):
+            return None
+
+        evidence = normalize_text(
+            " ".join(
+                [
+                    outcome.original_text,
+                    str(outcome.sku or ""),
+                    str(outcome.brand or ""),
+                    *(str(value) for value in outcome.constraints.values()),
+                ]
+            )
+        )
+        message_numbers = set(re.findall(r"\d+(?:[.,/]\d+)?", text))
+        evidence_numbers = set(re.findall(r"\d+(?:[.,/]\d+)?", evidence))
+        if message_numbers - evidence_numbers:
+            return None
+
+        category = outcome.category
+        constraints = dict(outcome.constraints)
+        if category in self.engineering_requirements.CATEGORIES:
+            self.engineering_requirements.activate_goal(
+                message,
+                category,
+                session,
+                explicit_slots=constraints,
+                returning=True,
+            )
+        else:
+            session.slots = constraints
+            session.category = category
+        session.last_products = []
+        session.product_focus = None
+        session.product_relation = None
+        session.shown_product_skus = []
+        session.shown_result_signature = None
+        session.clear_pending_question_state()
+
+        intent = IntentResult(
+            intent_type="attribute_request",
+            category=category,
+            confidence=1.0,
+            slots=constraints,
+            raw={"confirmed_no_exact_match": True},
+        )
+        answer = (
+            "Да. По последнему поиску точного совпадения с этими параметрами "
+            "в текущем каталоге не найдено."
+        )
+        return intent, answer
+
+    @staticmethod
+    def _maybe_thread_constraint_confirmation(
+        message: str,
+        session: SessionState,
+    ) -> str | None:
+        """Render critical thread terminology from typed state, never free prose."""
+
+        text = normalize_text(message)
+        if "резьб" not in text or not any(
+            marker in text
+            for marker in ["подтверд", "текущ", "точно", "правильно", "верно"]
+        ):
+            return None
+        stored_pair = normalize_thread_pair(session.slots.get("thread_type"))
+        requested_pair = normalize_thread_pair(text)
+        if stored_pair is None:
+            return None
+        # A conflicting pair is a correction and must continue through normal
+        # routing instead of being acknowledged as the current constraint.
+        if requested_pair is not None and requested_pair != stored_pair:
+            return None
+        labels = {
+            "ff": (
+                "ВР-ВР",
+                "внутренняя резьба с обеих сторон",
+                "FF",
+            ),
+            "fm": (
+                "ВР-НР",
+                "внутренняя резьба с одной стороны и наружная с другой",
+                "FM",
+            ),
+            "mm": (
+                "НР-НР",
+                "наружная резьба с обеих сторон",
+                "MM",
+            ),
+        }
+        code, description, international = labels[stored_pair]
+        return (
+            f"Подтверждаю: текущая резьба {code} — {description} "
+            f"({international})."
+        )
 
     def _referenced_product_category(
         self,
@@ -8930,7 +9622,58 @@ class ChatOrchestrator:
                 return category
         if intent.category != "other":
             return intent.category
+        if session.category in session.product_branches:
+            # Generic wording such as ``the first shown product`` has no noun
+            # from which the router can infer a category.  The active grounded
+            # branch is the only safe fallback; never search another branch.
+            return session.category
         return None
+
+    @staticmethod
+    def _is_first_display_card_reference(message: str) -> bool:
+        """Whether the customer points to card one of the oldest display.
+
+        This is deliberately a presentation concept.  ``first`` must be
+        resolved against the ordered cards that were emitted, not against a
+        later search filtered by the active constraints.
+        """
+
+        text = normalize_text(message)
+        first_shown = bool(
+            re.search(
+                r"\bперв\w*(?:\s+из)?\s+показан\w*"
+                r"(?:\s+(?:товар|вариант|модел|насос|кот[её]л|труб|радиатор|"
+                r"батаре|кран|бойлер|водонагрев|позици)\w*)?(?:\b|$)",
+                text,
+            )
+            and "предыдущ" not in text
+        )
+        very_first = bool(
+            re.search(
+                r"\bсам\w*\s+перв\w*"
+                r"(?:\s+(?:показан\w*|товар\w*|вариант\w*|модел\w*|позици\w*))?",
+                text,
+            )
+        )
+        shown_initially = bool(
+            "сначала" in text
+            and re.search(
+                r"\b(?:показал\w*|показывал\w*|показан\w*|был\w*)\b",
+                text,
+            )
+        )
+        first_position_first_list = bool(
+            re.search(
+                r"\bперв\w*\s+позици\w*\s+(?:из|в)\s+перв\w*\s+списк\w*\b",
+                text,
+            )
+        )
+        return bool(
+            first_shown
+            or very_first
+            or shown_initially
+            or first_position_first_list
+        )
 
     @staticmethod
     def _looks_like_product_recall(message: str) -> bool:
@@ -8938,7 +9681,15 @@ class ChatOrchestrator:
         ordinal_reference = bool(
             any(
                 marker in text
-                for marker in ["первый", "первая", "первую", "первого", "предыдущ"]
+                for marker in [
+                    "первый",
+                    "первая",
+                    "первую",
+                    "первого",
+                    "первому",
+                    "первым",
+                    "предыдущ",
+                ]
             )
             and any(
                 marker in text
@@ -8960,6 +9711,8 @@ class ChatOrchestrator:
             )
         )
         return bool(
+            ChatOrchestrator._is_first_display_card_reference(message)
+            or
             any(
                 marker in text
                 for marker in [
@@ -9050,33 +9803,84 @@ class ChatOrchestrator:
         if not category:
             return False
         branch = session.product_branches.get(category)
-        if not branch or not branch.selections:
+        if not branch or not (branch.selections or branch.first_display):
             return False
 
         candidates = list(branch.selections)
+        first_display = branch.first_display or (candidates[0] if candidates else None)
+        if first_display is None:
+            return False
+        if not candidates:
+            candidates = [first_display]
         text = normalize_text(message)
+        explicit_slot_marker = (intent.raw or {}).get("explicit_current_slot_keys")
+        explicit_slot_keys = set(
+            intent.slots
+            if explicit_slot_marker is None
+            else explicit_slot_marker
+        )
+        current_turn_slots = {
+            key: value
+            for key, value in intent.slots.items()
+            if key in explicit_slot_keys
+        }
         first_historical_selection = bool(
             re.search(
                 r"\bперв\w*\s+(?:подборк|поиск|результат|ветк)\w*\b",
                 text,
             )
         )
-        if first_historical_selection:
-            snapshot = candidates[0]
+        first_shown_product = self._is_first_display_card_reference(message)
+        first_ordinal_product = bool(
+            re.search(
+                r"\bперв\w*\s+(?:товар|вариант|модел|насос|кот[её]л|труб|"
+                r"радиатор|батаре|кран|бойлер|водонагрев)\w*\b",
+                text,
+            )
+            and "предыдущ" not in text
+        )
+        first_card_reference = first_shown_product or first_ordinal_product
+        if first_historical_selection or first_card_reference:
+            snapshot = first_display
         elif "предыдущ" in text and len(candidates) > 1:
             snapshot = candidates[-2]
         else:
+            reference_intent = intent.model_copy(
+                update={"slots": dict(current_turn_slots)}
+            )
             snapshot = max(
                 enumerate(candidates),
                 key=lambda item: self._snapshot_reference_score(
-                    item[1], message, intent, item[0]
+                    item[1], message, reference_intent, item[0]
                 ),
             )[1]
-        products = [
-            product
+        query = SearchQuery(
+            original_text=message,
+            category=category,
+            slots=dict(snapshot.constraints),
+        )
+        candidate_pairs = [
+            (product, card)
             for sku in snapshot.product_skus
             if (product := self._find_product_by_sku(sku)) is not None
+            if (card := self.card_agent.build_card(product, query)) is not None
         ]
+        if not candidate_pairs:
+            return False
+
+        # Resolve presentation identity before looking at any constraints.
+        # Otherwise a copied/stale slot can remove card one and silently turn
+        # "the first shown" into a neighbouring SKU.
+        if first_card_reference:
+            candidate_pairs = candidate_pairs[:1]
+        elif not first_historical_selection:
+            ordinal_index = self._select_ordinal_index(
+                message,
+                [card for _, card in candidate_pairs],
+            )
+            if ordinal_index is not None:
+                candidate_pairs = [candidate_pairs[ordinal_index]]
+
         qualifier_keys = (
             self.engineering_requirements.CATEGORY_KEYS.get(category, set())
             | self.engineering_requirements.COMMERCIAL_KEYS
@@ -9084,48 +9888,32 @@ class ChatOrchestrator:
         )
         qualifier_slots = {
             key: value
-            for key, value in intent.slots.items()
+            for key, value in current_turn_slots.items()
             if key in qualifier_keys and key not in TRANSIENT_QUERY_SLOTS
         }
         if qualifier_slots:
-            qualified_products = [
-                product
-                for product in products
+            qualified_pairs = [
+                (product, card)
+                for product, card in candidate_pairs
                 if self.search_agent.matches_constraints(
                     product,
                     category,
                     qualifier_slots,
                 )
             ]
-            if not qualified_products:
+            if not qualified_pairs:
                 # The remembered result set does not contain the explicitly
                 # qualified item.  Let the ordinary search path handle it
                 # instead of restoring unrelated cards from the same page.
                 return False
-            products = qualified_products
-        query = SearchQuery(
-            original_text=message,
-            category=category,
-            slots=dict(snapshot.constraints),
-        )
-        restored_cards = [
-            card
-            for product in products
-            if (card := self.card_agent.build_card(product, query)) is not None
-        ]
-        if not restored_cards:
-            return False
-        if not first_historical_selection:
-            ordinal_index = self._select_ordinal_index(message, restored_cards)
-            if ordinal_index is not None:
-                restored_cards = [restored_cards[ordinal_index]]
+            candidate_pairs = qualified_pairs
+        restored_cards = [card for _, card in candidate_pairs]
 
         restored_constraints = {
             key: value
             for key, value in snapshot.constraints.items()
             if not key.startswith("_") and key not in TRANSIENT_QUERY_SLOTS
         }
-        current_turn_slots = dict(intent.slots)
         if category in self.engineering_requirements.CATEGORIES:
             self.engineering_requirements.activate_goal(
                 message,
@@ -9143,6 +9931,17 @@ class ChatOrchestrator:
             explicit_slots=selected_turn_slots,
         )
         session.last_products = restored_cards
+        if len(restored_cards) == 1:
+            restored_product = self._find_product_by_sku(restored_cards[0].sku)
+            if restored_product is not None:
+                self._set_product_focus(
+                    session,
+                    restored_product,
+                    origin="restored",
+                )
+        else:
+            session.product_focus = None
+        session.product_relation = None
         session.shown_product_skus = [card.sku for card in restored_cards]
         session.shown_result_signature = None
         session.pending_complectation_parts = []
@@ -9392,6 +10191,7 @@ class ChatOrchestrator:
             "pressure": ["давлен", "pn"],
             "contours": ["контур"],
             "combustion_chamber": ["камера сгорания", "камера"],
+            "heating_method": ["способ нагрева", "вид нагрева", "тип нагрева"],
         }
         attribute_labels = {
             "temperature": "температура",
@@ -9405,6 +10205,7 @@ class ChatOrchestrator:
             "pressure": "давление",
             "contours": "количество контуров",
             "combustion_chamber": "камера сгорания",
+            "heating_method": "способ/вид нагрева",
         }
         lines: list[str] = []
         for card in cards[:3]:
@@ -9516,14 +10317,87 @@ class ChatOrchestrator:
             ]
         )
 
+    def _is_priority_card_fact_request(
+        self,
+        message: str,
+        intent: IntentResult,
+        session: SessionState,
+    ) -> bool:
+        """Recognise an explicit fact lookup before generic selection funnels.
+
+        The important case is a short follow-up such as ``Способ нагрева?``.
+        Category heuristics can read the noun as a new selection constraint,
+        while an exact-product focus makes it an unambiguous read-only card
+        query.  Commands that actually request a new item remain in retrieval.
+        """
+
+        cards = self._focused_product_cards(session)
+        if not cards or intent.intent_type in {
+            "exact_sku",
+            "exact_sku_comparison",
+            "link_request",
+        }:
+            return False
+        requested_fields = self._effective_requested_fields(message, intent)
+        if not requested_fields:
+            return False
+        if self._wants_choose_one(message):
+            return False
+        if not self._is_basic_card_fact_question(message, intent):
+            return False
+        restored_reference = bool(
+            (intent.raw or {}).get("product_reference_restored")
+        )
+        if (
+            session.last_products
+            and "heating_method" not in requested_fields
+            and not restored_reference
+        ):
+            # Existing specialised stock/price/connection handlers already
+            # precede the general selection gate and preserve their established
+            # wording.  The early path is needed when there is no visible card,
+            # or for fields (notably heating method) that collide with a
+            # selection slot before those handlers can run.
+            return False
+        text = normalize_text(message)
+        if re.search(
+            r"\b(?:покажи|покажите|подбери|подберите|ищу|нужен|нужна|"
+            r"нужны|замени|заменить|теперь)\b",
+            text,
+        ):
+            return False
+        if self._looks_like_comparison_request(text) or "аналог" in text:
+            return False
+        focus_category = (
+            session.product_focus.category
+            if session.product_focus is not None
+            else session.category
+        )
+        if (
+            intent.category not in {"other", session.category, focus_category}
+            and not self._references_shown_products(message, intent)
+        ):
+            return False
+        # One exact focus is enough for an elliptical factual question.  With
+        # a multi-card page require a pronoun/ordinal or answer all only when
+        # the turn was semantically classified as a product question.
+        return bool(
+            len(cards) == 1
+            or self._references_shown_products(message, intent)
+            or (intent.raw or {}).get("dialog_act") == "product_question"
+        )
+
     def _answer_from_context(
         self,
         message: str,
         intent: IntentResult,
         session: SessionState,
         agents_used: list[str],
+        context_cards: list[ProductCard] | None = None,
     ) -> ChatResponse | None:
-        context_cards = session.last_products
+        context_cards = list(
+            session.last_products if context_cards is None else context_cards
+        )
         ordinal_index = self._select_ordinal_index(message, context_cards)
         if ordinal_index is not None:
             context_cards = [context_cards[ordinal_index]]
@@ -9583,6 +10457,22 @@ class ChatOrchestrator:
         agents_used: list[str],
     ) -> ChatResponse | None:
         text = normalize_text(message)
+        relation_source_card: ProductCard | None = None
+        if session.product_relation is not None:
+            relation_source_card = self._card_for_sku(
+                session.product_relation.source_sku,
+                category=session.product_relation.category,
+            )
+        if relation_source_card is None and session.product_focus is not None:
+            relation_source_card = self._card_for_sku(
+                session.product_focus.sku,
+                category=session.product_focus.category,
+            )
+        reference_cards = (
+            [relation_source_card]
+            if relation_source_card is not None
+            else list(session.last_products)
+        )
         if self._wants_choose_one(message):
             return None
         awaiting_power_alternatives = bool(
@@ -9658,7 +10548,7 @@ class ChatOrchestrator:
         )
         if "аналог" not in text and not asks_more and not wants_cheaper:
             return None
-        if not session.last_products and not awaiting_power_alternatives:
+        if not reference_cards and not session.last_products and not awaiting_power_alternatives:
             return None
         identity_slots = {"sku", "brand", "reference_brand", "old_model", "name_tokens"}
         current_turn_slot_keys = set(
@@ -9685,7 +10575,10 @@ class ChatOrchestrator:
             session.pending_intent_type = None
             session.pending_category = None
             session.pending_slot_keys = []
-        reference_slots = self._shown_product_reference_slots(session)
+        reference_slots = self._shown_product_reference_slots(
+            session,
+            relation_source_card,
+        )
         for key, value in reference_slots.items():
             # Current-turn constraints are authoritative. Missing compatibility
             # dimensions, however, must come from the exact shown feed row—not
@@ -9720,13 +10613,17 @@ class ChatOrchestrator:
             result_signature
             and result_signature == session.shown_result_signature
         )
+        shown_sku_values = list(
+            session.shown_product_skus
+            if use_accumulated_page
+            else [card.sku for card in session.last_products]
+        )
+        shown_sku_values.extend(card.sku for card in reference_cards)
+        if session.product_relation is not None:
+            shown_sku_values.extend(session.product_relation.alternative_skus)
         shown_skus = {
             normalize_sku_token(sku)
-            for sku in (
-                session.shown_product_skus
-                if use_accumulated_page
-                else [card.sku for card in session.last_products]
-            )
+            for sku in shown_sku_values
         }
         agents_used.append("FeedSearchAgent")
         if (
@@ -9783,7 +10680,11 @@ class ChatOrchestrator:
             available_power_alternatives = []
             alternatives = remaining_pool
         if wants_cheaper:
-            min_shown_price = min((card.price for card in session.last_products), default=None)
+            price_reference_cards = reference_cards or session.last_products
+            min_shown_price = min(
+                (card.price for card in price_reference_cards),
+                default=None,
+            )
             if min_shown_price is not None:
                 alternatives = [
                     product
@@ -9800,7 +10701,9 @@ class ChatOrchestrator:
                 answer = self._guard_composed_answer(answer, "generic", agents_used)
             elif wants_cheaper:
                 agents_used.append("ResponseComposerAgent")
-                answer = self.composer.compose_no_cheaper(session.last_products)
+                answer = self.composer.compose_no_cheaper(
+                    reference_cards or session.last_products
+                )
                 answer = self._guard_composed_answer(answer, "generic", agents_used)
             elif (
                 explicit_boiler_power
@@ -9825,7 +10728,22 @@ class ChatOrchestrator:
         agents_used.append("ProductCardAgent")
         cards = self.card_agent.build_cards(alternatives, query, limit=3)
         agents_used.append("GuardrailsAgent")
-        guard = self.guardrails.validate_cards(cards, alternatives, query)
+        relaxed_fields = self.search_agent.alternative_relaxed_fields(query)
+        guard_query = SearchQuery(
+            original_text=query.original_text,
+            category=query.category,
+            slots={
+                key: value
+                for key, value in query.slots.items()
+                if key not in relaxed_fields
+            },
+            sku=query.sku,
+            brand=query.brand,
+            cheap=query.cheap,
+            in_stock_only=query.in_stock_only,
+            limit=query.limit,
+        )
+        guard = self.guardrails.validate_cards(cards, alternatives, guard_query)
         if not guard.ok or not cards:
             answer = (
                 "Не могу безопасно показать аналоги по текущим данным. "
@@ -9835,6 +10753,35 @@ class ChatOrchestrator:
             return self._response(session.session_id, answer, [], True, intent, session, agents_used)
         agents_used.append("ResponseComposerAgent")
         note = "Аналоги к показанным ранее товарам — проверьте отличия в характеристиках:"
+        if relation_source_card is not None:
+            note = (
+                f"Аналоги к артикулу {relation_source_card.sku} — "
+                "проверьте отличия в характеристиках:"
+            )
+        if "head_m" in relaxed_fields:
+            requested_head = self._float_slot(query.slots.get("head_m"))
+            head_differences: list[str] = []
+            for card in cards:
+                product = self._find_product_by_sku(card.sku)
+                actual_head = (
+                    self.search_agent._maximum_head_m(product)
+                    if product is not None
+                    else None
+                )
+                if actual_head is not None:
+                    head_differences.append(f"{card.sku}: {actual_head:g} м")
+            if requested_head is not None and head_differences:
+                source_label = (
+                    relation_source_card.sku
+                    if relation_source_card is not None
+                    else "исходного варианта"
+                )
+                note = (
+                    f"Аналоги к {source_label} отличаются напором: "
+                    f"у исходного варианта {requested_head:g} м; "
+                    f"у аналогов {', '.join(head_differences)}. "
+                    "Присоединение и монтажная длина сохранены:"
+                )
         if query.category == "boilers" and query.slots.get("power_kw") is not None:
             note = self._compose_boiler_power_page_note(
                 query,
@@ -9866,6 +10813,28 @@ class ChatOrchestrator:
         answer = self._guard_composed_answer(answer, "products", agents_used)
         if power_alternative_offer:
             answer = f"{answer}\n\n{power_alternative_offer}"
+        if relation_source_card is not None:
+            previous_alternatives: list[str] = []
+            if (
+                session.product_relation is not None
+                and normalize_sku_token(session.product_relation.source_sku)
+                == normalize_sku_token(relation_source_card.sku)
+            ):
+                previous_alternatives = list(
+                    session.product_relation.alternative_skus
+                )
+            session.product_relation = ProductRelationContext(
+                source_sku=relation_source_card.sku,
+                alternative_skus=list(
+                    dict.fromkeys(
+                        [*previous_alternatives, *[card.sku for card in cards]]
+                    )
+                ),
+                category=session.category,
+            )
+            intent.raw = dict(intent.raw or {})
+            intent.raw["product_control"] = "analog"
+            intent.raw["relation_source_sku"] = relation_source_card.sku
         session.last_products = cards
         session.shown_product_skus = [
             *(session.shown_product_skus if use_accumulated_page else []),
@@ -9894,27 +10863,96 @@ class ChatOrchestrator:
     def _shown_product_reference_slots(
         self,
         session: SessionState,
+        source_card: ProductCard | None = None,
     ) -> dict[str, object]:
         """Hydrate analogue constraints from the one exact shown feed row."""
-        if len(session.last_products) != 1:
-            return {}
-        product = self._find_product_by_sku(session.last_products[0].sku)
+        if source_card is None:
+            source_cards = self._focused_product_cards(session)
+            if len(source_cards) != 1:
+                return {}
+            source_card = source_cards[0]
+        product = self._find_product_by_sku(source_card.sku)
         if product is None:
             return {}
-        if session.category == "water_heaters":
-            return self.search_agent.water_heater_reference_slots(product)
-        if session.category == "pumps":
-            return self.search_agent.pump_reference_slots(product)
-        return {}
+        return self.search_agent.product_reference_slots(product)
 
-    def _maybe_comparison_answer(self, message: str, session: SessionState) -> str | None:
-        if len(session.last_products) < 2:
-            return None
+    @staticmethod
+    def _looks_like_analog_request(
+        message: str,
+        intent: IntentResult | None = None,
+    ) -> bool:
+        text = normalize_text(message)
+        return bool(
+            "аналог" in text
+            or "дешев" in text
+            or any(
+                marker in text
+                for marker in [
+                    "какие еще",
+                    "какие ещё",
+                    "покажи еще",
+                    "покажи ещё",
+                    "другие вариант",
+                ]
+            )
+            or bool(intent and (intent.flags.get("cheap") or intent.slots.get("cheap")))
+        )
+
+    def _maybe_comparison_answer(
+        self,
+        message: str,
+        session: SessionState,
+    ) -> tuple[str, list[ProductCard]] | None:
         text = normalize_text(message)
         markers = ["отлича", "в чем разница", "какая разница", "разница между", "сравни"]
         if not any(marker in text for marker in markers):
             return None
-        return self.composer.compose_comparison(session.last_products)
+        cards = list(session.last_products)
+        relation = session.product_relation
+        compare_only_alternatives = any(
+            marker in text
+            for marker in [
+                "между аналогами",
+                "аналоги между собой",
+                "эти аналоги между собой",
+            ]
+        )
+        if relation is not None and not compare_only_alternatives:
+            source_card = self._card_for_sku(
+                relation.source_sku,
+                category=relation.category,
+            )
+            alternative_cards: list[ProductCard] = []
+            for sku in relation.alternative_skus:
+                card = self._card_for_sku(sku, category=relation.category)
+                if card is None or any(
+                    normalize_sku_token(existing.sku)
+                    == normalize_sku_token(card.sku)
+                    for existing in alternative_cards
+                ):
+                    continue
+                alternative_cards.append(card)
+            selected_analog = (
+                self._select_ordinal_index(message, alternative_cards)
+                if "аналог" in text
+                else None
+            )
+            if (
+                source_card is not None
+                and selected_analog is not None
+                and selected_analog < len(alternative_cards)
+            ):
+                # ``исходный и первый аналог`` addresses exactly two rows;
+                # comparing the whole analogue page is a context error.
+                cards = [source_card, alternative_cards[selected_analog]]
+            else:
+                relation_cards = ([source_card] if source_card is not None else [])
+                relation_cards.extend(alternative_cards)
+                if len(relation_cards) >= 2:
+                    cards = relation_cards
+        if len(cards) < 2:
+            return None
+        return self.composer.compose_comparison(cards), cards
 
     def _ground_catalog_sku_intent(
         self,
@@ -10163,6 +11201,7 @@ class ChatOrchestrator:
         markers = [
             "выбери один",
             "назови один",
+            "назовите один",
             "выбери сама",
             "выбери сам",
             "что взять",
@@ -10172,6 +11211,8 @@ class ChatOrchestrator:
             "посоветуй один",
             "оставь один",
             "один вариант",
+            "какой дешевле",
+            "который дешевле",
         ]
         if any(marker in text for marker in markers):
             return True
@@ -13805,6 +14846,58 @@ class ChatOrchestrator:
             return False
 
         text = normalize_text(message)
+        explicit_fresh_start = bool(
+            any(
+                marker in text
+                for marker in [
+                    "начнем заново",
+                    "начнём заново",
+                    "с нуля",
+                    "новый подбор",
+                    "новая задача",
+                    "другой отдельный",
+                    "отдельно подбери",
+                ]
+            )
+        )
+        dialog_act = str((intent.raw or {}).get("dialog_act") or "")
+        same_category_continuation = bool(
+            not explicit_fresh_start
+            and (
+                dialog_act in {"continue", "refine", "replace", "add_component"}
+                or any(
+                    marker in text
+                    for marker in [
+                        "вместе с",
+                        "в комплекте с",
+                        "в паре с",
+                        "добавь к",
+                        "добавьте к",
+                        "к нему",
+                        "к ней",
+                        "остальные параметры",
+                        "остальное то же",
+                        "остальное без изменений",
+                    ]
+                )
+            )
+        )
+        if same_category_continuation:
+            if any(
+                marker in text
+                for marker in [
+                    "вместе с",
+                    "в комплекте с",
+                    "в паре с",
+                    "добавь к",
+                    "добавьте к",
+                    "к нему",
+                    "к ней",
+                ]
+            ):
+                intent.raw = dict(intent.raw or {})
+                intent.raw["dialog_act"] = "add_component"
+            return False
         if any(
             marker in text
             for marker in [
@@ -14324,9 +15417,10 @@ class ChatOrchestrator:
         session: SessionState,
         agents_used: list[str],
     ) -> ChatResponse:
+        product_control = str((intent.raw or {}).get("product_control") or "")
         in_stock_only = bool(
             intent.flags.get("in_stock") or intent.slots.get("in_stock")
-        )
+        ) and product_control not in {"card_fact", "comparison"}
         if in_stock_only and cards:
             available_cards = [
                 card for card in cards if self._card_is_in_stock(card)
@@ -14392,6 +15486,12 @@ class ChatOrchestrator:
         # non-empty response into its canonical branch so later topic switches
         # cannot destroy the referent.  Duplicate follow-ups are coalesced by
         # SKU and prices/stock are intentionally refreshed on restoration.
+        self._update_product_focus_after_grounded_response(
+            session,
+            cards,
+            intent,
+            agents_used,
+        )
         self._remember_product_selection(session, cards, intent, agents_used)
         # Some response paths save before calling this final guard/serialization
         # layer.  Persist after branch memory and stock filtering so stores that
@@ -14475,6 +15575,33 @@ class ChatOrchestrator:
                 "slots": session.slots,
                 "project_context": session.project_context,
                 "product_branch_categories": sorted(session.product_branches),
+                "last_search_outcome": (
+                    {
+                        "status": session.last_search_outcome.status,
+                        "category": session.last_search_outcome.category,
+                        "constraints": dict(
+                            session.last_search_outcome.constraints
+                        ),
+                    }
+                    if session.last_search_outcome is not None
+                    else None
+                ),
+                "focused_product_sku": (
+                    session.product_focus.sku
+                    if session.product_focus is not None
+                    else None
+                ),
+                "product_relation": (
+                    {
+                        "relation": session.product_relation.relation,
+                        "source_sku": session.product_relation.source_sku,
+                        "alternative_skus": list(
+                            session.product_relation.alternative_skus
+                        ),
+                    }
+                    if session.product_relation is not None
+                    else None
+                ),
                 "restored_product_skus": (intent.raw or {}).get(
                     "product_reference_restored"
                 ),

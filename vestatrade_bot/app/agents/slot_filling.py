@@ -6,8 +6,16 @@ from app.models import IntentResult, SessionState, SlotFillingResult
 
 from .engineering_calculations import normalize_engineering_slots
 from .numeric_semantics import extract_total_length_m as parse_total_length_m
+from .selection_contracts import (
+    GENERIC_RADIATOR_FITTING_CONTRACT,
+    RADIATOR_VALVE_CONTRACT,
+    THERMOSTATIC_HEAD_CONTRACT,
+    THREADED_BALL_VALVE_CONTRACT,
+    VALVE_BASE_CONTRACT,
+    missing_requirements,
+)
 from .slot_answer_resolver import bind_local_refusals
-from .utils import merge_slots, normalize_text
+from .utils import mentions_water_application, merge_slots, normalize_text
 
 
 class SlotFillingAgent:
@@ -1615,12 +1623,8 @@ class SlotFillingAgent:
             slots["application"] = "радиатор"
         elif "отоплен" in text:
             slots["application"] = "отопление"
-        elif "горяч" in text or "холодн" in text or "вода" in text or "воды" in text or "водоснаб" in text:
+        elif "горяч" in text or "холодн" in text or mentions_water_application(text):
             slots["application"] = "вода"
-
-        has_size = bool(
-            slots.get("diameter_mm") or slots.get("size_inch") or slots.get("connection_size")
-        )
 
         if slots.get("installation_context") == "перед унитазом":
             return SlotFillingResult(
@@ -1635,16 +1639,46 @@ class SlotFillingAgent:
                 ),
             )
 
-        missing = []
-        if not slots.get("application"):
-            missing.append("для чего нужен кран: вода (холодная/горячая), отопление или радиатор")
-        if not has_size:
-            missing.append("размер: 1/2, 3/4 или диаметр в мм")
+        contract_slots = dict(slots)
+        # A distinctive catalogue family/model plus an explicit port topology
+        # is an identity lookup, not an attempt to infer application safety.
+        # It is safe to show that grounded card while leaving applicability to
+        # a later question.  Generic requests ("кран 1/2") still have to state
+        # both application and thread pair before any alternatives are shown.
+        if (
+            contract_slots.get("name_tokens")
+            and contract_slots.get("thread_type")
+        ):
+            contract_slots.setdefault("application", "catalogue_identity")
+
+        contracts = [VALVE_BASE_CONTRACT]
+        product_kind = str(slots.get("product_kind") or "").strip().lower()
+        valve_kind = normalize_text(str(slots.get("valve_kind") or ""))
+        # A lone inch size on a ball valve does not describe both ends.  FF,
+        # FM and MM are different, non-interchangeable SKUs, so retrieval must
+        # wait for the pair.  DN/flanged/polymer valves are intentionally not
+        # forced through this threaded-small-valve contract.
+        if slots.get("size_inch") and not slots.get("union") and (
+            product_kind == "ball_valve" or "шаров" in valve_kind
+        ):
+            contracts.append(THREADED_BALL_VALVE_CONTRACT)
+        missing = missing_requirements(contract_slots, *contracts)
         if missing:
+            visible_missing = missing[:2]
             return SlotFillingResult(
                 slots=slots,
                 needs_clarification=True,
-                question="Уточните " + " и ".join(missing[:2]) + ".",
+                question="Уточните " + " и ".join(
+                    requirement.prompt for requirement in visible_missing
+                ) + ".",
+                expected_slots=list(
+                    dict.fromkeys(
+                        slot
+                        for requirement in visible_missing
+                        for slot in requirement.any_of
+                    )
+                ),
+                blocking=True,
             )
         hot_or_heating = bool(
             normalize_text(str(slots.get("application") or "")) == "отопление"
@@ -1667,31 +1701,71 @@ class SlotFillingAgent:
         return SlotFillingResult(slots=slots)
 
     def _radiator(self, slots: dict) -> SlotFillingResult:
-        if slots.get("thermostatic_head") is True:
-            if not slots.get("metric_thread") and not slots.get("size_inch"):
-                return SlotFillingResult(
-                    slots=slots,
-                    needs_clarification=True,
-                    question=(
-                        "Уточните модель термостатического клапана или резьбу "
-                        "под термоголовку, например M30x1,5."
-                    ),
+        product_kind = str(slots.get("product_kind") or "").strip().lower()
+
+        if product_kind == "thermostatic_head" or (
+            not product_kind and slots.get("thermostatic_head") is True
+        ):
+            missing = missing_requirements(slots, THERMOSTATIC_HEAD_CONTRACT)
+            if not missing:
+                return SlotFillingResult(slots=slots)
+            return SlotFillingResult(
+                slots=slots,
+                needs_clarification=True,
+                question="Уточните " + missing[0].prompt + ".",
+                expected_slots=list(missing[0].any_of),
+                blocking=True,
+            )
+
+        if product_kind in {
+            "thermostatic_valve",
+            "radiator_shutoff_valve",
+        }:
+            # The product kind already answers the regulate-vs-shutoff choice.
+            # Do not ask it again merely because the legacy
+            # ``thermostatic_head`` boolean is absent.
+            contract_slots = dict(slots)
+            contract_slots["control_mode"] = (
+                "регулировать"
+                if product_kind == "thermostatic_valve"
+                else "перекрывать"
+            )
+            missing = missing_requirements(
+                contract_slots,
+                RADIATOR_VALVE_CONTRACT,
+            )
+        else:
+            contract_slots = dict(slots)
+            if "thermostatic_head" in slots or slots.get("radiator_action"):
+                contract_slots["control_mode"] = (
+                    "регулировать"
+                    if slots.get("thermostatic_head") is True
+                    else "перекрывать"
                 )
-            return SlotFillingResult(slots=slots)
-        missing = []
-        if not slots.get("connection_form"):
-            missing.append("прямое или угловое подключение")
-        if not slots.get("diameter_mm") and not slots.get("size_inch"):
-            missing.append("размер 1/2 или 3/4")
-        if "thermostatic_head" not in slots:
-            missing.append("регулировать температуру (термоголовка) или просто перекрывать поток")
+            missing = missing_requirements(
+                contract_slots,
+                GENERIC_RADIATOR_FITTING_CONTRACT,
+            )
         if missing:
+            visible_missing = missing[:3]
             return SlotFillingResult(
                 slots=slots,
                 needs_clarification=True,
                 question=(
-                    "Подскажите для радиатора: " + "; ".join(missing[:3]) + "."
+                    "Подскажите для радиатора: "
+                    + "; ".join(
+                        requirement.prompt for requirement in visible_missing
+                    )
+                    + "."
                 ),
+                expected_slots=list(
+                    dict.fromkeys(
+                        slot
+                        for requirement in visible_missing
+                        for slot in requirement.any_of
+                    )
+                ),
+                blocking=True,
             )
         return SlotFillingResult(slots=slots)
 

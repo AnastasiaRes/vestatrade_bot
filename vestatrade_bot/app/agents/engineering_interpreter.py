@@ -226,6 +226,11 @@ class EngineeringInterpreterAgent:
         "metric_thread",
         "size_inch",
         "radiator_type",
+        "fitting_system",
+        "handle_type",
+        "body_form",
+        "connection_form",
+        "product_kind",
     }
     _ENUM_STRING_SLOTS = {
         "water_level_reference": {"ambiguous", "from_top", "from_bottom"},
@@ -234,6 +239,7 @@ class EngineeringInterpreterAgent:
     _BOOL_SLOTS = {
         "needs_float_switch",
         "has_warm_floor",
+        "full_bore",
     }
     # These values are calculations or normalized representations owned by the
     # deterministic engineering layer.  They are never accepted from the LLM,
@@ -687,6 +693,28 @@ class EngineeringInterpreterAgent:
             return "камер" in text
         if key == "thread_type":
             return any(marker in text for marker in ["вр", "вн", "нр", "нар", "ff", "fm", "mm"])
+        if key == "fitting_system":
+            return any(marker in text for marker in ["ppr", "ппр", "полипроп", "pex", "pe-x", "пнд", "press"])
+        if key == "handle_type":
+            return "бабоч" in text if "butterfly" in canonical_value else "рычаг" in text
+        if key in {"body_form", "connection_form"}:
+            return (
+                "углов" in text
+                if "углов" in normalized_value
+                else "прям" in text
+                if "прям" in normalized_value
+                else normalized_value in text
+            )
+        if key == "product_kind":
+            kind_markers = {
+                "thermostatic_head": ["термоголов", "термогалов"],
+                "thermostatic_valve": ["клапан"],
+                "ball_valve": ["шаров"],
+                "elbow": ["угол", "угольник", "уголок"],
+            }
+            return any(
+                marker in text for marker in kind_markers.get(canonical_value, [])
+            )
         if key == "metric_thread":
             return bool(re.search(r"\bm\s*\d{1,3}\s*[xх×]\s*\d", text))
         if key == "size_inch":
@@ -710,6 +738,8 @@ class EngineeringInterpreterAgent:
             return "поплав" in text
         if key == "has_warm_floor":
             return "пол" in text and any(marker in text for marker in ["тепл", "тёпл"])
+        if key == "full_bore":
+            return "полнопроход" in text
         return False
 
     @staticmethod

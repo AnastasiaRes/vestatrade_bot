@@ -399,8 +399,7 @@ h1 {
   gap: 8px;
 }
 
-.quick,
-.secondary {
+.quick {
   min-height: 38px;
   border-radius: 12px;
   padding: 9px 11px;
@@ -411,24 +410,8 @@ h1 {
   text-align: left;
 }
 
-.quick:hover,
-.secondary:hover {
+.quick:hover {
   background: #dceaff;
-}
-
-.tool-row {
-  margin-top: 14px;
-}
-
-.secondary {
-  width: 100%;
-  background: var(--blue);
-  color: #ffffff;
-  text-align: center;
-}
-
-.secondary:hover {
-  background: var(--blue-2);
 }
 
 .debug-panel {

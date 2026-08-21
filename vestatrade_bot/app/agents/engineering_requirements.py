@@ -46,6 +46,7 @@ class EngineeringRequirementsAgent:
     }
 
     COMMERCIAL_KEYS = {
+        "brand",
         "budget_rub",
         "max_price",
         "min_price",
@@ -232,6 +233,10 @@ class EngineeringRequirementsAgent:
             "size_inch",
             "connection_size",
             "thread_type",
+            "handle_type",
+            "full_bore",
+            "bore_type",
+            "product_kind",
             "body_form",
             "union",
             "operating_temperature_c",
@@ -266,6 +271,9 @@ class EngineeringRequirementsAgent:
             "diameter_mm",
             "size_inch",
             "thermostatic_head",
+            "product_kind",
+            "body_form",
+            "thread_type",
             "union",
             "thread_standard",
             "thread_gender",
@@ -298,6 +306,9 @@ class EngineeringRequirementsAgent:
             "secondary_diameter_mm",
             "size_inch",
             "thread_type",
+            "product_kind",
+            "body_form",
+            "angle_deg",
             "pipe_material",
             "pressure_class_bar",
             "nominal_diameter_dn",

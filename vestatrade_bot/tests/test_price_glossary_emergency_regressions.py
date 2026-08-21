@@ -98,7 +98,7 @@ def test_price_range_aggregates_every_match_beyond_the_display_limit() -> None:
 def test_price_question_about_a_shown_product_keeps_the_exact_answer() -> None:
     # A range would be wrong once a concrete card is on the table.
     bot = _price_bot()
-    bot.handle_chat("price-shown", "труба ppr 25 мм для отопления")
+    bot.handle_chat("price-shown", "Труба PPR 25 мм PN20")
     response = bot.handle_chat("price-shown", "а сколько стоит?")
 
     assert "от 110 до 413" not in response.answer

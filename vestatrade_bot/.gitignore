@@ -11,3 +11,4 @@ app/data/products_cache.json
 app/data/usage_budget.json
 app/data/*.lock
 tmp/
+qa_runtime/

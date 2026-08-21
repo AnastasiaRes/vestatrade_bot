@@ -6,6 +6,7 @@ from typing import Any
 from app.models import ProductCard, SearchQuery
 from app.openrouter_client import OpenRouterClient
 
+from .product_constraints import normalize_thread_pair
 from .utils import normalize_text
 
 
@@ -1104,7 +1105,13 @@ class ResponseComposerAgent:
         diff_keys = [
             key
             for key in seen_keys
-            if len({card.characteristics.get(key) for card in cards}) > 1
+            if len(
+                {
+                    self._canonical_comparison_value(card, key)
+                    for card in cards
+                }
+            )
+            > 1
         ]
         lines = ["Сравниваю показанные варианты по карточкам товаров:"]
         for card in cards:
@@ -1130,6 +1137,18 @@ class ResponseComposerAgent:
         draft = "\n".join(lines)
         self.last_draft = draft
         return draft
+
+    @staticmethod
+    def _canonical_comparison_value(card: ProductCard, key: str) -> str:
+        """Compare semantics, not feed spelling variants."""
+
+        value = card.characteristics.get(key)
+        key_text = normalize_text(str(key))
+        if "резьб" in key_text:
+            pair = normalize_thread_pair(f"{card.name} {value or ''}")
+            if pair is not None:
+                return pair
+        return normalize_text(str(value or ""))
 
     def compose_no_match(self, query: SearchQuery) -> str:
         slots = query.slots

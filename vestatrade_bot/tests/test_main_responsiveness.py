@@ -3,6 +3,10 @@ from __future__ import annotations
 import asyncio
 from threading import Event
 
+import pytest
+from fastapi import HTTPException
+from starlette.requests import Request
+
 from app import main
 from app.models import ChatRequest, ChatResponse
 
@@ -34,3 +38,71 @@ def test_health_stays_available_while_chat_waits_in_worker(monkeypatch) -> None:
         assert response.answer == "готово"
 
     asyncio.run(scenario())
+
+
+def test_ready_is_distinct_from_liveness(monkeypatch) -> None:
+    monkeypatch.setattr(main.orchestrator.search_agent, "products", [])
+
+    response = asyncio.run(main.ready())
+
+    assert response.status_code == 503
+    assert b'"status":"not_ready"' in response.body
+
+
+def test_unhandled_error_has_stable_redacted_contract() -> None:
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/chat",
+        "headers": [],
+        "query_string": b"",
+        "server": ("test", 80),
+        "client": ("test", 123),
+        "scheme": "http",
+    }
+
+    response = asyncio.run(
+        main.unhandled_error(Request(scope), RuntimeError("secret internal failure"))
+    )
+
+    assert response.status_code == 500
+    assert b'"code":"INTERNAL_ERROR"' in response.body
+    assert b'"trace_id"' in response.body
+    assert b"secret internal failure" not in response.body
+
+
+def test_reload_feed_is_disabled_without_admin_token(monkeypatch) -> None:
+    monkeypatch.setattr(main.settings, "reload_feed_token", None)
+
+    with pytest.raises(HTTPException) as captured:
+        main.reload_feed(x_admin_token=None)
+
+    assert captured.value.status_code == 503
+    assert captured.value.detail == "feed reload is disabled"
+
+
+def test_reload_feed_requires_matching_admin_token(monkeypatch) -> None:
+    monkeypatch.setattr(main.settings, "reload_feed_token", "server-secret")
+
+    with pytest.raises(HTTPException) as captured:
+        main.reload_feed(x_admin_token="wrong")
+
+    assert captured.value.status_code == 403
+
+
+def test_reload_feed_error_is_redacted(monkeypatch) -> None:
+    monkeypatch.setattr(main.settings, "reload_feed_token", "server-secret")
+
+    def fail_reload(*, refresh: bool):
+        assert refresh is True
+        raise RuntimeError("credential-bearing internal detail")
+
+    monkeypatch.setattr(main.orchestrator, "reload_products", fail_reload)
+
+    with pytest.raises(HTTPException) as captured:
+        main.reload_feed(x_admin_token="server-secret")
+
+    assert captured.value.status_code == 503
+    assert "credential-bearing" not in str(captured.value.detail)
+    assert captured.value.detail["code"] == "FEED_RELOAD_FAILED"
+    assert captured.value.detail["trace_id"]

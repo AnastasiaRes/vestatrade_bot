@@ -77,6 +77,21 @@ def catalog_bot() -> ChatOrchestrator:
             price=800,
         ),
         _product(
+            "VALVE-BASE-FF-BUTTERFLY",
+            'Кран шаровой BASE 1/2" ВР/ВР, ручка бабочка',
+            "Краны шаровые",
+            {
+                "тип товара": "Кран шаровой",
+                "серия": "BASE",
+                "диаметр подключения, дюйм": "1/2",
+                "тип резьбы": "Внутренняя/внутренняя",
+                "тип ручки": "Бабочка",
+                "назначение": "Вода, отопление",
+            },
+            brand="VALTEC",
+            price=850,
+        ),
+        _product(
             "PUMP-25-6-180",
             "Насос циркуляционный 25/6 180 мм",
             "Насосы циркуляционные",
@@ -295,7 +310,10 @@ def test_return_to_pump_restores_pump_goal_without_valve_slots(
     # Exact valve filtering is covered separately above.  This scenario is
     # about isolating two catalogue goals and restoring the pump afterwards.
     assert valve.products
-    assert valve.products[0].sku == "VALVE-BASE-FF"
+    assert {product.sku for product in valve.products}.issubset(
+        {"VALVE-BASE-FF", "VALVE-BASE-FF-BUTTERFLY"}
+    )
+    assert "VALVE-BASE-FM" not in {product.sku for product in valve.products}
     assert [product.sku for product in restored.products] == ["PUMP-25-6-180"]
     assert restored.debug["category"] == "pumps"
     assert restored.debug["slots"]["pump_type"] == "циркуляционный"
@@ -559,7 +577,7 @@ def test_price_question_about_first_shown_card_returns_only_first_card(
     session_id = "catalog-first-card-price"
     shown = catalog_bot.handle_chat(
         session_id,
-        'Покажи шаровые краны BASE 1/2" для воды',
+        'Покажи шаровые краны BASE 1/2" ВР/ВР для воды',
     )
     response = catalog_bot.handle_chat(session_id, "Сколько стоит первый?")
 
@@ -577,7 +595,7 @@ def test_quantity_digit_is_not_misread_as_product_ordinal(
     session_id = "catalog-quantity-not-ordinal"
     shown = catalog_bot.handle_chat(
         session_id,
-        'Покажи шаровые краны BASE 1/2" для воды',
+        'Покажи шаровые краны BASE 1/2" ВР/ВР для воды',
     )
     response = catalog_bot.handle_chat(session_id, "Сколько стоят 2 штуки?")
 
@@ -622,7 +640,7 @@ def test_return_clears_pending_complectation_from_the_branch_being_left(
     )
     catalog_bot.handle_chat(
         session_id,
-        'Теперь нужны шаровые краны BASE 1/2" для воды',
+        'Теперь нужны шаровые краны BASE 1/2" ВР/ВР для воды',
     )
     pending = catalog_bot.handle_chat(session_id, "Что входит в комплект?")
     restored = catalog_bot.handle_chat(session_id, "Вернёмся к насосу")
@@ -846,7 +864,7 @@ def test_requested_field_with_ordinal_reads_only_that_shown_card(
     session_id = "catalog-ordinal-card-field"
     shown = catalog_bot.handle_chat(
         session_id,
-        'Покажи шаровые краны BASE 1/2" для воды',
+        'Покажи шаровые краны BASE 1/2" ВР/ВР для воды',
     )
     assert len(shown.products) == 2
 
@@ -865,7 +883,7 @@ def test_return_to_first_product_uses_card_ordinal_not_snapshot_ordinal(
     session_id = "catalog-first-valve-return"
     shown = catalog_bot.handle_chat(
         session_id,
-        'Покажи шаровые краны BASE 1/2" для воды',
+        'Покажи шаровые краны BASE 1/2" ВР/ВР для воды',
     )
     catalog_bot.handle_chat(session_id, "Покажи артикул PUMP-25-6-180")
 

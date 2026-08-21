@@ -2,12 +2,14 @@
 
 Источник сценариев: `Глубокий набор тестовых диалогов для AI-консультанта Vesta Trading.pdf`.
 Локальный API: `http://127.0.0.1:8000`.
-Начало: `2026-05-27T19:51:04`.
-Окончание: `2026-05-27T19:57:30`.
-Health перед запуском: `{"status": "ok", "products_loaded": 100, "products_loaded_from": "feed"}`.
-OpenRouter spent до запуска: `$0.020199`.
-OpenRouter spent после запуска: `$0.029233`.
-Расход на прогон: `$0.009034`.
+Начало: `2026-07-20T21:57:25`.
+Окончание: `2026-07-20T21:57:45`.
+Health перед запуском: `{"status": "ok", "products_loaded": 14011, "products_loaded_from": "cache", "product_docs_loaded": 12}`.
+Снимок каталога оценщика: `{"path": "/private/tmp/vestatrade-live.KeZYR4/products_cache.json", "raw_count": 14011, "indexed_unique_skus": 14005, "sha256": "694f8d97812ebdba5dc443e0d7b21f6465a8073076b7fe46bc4c6b46d91e611a"}`.
+LLM telemetry: `{"mode": "fallback-only", "turns": 103, "requested": 45, "transport_succeeded": 0, "output_accepted": 0}`.
+LLM spent до запуска: `$0.000000`.
+LLM spent после запуска: `$0.000000`.
+Расход на прогон: `$0.000000`.
 
 ## 1. Точный SKU без лишних вопросов
 
@@ -17,24 +19,24 @@ OpenRouter spent после запуска: `$0.029233`.
 
 Пользователь: VT.217.N.04
 
-Время ответа: `5.78` сек.
+Время ответа: `0.06` сек.
 
 Ответ бота:
 
 ```text
-Нашёл подходящий вариант:  
-1. Кран шаровой BASE, рукоятка бабочка 1/2" вн.-вн.  
-   Артикул: VT.217.N.04  
-   Бренд: VALTEC  
-   Цена: 452 RUB  
-   Наличие: в наличии, 57 шт.  
-   Характеристики: артикул: VT.217.N.04; полное наименование: Кран шаровой BASE, рукоятка бабочка 1/2" вн.-вн.; штрихкод: 8050040971756  
-   Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/  
-Следующее действие: Показать аналоги.
+Нашёл подходящие варианты:
+1. Кран шаровой BASE, рукоятка бабочка 1/2" вн.-вн.
+   Артикул: VT.217.N.04
+   Бренд: VALTEC
+   Цена: 452 RUB
+   Наличие: в наличии, 43 шт.
+   Характеристики: диаметр подключения, дюйм: 1/2; тип присоединения: Резьбовой; артикул: VT.217.N.04
+   Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/
+Могу показать сопоставимые аналоги.
 ```
 
 Товары:
-- `VT.217.N.04` | Кран шаровой BASE, рукоятка бабочка 1/2&quot; вн.-вн. | 452.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/
+- `VT.217.N.04` | Кран шаровой BASE, рукоятка бабочка 1/2" вн.-вн. | 452.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/
 
 Debug:
 
@@ -54,14 +56,29 @@ Debug:
     "GuardrailsAgent",
     "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -69,13 +86,16 @@ Debug:
 
 Пользователь: скинь ссылку
 
-Время ответа: `2.54` сек.
+Время ответа: `0.03` сек.
 
 Ответ бота:
 
 ```text
-https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/
+Ссылка на товар VT.217.N.04: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/
 ```
+
+Товары:
+- `VT.217.N.04` | Кран шаровой BASE, рукоятка бабочка 1/2" вн.-вн. | 452.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/
 
 Debug:
 
@@ -91,14 +111,29 @@ Debug:
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -110,22 +145,20 @@ Debug:
 
 Пользователь: VRS.256.18.0
 
-Время ответа: `4.45` сек.
+Время ответа: `0.05` сек.
 
 Ответ бота:
 
 ```text
 Нашёл подходящие варианты:
-
-1. Насос циркуляционный VALTEC RS 25/6-180 с гайками  
-   Артикул: VRS.256.18.0  
-   Бренд: VALTEC  
-   Цена: 4186 RUB  
-   Наличие: в наличии, 12 шт.  
-   Характеристики: артикул: VRS.256.18.0; полное наименование: Насос циркуляционный VALTEC RS 25/6-180 с гайками; штрихкод: 8056518344329  
+1. Насос циркуляционный VALTEC RS 25/6-180 с гайками
+   Артикул: VRS.256.18.0
+   Бренд: VALTEC
+   Цена: 4186 RUB
+   Наличие: в наличии, 14 шт.
+   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 180
    Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-256-180-s-gaykami/
-
-Следующее действие: Показать аналоги.
+Могу показать сопоставимые аналоги.
 ```
 
 Товары:
@@ -149,14 +182,29 @@ Debug:
     "GuardrailsAgent",
     "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -164,12 +212,12 @@ Debug:
 
 Пользователь: есть что подешевле?
 
-Время ответа: `3.18` сек.
+Время ответа: `0.12` сек.
 
 Ответ бота:
 
 ```text
-Более дешёвых подходящих вариантов в данных фида не вижу. Последний подходящий вариант: VRS.256.18.0. Могу показать аналоги или передать вопрос менеджеру.
+Более дешёвых подходящих вариантов в текущем ассортименте не вижу. Последний подходящий вариант: VRS.256.18.0. Могу показать аналоги или передать вопрос менеджеру.
 ```
 
 Debug:
@@ -177,27 +225,39 @@ Debug:
 ```json
 {
   "intent": "cheap_request",
-  "category": "other",
+  "category": "pumps",
   "slots": {
-    "sku": "vrs.256.18.0",
-    "cheap": true
+    "sku": "vrs.256.18.0"
   },
   "agents_used": [
     "IntentRouterAgent",
-    "SlotFillingAgent",
     "FeedSearchAgent",
-    "RankingAgent",
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -209,26 +269,24 @@ Debug:
 
 Пользователь: 2202210
 
-Время ответа: `4.02` сек.
+Время ответа: `0.07` сек.
 
 Ответ бота:
 
 ```text
 Нашёл подходящие варианты:
-
-1. Котел электрический Arderia E9, 9 кВт  
-   Артикул: 2202210  
-   Бренд: Arderia  
-   Цена: 32602 RUB  
-   Наличие: в наличии, 2 шт.  
-   Характеристики: артикул: 2202210; полное наименование: Котел электрический Arderia E9, 9 кВт; количество контуров: Одноконтурный  
+1. Котел электрический Arderia E9, 9 кВт
+   Артикул: 2202210
+   Бренд: Arderia
+   Цена: 35365 RUB
+   Наличие: в наличии, 5 шт.
+   Характеристики: мощность, квт: 9; тип котла: Электрический; количество контуров: Одноконтурный
    Ссылка: https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-elektricheskij-arderia-e9-9-kvt/
-
-Следующее действие: Показать аналоги.
+Могу показать сопоставимые аналоги.
 ```
 
 Товары:
-- `2202210` | Котел электрический Arderia E9, 9 кВт | 32602.0 RUB | в наличии | https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-elektricheskij-arderia-e9-9-kvt/
+- `2202210` | Котел электрический Arderia E9, 9 кВт | 35365.0 RUB | в наличии | https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-elektricheskij-arderia-e9-9-kvt/
 
 Debug:
 
@@ -248,14 +306,29 @@ Debug:
     "GuardrailsAgent",
     "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -263,52 +336,55 @@ Debug:
 
 Пользователь: а какие там основные характеристики?
 
-Время ответа: `4.24` сек.
+Время ответа: `0.07` сек.
 
 Ответ бота:
 
 ```text
-Нашёл подходящие варианты:  
-1. Котел электрический Arderia E9, 9 кВт  
-   Артикул: 2202210  
-   Бренд: Arderia  
-   Цена: 32602 RUB  
-   Наличие: в наличии, 2 шт.  
-   Характеристики: артикул: 2202210; полное наименование: Котел электрический Arderia E9, 9 кВт; количество контуров: Одноконтурный  
-   Ссылка: https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-elektricheskij-arderia-e9-9-kvt/  
-
-Следующее действие: Показать аналоги.
+Котел электрический Arderia E9, 9 кВт. Артикул: 2202210.
+Основные данные: мощность, квт: 9; тип котла: Электрический; количество контуров: Одноконтурный; отапливаемая площадь, м²: 90.
 ```
 
 Товары:
-- `2202210` | Котел электрический Arderia E9, 9 кВт | 32602.0 RUB | в наличии | https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-elektricheskij-arderia-e9-9-kvt/
+- `2202210` | Котел электрический Arderia E9, 9 кВт | 35365.0 RUB | в наличии | https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-elektricheskij-arderia-e9-9-kvt/
 
 Debug:
 
 ```json
 {
   "intent": "attribute_request",
-  "category": "other",
+  "category": "boilers",
   "slots": {
     "sku": "2202210"
   },
   "agents_used": [
     "IntentRouterAgent",
-    "SlotFillingAgent",
-    "FeedSearchAgent",
-    "RankingAgent",
-    "ProductCardAgent",
-    "GuardrailsAgent",
-    "ResponseComposerAgent"
+    "ResponseComposerAgent",
+    "GuardrailsAgent"
   ],
-  "llm_used": true,
-  "intent_llm_used": true,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
+  "intent_llm_used": false,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -320,22 +396,20 @@ Debug:
 
 Пользователь:   vrs . 256 . 18 . 0  
 
-Время ответа: `4.64` сек.
+Время ответа: `0.06` сек.
 
 Ответ бота:
 
 ```text
-Нашёл для тебя подходящий вариант:
-
-1. Насос циркуляционный VALTEC RS 25/6-180 с гайками  
-   Артикул: VRS.256.18.0  
-   Бренд: VALTEC  
-   Цена: 4186 RUB  
-   Наличие: в наличии, 12 шт.  
-   Характеристики: артикул: VRS.256.18.0; полное наименование: Насос циркуляционный VALTEC RS 25/6-180 с гайками; штрихкод: 8056518344329  
+Нашёл подходящие варианты:
+1. Насос циркуляционный VALTEC RS 25/6-180 с гайками
+   Артикул: VRS.256.18.0
+   Бренд: VALTEC
+   Цена: 4186 RUB
+   Наличие: в наличии, 14 шт.
+   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 180
    Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-256-180-s-gaykami/
-
-Следующее действие: Показать аналоги.
+Могу показать сопоставимые аналоги.
 ```
 
 Товары:
@@ -359,14 +433,29 @@ Debug:
     "GuardrailsAgent",
     "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -374,7 +463,7 @@ Debug:
 
 Пользователь: это точно он?
 
-Время ответа: `4.7` сек.
+Время ответа: `0.04` сек.
 
 Ответ бота:
 
@@ -399,14 +488,29 @@ Debug:
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
-  "intent_llm_used": true,
-  "response_llm_used": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
+  "intent_llm_used": false,
+  "intent_llm_requested": true,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
   "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -418,7 +522,7 @@ Debug:
 
 Пользователь: кран шаровый
 
-Время ответа: `1.89` сек.
+Время ответа: `0.02` сек.
 
 Ответ бота:
 
@@ -432,21 +536,38 @@ Debug:
 {
   "intent": "broad_category",
   "category": "valves",
-  "slots": {},
+  "slots": {
+    "valve_kind": "шаровый кран"
+  },
   "agents_used": [
     "IntentRouterAgent",
     "SlotFillingAgent",
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
   "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -454,41 +575,40 @@ Debug:
 
 Пользователь: для воды, 1/2
 
-Время ответа: `5.4` сек.
+Время ответа: `0.23` сек.
 
 Ответ бота:
 
 ```text
-Нашёл для тебя подходящие краны под 1/2 дюйма:
-
-1. Кран шаровой BASE, рукоятка бабочка 1/2" вн.-вн.  
-   Артикул: VT.217.N.04  
-   Бренд: VALTEC  
-   Цена: 452 RUB  
-   Наличие: в наличии, 57 шт.  
+Нашёл подходящие варианты:
+1. Кран шаровой Rommer с американкой 1/2" ВН/НР, ручка бабочка
+   Артикул: RBV-0005-2510215
+   Бренд: ROMMER
+   Цена: 395 RUB
+   Наличие: в наличии, 1 шт.
+   Характеристики: диаметр подключения, дюйм: 1/2; тип присоединения: Резьбовой; полное наименование: Кран шаровый Rommer с американкой 1/2" ВН/НР, ручка бабочка
+   Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-rommer/kran-sharovyj-rommer-s-amerikankoj-1-2-vn-nr-ruchka-babochka/
+2. Кран шаровой MINI 1/2" вн.-нар.
+   Артикул: VT.331.N.04
+   Бренд: VALTEC
+   Цена: 449 RUB
+   Наличие: в наличии, 53 шт.
+   Характеристики: диаметр подключения, дюйм: 1/2; тип присоединения: Резьбовой; артикул: VT.331.N.04
+   Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-mini-12-vn-nar/
+3. Кран шаровой BASE, рукоятка бабочка 1/2" вн.-вн.
+   Артикул: VT.217.N.04
+   Бренд: VALTEC
+   Цена: 452 RUB
+   Наличие: в наличии, 43 шт.
+   Характеристики: диаметр подключения, дюйм: 1/2; тип присоединения: Резьбовой; артикул: VT.217.N.04
    Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/
-
-2. Кран шаровой BASE, рукоятка бабочка 1/2" вн.-нар.  
-   Артикул: VT.218.N.04  
-   Бренд: VALTEC  
-   Цена: 482 RUB  
-   Наличие: в наличии, 233 шт.  
-   Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-nar/
-
-3. Кран шаровой BASE, стальная рукоятка 1/2" вн.-вн.  
-   Артикул: VT.214.N.04  
-   Бренд: VALTEC  
-   Цена: 503 RUB  
-   Наличие: в наличии, 2 шт.  
-   Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-stalnaya-rukoyatka-12-vn-vn/
-
-Сравни — и выбирай!
+Могу сравнить эти варианты по главным отличиям для вашей задачи.
 ```
 
 Товары:
-- `VT.217.N.04` | Кран шаровой BASE, рукоятка бабочка 1/2&quot; вн.-вн. | 452.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/
-- `VT.218.N.04` | Кран шаровой BASE, рукоятка бабочка 1/2&quot; вн.-нар. | 482.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-nar/
-- `VT.214.N.04` | Кран шаровой BASE, стальная рукоятка 1/2&quot; вн.-вн. | 503.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-stalnaya-rukoyatka-12-vn-vn/
+- `RBV-0005-2510215` | Кран шаровой Rommer с американкой 1/2" ВН/НР, ручка бабочка | 395.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-rommer/kran-sharovyj-rommer-s-amerikankoj-1-2-vn-nr-ruchka-babochka/
+- `VT.331.N.04` | Кран шаровой MINI 1/2" вн.-нар. | 449.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-mini-12-vn-nar/
+- `VT.217.N.04` | Кран шаровой BASE, рукоятка бабочка 1/2" вн.-вн. | 452.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/
 
 Debug:
 
@@ -497,6 +617,7 @@ Debug:
   "intent": "attribute_request",
   "category": "valves",
   "slots": {
+    "valve_kind": "шаровый кран",
     "size_inch": "1/2",
     "application": "вода"
   },
@@ -509,14 +630,29 @@ Debug:
     "GuardrailsAgent",
     "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -528,7 +664,7 @@ Debug:
 
 Пользователь: нужен насос
 
-Время ответа: `1.58` сек.
+Время ответа: `0.02` сек.
 
 Ответ бота:
 
@@ -551,14 +687,29 @@ Debug:
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
   "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -566,40 +717,13 @@ Debug:
 
 Пользователь: для отопления, 130 мм
 
-Время ответа: `4.67` сек.
+Время ответа: `0.04` сек.
 
 Ответ бота:
 
 ```text
-Нашёл подходящие варианты:
-1. Насос циркуляционный VALTEC RS 25/6-130 с гайками
-   Артикул: VRS.256.13.0
-   Бренд: VALTEC
-   Цена: 4311 RUB
-   Наличие: в наличии, 12 шт.
-   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130
-   Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-256-130-s-gaykami/
-2. Насос циркуляционный Wilo Star RS 25/6-130-RK
-   Артикул: 9168934
-   Бренд: Wilo
-   Цена: 7717 RUB
-   Наличие: в наличии, 10 шт.
-   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130
-   Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-wilo-star-rs-25-6-130-rk/
-3. Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK
-   Артикул: 2459900
-   Бренд: Wilo
-   Цена: 11401 RUB
-   Наличие: в наличии, 10 шт.
-   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130-180
-   Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-s-montazhnymi-adapterami-i-gajkami-wilo-star-rs-25-6-130-180-rk/
-Следующее действие: Сравнить.
+Для точного подбора циркуляционного насоса ещё уточните: напор (например 4 или 6 м). По возможности также укажите присоединение (обычно 25 или 32); либо просто пришлите полную маркировку старого насоса.
 ```
-
-Товары:
-- `VRS.256.13.0` | Насос циркуляционный VALTEC RS 25/6-130 с гайками | 4311.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-256-130-s-gaykami/
-- `9168934` | Насос циркуляционный Wilo Star RS 25/6-130-RK | 7717.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-wilo-star-rs-25-6-130-rk/
-- `2459900` | Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK | 11401.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-s-montazhnymi-adapterami-i-gajkami-wilo-star-rs-25-6-130-180-rk/
 
 Debug:
 
@@ -615,20 +739,122 @@ Debug:
   "agents_used": [
     "IntentRouterAgent",
     "SlotFillingAgent",
+    "ResponseComposerAgent",
+    "GuardrailsAgent"
+  ],
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
+  "intent_llm_used": false,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
+  "topic_changed": false,
+  "products_loaded_from": "cache"
+}
+```
+
+### Ход 3
+
+Пользователь: 25/6
+
+Время ответа: `0.18` сек.
+
+Ответ бота:
+
+```text
+Нашёл подходящие варианты:
+1. Насос циркуляционный VALTEC RS 25/6-130 с гайками
+   Артикул: VRS.256.13.0
+   Бренд: VALTEC
+   Цена: 4311 RUB
+   Наличие: в наличии, 9 шт.
+   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130
+   Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-256-130-s-gaykami/
+2. Насос циркуляционный Wilo Star RS 25/6-130-RK
+   Артикул: 9168934
+   Бренд: Wilo
+   Цена: 7148 RUB
+   Наличие: в наличии, 9 шт.
+   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130
+   Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-wilo-star-rs-25-6-130-rk/
+3. Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK
+   Артикул: 2459900
+   Бренд: Wilo
+   Цена: 10521 RUB
+   Наличие: в наличии, 9 шт.
+   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130-180
+   Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-s-montazhnymi-adapterami-i-gajkami-wilo-star-rs-25-6-130-180-rk/
+Могу сравнить эти варианты по главным отличиям для вашей задачи.
+
+Кстати, к насосу часто ставят два шаровых крана с американкой — так его можно снять, не сливая систему. Если нужно, напишите «кран с американкой».
+```
+
+Товары:
+- `VRS.256.13.0` | Насос циркуляционный VALTEC RS 25/6-130 с гайками | 4311.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-256-130-s-gaykami/
+- `9168934` | Насос циркуляционный Wilo Star RS 25/6-130-RK | 7148.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-wilo-star-rs-25-6-130-rk/
+- `2459900` | Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK | 10521.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-s-montazhnymi-adapterami-i-gajkami-wilo-star-rs-25-6-130-180-rk/
+
+Debug:
+
+```json
+{
+  "intent": "attribute_request",
+  "category": "pumps",
+  "slots": {
+    "product_kind": "насос",
+    "mounting_length_mm": 130,
+    "pump_type": "циркуляционный",
+    "connection_size": 25,
+    "head_m": 6.0,
+    "companion_hint_pumps": true
+  },
+  "agents_used": [
+    "IntentRouterAgent",
+    "SlotFillingAgent",
     "FeedSearchAgent",
     "RankingAgent",
     "ProductCardAgent",
     "GuardrailsAgent",
     "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -640,7 +866,7 @@ Debug:
 
 Пользователь: котёл электрический
 
-Время ответа: `1.51` сек.
+Время ответа: `0.02` сек.
 
 Ответ бота:
 
@@ -655,7 +881,9 @@ Debug:
   "intent": "broad_category",
   "category": "boilers",
   "slots": {
-    "boiler_type": "электрический"
+    "boiler_type": "электрический",
+    "has_electricity": true,
+    "heat_sources": "электричество"
   },
   "agents_used": [
     "IntentRouterAgent",
@@ -663,14 +891,29 @@ Debug:
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
   "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -678,24 +921,42 @@ Debug:
 
 Пользователь: 95 метров, 380
 
-Время ответа: `4.57` сек.
+Время ответа: `0.24` сек.
 
 Ответ бота:
 
 ```text
-Для площади 95 м² мощность — ориентировочная, поэтому привожу вариант без инженерного расчёта.  
-1. Котел электрический Arderia E9, 9 кВт  
-   Артикул: 2202210  
-   Бренд: Arderia  
-   Цена: 32602 RUB  
-   Наличие: в наличии, 2 шт.  
-   Характеристики: мощность, квт: 9; тип котла: Электрический; количество контуров: Одноконтурный  
-   Ссылка: https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-elektricheskij-arderia-e9-9-kvt/  
-Следующее действие: Показать аналоги.
+Для 95 м² предварительный ориентир — не меньше примерно 9.5 кВт до поправок на теплопотери и ГВС. Позиции ниже этого ориентира показываю только как пограничные: не считаю их достаточными или имеющими запас без теплотехнического расчёта.
+1. Котел электрический Эван NEXT-9 (220/380)
+   Артикул: 12909
+   Бренд: ЭВАН
+   Цена: 15971 RUB
+   Наличие: нет в наличии, 0 шт.
+   Характеристики: мощность, квт: 9; тип котла: Электрический; количество контуров: Одноконтурный; отапливаемая площадь, м²: 90
+   Ссылка: https://www.vestatrade.ru/kotelnoe-oborudovanie/kotel-elektricheskij/kotelnoe-oborudovanie-evan/kotel-elektricheskiy-evan-next-9-220380/
+2. Котел электрический Эван NEXT-12 (380)
+   Артикул: 12912
+   Бренд: ЭВАН
+   Цена: 17665 RUB
+   Наличие: нет в наличии, 0 шт.
+   Характеристики: мощность, квт: 12; тип котла: Электрический; количество контуров: Одноконтурный; отапливаемая площадь, м²: 120
+   Ссылка: https://www.vestatrade.ru/kotelnoe-oborudovanie/kotel-elektricheskij/kotelnoe-oborudovanie-evan/kotel-elektricheskiy-evan-next-12-380/
+3. Котел электрический Эван NEXT-14 (380)
+   Артикул: 12914
+   Бренд: ЭВАН
+   Цена: 20165 RUB
+   Наличие: нет в наличии, 0 шт.
+   Характеристики: мощность, квт: 14; тип котла: Электрический; количество контуров: Одноконтурный; отапливаемая площадь, м²: 140
+   Ссылка: https://www.vestatrade.ru/kotelnoe-oborudovanie/kotel-elektricheskij/kotelnoe-oborudovanie-evan/kotel-elektricheskiy-evan-next-14-380/
+Могу сравнить эти варианты по главным отличиям для вашей задачи.
+
+Кстати, у настенных котлов циркуляционный насос часто уже встроен, поэтому отдельный насос нужен не всегда. Его добавляют для тёплого пола, бойлера, нескольких контуров или длинной системы; также обычно проверяют группу безопасности и трубы для обвязки.
 ```
 
 Товары:
-- `2202210` | Котел электрический Arderia E9, 9 кВт | 32602.0 RUB | в наличии | https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-elektricheskij-arderia-e9-9-kvt/
+- `12909` | Котел электрический Эван NEXT-9 (220/380) | 15971.0 RUB | нет в наличии | https://www.vestatrade.ru/kotelnoe-oborudovanie/kotel-elektricheskij/kotelnoe-oborudovanie-evan/kotel-elektricheskiy-evan-next-9-220380/
+- `12912` | Котел электрический Эван NEXT-12 (380) | 17665.0 RUB | нет в наличии | https://www.vestatrade.ru/kotelnoe-oborudovanie/kotel-elektricheskij/kotelnoe-oborudovanie-evan/kotel-elektricheskiy-evan-next-12-380/
+- `12914` | Котел электрический Эван NEXT-14 (380) | 20165.0 RUB | нет в наличии | https://www.vestatrade.ru/kotelnoe-oborudovanie/kotel-elektricheskij/kotelnoe-oborudovanie-evan/kotel-elektricheskiy-evan-next-14-380/
 
 Debug:
 
@@ -705,8 +966,11 @@ Debug:
   "category": "boilers",
   "slots": {
     "boiler_type": "электрический",
+    "has_electricity": true,
+    "heat_sources": "электричество",
+    "voltage_v": 380,
     "area_m2": 95.0,
-    "voltage_v": 380
+    "companion_hint_boilers": true
   },
   "agents_used": [
     "IntentRouterAgent",
@@ -717,14 +981,29 @@ Debug:
     "GuardrailsAgent",
     "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -736,7 +1015,7 @@ Debug:
 
 Пользователь: нужна труба
 
-Время ответа: `1.52` сек.
+Время ответа: `0.02` сек.
 
 Ответ бота:
 
@@ -759,14 +1038,29 @@ Debug:
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
   "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -774,26 +1068,42 @@ Debug:
 
 Пользователь: для отопления, 25 мм
 
-Время ответа: `4.91` сек.
+Время ответа: `0.11` сек.
 
 Ответ бота:
 
 ```text
-Ориентир по мощности для 100 м² приблизительный, поэтому показываю варианты без инженерного расчёта.
-1. Котел электрический Arderia E9, 9 кВт
-   Артикул: 2202210
-   Бренд: Arderia
-   Цена: 32602 RUB
+Нашёл подходящие варианты:
+1. Труба отопит. 25х3,5 мм РЕХАУ PINK, бухта 50м
+   Артикул: 11360623050
+   Бренд: РЕХАУ
+   Цена: 100 RUB
+   Наличие: в наличии, 35 шт.
+   Характеристики: полное наименование: Труба отопит. 25х3,5 мм Rehau RAUTITAN pink, бухта 50м
+   Ссылка: https://www.vestatrade.ru/akcionnye-tovary-spb/truba-otopit-25h35-mm-rehau-rautitan-pink-buhta-50m/
+2. Труба РОСТерм армированная стекловолокном PN 25 (SDR 6) белый 25ммх4,2мм 2м
+   Артикул: PR-AQS6-25/2m
+   Бренд: РОСТерм
+   Цена: 128 RUB
+   Наличие: в наличии, 79 шт.
+   Характеристики: основной материал: Полипропилен; диаметр (мм): 25; артикул: PR-AQS6-25/2m
+   Ссылка: https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-polipropilenovye-rosterm/truba-rosterm-armirovannaja-steklovoloknom-pn-25-sdr-6-belyj-25mmh42mm-2m/
+3. Труба PPRC армир. стекловолокном RUBIS 25мм PN20 SDR 7.4 Pro Aqua
+   Артикул: PA35010P
+   Бренд: PRO AQUA
+   Цена: 133 RUB
    Наличие: в наличии, 2 шт.
-   Характеристики: мощность, квт: 9; тип котла: Электрический; количество контуров: Одноконтурный
-   Ссылка: https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-elektricheskij-arderia-e9-9-kvt/
-Следующее действие: Показать аналоги.
+   Характеристики: артикул: PA35010P; полное наименование: Труба PPRC армир. стекловолокном RUBIS 25мм PN20 SDR 7.4 Pro Aqua
+   Ссылка: https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-polipropilenovye-pro-aqua/truba-pprc-armir-steklovoloknom-rubis-25mm-pn20-sdr-74-pro-aqua/
+Могу сравнить эти варианты по главным отличиям для вашей задачи.
+
+Кстати, к трубам обычно нужны краны и переходники. Если нужно, напишите, например, «кран 1/2».
 ```
 
 Товары:
-- `VTp.700.FB20.25` | Труба PP-FIBER арм. стекл., PN 20, 25 MM (белый) | 168.0 RUB | в наличии | https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-belye-valtec/truba-pp-fiber-arm-stekl-pn-20-25-mm-belyy/
-- `VTp.700.AL25.20` | Труба PP-ALUX, арм. алюминием, PN 25, 20 MM (белый) | 181.0 RUB | в наличии | https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-belye-valtec/truba-pp-alux-arm-alyuminiem-pn-25-20-mm-belyy/
-- `VTp.700.0020.25` | Труба PN 20, 25 MM (белый) | 182.0 RUB | в наличии | https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-belye-valtec/truba-pn-20-25-mm-belyy/
+- `11360623050` | Труба отопит. 25х3,5 мм РЕХАУ PINK, бухта 50м | 100.0 RUB | в наличии | https://www.vestatrade.ru/akcionnye-tovary-spb/truba-otopit-25h35-mm-rehau-rautitan-pink-buhta-50m/
+- `PR-AQS6-25/2m` | Труба РОСТерм армированная стекловолокном PN 25 (SDR 6) белый 25ммх4,2мм 2м | 128.0 RUB | в наличии | https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-polipropilenovye-rosterm/truba-rosterm-armirovannaja-steklovoloknom-pn-25-sdr-6-belyj-25mmh42mm-2m/
+- `PA35010P` | Труба PPRC армир. стекловолокном RUBIS 25мм PN20 SDR 7.4 Pro Aqua | 133.0 RUB | в наличии | https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-polipropilenovye-pro-aqua/truba-pprc-armir-steklovoloknom-rubis-25mm-pn20-sdr-74-pro-aqua/
 
 Debug:
 
@@ -803,8 +1113,9 @@ Debug:
   "category": "pipes",
   "slots": {
     "element_type": "труба",
-    "pipe_purpose": "отопление/водоснабжение",
-    "diameter_mm": 25
+    "pipe_purpose": "отопление",
+    "diameter_mm": 25,
+    "companion_hint_pipes": true
   },
   "agents_used": [
     "IntentRouterAgent",
@@ -815,33 +1126,46 @@ Debug:
     "GuardrailsAgent",
     "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
 ## 9. Широкий запрос труба для воды
 
-Категория: `трубы`. Приоритет: `P1`. Вердикт: **PARTIAL**.
-Проблемы:
-- clarify_first: не найдены ожидаемые маркеры ['холод', 'горяч', 'диаметр']
+Категория: `трубы`. Приоритет: `P1`. Вердикт: **PASS**.
 
 ### Ход 1
 
 Пользователь: труба для воды
 
-Время ответа: `1.22` сек.
+Время ответа: `0.03` сек.
 
 Ответ бота:
 
 ```text
-Уточните диаметр в мм.
+Уточните холодная или горячая вода и диаметр в мм.
 ```
 
 Debug:
@@ -851,7 +1175,7 @@ Debug:
   "intent": "attribute_request",
   "category": "pipes",
   "slots": {
-    "pipe_purpose": "отопление/водоснабжение",
+    "pipe_purpose": "водоснабжение",
     "element_type": "труба"
   },
   "agents_used": [
@@ -860,14 +1184,29 @@ Debug:
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
   "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -875,41 +1214,42 @@ Debug:
 
 Пользователь: для горячей, 20 мм
 
-Время ответа: `6.69` сек.
+Время ответа: `0.14` сек.
 
 Ответ бота:
 
 ```text
-Нашёл для тебя подходящие варианты — вот что есть в наличии:
+Нашёл подходящие варианты:
+1. Труба ППР PN20 для систем ХВС и ГВС 20x3,4 Ekoplastik
+   Артикул: STR020P20X
+   Бренд: Ekoplastik
+   Цена: 70 RUB
+   Наличие: в наличии, 3 шт.
+   Характеристики: артикул: STR020P20X; полное наименование: Труба ППР PN20 для систем ХВС и ГВС 20x3,4 Ekoplastik
+   Ссылка: https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-polipropilenovye-ecoplastik/truba-ppr-pn20-dlya-sistem-hvs-i-gvs-20x34-ekoplastik/
+2. Труба РОСТерм армированная стекловолокном PN 25 (SDR 6) белый 20ммх3,4мм 4м
+   Артикул: PR-AQS6-20
+   Бренд: РОСТерм
+   Цена: 85 RUB
+   Наличие: в наличии, 16 шт.
+   Характеристики: основной материал: Полипропилен; диаметр (мм): 20; артикул: PR-AQS6-20
+   Ссылка: https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-polipropilenovye-rosterm/truba-rosterm-armirovannaja-steklovoloknom-pn-25-sdr-6-belyj-20mmh34mm-4m/
+3. Труба РОСТерм армированная стекловолокном PN 25 (SDR 6) белый 20ммх3,4мм 2м
+   Артикул: PR-AQS6-20/2m
+   Бренд: РОСТерм
+   Цена: 85 RUB
+   Наличие: в наличии, 226 шт.
+   Характеристики: основной материал: Полипропилен; диаметр (мм): 20; артикул: PR-AQS6-20/2m
+   Ссылка: https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-polipropilenovye-rosterm/truba-rosterm-armirovannaja-steklovoloknom-pn-25-sdr-6-belyj-20mmh34mm-2m/
+Могу сравнить эти варианты по главным отличиям для вашей задачи.
 
-1. Труба PP-FIBER арм. стекл., PN 20, 20 мм (белый)  
-   Артикул: VTp.700.FB20.20  
-   Бренд: VALTEC  
-   Цена: 114 RUB  
-   Наличие: в наличии, 1330 шт.  
-   Ссылка: https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-belye-valtec/truba-pp-fiber-arm-stekl-pn-20-20-mm-belyy/
-
-2. Труба PN 20, 20 мм (белый)  
-   Артикул: VTp.700.0020.20  
-   Бренд: VALTEC  
-   Цена: 117 RUB  
-   Наличие: в наличии, 48 шт.  
-   Ссылка: https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-belye-valtec/truba-pn-20-20-mm-belyy/
-
-3. Труба PP-FIBER арм. стекл., PN 20, 25 мм (белый)  
-   Артикул: VTp.700.FB20.25  
-   Бренд: VALTEC  
-   Цена: 168 RUB  
-   Наличие: в наличии, 952 шт.  
-   Ссылка: https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-belye-valtec/truba-pp-fiber-arm-stekl-pn-20-25-mm-belyy/
-
-Сравнивай — подберёшь идеальный вариант.
+Кстати, к трубам обычно нужны краны и переходники. Если нужно, напишите, например, «кран 1/2».
 ```
 
 Товары:
-- `VTp.700.FB20.20` | Труба PP-FIBER арм. стекл., PN 20, 20 MM (белый) | 114.0 RUB | в наличии | https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-belye-valtec/truba-pp-fiber-arm-stekl-pn-20-20-mm-belyy/
-- `VTp.700.0020.20` | Труба PN 20, 20 MM (белый) | 117.0 RUB | в наличии | https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-belye-valtec/truba-pn-20-20-mm-belyy/
-- `VTp.700.FB20.25` | Труба PP-FIBER арм. стекл., PN 20, 25 MM (белый) | 168.0 RUB | в наличии | https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-belye-valtec/truba-pp-fiber-arm-stekl-pn-20-25-mm-belyy/
+- `STR020P20X` | Труба ППР PN20 для систем ХВС и ГВС 20x3,4 Ekoplastik | 70.0 RUB | в наличии | https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-polipropilenovye-ecoplastik/truba-ppr-pn20-dlya-sistem-hvs-i-gvs-20x34-ekoplastik/
+- `PR-AQS6-20` | Труба РОСТерм армированная стекловолокном PN 25 (SDR 6) белый 20ммх3,4мм 4м | 85.0 RUB | в наличии | https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-polipropilenovye-rosterm/truba-rosterm-armirovannaja-steklovoloknom-pn-25-sdr-6-belyj-20mmh34mm-4m/
+- `PR-AQS6-20/2m` | Труба РОСТерм армированная стекловолокном PN 25 (SDR 6) белый 20ммх3,4мм 2м | 85.0 RUB | в наличии | https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-polipropilenovye-rosterm/truba-rosterm-armirovannaja-steklovoloknom-pn-25-sdr-6-belyj-20mmh34mm-2m/
 
 Debug:
 
@@ -918,10 +1258,11 @@ Debug:
   "intent": "attribute_request",
   "category": "pipes",
   "slots": {
-    "pipe_purpose": "отопление/водоснабжение",
+    "pipe_purpose": "водоснабжение",
     "element_type": "труба",
     "water_temperature": "горячая",
-    "diameter_mm": 20
+    "diameter_mm": 20,
+    "companion_hint_pipes": true
   },
   "agents_used": [
     "IntentRouterAgent",
@@ -932,28 +1273,41 @@ Debug:
     "GuardrailsAgent",
     "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
 ## 10. Широкий запрос не знаю какую трубу
 
-Категория: `трубы`. Приоритет: `P1`. Вердикт: **PARTIAL**.
-Проблемы:
-- clarify_later: не найдены ожидаемые маркеры ['холод', 'горяч', 'диаметр']
+Категория: `трубы`. Приоритет: `P1`. Вердикт: **PASS**.
 
 ### Ход 1
 
 Пользователь: надо трубу, не знаю какую
 
-Время ответа: `4.04` сек.
+Время ответа: `0.04` сек.
 
 Ответ бота:
 
@@ -974,14 +1328,29 @@ Debug:
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
-  "intent_llm_used": true,
-  "response_llm_used": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
+  "intent_llm_used": false,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
   "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -989,12 +1358,12 @@ Debug:
 
 Пользователь: в квартиру, для воды
 
-Время ответа: `1.63` сек.
+Время ответа: `0.03` сек.
 
 Ответ бота:
 
 ```text
-Уточните диаметр в мм.
+Уточните холодная или горячая вода и диаметр в мм.
 ```
 
 Debug:
@@ -1004,7 +1373,7 @@ Debug:
   "intent": "attribute_request",
   "category": "pipes",
   "slots": {
-    "pipe_purpose": "отопление/водоснабжение"
+    "pipe_purpose": "водоснабжение"
   },
   "agents_used": [
     "IntentRouterAgent",
@@ -1012,14 +1381,29 @@ Debug:
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
   "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -1031,7 +1415,7 @@ Debug:
 
 Пользователь: канализационная труба 50
 
-Время ответа: `1.66` сек.
+Время ответа: `0.02` сек.
 
 Ответ бота:
 
@@ -1056,14 +1440,29 @@ Debug:
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
   "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -1071,44 +1470,42 @@ Debug:
 
 Пользователь: внутренняя, труба, 500 мм
 
-Время ответа: `15.66` сек.
+Время ответа: `0.23` сек.
 
 Ответ бота:
 
 ```text
-Нет точного совпадения с запросом «внутренняя, труба, 500 мм», но вот ближайшие варианты — проверьте, подойдут ли характеристики:
+Нашёл подходящие варианты:
+1. Труба канализационная, HTEM, 50*500"20
+   Артикул: 112020
+   Бренд: OSTENDORF
+   Цена: 138 RUB
+   Наличие: в наличии, 341 шт.
+   Характеристики: тип товара: Труба; артикул: 112020; полное наименование: Труба канализационная, HTEM, 50*500"20
+   Ссылка: https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/truba-kanalizacionnaya-htem-5050020/
+2. Труба PP д.50*500 (Синикон) Комфорт Плюс
+   Артикул: 500045.К
+   Бренд: СИНИКОН
+   Цена: 226 RUB
+   Наличие: в наличии, 3 шт.
+   Характеристики: артикул: 500045.К; полное наименование: Труба PP д.50*500 (Синикон) Комфорт Плюс
+   Ссылка: https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-besshumnaya-sinikon/truba-pp-d50500-sinikon-komfort-plyus/
+3. Труба с раструбом 50 х 500 мм (СИНИКОН)
+   Артикул: 500045
+   Бренд: СИНИКОН
+   Цена: 144 RUB
+   Наличие: нет в наличии, 0 шт.
+   Характеристики: тип товара: Труба; артикул: 500045; полное наименование: Труба с раструбом 50 х 500 мм (СИНИКОН)
+   Ссылка: https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-sinikon/truba-s-rastrubom-50-h-500-mm-sinikon/
+Могу сравнить эти варианты по главным отличиям для вашей задачи.
 
-1. Труба канализационная, HTEM, 50*1500"10  
-   Артикул: 112050  
-   Бренд: OSTENDORF  
-   Цена: 286 RUB  
-   Наличие: в наличии, 71 шт.  
-   Характеристики: тип товара: Труба; артикул: 112050; полное наименование: Труба канализационная, HTEM, 50*1500"10  
-   Ссылка: https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/truba-kanalizacionnaya-htem-50150010/
-
-2. Труба канализационная, HTEM, 50*2000"10  
-   Артикул: 112060  
-   Бренд: OSTENDORF  
-   Цена: 355 RUB  
-   Наличие: в наличии, 156 шт.  
-   Характеристики: тип товара: Труба; артикул: 112060; полное наименование: Труба канализационная, HTEM, 50*2000"10  
-   Ссылка: https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/truba-kanalizacionnaya-htem-50200010/
-
-3. Труба канализационная, HTEM, 50*750"10  
-   Артикул: 112030  
-   Бренд: OSTENDORF  
-   Цена: 163 RUB  
-   Наличие: нет в наличии, 0 шт.  
-   Характеристики: тип товара: Труба; артикул: 112030; полное наименование: Труба канализационная, HTEM, 50*750"10  
-   Ссылка: https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/truba-kanalizacionnaya-htem-5075010/
-
-Следующее действие: Сравнить.
+Кстати, к канализационной трубе часто берут отводы и муфты того же диаметра. Если нужно, напишите, например, «отвод 50».
 ```
 
 Товары:
-- `112050` | Труба канализационная, HTEM, 50*1500&quot;10 | 286.0 RUB | в наличии | https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/truba-kanalizacionnaya-htem-50150010/
-- `112060` | Труба канализационная, HTEM, 50*2000&quot;10 | 355.0 RUB | в наличии | https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/truba-kanalizacionnaya-htem-50200010/
-- `112030` | Труба канализационная, HTEM, 50*750&quot;10 | 163.0 RUB | нет в наличии | https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/truba-kanalizacionnaya-htem-5075010/
+- `112020` | Труба канализационная, HTEM, 50*500"20 | 138.0 RUB | в наличии | https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/truba-kanalizacionnaya-htem-5050020/
+- `500045.К` | Труба PP д.50*500 (Синикон) Комфорт Плюс | 226.0 RUB | в наличии | https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-besshumnaya-sinikon/truba-pp-d50500-sinikon-komfort-plyus/
+- `500045` | Труба с раструбом 50 х 500 мм (СИНИКОН) | 144.0 RUB | нет в наличии | https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-sinikon/truba-s-rastrubom-50-h-500-mm-sinikon/
 
 Debug:
 
@@ -1121,24 +1518,41 @@ Debug:
     "element_type": "труба",
     "diameter_mm": 50,
     "sewer_scope": "внутренняя",
-    "length_mm": 500
+    "length_mm": 500,
+    "companion_hint_sewer": true
   },
   "agents_used": [
     "IntentRouterAgent",
     "SlotFillingAgent",
     "FeedSearchAgent",
+    "RankingAgent",
     "ProductCardAgent",
     "GuardrailsAgent",
     "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -1150,7 +1564,7 @@ Debug:
 
 Пользователь: мне отвод 110
 
-Время ответа: `1.34` сек.
+Время ответа: `0.03` сек.
 
 Ответ бота:
 
@@ -1175,14 +1589,29 @@ Debug:
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
   "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -1190,44 +1619,42 @@ Debug:
 
 Пользователь: внутренняя, 90
 
-Время ответа: `5.71` сек.
+Время ответа: `0.11` сек.
 
 Ответ бота:
 
 ```text
-Нет точного совпадения с запросом «внутренняя, 90°», но вот ближайшие варианты — проверьте, подойдут ли по характеристикам:
+Нашёл подходящие варианты:
+1. Отвод 87°, HTB, 110"20
+   Артикул: 115140
+   Бренд: OSTENDORF
+   Цена: 176 RUB
+   Наличие: в наличии, 115 шт.
+   Характеристики: тип товара: Отвод; артикул: 115140; полное наименование: Отвод 87°, HTB, 110"20
+   Ссылка: https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/otvod-87deg-htb-11020/
+2. Отвод 110 х 90 с выходом 50 (фронтальный, тыл.)
+   Артикул: 10010587F
+   Бренд: no name
+   Цена: 374 RUB
+   Наличие: в наличии, 13 шт.
+   Характеристики: тип товара: Отвод; полное наименование: Отвод 110 х 90 с выходом 50 (фронтальный, тыл.)
+   Ссылка: https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-politek-simtek/otvod-110-h-90-s-vyhodom-50-frontalnyy-tyl/
+3. Отвод 110 х 90 с выходом 50 (правый)
+   Артикул: 10010587R
+   Бренд: no name
+   Цена: 374 RUB
+   Наличие: в наличии, 17 шт.
+   Характеристики: тип товара: Отвод; полное наименование: Отвод 110 х 90 с выходом 50 (правый)
+   Ссылка: https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-politek-simtek/otvod-110-h-90-s-vyhodom-50-pravyy/
+Могу сравнить эти варианты по главным отличиям для вашей задачи.
 
-1. Отвод 87°, HTB, 50"20  
-   Артикул: 112140  
-   Бренд: OSTENDORF  
-   Цена: 50 RUB  
-   Наличие: в наличии, 472 шт.  
-   Характеристики: тип товара: Отвод; артикул: 112140; полное наименование: Отвод 87°, HTB, 50"20  
-   Ссылка: https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/otvod-87deg-htb-5020/
-
-2. Отвод 15°, HTB, 32"20  
-   Артикул: 110100  
-   Бренд: OSTENDORF  
-   Цена: 63 RUB  
-   Наличие: в наличии, 21 шт.  
-   Характеристики: тип товара: Отвод; артикул: 110100; полное наименование: Отвод 15°, HTB, 32"20  
-   Ссылка: https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/otvod-15deg-htb-3220/
-
-3. Отвод 30°, HTB, 110"20  
-   Артикул: 115110  
-   Бренд: OSTENDORF  
-   Цена: 156 RUB  
-   Наличие: в наличии, 71 шт.  
-   Характеристики: тип товара: Отвод; артикул: 115110; полное наименование: Отвод 30°, HTB, 110"20  
-   Ссылка: https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/otvod-30deg-htb-11020/
-
-Сравните — подойдёт ли вам по углу и размеру.
+Кстати, к канализационной трубе часто берут отводы и муфты того же диаметра. Если нужно, напишите, например, «отвод 50».
 ```
 
 Товары:
-- `112140` | Отвод 87°, HTB, 50&quot;20 | 50.0 RUB | в наличии | https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/otvod-87deg-htb-5020/
-- `110100` | Отвод 15°, HTB, 32&quot;20 | 63.0 RUB | в наличии | https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/otvod-15deg-htb-3220/
-- `115110` | Отвод 30°, HTB, 110&quot;20 | 156.0 RUB | в наличии | https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/otvod-30deg-htb-11020/
+- `115140` | Отвод 87°, HTB, 110"20 | 176.0 RUB | в наличии | https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/otvod-87deg-htb-11020/
+- `10010587F` | Отвод 110 х 90 с выходом 50 (фронтальный, тыл.) | 374.0 RUB | в наличии | https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-politek-simtek/otvod-110-h-90-s-vyhodom-50-frontalnyy-tyl/
+- `10010587R` | Отвод 110 х 90 с выходом 50 (правый) | 374.0 RUB | в наличии | https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-politek-simtek/otvod-110-h-90-s-vyhodom-50-pravyy/
 
 Debug:
 
@@ -1237,26 +1664,44 @@ Debug:
   "category": "sewer",
   "slots": {
     "element_type": "отвод",
-    "diameter_mm": 90,
+    "diameter_mm": 110,
     "pipe_purpose": "канализация",
-    "sewer_scope": "внутренняя"
+    "sewer_scope": "внутренняя",
+    "angle_deg": 90,
+    "companion_hint_sewer": true
   },
   "agents_used": [
     "IntentRouterAgent",
     "SlotFillingAgent",
     "FeedSearchAgent",
+    "RankingAgent",
     "ProductCardAgent",
     "GuardrailsAgent",
     "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -1268,7 +1713,7 @@ Debug:
 
 Пользователь: муфта на канализацию нужна
 
-Время ответа: `2.01` сек.
+Время ответа: `0.03` сек.
 
 Ответ бота:
 
@@ -1292,14 +1737,29 @@ Debug:
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
   "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -1307,25 +1767,26 @@ Debug:
 
 Пользователь: внутренняя, 50, соединительная
 
-Время ответа: `4.83` сек.
+Время ответа: `0.12` сек.
 
 Ответ бота:
 
 ```text
 Нашёл подходящие варианты:
+1. Муфта соединительная 50мм (СИНИКОН)
+   Артикул: 528003.R
+   Бренд: СИНИКОН
+   Цена: 94 RUB
+   Наличие: нет в наличии, 0 шт.
+   Характеристики: тип товара: Муфта; артикул: 528003.R; полное наименование: Муфта соединительная 50мм (СИНИКОН)
+   Ссылка: https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-sinikon/mufta-soedinitelnaya-50mm-sinikon/
+Могу показать сопоставимые аналоги.
 
-1. Муфта надвижная (ремонтная), HTU, 50"20  
-   Артикул: 112500  
-   Бренд: OSTENDORF  
-   Цена: 78 RUB  
-   Наличие: в наличии, 21 шт.  
-   Ссылка: https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/mufta-nadvizhnayaremontnaya-htu-5020/
-
-Следующее действие: Показать аналоги.
+Кстати, к канализационной трубе часто берут отводы и муфты того же диаметра. Если нужно, напишите, например, «отвод 50».
 ```
 
 Товары:
-- `112500` | Муфта надвижная(ремонтная), HTU, 50&quot;20 | 78.0 RUB | в наличии | https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/mufta-nadvizhnayaremontnaya-htu-5020/
+- `528003.R` | Муфта соединительная 50мм (СИНИКОН) | 94.0 RUB | нет в наличии | https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-sinikon/mufta-soedinitelnaya-50mm-sinikon/
 
 Debug:
 
@@ -1337,7 +1798,9 @@ Debug:
     "pipe_purpose": "канализация",
     "element_type": "муфта",
     "sewer_scope": "внутренняя",
-    "diameter_mm": 50
+    "coupling_type": "соединительная",
+    "diameter_mm": 50,
+    "companion_hint_sewer": true
   },
   "agents_used": [
     "IntentRouterAgent",
@@ -1348,14 +1811,29 @@ Debug:
     "GuardrailsAgent",
     "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -1367,12 +1845,12 @@ Debug:
 
 Пользователь: циркуляционный насос, подешевле
 
-Время ответа: `1.74` сек.
+Время ответа: `0.03` сек.
 
 Ответ бота:
 
 ```text
-Уточните монтажную длину и напор или модель старого насоса.
+Понял, нужен циркуляционный насос. Уточните присоединение, монтажную длину и напор или пришлите полную маркировку старого насоса.
 ```
 
 Debug:
@@ -1383,6 +1861,7 @@ Debug:
   "category": "pumps",
   "slots": {
     "pump_type": "циркуляционный",
+    "pump_use": "отопление",
     "cheap": true
   },
   "agents_used": [
@@ -1391,14 +1870,29 @@ Debug:
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
   "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -1406,7 +1900,155 @@ Debug:
 
 Пользователь: 25/6, 130 мм
 
-Время ответа: `9.1` сек.
+Время ответа: `0.19` сек.
+
+Ответ бота:
+
+```text
+Нашёл подходящие варианты:
+1. Насос циркуляционный Kromwell PS 25/6 130
+   Артикул: PS 25/6 130
+   Бренд: Kromwell
+   Цена: 2898 RUB
+   Наличие: нет в наличии, 0 шт.
+   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130
+   Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-kromwell/nasos-cirkulyacionnyj-kromwell-ps-25-6-130/
+2. Насос циркуляц. (отопл.) CP 25-60 130
+   Артикул: 95046
+   Бренд: UNIPUMP
+   Цена: 3207 RUB
+   Наличие: нет в наличии, 0 шт.
+   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130
+   Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/cirkulyacionnye-nasosy-unipump/nasos-cirkulyac-otopl-cp-25-60-130/
+3. Насос циркуляционный Rommer 25/60-130
+   Артикул: RCP-0002-2561301
+   Бренд: ROMMER
+   Цена: 3532 RUB
+   Наличие: нет в наличии, 0 шт.
+   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130
+   Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-rommer/nasos-cirkulyacionnyj-rommer-25-60-130/
+Могу показать сопоставимые аналоги.
+
+Кстати, к насосу часто ставят два шаровых крана с американкой — так его можно снять, не сливая систему. Если нужно, напишите «кран с американкой».
+```
+
+Товары:
+- `PS 25/6 130` | Насос циркуляционный Kromwell PS 25/6 130 | 2898.0 RUB | нет в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-kromwell/nasos-cirkulyacionnyj-kromwell-ps-25-6-130/
+- `95046` | Насос циркуляц. (отопл.) CP 25-60 130 | 3207.0 RUB | нет в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/cirkulyacionnye-nasosy-unipump/nasos-cirkulyac-otopl-cp-25-60-130/
+- `RCP-0002-2561301` | Насос циркуляционный Rommer 25/60-130 | 3532.0 RUB | нет в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-rommer/nasos-cirkulyacionnyj-rommer-25-60-130/
+
+Debug:
+
+```json
+{
+  "intent": "attribute_request",
+  "category": "pumps",
+  "slots": {
+    "pump_type": "циркуляционный",
+    "pump_use": "отопление",
+    "cheap": true,
+    "connection_size": 25,
+    "head_m": 6.0,
+    "mounting_length_mm": 130,
+    "companion_hint_pumps": true
+  },
+  "agents_used": [
+    "IntentRouterAgent",
+    "SlotFillingAgent",
+    "FeedSearchAgent",
+    "RankingAgent",
+    "ProductCardAgent",
+    "GuardrailsAgent",
+    "ResponseComposerAgent"
+  ],
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
+  "intent_llm_used": false,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": null,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
+  "topic_changed": false,
+  "products_loaded_from": "cache"
+}
+```
+
+## 15. Насос для отопления с вопросом почему
+
+Категория: `насосы`. Приоритет: `P0`. Вердикт: **PASS**.
+
+### Ход 1
+
+Пользователь: нужен насос для отопления
+
+Время ответа: `0.02` сек.
+
+Ответ бота:
+
+```text
+Понял, нужен циркуляционный насос. Уточните присоединение, монтажную длину и напор или пришлите полную маркировку старого насоса.
+```
+
+Debug:
+
+```json
+{
+  "intent": "attribute_request",
+  "category": "pumps",
+  "slots": {
+    "pump_type": "циркуляционный"
+  },
+  "agents_used": [
+    "IntentRouterAgent",
+    "SlotFillingAgent",
+    "ResponseComposerAgent",
+    "GuardrailsAgent"
+  ],
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
+  "intent_llm_used": false,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
+  "topic_changed": false,
+  "products_loaded_from": "cache"
+}
+```
+
+### Ход 2
+
+Пользователь: да, старый 25/6 130
+
+Время ответа: `0.31` сек.
 
 Ответ бота:
 
@@ -1416,151 +2058,32 @@ Debug:
    Артикул: VRS.256.13.0
    Бренд: VALTEC
    Цена: 4311 RUB
-   Наличие: в наличии, 12 шт.
+   Наличие: в наличии, 9 шт.
    Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130
    Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-256-130-s-gaykami/
 2. Насос циркуляционный Wilo Star RS 25/6-130-RK
    Артикул: 9168934
    Бренд: Wilo
-   Цена: 7717 RUB
-   Наличие: в наличии, 10 шт.
+   Цена: 7148 RUB
+   Наличие: в наличии, 9 шт.
    Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130
    Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-wilo-star-rs-25-6-130-rk/
 3. Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK
    Артикул: 2459900
    Бренд: Wilo
-   Цена: 11401 RUB
-   Наличие: в наличии, 10 шт.
+   Цена: 10521 RUB
+   Наличие: в наличии, 9 шт.
    Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130-180
    Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-s-montazhnymi-adapterami-i-gajkami-wilo-star-rs-25-6-130-180-rk/
-Следующее действие: Показать аналоги.
+Могу сравнить эти варианты по главным отличиям для вашей задачи.
+
+Кстати, к насосу часто ставят два шаровых крана с американкой — так его можно снять, не сливая систему. Если нужно, напишите «кран с американкой».
 ```
 
 Товары:
 - `VRS.256.13.0` | Насос циркуляционный VALTEC RS 25/6-130 с гайками | 4311.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-256-130-s-gaykami/
-- `9168934` | Насос циркуляционный Wilo Star RS 25/6-130-RK | 7717.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-wilo-star-rs-25-6-130-rk/
-- `2459900` | Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK | 11401.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-s-montazhnymi-adapterami-i-gajkami-wilo-star-rs-25-6-130-180-rk/
-
-Debug:
-
-```json
-{
-  "intent": "attribute_request",
-  "category": "pumps",
-  "slots": {
-    "pump_type": "циркуляционный",
-    "cheap": true,
-    "connection_size": 25,
-    "head_m": 6.0,
-    "mounting_length_mm": 130
-  },
-  "agents_used": [
-    "IntentRouterAgent",
-    "SlotFillingAgent",
-    "FeedSearchAgent",
-    "RankingAgent",
-    "ProductCardAgent",
-    "GuardrailsAgent",
-    "ResponseComposerAgent"
-  ],
-  "llm_used": true,
-  "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
-  "topic_changed": false,
-  "products_loaded_from": "feed"
-}
-```
-
-## 15. Насос для отопления с вопросом почему
-
-Категория: `насосы`. Приоритет: `P0`. Вердикт: **FAIL**.
-Проблемы:
-- clarify_first: не найдены ожидаемые маркеры ['циркуляц', 'стар']
-- нет объяснения логики подбора
-
-### Ход 1
-
-Пользователь: нужен насос для отопления
-
-Время ответа: `1.78` сек.
-
-Ответ бота:
-
-```text
-Уточните монтажную длину и напор или модель старого насоса.
-```
-
-Debug:
-
-```json
-{
-  "intent": "attribute_request",
-  "category": "pumps",
-  "slots": {
-    "pump_type": "циркуляционный"
-  },
-  "agents_used": [
-    "IntentRouterAgent",
-    "SlotFillingAgent",
-    "ResponseComposerAgent",
-    "GuardrailsAgent"
-  ],
-  "llm_used": true,
-  "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
-  "topic_changed": false,
-  "products_loaded_from": "feed"
-}
-```
-
-### Ход 2
-
-Пользователь: да, старый 25/6 130
-
-Время ответа: `11.81` сек.
-
-Ответ бота:
-
-```text
-Нашёл подходящие варианты — вот что подходит:
-
-1. Насос циркуляционный VALTEC RS 25/6-130 с гайками  
-   Артикул: VRS.256.13.0  
-   Бренд: VALTEC  
-   Цена: 4311 RUB  
-   Наличие: в наличии, 12 шт.  
-   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130  
-   Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-256-130-s-gaykami/
-
-2. Насос циркуляционный Wilo Star RS 25/6-130-RK  
-   Артикул: 9168934  
-   Бренд: Wilo  
-   Цена: 7717 RUB  
-   Наличие: в наличии, 10 шт.  
-   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130  
-   Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-wilo-star-rs-25-6-130-rk/
-
-3. Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK  
-   Артикул: 2459900  
-   Бренд: Wilo  
-   Цена: 11401 RUB  
-   Наличие: в наличии, 10 шт.  
-   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130-180  
-   Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-s-montazhnymi-adapterami-i-gajkami-wilo-star-rs-25-6-130-180-rk/
-
-Сравнивай — подберёшь идеальный вариант.
-```
-
-Товары:
-- `VRS.256.13.0` | Насос циркуляционный VALTEC RS 25/6-130 с гайками | 4311.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-256-130-s-gaykami/
-- `9168934` | Насос циркуляционный Wilo Star RS 25/6-130-RK | 7717.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-wilo-star-rs-25-6-130-rk/
-- `2459900` | Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK | 11401.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-s-montazhnymi-adapterami-i-gajkami-wilo-star-rs-25-6-130-180-rk/
+- `9168934` | Насос циркуляционный Wilo Star RS 25/6-130-RK | 7148.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-wilo-star-rs-25-6-130-rk/
+- `2459900` | Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK | 10521.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-s-montazhnymi-adapterami-i-gajkami-wilo-star-rs-25-6-130-180-rk/
 
 Debug:
 
@@ -1572,7 +2095,8 @@ Debug:
     "pump_type": "циркуляционный",
     "connection_size": 25,
     "head_m": 6.0,
-    "mounting_length_mm": 130
+    "mounting_length_mm": 130,
+    "companion_hint_pumps": true
   },
   "agents_used": [
     "IntentRouterAgent",
@@ -1583,14 +2107,29 @@ Debug:
     "GuardrailsAgent",
     "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -1598,60 +2137,76 @@ Debug:
 
 Пользователь: а почему ты это предлагаешь?
 
-Время ответа: `4.22` сек.
+Время ответа: `0.03` сек.
 
 Ответ бота:
 
 ```text
-Понимаю, ты хочешь уточнить — спасибо за вопрос!  
-Мы можем помочь подобрать товары по категориям: трубы, насосы, котлы, краны, канализация, радиаторная арматура.  
-Напиши, какой у тебя проект или задача — и я подскажу, что подойдёт.
+Потому что параметры из ваших уточнений совпадают с карточками товаров. Учёл: тип насоса: циркуляционный, присоединение: 25, напор: 6.0, монтажная длина: 130. Подходящие позиции: VRS.256.13.0, 9168934, 2459900.
 ```
+
+Товары:
+- `VRS.256.13.0` | Насос циркуляционный VALTEC RS 25/6-130 с гайками | 4311.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-256-130-s-gaykami/
+- `9168934` | Насос циркуляционный Wilo Star RS 25/6-130-RK | 7148.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-wilo-star-rs-25-6-130-rk/
+- `2459900` | Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK | 10521.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-s-montazhnymi-adapterami-i-gajkami-wilo-star-rs-25-6-130-180-rk/
 
 Debug:
 
 ```json
 {
-  "intent": "small_talk",
+  "intent": "unknown",
   "category": "other",
   "slots": {
     "pump_type": "циркуляционный",
     "connection_size": 25,
     "head_m": 6.0,
-    "mounting_length_mm": 130
+    "mounting_length_mm": 130,
+    "companion_hint_pumps": true
   },
   "agents_used": [
     "IntentRouterAgent",
-    "ResponseComposerAgent",
-    "GuardrailsAgent"
+    "ResponseComposerAgent"
   ],
-  "llm_used": true,
-  "intent_llm_used": true,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
+  "intent_llm_used": false,
+  "intent_llm_requested": true,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
 ## 16. Насос как Grundfos, но дешевле
 
-Категория: `насосы`. Приоритет: `P0`. Вердикт: **FAIL**.
-Проблемы:
-- clarify_first: не найдены ожидаемые маркеры ['модель', '25']
+Категория: `насосы`. Приоритет: `P0`. Вердикт: **PASS**.
 
 ### Ход 1
 
 Пользователь: насос как Grundfos, но дешевле
 
-Время ответа: `1.88` сек.
+Время ответа: `0.03` сек.
 
 Ответ бота:
 
 ```text
-Для какой задачи нужен насос: отопление, водоснабжение/полив, повышение давления или откачка воды?
+Уточните модель старого насоса или маркировку: например UPS 25-40/25-60, монтажную длину 130/180 мм и присоединение.
 ```
 
 Debug:
@@ -1661,7 +2216,7 @@ Debug:
   "intent": "cheap_request",
   "category": "pumps",
   "slots": {
-    "brand": "GRUNDFOS",
+    "reference_brand": "GRUNDFOS",
     "cheap": true,
     "product_kind": "насос"
   },
@@ -1671,14 +2226,29 @@ Debug:
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
   "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -1686,35 +2256,42 @@ Debug:
 
 Пользователь: старый 25/4, 180 мм
 
-Время ответа: `6.41` сек.
+Время ответа: `0.33` сек.
 
 Ответ бота:
 
 ```text
-Нашёл для тебя подходящие варианты:
+Нашёл подходящие варианты:
+1. Насос циркуляционный Kromwell PS 25/4G 180 (с гайками в комплекте)
+   Артикул: PS 25/4G 180
+   Бренд: Kromwell
+   Цена: 2880 RUB
+   Наличие: нет в наличии, 0 шт.
+   Характеристики: тип товара: Насос; максимальный напор, м: 4; монтажная длина, мм: 180
+   Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-kromwell/nasos-cirkulyacionnyj-kromwell-ps-25-4g-180-s-gajkami-v-komplekte/
+2. Насос циркуляционный «ЦИРКУЛЬ» 25/40
+   Артикул: 2540
+   Бренд: Джилекс
+   Цена: 2990 RUB
+   Наличие: нет в наличии, 0 шт.
+   Характеристики: тип товара: Насос; максимальный напор, м: 4; монтажная длина, мм: 180
+   Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-cirkul/nasos-cirkulyacionnyj-cirkul-25-40/
+3. Насос циркуляционный Rommer 25/40-180
+   Артикул: RCP-0002-2541801
+   Бренд: ROMMER
+   Цена: 3185 RUB
+   Наличие: нет в наличии, 0 шт.
+   Характеристики: тип товара: Насос; максимальный напор, м: 4; монтажная длина, мм: 180
+   Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-rommer/nasos-cirkulyacionnyj-rommer-25-40-180/
+Могу показать сопоставимые аналоги.
 
-1. Насос циркуляц. (отопл.) UPС 25-40 180  
-   Артикул: 53843  
-   Бренд: UNIPUMP  
-   Цена: 3844 RUB  
-   Наличие: в наличии, 2 шт.  
-   Характеристики: тип товара: Насос; максимальный напор, м: 4.5; монтажная длина, мм: 180  
-   Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/cirkulyacionnye-nasosy-unipump/nasos-cirkulyac-otopl-ups-25-40-180/
-
-2. Насос циркуляционный VALTEC RS 25/4-180 с гайками  
-   Артикул: VRS.254.18.0  
-   Бренд: VALTEC  
-   Цена: 3989 RUB  
-   Наличие: в наличии, 9 шт.  
-   Характеристики: тип товара: Насос; максимальный напор, м: 4.2; монтажная длина, мм: 180  
-   Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-254-180-s-gaykami/
-
-Следующее действие: Показать аналоги.
+Кстати, к насосу часто ставят два шаровых крана с американкой — так его можно снять, не сливая систему. Если нужно, напишите «кран с американкой».
 ```
 
 Товары:
-- `53843` | Насос циркуляц. (отопл.) UPС 25-40 180 | 3844.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/cirkulyacionnye-nasosy-unipump/nasos-cirkulyac-otopl-ups-25-40-180/
-- `VRS.254.18.0` | Насос циркуляционный VALTEC RS 25/4-180 с гайками | 3989.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-254-180-s-gaykami/
+- `PS 25/4G 180` | Насос циркуляционный Kromwell PS 25/4G 180 (с гайками в комплекте) | 2880.0 RUB | нет в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-kromwell/nasos-cirkulyacionnyj-kromwell-ps-25-4g-180-s-gajkami-v-komplekte/
+- `2540` | Насос циркуляционный «ЦИРКУЛЬ» 25/40 | 2990.0 RUB | нет в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-cirkul/nasos-cirkulyacionnyj-cirkul-25-40/
+- `RCP-0002-2541801` | Насос циркуляционный Rommer 25/40-180 | 3185.0 RUB | нет в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-rommer/nasos-cirkulyacionnyj-rommer-25-40-180/
 
 Debug:
 
@@ -1723,13 +2300,14 @@ Debug:
   "intent": "attribute_request",
   "category": "pumps",
   "slots": {
-    "brand": "GRUNDFOS",
+    "reference_brand": "GRUNDFOS",
     "cheap": true,
     "product_kind": "насос",
     "connection_size": 25,
     "head_m": 4.0,
     "mounting_length_mm": 180,
-    "pump_type": "циркуляционный"
+    "pump_type": "циркуляционный",
+    "companion_hint_pumps": true
   },
   "agents_used": [
     "IntentRouterAgent",
@@ -1740,33 +2318,46 @@ Debug:
     "GuardrailsAgent",
     "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
 ## 17. Есть насос в наличии
 
-Категория: `наличие`. Приоритет: `P0`. Вердикт: **FAIL**.
-Проблемы:
-- clarify_first: не найдены ожидаемые маркеры ['какой', 'парамет']
+Категория: `наличие`. Приоритет: `P0`. Вердикт: **PASS**.
 
 ### Ход 1
 
 Пользователь: есть насос в наличии?
 
-Время ответа: `2.44` сек.
+Время ответа: `0.03` сек.
 
 Ответ бота:
 
 ```text
-По какому товару проверить наличие? Укажите артикул, модель или ключевые параметры.
+Какой насос нужен и для какой задачи? Укажите тип (циркуляционный, скважинный, дренажный, поверхностный/станция) или ключевые параметры: напор, присоединение и монтажную длину либо источник воды. После этого проверю наличие подходящих моделей.
 ```
 
 Debug:
@@ -1782,17 +2373,31 @@ Debug:
   "agents_used": [
     "IntentRouterAgent",
     "SlotFillingAgent",
-    "ResponseComposerAgent",
-    "GuardrailsAgent"
+    "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -1800,7 +2405,7 @@ Debug:
 
 Пользователь: циркуляционный 25/6 130, только то что реально есть
 
-Время ответа: `5.47` сек.
+Время ответа: `0.19` сек.
 
 Ответ бота:
 
@@ -1810,30 +2415,32 @@ Debug:
    Артикул: VRS.256.13.0
    Бренд: VALTEC
    Цена: 4311 RUB
-   Наличие: в наличии, 12 шт.
+   Наличие: в наличии, 9 шт.
    Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130
    Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-256-130-s-gaykami/
 2. Насос циркуляционный Wilo Star RS 25/6-130-RK
    Артикул: 9168934
    Бренд: Wilo
-   Цена: 7717 RUB
-   Наличие: в наличии, 10 шт.
+   Цена: 7148 RUB
+   Наличие: в наличии, 9 шт.
    Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130
    Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-wilo-star-rs-25-6-130-rk/
 3. Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK
    Артикул: 2459900
    Бренд: Wilo
-   Цена: 11401 RUB
-   Наличие: в наличии, 10 шт.
+   Цена: 10521 RUB
+   Наличие: в наличии, 9 шт.
    Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130-180
    Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-s-montazhnymi-adapterami-i-gajkami-wilo-star-rs-25-6-130-180-rk/
-Следующее действие: Сравнить.
+Могу сравнить эти варианты по главным отличиям для вашей задачи.
+
+Кстати, к насосу часто ставят два шаровых крана с американкой — так его можно снять, не сливая систему. Если нужно, напишите «кран с американкой».
 ```
 
 Товары:
 - `VRS.256.13.0` | Насос циркуляционный VALTEC RS 25/6-130 с гайками | 4311.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-256-130-s-gaykami/
-- `9168934` | Насос циркуляционный Wilo Star RS 25/6-130-RK | 7717.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-wilo-star-rs-25-6-130-rk/
-- `2459900` | Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK | 11401.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-s-montazhnymi-adapterami-i-gajkami-wilo-star-rs-25-6-130-180-rk/
+- `9168934` | Насос циркуляционный Wilo Star RS 25/6-130-RK | 7148.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-wilo-star-rs-25-6-130-rk/
+- `2459900` | Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK | 10521.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-s-montazhnymi-adapterami-i-gajkami-wilo-star-rs-25-6-130-180-rk/
 
 Debug:
 
@@ -1845,9 +2452,11 @@ Debug:
     "in_stock": true,
     "product_kind": "насос",
     "pump_type": "циркуляционный",
+    "pump_use": "отопление",
     "connection_size": 25,
     "head_m": 6.0,
-    "mounting_length_mm": 130
+    "mounting_length_mm": 130,
+    "companion_hint_pumps": true
   },
   "agents_used": [
     "IntentRouterAgent",
@@ -1858,14 +2467,29 @@ Debug:
     "GuardrailsAgent",
     "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -1877,7 +2501,7 @@ Debug:
 
 Пользователь: насос 25/6 130
 
-Время ответа: `9.31` сек.
+Время ответа: `0.18` сек.
 
 Ответ бота:
 
@@ -1887,30 +2511,32 @@ Debug:
    Артикул: VRS.256.13.0
    Бренд: VALTEC
    Цена: 4311 RUB
-   Наличие: в наличии, 12 шт.
+   Наличие: в наличии, 9 шт.
    Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130
    Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-256-130-s-gaykami/
 2. Насос циркуляционный Wilo Star RS 25/6-130-RK
    Артикул: 9168934
    Бренд: Wilo
-   Цена: 7717 RUB
-   Наличие: в наличии, 10 шт.
+   Цена: 7148 RUB
+   Наличие: в наличии, 9 шт.
    Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130
    Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-wilo-star-rs-25-6-130-rk/
 3. Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK
    Артикул: 2459900
    Бренд: Wilo
-   Цена: 11401 RUB
-   Наличие: в наличии, 10 шт.
+   Цена: 10521 RUB
+   Наличие: в наличии, 9 шт.
    Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130-180
    Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-s-montazhnymi-adapterami-i-gajkami-wilo-star-rs-25-6-130-180-rk/
-Следующее действие: Сравнить.
+Могу сравнить эти варианты по главным отличиям для вашей задачи.
+
+Кстати, к насосу часто ставят два шаровых крана с американкой — так его можно снять, не сливая систему. Если нужно, напишите «кран с американкой».
 ```
 
 Товары:
 - `VRS.256.13.0` | Насос циркуляционный VALTEC RS 25/6-130 с гайками | 4311.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-256-130-s-gaykami/
-- `9168934` | Насос циркуляционный Wilo Star RS 25/6-130-RK | 7717.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-wilo-star-rs-25-6-130-rk/
-- `2459900` | Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK | 11401.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-s-montazhnymi-adapterami-i-gajkami-wilo-star-rs-25-6-130-180-rk/
+- `9168934` | Насос циркуляционный Wilo Star RS 25/6-130-RK | 7148.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-wilo-star-rs-25-6-130-rk/
+- `2459900` | Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK | 10521.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-s-montazhnymi-adapterami-i-gajkami-wilo-star-rs-25-6-130-180-rk/
 
 Debug:
 
@@ -1922,7 +2548,8 @@ Debug:
     "connection_size": 25,
     "head_m": 6.0,
     "mounting_length_mm": 130,
-    "pump_type": "циркуляционный"
+    "pump_type": "циркуляционный",
+    "companion_hint_pumps": true
   },
   "agents_used": [
     "IntentRouterAgent",
@@ -1933,14 +2560,29 @@ Debug:
     "GuardrailsAgent",
     "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -1948,7 +2590,7 @@ Debug:
 
 Пользователь: да, бренд не важен
 
-Время ответа: `4.2` сек.
+Время ответа: `0.02` сек.
 
 Ответ бота:
 
@@ -1958,8 +2600,8 @@ Debug:
 
 Товары:
 - `VRS.256.13.0` | Насос циркуляционный VALTEC RS 25/6-130 с гайками | 4311.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-256-130-s-gaykami/
-- `9168934` | Насос циркуляционный Wilo Star RS 25/6-130-RK | 7717.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-wilo-star-rs-25-6-130-rk/
-- `2459900` | Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK | 11401.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-s-montazhnymi-adapterami-i-gajkami-wilo-star-rs-25-6-130-180-rk/
+- `9168934` | Насос циркуляционный Wilo Star RS 25/6-130-RK | 7148.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-wilo-star-rs-25-6-130-rk/
+- `2459900` | Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK | 10521.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-s-montazhnymi-adapterami-i-gajkami-wilo-star-rs-25-6-130-180-rk/
 
 Debug:
 
@@ -1971,40 +2613,54 @@ Debug:
     "connection_size": 25,
     "head_m": 6.0,
     "mounting_length_mm": 130,
-    "pump_type": "циркуляционный"
+    "pump_type": "циркуляционный",
+    "companion_hint_pumps": true
   },
   "agents_used": [
     "IntentRouterAgent",
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
-  "intent_llm_used": true,
-  "response_llm_used": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
+  "intent_llm_used": false,
+  "intent_llm_requested": true,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
   "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
 ## 19. Замена старого насоса по модели
 
-Категория: `насосы`. Приоритет: `P1`. Вердикт: **PARTIAL**.
-Проблемы:
-- clarify_first: не найдены ожидаемые маркеры ['модель', 'размер']
+Категория: `насосы`. Приоритет: `P1`. Вердикт: **PASS**.
 
 ### Ход 1
 
 Пользователь: старый насос есть, нужен на замену
 
-Время ответа: `3.28` сек.
+Время ответа: `0.05` сек.
 
 Ответ бота:
 
 ```text
-Для какой задачи нужен насос: отопление, водоснабжение/полив, повышение давления или откачка воды?
+Для замены напишите модель или маркировку старого насоса и размер: монтажную длину 130/180 мм; если видно — также напор 25/4 или 25/6.
 ```
 
 Debug:
@@ -2014,6 +2670,7 @@ Debug:
   "intent": "attribute_request",
   "category": "pumps",
   "slots": {
+    "pump_replacement": true,
     "product_kind": "насос"
   },
   "agents_used": [
@@ -2022,14 +2679,29 @@ Debug:
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
   "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -2037,44 +2709,42 @@ Debug:
 
 Пользователь: старый 25/6 130, можно дешевле
 
-Время ответа: `5.63` сек.
+Время ответа: `0.31` сек.
 
 Ответ бота:
 
 ```text
-Нашёл подходящие варианты — вот что есть в наличии:
+Нашёл подходящие варианты:
+1. Насос циркуляционный Kromwell PS 25/6 130
+   Артикул: PS 25/6 130
+   Бренд: Kromwell
+   Цена: 2898 RUB
+   Наличие: нет в наличии, 0 шт.
+   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130
+   Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-kromwell/nasos-cirkulyacionnyj-kromwell-ps-25-6-130/
+2. Насос циркуляц. (отопл.) CP 25-60 130
+   Артикул: 95046
+   Бренд: UNIPUMP
+   Цена: 3207 RUB
+   Наличие: нет в наличии, 0 шт.
+   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130
+   Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/cirkulyacionnye-nasosy-unipump/nasos-cirkulyac-otopl-cp-25-60-130/
+3. Насос циркуляционный Rommer 25/60-130
+   Артикул: RCP-0002-2561301
+   Бренд: ROMMER
+   Цена: 3532 RUB
+   Наличие: нет в наличии, 0 шт.
+   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130
+   Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-rommer/nasos-cirkulyacionnyj-rommer-25-60-130/
+Могу показать сопоставимые аналоги.
 
-1. Насос циркуляционный VALTEC RS 25/6-130 с гайками  
-   Артикул: VRS.256.13.0  
-   Бренд: VALTEC  
-   Цена: 4311 RUB  
-   Наличие: в наличии, 12 шт.  
-   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130  
-   Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-256-130-s-gaykami/
-
-2. Насос циркуляционный Wilo Star RS 25/6-130-RK  
-   Артикул: 9168934  
-   Бренд: Wilo  
-   Цена: 7717 RUB  
-   Наличие: в наличии, 10 шт.  
-   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130  
-   Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-wilo-star-rs-25-6-130-rk/
-
-3. Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK  
-   Артикул: 2459900  
-   Бренд: Wilo  
-   Цена: 11401 RUB  
-   Наличие: в наличии, 10 шт.  
-   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130-180  
-   Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-s-montazhnymi-adapterami-i-gajkami-wilo-star-rs-25-6-130-180-rk/
-
-Следующее действие: Показать аналоги.
+Кстати, к насосу часто ставят два шаровых крана с американкой — так его можно снять, не сливая систему. Если нужно, напишите «кран с американкой».
 ```
 
 Товары:
-- `VRS.256.13.0` | Насос циркуляционный VALTEC RS 25/6-130 с гайками | 4311.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-256-130-s-gaykami/
-- `9168934` | Насос циркуляционный Wilo Star RS 25/6-130-RK | 7717.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-wilo-star-rs-25-6-130-rk/
-- `2459900` | Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK | 11401.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-s-montazhnymi-adapterami-i-gajkami-wilo-star-rs-25-6-130-180-rk/
+- `PS 25/6 130` | Насос циркуляционный Kromwell PS 25/6 130 | 2898.0 RUB | нет в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-kromwell/nasos-cirkulyacionnyj-kromwell-ps-25-6-130/
+- `95046` | Насос циркуляц. (отопл.) CP 25-60 130 | 3207.0 RUB | нет в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/cirkulyacionnye-nasosy-unipump/nasos-cirkulyac-otopl-cp-25-60-130/
+- `RCP-0002-2561301` | Насос циркуляционный Rommer 25/60-130 | 3532.0 RUB | нет в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-rommer/nasos-cirkulyacionnyj-rommer-25-60-130/
 
 Debug:
 
@@ -2083,12 +2753,14 @@ Debug:
   "intent": "cheap_request",
   "category": "pumps",
   "slots": {
+    "pump_replacement": true,
     "product_kind": "насос",
     "connection_size": 25,
     "head_m": 6.0,
     "mounting_length_mm": 130,
     "pump_type": "циркуляционный",
-    "cheap": true
+    "cheap": true,
+    "companion_hint_pumps": true
   },
   "agents_used": [
     "IntentRouterAgent",
@@ -2099,14 +2771,29 @@ Debug:
     "GuardrailsAgent",
     "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -2118,26 +2805,42 @@ Debug:
 
 Пользователь: электрический котёл на 100 м²
 
-Время ответа: `4.42` сек.
+Время ответа: `0.41` сек.
 
 Ответ бота:
 
 ```text
-Для 100 м² мощность — ориентир, не инженерный расчёт. Вот вариант:
+Для 100 м² предварительный ориентир — не меньше примерно 10 кВт до поправок на теплопотери и ГВС. Позиции ниже этого ориентира показываю только как пограничные: не считаю их достаточными или имеющими запас без теплотехнического расчёта.
+1. Котел электрический Arderia E12, 12 кВт
+   Артикул: 2202211
+   Бренд: Arderia
+   Цена: 36534 RUB
+   Наличие: в наличии, 2 шт.
+   Характеристики: мощность, квт: 12; тип котла: Электрический; количество контуров: Одноконтурный; отапливаемая площадь, м²: 120
+   Ссылка: https://www.vestatrade.ru/kotelnoe-oborudovanie/kotel-elektricheskij/kotly-elektricheskie-arderia/kotel-elektricheskij-arderia-e12-12-kvt/
+2. Котел электрический THERMEX Stern 9 кВт
+   Артикул: 511501
+   Бренд: Thermex
+   Цена: 12740 RUB
+   Наличие: нет в наличии, 0 шт.
+   Характеристики: мощность, квт: 9; тип котла: Электрический; количество контуров: Одноконтурный; отапливаемая площадь, м²: 90
+   Ссылка: https://www.vestatrade.ru/kotelnoe-oborudovanie/kotel-elektricheskij/kotly-elektricheskie-thermex/kotel-elektricheskij-thermex-stern-9-kvt/
+3. Котел электрический THERMEX Libert 9
+   Артикул: 511502
+   Бренд: Thermex
+   Цена: 15709 RUB
+   Наличие: нет в наличии, 0 шт.
+   Характеристики: мощность, квт: 9; тип котла: Электрический; количество контуров: Двухконтурный; отапливаемая площадь, м²: 90
+   Ссылка: https://www.vestatrade.ru/kotelnoe-oborudovanie/kotel-elektricheskij/kotly-elektricheskie-thermex/kotel-elektricheskij-thermex-libert-9/
+Могу сравнить эти варианты по главным отличиям для вашей задачи.
 
-1. Котел электрический Arderia E9, 9 кВт  
-   Артикул: 2202210  
-   Бренд: Arderia  
-   Цена: 32602 RUB  
-   Наличие: в наличии, 2 шт.  
-   Характеристики: мощность, квт: 9; тип котла: Электрический; количество контуров: Одноконтурный  
-   Ссылка: https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-elektricheskij-arderia-e9-9-kvt/
-
-Следующее действие: Показать аналоги.
+Кстати, у настенных котлов циркуляционный насос часто уже встроен, поэтому отдельный насос нужен не всегда. Его добавляют для тёплого пола, бойлера, нескольких контуров или длинной системы; также обычно проверяют группу безопасности и трубы для обвязки.
 ```
 
 Товары:
-- `2202210` | Котел электрический Arderia E9, 9 кВт | 32602.0 RUB | в наличии | https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-elektricheskij-arderia-e9-9-kvt/
+- `2202211` | Котел электрический Arderia E12, 12 кВт | 36534.0 RUB | в наличии | https://www.vestatrade.ru/kotelnoe-oborudovanie/kotel-elektricheskij/kotly-elektricheskie-arderia/kotel-elektricheskij-arderia-e12-12-kvt/
+- `511501` | Котел электрический THERMEX Stern 9 кВт | 12740.0 RUB | нет в наличии | https://www.vestatrade.ru/kotelnoe-oborudovanie/kotel-elektricheskij/kotly-elektricheskie-thermex/kotel-elektricheskij-thermex-stern-9-kvt/
+- `511502` | Котел электрический THERMEX Libert 9 | 15709.0 RUB | нет в наличии | https://www.vestatrade.ru/kotelnoe-oborudovanie/kotel-elektricheskij/kotly-elektricheskie-thermex/kotel-elektricheskij-thermex-libert-9/
 
 Debug:
 
@@ -2146,8 +2849,11 @@ Debug:
   "intent": "broad_category",
   "category": "boilers",
   "slots": {
+    "area_m2": 100.0,
     "boiler_type": "электрический",
-    "area_m2": 100.0
+    "has_electricity": true,
+    "heat_sources": "электричество",
+    "companion_hint_boilers": true
   },
   "agents_used": [
     "IntentRouterAgent",
@@ -2158,14 +2864,29 @@ Debug:
     "GuardrailsAgent",
     "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -2173,26 +2894,40 @@ Debug:
 
 Пользователь: 380
 
-Время ответа: `3.61` сек.
+Время ответа: `0.26` сек.
 
 Ответ бота:
 
 ```text
-Для 100 м² — ориентирный показатель, без точного расчёта. Вот вариант:
-
-1. Котел электрический Arderia E9, 9 кВт  
-   Артикул: 2202210  
-   Бренд: Arderia  
-   Цена: 32602 RUB  
-   Наличие: в наличии, 2 шт.  
-   Характеристики: мощность, квт: 9; тип котла: Электрический; количество контуров: Одноконтурный  
-   Ссылка: https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-elektricheskij-arderia-e9-9-kvt/
-
-Следующее действие: Показать аналоги.
+Для 100 м² предварительный ориентир — не меньше примерно 10 кВт до поправок на теплопотери и ГВС. Позиции ниже этого ориентира показываю только как пограничные: не считаю их достаточными или имеющими запас без теплотехнического расчёта.
+1. Котел электрический Эван Warmos Start 2023 - 9 (220/380)
+   Артикул: 12309
+   Бренд: ЭВАН
+   Цена: 11426 RUB
+   Наличие: нет в наличии, 0 шт.
+   Характеристики: мощность, квт: 9; тип котла: Электрический; количество контуров: Одноконтурный; отапливаемая площадь, м²: 90
+   Ссылка: https://www.vestatrade.ru/kotelnoe-oborudovanie/kotel-elektricheskij/kotelnoe-oborudovanie-evan/kotel-elektricheskij-evan-warmos-start-2023-9-220-380/
+2. Котел электрический Эван NEXT-9 (220/380)
+   Артикул: 12909
+   Бренд: ЭВАН
+   Цена: 15971 RUB
+   Наличие: нет в наличии, 0 шт.
+   Характеристики: мощность, квт: 9; тип котла: Электрический; количество контуров: Одноконтурный; отапливаемая площадь, м²: 90
+   Ссылка: https://www.vestatrade.ru/kotelnoe-oborudovanie/kotel-elektricheskij/kotelnoe-oborudovanie-evan/kotel-elektricheskiy-evan-next-9-220380/
+3. Котел электрический Эван NEXT-12 (380)
+   Артикул: 12912
+   Бренд: ЭВАН
+   Цена: 17665 RUB
+   Наличие: нет в наличии, 0 шт.
+   Характеристики: мощность, квт: 12; тип котла: Электрический; количество контуров: Одноконтурный; отапливаемая площадь, м²: 120
+   Ссылка: https://www.vestatrade.ru/kotelnoe-oborudovanie/kotel-elektricheskij/kotelnoe-oborudovanie-evan/kotel-elektricheskiy-evan-next-12-380/
+Могу сравнить эти варианты по главным отличиям для вашей задачи.
 ```
 
 Товары:
-- `2202210` | Котел электрический Arderia E9, 9 кВт | 32602.0 RUB | в наличии | https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-elektricheskij-arderia-e9-9-kvt/
+- `12309` | Котел электрический Эван Warmos Start 2023 - 9 (220/380) | 11426.0 RUB | нет в наличии | https://www.vestatrade.ru/kotelnoe-oborudovanie/kotel-elektricheskij/kotelnoe-oborudovanie-evan/kotel-elektricheskij-evan-warmos-start-2023-9-220-380/
+- `12909` | Котел электрический Эван NEXT-9 (220/380) | 15971.0 RUB | нет в наличии | https://www.vestatrade.ru/kotelnoe-oborudovanie/kotel-elektricheskij/kotelnoe-oborudovanie-evan/kotel-elektricheskiy-evan-next-9-220380/
+- `12912` | Котел электрический Эван NEXT-12 (380) | 17665.0 RUB | нет в наличии | https://www.vestatrade.ru/kotelnoe-oborudovanie/kotel-elektricheskij/kotelnoe-oborudovanie-evan/kotel-elektricheskiy-evan-next-12-380/
 
 Debug:
 
@@ -2201,8 +2936,11 @@ Debug:
   "intent": "attribute_request",
   "category": "boilers",
   "slots": {
-    "boiler_type": "электрический",
     "area_m2": 100.0,
+    "boiler_type": "электрический",
+    "has_electricity": true,
+    "heat_sources": "электричество",
+    "companion_hint_boilers": true,
     "voltage_v": 380
   },
   "agents_used": [
@@ -2214,33 +2952,46 @@ Debug:
     "GuardrailsAgent",
     "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
 ## 21. Котёл подешевле
 
-Категория: `котлы`. Приоритет: `P0`. Вердикт: **FAIL**.
-Проблемы:
-- clarify_first: не найдены ожидаемые маркеры ['газ', 'электр', 'площад']
+Категория: `котлы`. Приоритет: `P0`. Вердикт: **PASS**.
 
 ### Ход 1
 
 Пользователь: котёл подешевле
 
-Время ответа: `1.5` сек.
+Время ответа: `0.02` сек.
 
 Ответ бота:
 
 ```text
-Газовый или электрический котёл вам нужен?
+Котёл нужен газовый или электрический и на какую площадь?
 ```
 
 Debug:
@@ -2258,14 +3009,29 @@ Debug:
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
   "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -2273,26 +3039,42 @@ Debug:
 
 Пользователь: электрический, 90 метров, 380
 
-Время ответа: `3.7` сек.
+Время ответа: `0.38` сек.
 
 Ответ бота:
 
 ```text
-Для площади 90 м² мощность — ориентировочная, без инженерного расчёта. Варианты:
+Ориентир по мощности для 90 м² предварительный; точный подбор зависит от теплопотерь здания.
+1. Котел электрический Эван NEXT-9 (220/380)
+   Артикул: 12909
+   Бренд: ЭВАН
+   Цена: 15971 RUB
+   Наличие: нет в наличии, 0 шт.
+   Характеристики: мощность, квт: 9; тип котла: Электрический; количество контуров: Одноконтурный; отапливаемая площадь, м²: 90
+   Ссылка: https://www.vestatrade.ru/kotelnoe-oborudovanie/kotel-elektricheskij/kotelnoe-oborudovanie-evan/kotel-elektricheskiy-evan-next-9-220380/
+2. Котел электрический Эван NEXT-12 (380)
+   Артикул: 12912
+   Бренд: ЭВАН
+   Цена: 17665 RUB
+   Наличие: нет в наличии, 0 шт.
+   Характеристики: мощность, квт: 12; тип котла: Электрический; количество контуров: Одноконтурный; отапливаемая площадь, м²: 120
+   Ссылка: https://www.vestatrade.ru/kotelnoe-oborudovanie/kotel-elektricheskij/kotelnoe-oborudovanie-evan/kotel-elektricheskiy-evan-next-12-380/
+3. Котел электрический Эван NEXT-14 (380)
+   Артикул: 12914
+   Бренд: ЭВАН
+   Цена: 20165 RUB
+   Наличие: нет в наличии, 0 шт.
+   Характеристики: мощность, квт: 14; тип котла: Электрический; количество контуров: Одноконтурный; отапливаемая площадь, м²: 140
+   Ссылка: https://www.vestatrade.ru/kotelnoe-oborudovanie/kotel-elektricheskij/kotelnoe-oborudovanie-evan/kotel-elektricheskiy-evan-next-14-380/
+Могу показать сопоставимые аналоги.
 
-1. Котел электрический Arderia E9, 9 кВт  
-   Артикул: 2202210  
-   Бренд: Arderia  
-   Цена: 32602 RUB  
-   Наличие: в наличии, 2 шт.  
-   Характеристики: мощность, квт: 9; тип котла: Электрический; количество контуров: Одноконтурный  
-   Ссылка: https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-elektricheskij-arderia-e9-9-kvt/
-
-Следующее действие: Показать аналоги.
+Кстати, у настенных котлов циркуляционный насос часто уже встроен, поэтому отдельный насос нужен не всегда. Его добавляют для тёплого пола, бойлера, нескольких контуров или длинной системы; также обычно проверяют группу безопасности и трубы для обвязки.
 ```
 
 Товары:
-- `2202210` | Котел электрический Arderia E9, 9 кВт | 32602.0 RUB | в наличии | https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-elektricheskij-arderia-e9-9-kvt/
+- `12909` | Котел электрический Эван NEXT-9 (220/380) | 15971.0 RUB | нет в наличии | https://www.vestatrade.ru/kotelnoe-oborudovanie/kotel-elektricheskij/kotelnoe-oborudovanie-evan/kotel-elektricheskiy-evan-next-9-220380/
+- `12912` | Котел электрический Эван NEXT-12 (380) | 17665.0 RUB | нет в наличии | https://www.vestatrade.ru/kotelnoe-oborudovanie/kotel-elektricheskij/kotelnoe-oborudovanie-evan/kotel-elektricheskiy-evan-next-12-380/
+- `12914` | Котел электрический Эван NEXT-14 (380) | 20165.0 RUB | нет в наличии | https://www.vestatrade.ru/kotelnoe-oborudovanie/kotel-elektricheskij/kotelnoe-oborudovanie-evan/kotel-elektricheskiy-evan-next-14-380/
 
 Debug:
 
@@ -2302,9 +3084,10 @@ Debug:
   "category": "boilers",
   "slots": {
     "cheap": true,
+    "voltage_v": 380,
     "boiler_type": "электрический",
     "area_m2": 90.0,
-    "voltage_v": 380
+    "companion_hint_boilers": true
   },
   "agents_used": [
     "IntentRouterAgent",
@@ -2315,33 +3098,46 @@ Debug:
     "GuardrailsAgent",
     "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
 ## 22. Нужен котёл, но я не знаю какой
 
-Категория: `котлы`. Приоритет: `P1`. Вердикт: **PARTIAL**.
-Проблемы:
-- clarify_first: не найдены ожидаемые маркеры ['площад', 'газ']
+Категория: `котлы`. Приоритет: `P1`. Вердикт: **PASS**.
 
 ### Ход 1
 
 Пользователь: нужен котёл, но я не знаю какой
 
-Время ответа: `1.47` сек.
+Время ответа: `0.04` сек.
 
 Ответ бота:
 
 ```text
-Газовый или электрический котёл вам нужен?
+Котёл нужен газовый или электрический и на какую площадь?
 ```
 
 Debug:
@@ -2350,21 +3146,38 @@ Debug:
 {
   "intent": "broad_category",
   "category": "boilers",
-  "slots": {},
+  "slots": {
+    "needs_voltage_clarification": true
+  },
   "agents_used": [
     "IntentRouterAgent",
     "SlotFillingAgent",
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
   "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -2372,32 +3185,13 @@ Debug:
 
 Пользователь: 70 квадратов, газа нет
 
-Время ответа: `6.19` сек.
+Время ответа: `0.15` сек.
 
 Ответ бота:
 
 ```text
-Ориентир по мощности для 70 м² приблизительный, поэтому показываю варианты без инженерного расчёта.
-1. Котел электрический Arderia E9, 9 кВт
-   Артикул: 2202210
-   Бренд: Arderia
-   Цена: 32602 RUB
-   Наличие: в наличии, 2 шт.
-   Характеристики: мощность, квт: 9; тип котла: Электрический; количество контуров: Одноконтурный
-   Ссылка: https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-elektricheskij-arderia-e9-9-kvt/
-2. Котел электрический E.C.A. Arceus ST - 6 кВт, 1 контур, 3х-ход. клапан с мотором, датчик бойлера
-   Артикул: 8216262000
-   Бренд: E.C.A
-   Цена: 38010 RUB
-   Наличие: в наличии, 1 шт.
-   Характеристики: мощность, квт: 6; тип котла: Электрический; количество контуров: Одноконтурный
-   Ссылка: https://www.vestatrade.ru/kotelnoe-oborudovanie/kotel-elektricheskij/kotly-elektricheskie-e-c-a/kotel-elektricheskij-e-c-a-arceus-st-6-kvt-1-kontur/
-Следующее действие: Сравнить.
+Какое питание доступно для котла: 220 или 380 В?
 ```
-
-Товары:
-- `2202210` | Котел электрический Arderia E9, 9 кВт | 32602.0 RUB | в наличии | https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-elektricheskij-arderia-e9-9-kvt/
-- `8216262000` | Котел электрический E.C.A. Arceus ST - 6 кВт, 1 контур, 3х-ход. клапан с мотором, датчик бойлера | 38010.0 RUB | в наличии | https://www.vestatrade.ru/kotelnoe-oborudovanie/kotel-elektricheskij/kotly-elektricheskie-e-c-a/kotel-elektricheskij-e-c-a-arceus-st-6-kvt-1-kontur/
 
 Debug:
 
@@ -2406,26 +3200,39 @@ Debug:
   "intent": "attribute_request",
   "category": "boilers",
   "slots": {
+    "needs_voltage_clarification": true,
     "boiler_type": "электрический",
     "area_m2": 70.0
   },
   "agents_used": [
     "IntentRouterAgent",
     "SlotFillingAgent",
-    "FeedSearchAgent",
-    "RankingAgent",
-    "ProductCardAgent",
-    "GuardrailsAgent",
-    "ResponseComposerAgent"
+    "ResponseComposerAgent",
+    "GuardrailsAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
   "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -2437,7 +3244,7 @@ Debug:
 
 Пользователь: а 6 кВт хватит на 100 метров?
 
-Время ответа: `0.0` сек.
+Время ответа: `0.02` сек.
 
 Ответ бота:
 
@@ -2451,20 +3258,38 @@ Debug:
 {
   "intent": "attribute_request",
   "category": "boilers",
-  "slots": {},
+  "slots": {
+    "power_kw": 6.0,
+    "area_m2": 100.0
+  },
   "agents_used": [
     "IntentRouterAgent",
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
   "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
   "response_llm_used": false,
   "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
   "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -2472,36 +3297,52 @@ Debug:
 
 Пользователь: но сосед говорит хватит
 
-Время ответа: `5.21` сек.
+Время ответа: `0.04` сек.
 
 Ответ бота:
 
 ```text
-Понимаю, что соседу неудобно — это действительно важно.  
-Мы специализируемся на сантехнике: трубы, насосы, котлы, краны, канализация, радиаторная арматура.  
-Напиши, что именно нужно для вашего случая — помогу подобрать решение.
+6 кВт на 100 м² скорее не хватит: по эмпирическому правилу нужно около 10 кВт (10 м² на 1 кВт), а с учётом утепления и горячей воды — обычно с запасом. Не буду подтверждать, что хватит. Если хотите, могу подобрать котёл с подходящей мощностью — уточните тип (газ/электр) и питание.
 ```
 
 Debug:
 
 ```json
 {
-  "intent": "small_talk",
+  "intent": "unknown",
   "category": "other",
-  "slots": {},
+  "slots": {
+    "power_kw": 6.0,
+    "area_m2": 100.0
+  },
   "agents_used": [
     "IntentRouterAgent",
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
-  "intent_llm_used": true,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
+  "intent_llm_used": false,
+  "intent_llm_requested": true,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -2513,12 +3354,12 @@ Debug:
 
 Пользователь: 12 кВт или 15 кВт на дом 100 м²?
 
-Время ответа: `0.0` сек.
+Время ответа: `0.03` сек.
 
 Ответ бота:
 
 ```text
-12 и 15 кВт — не равнозначные варианты. Ориентир 10 м² на 1 кВт, но запас по мощности зависит от утепления, числа контуров и ГВС. 15 кВт даст запас при плохом утеплении и при подключении бойлера, 12 кВт работает впритык. Уточните: какое утепление и нужна ли горячая вода — тогда подберу варианты из фида.
+12 и 15 кВт — не равнозначные варианты. Для 100 м² базовый ориентир — около 10 кВт. Оба могут иметь запас, а 15 кВт не автоматически лучше: выбор зависит от теплопотерь, минимальной мощности, числа контуров и нагрузки ГВС. Уточните: какое утепление и нужна ли горячая вода — тогда подберу варианты из ассортимента.
 ```
 
 Debug:
@@ -2536,13 +3377,28 @@ Debug:
     "GuardrailsAgent"
   ],
   "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
   "response_llm_used": false,
   "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
   "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -2550,12 +3406,12 @@ Debug:
 
 Пользователь: обычный дом, без суперутепления
 
-Время ответа: `1.76` сек.
+Время ответа: `0.04` сек.
 
 Ответ бота:
 
 ```text
-При обычном утеплении 15 кВт даст запас по мощности и комфортнее, 12 кВт работает почти впритык и не оставляет запаса под ГВС. Не равнозначные варианты — для дом 100 м² я бы рекомендовал 15 кВт. Если нужны конкретные товары, уточните: газовый или электрический, питание 220/380.
+При обычном утеплении для 100 м² разумнее начать проверку с 12 кВт; 15 кВт рассматривайте при повышенных теплопотерях или заметной нагрузке ГВС. Оба варианта выше базового ориентира около 10 кВт, поэтому 15 кВт нельзя автоматически считать лучше: запас нужно соотнести с минимальной мощностью, тактованием и ГВС. Если нужны конкретные товары, уточните: газовый или электрический, питание 220/380.
 ```
 
 Debug:
@@ -2570,33 +3426,46 @@ Debug:
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
-  "intent_llm_used": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
+  "intent_llm_used": false,
+  "intent_llm_requested": true,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
   "response_llm_used": false,
   "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
 ## 25. В котле есть насос и бак
 
-Категория: `комплектация`. Приоритет: `P0`. Вердикт: **FAIL**.
-Проблемы:
-- clarify_first: не найдены ожидаемые маркеры ['модель', 'артикул']
+Категория: `комплектация`. Приоритет: `P0`. Вердикт: **PASS**.
 
 ### Ход 1
 
 Пользователь: в котле есть насос и бак?
 
-Время ответа: `1.69` сек.
+Время ответа: `0.04` сек.
 
 Ответ бота:
 
 ```text
-По какому котлу проверить — укажите модель и систему?
+По какому котлу или товару проверить комплектацию? Напишите модель/артикул и систему — без сверки с карточкой товара не подтвержу узлы.
 ```
 
 Debug:
@@ -2606,22 +3475,39 @@ Debug:
   "intent": "complectation",
   "category": "pumps",
   "slots": {
-    "product_kind": "насос"
+    "pump_type": "циркуляционный",
+    "pump_use": "отопление",
+    "pump_context": "котел",
+    "allow_basic_option": true
   },
   "agents_used": [
     "IntentRouterAgent",
     "SlotFillingAgent",
-    "ResponseComposerAgent",
-    "GuardrailsAgent"
+    "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -2629,16 +3515,13 @@ Debug:
 
 Пользователь: 2202210
 
-Время ответа: `2.28` сек.
+Время ответа: `0.06` сек.
 
 Ответ бота:
 
 ```text
-По данным фида для 2202210 вижу подтверждение: насос, бак. Карточка товара: https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-elektricheskij-arderia-e9-9-kvt/
+Не вижу подтверждения комплектации в карточке товара. Лучше проверить карточку/документацию или передать вопрос менеджеру. Проверяемый пункт для 2202210: насос, бак; его наличие или включение в поставку карточкой не подтверждено.
 ```
-
-Товары:
-- `2202210` | Котел электрический Arderia E9, 9 кВт | 32602.0 RUB | в наличии | https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-elektricheskij-arderia-e9-9-kvt/
 
 Debug:
 
@@ -2647,7 +3530,10 @@ Debug:
   "intent": "exact_sku",
   "category": "pumps",
   "slots": {
-    "product_kind": "насос",
+    "pump_type": "циркуляционный",
+    "pump_use": "отопление",
+    "pump_context": "котел",
+    "allow_basic_option": true,
     "sku": "2202210"
   },
   "agents_used": [
@@ -2655,14 +3541,29 @@ Debug:
     "SlotFillingAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -2674,12 +3575,12 @@ Debug:
 
 Пользователь: чем его обвязать?
 
-Время ответа: `1.81` сек.
+Время ответа: `0.03` сек.
 
 Ответ бота:
 
 ```text
-По какому котлу и какой системе обвязка/группа безопасности нужна? Уточните модель котла и тип системы (открытая или закрытая, радиаторы/тёплый пол) — без сверки с документацией не буду подтверждать конкретные узлы.
+По какому котлу и какой системе обвязка/группа безопасности нужна? Уточните модель/артикул котла и тип системы (открытая или закрытая, радиаторы/тёплый пол) — без сверки с документацией не буду подтверждать конкретные узлы.
 ```
 
 Debug:
@@ -2691,18 +3592,31 @@ Debug:
   "slots": {},
   "agents_used": [
     "IntentRouterAgent",
-    "SlotFillingAgent",
-    "ResponseComposerAgent",
-    "GuardrailsAgent"
+    "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -2710,14 +3624,14 @@ Debug:
 
 Пользователь: электрический котёл, только радиаторы
 
-Время ответа: `0.0` сек.
+Время ответа: `0.04` сек.
 
 Ответ бота:
 
 ```text
-Без артикула или модели котла не подтвержу обвязку/комплектацию по данным фида. Не буду угадывать узлы системы — лучше передам менеджеру с краткой сводкой.
+Без артикула или модели котла не подтвержу обвязку или комплектацию. Не буду угадывать узлы системы — лучше передам менеджеру краткую сводкой.
 Лучше передать вопрос менеджеру.
-Кратко: пользователь хочет: электрический котёл, только радиаторы. Известно: boiler_type: электрический. Не хватает: нет артикула/модели для проверки комплектации в фиде. Рассматривались товары: не рассматривались.
+Кратко: пользователь хочет: чем его обвязать? | электрический котёл, только радиаторы. Известно: boiler_type: электрический, has_electricity: True, heat_sources: электричество. Не хватает: нет артикула/модели для проверки комплектации. Рассматривались товары: не рассматривались.
 ```
 
 Debug:
@@ -2725,9 +3639,11 @@ Debug:
 ```json
 {
   "intent": "complectation",
-  "category": "boilers",
+  "category": "radiators",
   "slots": {
-    "boiler_type": "электрический"
+    "boiler_type": "электрический",
+    "has_electricity": true,
+    "heat_sources": "электричество"
   },
   "agents_used": [
     "IntentRouterAgent",
@@ -2735,13 +3651,28 @@ Debug:
     "HandoffAgent"
   ],
   "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
   "response_llm_used": false,
   "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
   "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -2753,12 +3684,12 @@ Debug:
 
 Пользователь: нужна группа безопасности?
 
-Время ответа: `2.13` сек.
+Время ответа: `0.03` сек.
 
 Ответ бота:
 
 ```text
-Какой котел и тип системы (открытая/закрытая, радиаторы/тёплый пол) — уточните модель и схему, чтобы проверить нужен ли узел безопасности.
+По какому котлу и какой системе обвязка/группа безопасности нужна? Уточните модель/артикул котла и тип системы (открытая или закрытая, радиаторы/тёплый пол) — без сверки с документацией не буду подтверждать конкретные узлы.
 ```
 
 Debug:
@@ -2771,17 +3702,31 @@ Debug:
   "agents_used": [
     "IntentRouterAgent",
     "SlotFillingAgent",
-    "ResponseComposerAgent",
-    "GuardrailsAgent"
+    "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -2789,14 +3734,14 @@ Debug:
 
 Пользователь: электрический котёл, закрытая система
 
-Время ответа: `0.0` сек.
+Время ответа: `0.04` сек.
 
 Ответ бота:
 
 ```text
-Без артикула или модели котла не подтвержу обвязку/комплектацию по данным фида. Не буду угадывать узлы системы — лучше передам менеджеру с краткой сводкой.
+Без артикула или модели котла не подтвержу обвязку или комплектацию. Не буду угадывать узлы системы — лучше передам менеджеру краткую сводкой.
 Лучше передать вопрос менеджеру.
-Кратко: пользователь хочет: электрический котёл, закрытая система. Известно: boiler_type: электрический. Не хватает: нет артикула/модели для проверки комплектации в фиде. Рассматривались товары: не рассматривались.
+Кратко: пользователь хочет: нужна группа безопасности? | электрический котёл, закрытая система. Известно: boiler_type: электрический, has_electricity: True, heat_sources: электричество. Не хватает: нет артикула/модели для проверки комплектации. Рассматривались товары: не рассматривались.
 ```
 
 Debug:
@@ -2806,7 +3751,9 @@ Debug:
   "intent": "complectation",
   "category": "boilers",
   "slots": {
-    "boiler_type": "электрический"
+    "boiler_type": "электрический",
+    "has_electricity": true,
+    "heat_sources": "электричество"
   },
   "agents_used": [
     "IntentRouterAgent",
@@ -2814,13 +3761,28 @@ Debug:
     "HandoffAgent"
   ],
   "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
   "response_llm_used": false,
   "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
   "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -2832,82 +3794,13 @@ Debug:
 
 Пользователь: покажи шаровый кран 1/2
 
-Время ответа: `1.71` сек.
+Время ответа: `0.04` сек.
 
 Ответ бота:
 
 ```text
-Для чего нужен кран: вода (холодная/горячая), отопление или радиатор?
+Уточните для чего нужен кран: вода (холодная/горячая), отопление или радиатор.
 ```
-
-Debug:
-
-```json
-{
-  "intent": "attribute_request",
-  "category": "valves",
-  "slots": {
-    "size_inch": "1/2"
-  },
-  "agents_used": [
-    "IntentRouterAgent",
-    "SlotFillingAgent",
-    "ResponseComposerAgent",
-    "GuardrailsAgent"
-  ],
-  "llm_used": true,
-  "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
-  "topic_changed": false,
-  "products_loaded_from": "feed"
-}
-```
-
-### Ход 2
-
-Пользователь: для воды
-
-Время ответа: `5.15` сек.
-
-Ответ бота:
-
-```text
-Нашёл для тебя подходящие краны для воды:
-
-1. Кран шаровой BASE, рукоятка бабочка 1/2″ вн.-вн.  
-   Артикул: VT.217.N.04  
-   Бренд: VALTEC  
-   Цена: 452 RUB  
-   Наличие: в наличии, 57 шт.  
-   Характеристики: диаметр подключения, дюйм: 1/2; тип присоединения: Резьбовой; артикул: VT.217.N.04  
-   Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/
-
-2. Кран шаровой BASE, рукоятка бабочка 1/2″ вн.-нар.  
-   Артикул: VT.218.N.04  
-   Бренд: VALTEC  
-   Цена: 482 RUB  
-   Наличие: в наличии, 233 шт.  
-   Характеристики: диаметр подключения, дюйм: 1/2; тип присоединения: Резьбовой; артикул: VT.218.N.04  
-   Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-nar/
-
-3. Кран шаровой BASE, стальная рукоятка 1/2″ вн.-вн.  
-   Артикул: VT.214.N.04  
-   Бренд: VALTEC  
-   Цена: 503 RUB  
-   Наличие: в наличии, 2 шт.  
-   Характеристики: диаметр подключения, дюйм: 1/2; тип присоединения: Резьбовой; артикул: VT.214.N.04  
-   Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-stalnaya-rukoyatka-12-vn-vn/
-
-Сравни — и выбирай!
-```
-
-Товары:
-- `VT.217.N.04` | Кран шаровой BASE, рукоятка бабочка 1/2&quot; вн.-вн. | 452.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/
-- `VT.218.N.04` | Кран шаровой BASE, рукоятка бабочка 1/2&quot; вн.-нар. | 482.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-nar/
-- `VT.214.N.04` | Кран шаровой BASE, стальная рукоятка 1/2&quot; вн.-вн. | 503.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-stalnaya-rukoyatka-12-vn-vn/
 
 Debug:
 
@@ -2917,6 +3810,88 @@ Debug:
   "category": "valves",
   "slots": {
     "size_inch": "1/2",
+    "valve_kind": "шаровый кран"
+  },
+  "agents_used": [
+    "IntentRouterAgent",
+    "SlotFillingAgent",
+    "ResponseComposerAgent",
+    "GuardrailsAgent"
+  ],
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
+  "intent_llm_used": false,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
+  "topic_changed": false,
+  "products_loaded_from": "cache"
+}
+```
+
+### Ход 2
+
+Пользователь: для воды
+
+Время ответа: `0.23` сек.
+
+Ответ бота:
+
+```text
+Нашёл подходящие варианты:
+1. Кран шаровой MINI 1/2" вн.-нар.
+   Артикул: VT.331.N.04
+   Бренд: VALTEC
+   Цена: 449 RUB
+   Наличие: в наличии, 53 шт.
+   Характеристики: диаметр подключения, дюйм: 1/2; тип присоединения: Резьбовой; артикул: VT.331.N.04
+   Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-mini-12-vn-nar/
+2. Кран шаровой BASE, рукоятка бабочка 1/2" вн.-вн.
+   Артикул: VT.217.N.04
+   Бренд: VALTEC
+   Цена: 452 RUB
+   Наличие: в наличии, 43 шт.
+   Характеристики: диаметр подключения, дюйм: 1/2; тип присоединения: Резьбовой; артикул: VT.217.N.04
+   Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/
+3. Кран шаровой BASE, рукоятка бабочка 1/2" вн.-нар.
+   Артикул: VT.218.N.04
+   Бренд: VALTEC
+   Цена: 482 RUB
+   Наличие: в наличии, 1 шт.
+   Характеристики: диаметр подключения, дюйм: 1/2; тип присоединения: Резьбовой; артикул: VT.218.N.04
+   Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-nar/
+Могу сравнить эти варианты по главным отличиям для вашей задачи.
+```
+
+Товары:
+- `VT.331.N.04` | Кран шаровой MINI 1/2" вн.-нар. | 449.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-mini-12-vn-nar/
+- `VT.217.N.04` | Кран шаровой BASE, рукоятка бабочка 1/2" вн.-вн. | 452.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/
+- `VT.218.N.04` | Кран шаровой BASE, рукоятка бабочка 1/2" вн.-нар. | 482.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-nar/
+
+Debug:
+
+```json
+{
+  "intent": "attribute_request",
+  "category": "valves",
+  "slots": {
+    "size_inch": "1/2",
+    "valve_kind": "шаровый кран",
     "application": "вода"
   },
   "agents_used": [
@@ -2928,14 +3903,29 @@ Debug:
     "GuardrailsAgent",
     "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -2943,13 +3933,16 @@ Debug:
 
 Пользователь: скинь ссылку на первый
 
-Время ответа: `2.08` сек.
+Время ответа: `0.03` сек.
 
 Ответ бота:
 
 ```text
-https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/
+Ссылка на товар VT.331.N.04: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-mini-12-vn-nar/
 ```
+
+Товары:
+- `VT.331.N.04` | Кран шаровой MINI 1/2" вн.-нар. | 449.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-mini-12-vn-nar/
 
 Debug:
 
@@ -2959,6 +3952,7 @@ Debug:
   "category": "other",
   "slots": {
     "size_inch": "1/2",
+    "valve_kind": "шаровый кран",
     "application": "вода"
   },
   "agents_used": [
@@ -2966,100 +3960,47 @@ Debug:
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
 ## 29. Повтори ссылку и карточку ещё раз
 
-Категория: `ссылка`. Приоритет: `P1`. Вердикт: **PARTIAL**.
-Проблемы:
-- повторный ответ не подтвердил тот же SKU
+Категория: `ссылка`. Приоритет: `P1`. Вердикт: **PASS**.
 
 ### Ход 1
 
 Пользователь: покажи шаровый кран 1/2
 
-Время ответа: `1.55` сек.
+Время ответа: `0.04` сек.
 
 Ответ бота:
 
 ```text
-Для чего нужен кран: вода (холодная/горячая), отопление или радиатор?
+Уточните для чего нужен кран: вода (холодная/горячая), отопление или радиатор.
 ```
-
-Debug:
-
-```json
-{
-  "intent": "attribute_request",
-  "category": "valves",
-  "slots": {
-    "size_inch": "1/2"
-  },
-  "agents_used": [
-    "IntentRouterAgent",
-    "SlotFillingAgent",
-    "ResponseComposerAgent",
-    "GuardrailsAgent"
-  ],
-  "llm_used": true,
-  "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
-  "topic_changed": false,
-  "products_loaded_from": "feed"
-}
-```
-
-### Ход 2
-
-Пользователь: для воды
-
-Время ответа: `6.97` сек.
-
-Ответ бота:
-
-```text
-Нашёл для тебя подходящие краны:
-
-1. Кран шаровой BASE, рукоятка бабочка 1/2&quot; вн.-вн.  
-   Артикул: VT.217.N.04  
-   Бренд: VALTEC  
-   Цена: 452 RUB  
-   Наличие: в наличии, 57 шт.  
-   Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/
-
-2. Кран шаровой BASE, рукоятка бабочка 1/2&quot; вн.-нар.  
-   Артикул: VT.218.N.04  
-   Бренд: VALTEC  
-   Цена: 482 RUB  
-   Наличие: в наличии, 233 шт.  
-   Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-nar/
-
-3. Кран шаровой BASE, стальная рукоятка 1/2&quot; вн.-вн.  
-   Артикул: VT.214.N.04  
-   Бренд: VALTEC  
-   Цена: 503 RUB  
-   Наличие: в наличии, 2 шт.  
-   Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-stalnaya-rukoyatka-12-vn-vn/
-
-Сравни и выбери — всё под рукой.
-```
-
-Товары:
-- `VT.217.N.04` | Кран шаровой BASE, рукоятка бабочка 1/2&quot; вн.-вн. | 452.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/
-- `VT.218.N.04` | Кран шаровой BASE, рукоятка бабочка 1/2&quot; вн.-нар. | 482.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-nar/
-- `VT.214.N.04` | Кран шаровой BASE, стальная рукоятка 1/2&quot; вн.-вн. | 503.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-stalnaya-rukoyatka-12-vn-vn/
 
 Debug:
 
@@ -3069,6 +4010,88 @@ Debug:
   "category": "valves",
   "slots": {
     "size_inch": "1/2",
+    "valve_kind": "шаровый кран"
+  },
+  "agents_used": [
+    "IntentRouterAgent",
+    "SlotFillingAgent",
+    "ResponseComposerAgent",
+    "GuardrailsAgent"
+  ],
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
+  "intent_llm_used": false,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
+  "topic_changed": false,
+  "products_loaded_from": "cache"
+}
+```
+
+### Ход 2
+
+Пользователь: для воды
+
+Время ответа: `0.22` сек.
+
+Ответ бота:
+
+```text
+Нашёл подходящие варианты:
+1. Кран шаровой MINI 1/2" вн.-нар.
+   Артикул: VT.331.N.04
+   Бренд: VALTEC
+   Цена: 449 RUB
+   Наличие: в наличии, 53 шт.
+   Характеристики: диаметр подключения, дюйм: 1/2; тип присоединения: Резьбовой; артикул: VT.331.N.04
+   Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-mini-12-vn-nar/
+2. Кран шаровой BASE, рукоятка бабочка 1/2" вн.-вн.
+   Артикул: VT.217.N.04
+   Бренд: VALTEC
+   Цена: 452 RUB
+   Наличие: в наличии, 43 шт.
+   Характеристики: диаметр подключения, дюйм: 1/2; тип присоединения: Резьбовой; артикул: VT.217.N.04
+   Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/
+3. Кран шаровой BASE, рукоятка бабочка 1/2" вн.-нар.
+   Артикул: VT.218.N.04
+   Бренд: VALTEC
+   Цена: 482 RUB
+   Наличие: в наличии, 1 шт.
+   Характеристики: диаметр подключения, дюйм: 1/2; тип присоединения: Резьбовой; артикул: VT.218.N.04
+   Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-nar/
+Могу сравнить эти варианты по главным отличиям для вашей задачи.
+```
+
+Товары:
+- `VT.331.N.04` | Кран шаровой MINI 1/2" вн.-нар. | 449.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-mini-12-vn-nar/
+- `VT.217.N.04` | Кран шаровой BASE, рукоятка бабочка 1/2" вн.-вн. | 452.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/
+- `VT.218.N.04` | Кран шаровой BASE, рукоятка бабочка 1/2" вн.-нар. | 482.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-nar/
+
+Debug:
+
+```json
+{
+  "intent": "attribute_request",
+  "category": "valves",
+  "slots": {
+    "size_inch": "1/2",
+    "valve_kind": "шаровый кран",
     "application": "вода"
   },
   "agents_used": [
@@ -3080,14 +4103,29 @@ Debug:
     "GuardrailsAgent",
     "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -3095,16 +4133,21 @@ Debug:
 
 Пользователь: повтори ссылку ещё раз и артикул тоже
 
-Время ответа: `3.98` сек.
+Время ответа: `0.03` сек.
 
 Ответ бота:
 
 ```text
-Вот ссылки на показанные товары:  
-1. VT.217.N.04: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/  
-2. VT.218.N.04: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-nar/  
-3. VT.214.N.04: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-stalnaya-rukoyatka-12-vn-vn/
+Вот ссылки на показанные товары:
+1. VT.331.N.04: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-mini-12-vn-nar/
+2. VT.217.N.04: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/
+3. VT.218.N.04: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-nar/
 ```
+
+Товары:
+- `VT.331.N.04` | Кран шаровой MINI 1/2" вн.-нар. | 449.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-mini-12-vn-nar/
+- `VT.217.N.04` | Кран шаровой BASE, рукоятка бабочка 1/2" вн.-вн. | 452.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/
+- `VT.218.N.04` | Кран шаровой BASE, рукоятка бабочка 1/2" вн.-нар. | 482.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-nar/
 
 Debug:
 
@@ -3114,6 +4157,7 @@ Debug:
   "category": "other",
   "slots": {
     "size_inch": "1/2",
+    "valve_kind": "шаровый кран",
     "application": "вода"
   },
   "agents_used": [
@@ -3121,14 +4165,29 @@ Debug:
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -3136,24 +4195,28 @@ Debug:
 
 Пользователь: ты точно тот же товар прислал?
 
-Время ответа: `4.47` сек.
+Время ответа: `0.04` сек.
 
 Ответ бота:
 
 ```text
-Понимаю вашу оговорку — всегда стараемся передать товар точно так, как вы ожидаете.  
-Если что-то не подошло — уточните, пожалуйста, в какой категории вам нужен товар и какие параметры важны.  
-Могу предложить: трубы, насосы, краны или радиаторную арматуру — скажите, что именно вам нужно.
+Да, это VT.331.N.04 — Кран шаровой MINI 1/2" вн.-нар.. Цена: 449 RUB. Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-mini-12-vn-nar/
 ```
+
+Товары:
+- `VT.331.N.04` | Кран шаровой MINI 1/2" вн.-нар. | 449.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-mini-12-vn-nar/
+- `VT.217.N.04` | Кран шаровой BASE, рукоятка бабочка 1/2" вн.-вн. | 452.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/
+- `VT.218.N.04` | Кран шаровой BASE, рукоятка бабочка 1/2" вн.-нар. | 482.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-nar/
 
 Debug:
 
 ```json
 {
-  "intent": "small_talk",
+  "intent": "unknown",
   "category": "other",
   "slots": {
     "size_inch": "1/2",
+    "valve_kind": "шаровый кран",
     "application": "вода"
   },
   "agents_used": [
@@ -3161,33 +4224,46 @@ Debug:
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
-  "intent_llm_used": true,
-  "response_llm_used": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
+  "intent_llm_used": false,
+  "intent_llm_requested": true,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
   "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
 ## 30. Есть 2 штуки
 
-Категория: `наличие`. Приоритет: `P0`. Вердикт: **FAIL**.
-Проблемы:
-- clarify_first: не найдены ожидаемые маркеры ['какой', 'артикул']
+Категория: `наличие`. Приоритет: `P0`. Вердикт: **PASS**.
 
 ### Ход 1
 
 Пользователь: есть 2 штуки?
 
-Время ответа: `1.98` сек.
+Время ответа: `0.04` сек.
 
 Ответ бота:
 
 ```text
-По какому товару проверить наличие? Напишите артикул или модель.
+По какому товару проверить наличие? Напишите артикул или модель — иначе я не смогу подтвердить, что в наличии именно нужный товар.
 ```
 
 Debug:
@@ -3205,14 +4281,29 @@ Debug:
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
   "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -3220,26 +4311,24 @@ Debug:
 
 Пользователь: 2202210
 
-Время ответа: `4.05` сек.
+Время ответа: `0.09` сек.
 
 Ответ бота:
 
 ```text
 Нашёл подходящие варианты:
-
-1. Котел электрический Arderia E9, 9 кВт  
-   Артикул: 2202210  
-   Бренд: Arderia  
-   Цена: 32602 RUB  
-   Наличие: в наличии, 2 шт.  
-   Характеристики: артикул: 2202210; полное наименование: Котел электрический Arderia E9, 9 кВт; количество контуров: Одноконтурный  
+1. Котел электрический Arderia E9, 9 кВт
+   Артикул: 2202210
+   Бренд: Arderia
+   Цена: 35365 RUB
+   Наличие: в наличии, 5 шт.
+   Характеристики: мощность, квт: 9; тип котла: Электрический; количество контуров: Одноконтурный
    Ссылка: https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-elektricheskij-arderia-e9-9-kvt/
-
-Следующее действие: Показать аналоги.
+Могу показать сопоставимые аналоги.
 ```
 
 Товары:
-- `2202210` | Котел электрический Arderia E9, 9 кВт | 32602.0 RUB | в наличии | https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-elektricheskij-arderia-e9-9-kvt/
+- `2202210` | Котел электрический Arderia E9, 9 кВт | 35365.0 RUB | в наличии | https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-elektricheskij-arderia-e9-9-kvt/
 
 Debug:
 
@@ -3260,14 +4349,29 @@ Debug:
     "GuardrailsAgent",
     "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -3279,12 +4383,12 @@ Debug:
 
 Пользователь: в наличии?
 
-Время ответа: `1.71` сек.
+Время ответа: `0.02` сек.
 
 Ответ бота:
 
 ```text
-По какому товару проверить наличие? Напишите артикул или модель.
+По какому товару проверить наличие? Напишите артикул или модель — иначе я не смогу подтвердить, что в наличии именно нужный товар.
 ```
 
 Debug:
@@ -3302,14 +4406,29 @@ Debug:
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
   "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -3317,25 +4436,24 @@ Debug:
 
 Пользователь: 2202210
 
-Время ответа: `2.59` сек.
+Время ответа: `0.08` сек.
 
 Ответ бота:
 
 ```text
-Нашёл для тебя подходящий вариант:  
-1. Котел электрический Arderia E9, 9 кВт  
-   Артикул: 2202210  
-   Бренд: Arderia  
-   Цена: 32602 RUB  
-   Наличие: в наличии, 2 шт.  
-   Характеристики: артикул: 2202210; полное наименование: Котел электрический Arderia E9, 9 кВт; количество контуров: Одноконтурный  
-   Ссылка: https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-elektricheskij-arderia-e9-9-kvt/  
-
-Следующее действие: Показать аналоги.
+Нашёл подходящие варианты:
+1. Котел электрический Arderia E9, 9 кВт
+   Артикул: 2202210
+   Бренд: Arderia
+   Цена: 35365 RUB
+   Наличие: в наличии, 5 шт.
+   Характеристики: мощность, квт: 9; тип котла: Электрический; количество контуров: Одноконтурный
+   Ссылка: https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-elektricheskij-arderia-e9-9-kvt/
+Могу показать сопоставимые аналоги.
 ```
 
 Товары:
-- `2202210` | Котел электрический Arderia E9, 9 кВт | 32602.0 RUB | в наличии | https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-elektricheskij-arderia-e9-9-kvt/
+- `2202210` | Котел электрический Arderia E9, 9 кВт | 35365.0 RUB | в наличии | https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-elektricheskij-arderia-e9-9-kvt/
 
 Debug:
 
@@ -3356,14 +4474,29 @@ Debug:
     "GuardrailsAgent",
     "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -3375,12 +4508,12 @@ Debug:
 
 Пользователь: можно забрать сегодня?
 
-Время ответа: `1.58` сек.
+Время ответа: `0.03` сек.
 
 Ответ бота:
 
 ```text
-По какому товару? Напишите артикул или модель.
+По какому товару проверить наличие? Напишите артикул или модель — иначе я не смогу подтвердить, что в наличии именно нужный товар.
 ```
 
 Debug:
@@ -3398,14 +4531,29 @@ Debug:
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
   "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -3413,25 +4561,24 @@ Debug:
 
 Пользователь: 2202210
 
-Время ответа: `2.56` сек.
+Время ответа: `0.08` сек.
 
 Ответ бота:
 
 ```text
-Нашёл для тебя подходящий вариант:  
-1. Котел электрический Arderia E9, 9 кВт  
-   Артикул: 2202210  
-   Бренд: Arderia  
-   Цена: 32602 RUB  
-   Наличие: в наличии, 2 шт.  
-   Характеристики: артикул: 2202210; полное наименование: Котел электрический Arderia E9, 9 кВт; количество контуров: Одноконтурный  
-   Ссылка: https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-elektricheskij-arderia-e9-9-kvt/  
-
-Следующее действие: Показать аналоги.
+Нашёл подходящие варианты:
+1. Котел электрический Arderia E9, 9 кВт
+   Артикул: 2202210
+   Бренд: Arderia
+   Цена: 35365 RUB
+   Наличие: в наличии, 5 шт.
+   Характеристики: мощность, квт: 9; тип котла: Электрический; количество контуров: Одноконтурный
+   Ссылка: https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-elektricheskij-arderia-e9-9-kvt/
+Могу показать сопоставимые аналоги.
 ```
 
 Товары:
-- `2202210` | Котел электрический Arderia E9, 9 кВт | 32602.0 RUB | в наличии | https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-elektricheskij-arderia-e9-9-kvt/
+- `2202210` | Котел электрический Arderia E9, 9 кВт | 35365.0 RUB | в наличии | https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-elektricheskij-arderia-e9-9-kvt/
 
 Debug:
 
@@ -3452,14 +4599,29 @@ Debug:
     "GuardrailsAgent",
     "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -3471,12 +4633,12 @@ Debug:
 
 Пользователь: самый дешёвый шаровый кран 1/2
 
-Время ответа: `1.36` сек.
+Время ответа: `0.14` сек.
 
 Ответ бота:
 
 ```text
-Для чего нужен кран: вода (холодная/горячая), отопление или радиатор?
+Уточните для чего нужен кран: вода (холодная/горячая), отопление или радиатор.
 ```
 
 Debug:
@@ -3487,7 +4649,8 @@ Debug:
   "category": "valves",
   "slots": {
     "size_inch": "1/2",
-    "cheap": true
+    "cheap": true,
+    "valve_kind": "шаровый кран"
   },
   "agents_used": [
     "IntentRouterAgent",
@@ -3495,14 +4658,29 @@ Debug:
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
   "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -3510,44 +4688,40 @@ Debug:
 
 Пользователь: для воды
 
-Время ответа: `8.93` сек.
+Время ответа: `0.21` сек.
 
 Ответ бота:
 
 ```text
-Нашёл для тебя подходящие варианты:
-
-1. Кран шаровой BASE, рукоятка бабочка 1/2&quot; вн.-вн.  
-   Артикул: VT.217.N.04  
-   Бренд: VALTEC  
-   Цена: 452 RUB  
-   Наличие: в наличии, 57 шт.  
-   Характеристики: диаметр подключения, дюйм: 1/2; тип присоединения: Резьбовой; артикул: VT.217.N.04  
+Нашёл подходящие варианты:
+1. Кран шаровой СТАНДАРТ, длинная рукоятка 1/2", вн.-нар. (PN40)
+   Артикул: VT.121.GN.04
+   Бренд: VALTEC
+   Цена: 267 RUB
+   Наличие: нет в наличии, 0 шт.
+   Характеристики: диаметр подключения, дюйм: 1/2; тип присоединения: Резьбовой; артикул: VT.121.GN.04
+   Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-standart/kran-shar-standart-dlinnaya-rukoyatka-1-2-vn-nar-pn40/
+2. Кран шаровой MINI 1/2" вн.-нар.
+   Артикул: VT.331.N.04
+   Бренд: VALTEC
+   Цена: 449 RUB
+   Наличие: в наличии, 53 шт.
+   Характеристики: диаметр подключения, дюйм: 1/2; тип присоединения: Резьбовой; артикул: VT.331.N.04
+   Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-mini-12-vn-nar/
+3. Кран шаровой BASE, рукоятка бабочка 1/2" вн.-вн.
+   Артикул: VT.217.N.04
+   Бренд: VALTEC
+   Цена: 452 RUB
+   Наличие: в наличии, 43 шт.
+   Характеристики: диаметр подключения, дюйм: 1/2; тип присоединения: Резьбовой; артикул: VT.217.N.04
    Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/
-
-2. Кран шаровой BASE, рукоятка бабочка 1/2&quot; вн.-нар.  
-   Артикул: VT.218.N.04  
-   Бренд: VALTEC  
-   Цена: 482 RUB  
-   Наличие: в наличии, 233 шт.  
-   Характеристики: диаметр подключения, дюйм: 1/2; тип присоединения: Резьбовой; артикул: VT.218.N.04  
-   Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-nar/
-
-3. Кран шаровой BASE, стальная рукоятка 1/2&quot; вн.-вн.  
-   Артикул: VT.214.N.04  
-   Бренд: VALTEC  
-   Цена: 503 RUB  
-   Наличие: в наличии, 2 шт.  
-   Характеристики: диаметр подключения, дюйм: 1/2; тип присоединения: Резьбовой; артикул: VT.214.N.04  
-   Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-stalnaya-rukoyatka-12-vn-vn/
-
-Следующее действие: Показать аналоги.
+Могу показать сопоставимые аналоги.
 ```
 
 Товары:
-- `VT.217.N.04` | Кран шаровой BASE, рукоятка бабочка 1/2&quot; вн.-вн. | 452.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/
-- `VT.218.N.04` | Кран шаровой BASE, рукоятка бабочка 1/2&quot; вн.-нар. | 482.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-nar/
-- `VT.214.N.04` | Кран шаровой BASE, стальная рукоятка 1/2&quot; вн.-вн. | 503.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-stalnaya-rukoyatka-12-vn-vn/
+- `VT.121.GN.04` | Кран шаровой СТАНДАРТ, длинная рукоятка 1/2", вн.-нар. (PN40) | 267.0 RUB | нет в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-standart/kran-shar-standart-dlinnaya-rukoyatka-1-2-vn-nar-pn40/
+- `VT.331.N.04` | Кран шаровой MINI 1/2" вн.-нар. | 449.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-mini-12-vn-nar/
+- `VT.217.N.04` | Кран шаровой BASE, рукоятка бабочка 1/2" вн.-вн. | 452.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/
 
 Debug:
 
@@ -3558,6 +4732,7 @@ Debug:
   "slots": {
     "size_inch": "1/2",
     "cheap": true,
+    "valve_kind": "шаровый кран",
     "application": "вода"
   },
   "agents_used": [
@@ -3569,14 +4744,29 @@ Debug:
     "GuardrailsAgent",
     "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -3588,7 +4778,7 @@ Debug:
 
 Пользователь: насос 25/6, только в наличии
 
-Время ответа: `9.65` сек.
+Время ответа: `0.15` сек.
 
 Ответ бота:
 
@@ -3598,30 +4788,32 @@ Debug:
    Артикул: VRS.256.18.0
    Бренд: VALTEC
    Цена: 4186 RUB
-   Наличие: в наличии, 12 шт.
+   Наличие: в наличии, 14 шт.
    Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 180
    Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-256-180-s-gaykami/
 2. Насос циркуляционный VALTEC RS 25/6-130 с гайками
    Артикул: VRS.256.13.0
    Бренд: VALTEC
    Цена: 4311 RUB
-   Наличие: в наличии, 12 шт.
+   Наличие: в наличии, 9 шт.
    Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130
    Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-256-130-s-gaykami/
-3. Насос циркуляционный Wilo Star RS 25/6-130-RK
-   Артикул: 9168934
-   Бренд: Wilo
-   Цена: 7717 RUB
-   Наличие: в наличии, 10 шт.
-   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130
-   Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-wilo-star-rs-25-6-130-rk/
-Следующее действие: Сравнить.
+3. Насос циркуляц. (отопл.) UPС 25-60 180
+   Артикул: 50058
+   Бренд: UNIPUMP
+   Цена: 4777 RUB
+   Наличие: в наличии, 1 шт.
+   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 180
+   Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/cirkulyacionnye-nasosy-unipump/nasos-cirkulyac-otopl-ups-25-60-180/
+Могу сравнить эти варианты по главным отличиям для вашей задачи.
+
+Кстати, к насосу часто ставят два шаровых крана с американкой — так его можно снять, не сливая систему. Если нужно, напишите «кран с американкой».
 ```
 
 Товары:
 - `VRS.256.18.0` | Насос циркуляционный VALTEC RS 25/6-180 с гайками | 4186.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-256-180-s-gaykami/
 - `VRS.256.13.0` | Насос циркуляционный VALTEC RS 25/6-130 с гайками | 4311.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-256-130-s-gaykami/
-- `9168934` | Насос циркуляционный Wilo Star RS 25/6-130-RK | 7717.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-wilo-star-rs-25-6-130-rk/
+- `50058` | Насос циркуляц. (отопл.) UPС 25-60 180 | 4777.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/cirkulyacionnye-nasosy-unipump/nasos-cirkulyac-otopl-ups-25-60-180/
 
 Debug:
 
@@ -3633,7 +4825,8 @@ Debug:
     "connection_size": 25,
     "head_m": 6.0,
     "pump_type": "циркуляционный",
-    "in_stock": true
+    "in_stock": true,
+    "companion_hint_pumps": true
   },
   "agents_used": [
     "IntentRouterAgent",
@@ -3644,14 +4837,29 @@ Debug:
     "GuardrailsAgent",
     "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -3659,44 +4867,40 @@ Debug:
 
 Пользователь: 130
 
-Время ответа: `9.39` сек.
+Время ответа: `0.17` сек.
 
 Ответ бота:
 
 ```text
-Нашёл подходящие варианты — вот что у нас есть:
-
-1. Насос циркуляционный VALTEC RS 25/6-130 с гайками  
-   Артикул: VRS.256.13.0  
-   Бренд: VALTEC  
-   Цена: 4311 RUB  
-   Наличие: в наличии, 12 шт.  
-   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130  
+Нашёл подходящие варианты:
+1. Насос циркуляционный VALTEC RS 25/6-130 с гайками
+   Артикул: VRS.256.13.0
+   Бренд: VALTEC
+   Цена: 4311 RUB
+   Наличие: в наличии, 9 шт.
+   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130
    Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-256-130-s-gaykami/
-
-2. Насос циркуляционный Wilo Star RS 25/6-130-RK  
-   Артикул: 9168934  
-   Бренд: Wilo  
-   Цена: 7717 RUB  
-   Наличие: в наличии, 10 шт.  
-   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130  
+2. Насос циркуляционный Wilo Star RS 25/6-130-RK
+   Артикул: 9168934
+   Бренд: Wilo
+   Цена: 7148 RUB
+   Наличие: в наличии, 9 шт.
+   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130
    Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-wilo-star-rs-25-6-130-rk/
-
-3. Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK  
-   Артикул: 2459900  
-   Бренд: Wilo  
-   Цена: 11401 RUB  
-   Наличие: в наличии, 10 шт.  
-   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130-180  
+3. Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK
+   Артикул: 2459900
+   Бренд: Wilo
+   Цена: 10521 RUB
+   Наличие: в наличии, 9 шт.
+   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130-180
    Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-s-montazhnymi-adapterami-i-gajkami-wilo-star-rs-25-6-130-180-rk/
-
-Следующее действие: Сравнить.
+Могу сравнить эти варианты по главным отличиям для вашей задачи.
 ```
 
 Товары:
 - `VRS.256.13.0` | Насос циркуляционный VALTEC RS 25/6-130 с гайками | 4311.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-256-130-s-gaykami/
-- `9168934` | Насос циркуляционный Wilo Star RS 25/6-130-RK | 7717.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-wilo-star-rs-25-6-130-rk/
-- `2459900` | Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK | 11401.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-s-montazhnymi-adapterami-i-gajkami-wilo-star-rs-25-6-130-180-rk/
+- `9168934` | Насос циркуляционный Wilo Star RS 25/6-130-RK | 7148.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-wilo-star-rs-25-6-130-rk/
+- `2459900` | Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK | 10521.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-s-montazhnymi-adapterami-i-gajkami-wilo-star-rs-25-6-130-180-rk/
 
 Debug:
 
@@ -3709,6 +4913,7 @@ Debug:
     "head_m": 6.0,
     "pump_type": "циркуляционный",
     "in_stock": true,
+    "companion_hint_pumps": true,
     "mounting_length_mm": 130
   },
   "agents_used": [
@@ -3720,101 +4925,47 @@ Debug:
     "GuardrailsAgent",
     "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
 ## 35. Только VALTEC без аналогов
 
-Категория: `краны`. Приоритет: `P1`. Вердикт: **PARTIAL**.
-Проблемы:
-- clarify_first: не найдены ожидаемые маркеры ['назнач']
+Категория: `краны`. Приоритет: `P1`. Вердикт: **PASS**.
 
 ### Ход 1
 
 Пользователь: нужен кран 1/2, только Valtec
 
-Время ответа: `1.84` сек.
+Время ответа: `0.05` сек.
 
 Ответ бота:
 
 ```text
-Для чего нужен кран: вода (холодная/горячая), отопление или радиатор?
+Уточните для чего нужен кран: вода (холодная/горячая), отопление или радиатор.
 ```
-
-Debug:
-
-```json
-{
-  "intent": "attribute_request",
-  "category": "valves",
-  "slots": {
-    "brand": "VALTEC",
-    "size_inch": "1/2"
-  },
-  "agents_used": [
-    "IntentRouterAgent",
-    "SlotFillingAgent",
-    "ResponseComposerAgent",
-    "GuardrailsAgent"
-  ],
-  "llm_used": true,
-  "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
-  "topic_changed": false,
-  "products_loaded_from": "feed"
-}
-```
-
-### Ход 2
-
-Пользователь: для воды, без аналогов
-
-Время ответа: `7.2` сек.
-
-Ответ бота:
-
-```text
-Нашли подходящие варианты — всё по твоему запросу:
-
-1. Кран шаровой BASE, рукоятка бабочка 1/2" вн.-вн.  
-   Артикул: VT.217.N.04  
-   Бренд: VALTEC  
-   Цена: 452 RUB  
-   Наличие: в наличии, 57 шт.  
-   Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/
-
-2. Кран шаровой BASE, рукоятка бабочка 1/2" вн.-нар.  
-   Артикул: VT.218.N.04  
-   Бренд: VALTEC  
-   Цена: 482 RUB  
-   Наличие: в наличии, 233 шт.  
-   Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-nar/
-
-3. Кран шаровой BASE, стальная рукоятка 1/2" вн.-вн.  
-   Артикул: VT.214.N.04  
-   Бренд: VALTEC  
-   Цена: 503 RUB  
-   Наличие: в наличии, 2 шт.  
-   Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-stalnaya-rukoyatka-12-vn-vn/
-
-Сравни — и выбери то, что подойдёт именно тебе.
-```
-
-Товары:
-- `VT.217.N.04` | Кран шаровой BASE, рукоятка бабочка 1/2&quot; вн.-вн. | 452.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/
-- `VT.218.N.04` | Кран шаровой BASE, рукоятка бабочка 1/2&quot; вн.-нар. | 482.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-nar/
-- `VT.214.N.04` | Кран шаровой BASE, стальная рукоятка 1/2&quot; вн.-вн. | 503.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-stalnaya-rukoyatka-12-vn-vn/
 
 Debug:
 
@@ -3825,6 +4976,89 @@ Debug:
   "slots": {
     "brand": "VALTEC",
     "size_inch": "1/2",
+    "valve_kind": "шаровый кран"
+  },
+  "agents_used": [
+    "IntentRouterAgent",
+    "SlotFillingAgent",
+    "ResponseComposerAgent",
+    "GuardrailsAgent"
+  ],
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
+  "intent_llm_used": false,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
+  "topic_changed": false,
+  "products_loaded_from": "cache"
+}
+```
+
+### Ход 2
+
+Пользователь: для воды, без аналогов
+
+Время ответа: `0.1` сек.
+
+Ответ бота:
+
+```text
+Нашёл подходящие варианты:
+1. Кран шаровой MINI 1/2" вн.-нар.
+   Артикул: VT.331.N.04
+   Бренд: VALTEC
+   Цена: 449 RUB
+   Наличие: в наличии, 53 шт.
+   Характеристики: диаметр подключения, дюйм: 1/2; тип присоединения: Резьбовой; артикул: VT.331.N.04
+   Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-mini-12-vn-nar/
+2. Кран шаровой BASE-ГОСТ полнопроходной с рукояткой-бабочкой вн.-вн. DN15 PN40 1/2"
+   Артикул: VT.217S.N.04
+   Бренд: VALTEC
+   Цена: 485 RUB
+   Наличие: в наличии, 4 шт.
+   Характеристики: диаметр подключения, дюйм: 1/2; тип присоединения: Резьбовой; артикул: VT.217S.N.04
+   Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base-gost/kran-sharovoj-base-gost-polnoprohodnoj-s-rukojatkoj-babochkoj-vn-vn-dn15-pn40-12/
+3. Кран шаровой MINI 1/2" вн.-вн.
+   Артикул: VT.330.N.04
+   Бренд: VALTEC
+   Цена: 502 RUB
+   Наличие: в наличии, 3 шт.
+   Характеристики: диаметр подключения, дюйм: 1/2; тип присоединения: Резьбовой; артикул: VT.330.N.04
+   Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-mini-12-vn-vn/
+Могу сравнить эти варианты по главным отличиям для вашей задачи.
+```
+
+Товары:
+- `VT.331.N.04` | Кран шаровой MINI 1/2" вн.-нар. | 449.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-mini-12-vn-nar/
+- `VT.217S.N.04` | Кран шаровой BASE-ГОСТ полнопроходной с рукояткой-бабочкой вн.-вн. DN15 PN40 1/2" | 485.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base-gost/kran-sharovoj-base-gost-polnoprohodnoj-s-rukojatkoj-babochkoj-vn-vn-dn15-pn40-12/
+- `VT.330.N.04` | Кран шаровой MINI 1/2" вн.-вн. | 502.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-mini-12-vn-vn/
+
+Debug:
+
+```json
+{
+  "intent": "attribute_request",
+  "category": "valves",
+  "slots": {
+    "brand": "VALTEC",
+    "size_inch": "1/2",
+    "valve_kind": "шаровый кран",
     "application": "вода"
   },
   "agents_used": [
@@ -3836,14 +5070,29 @@ Debug:
     "GuardrailsAgent",
     "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -3855,7 +5104,7 @@ Debug:
 
 Пользователь: нужен кран шаровый
 
-Время ответа: `1.55` сек.
+Время ответа: `0.03` сек.
 
 Ответ бота:
 
@@ -3869,21 +5118,38 @@ Debug:
 {
   "intent": "broad_category",
   "category": "valves",
-  "slots": {},
+  "slots": {
+    "valve_kind": "шаровый кран"
+  },
   "agents_used": [
     "IntentRouterAgent",
     "SlotFillingAgent",
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
   "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -3891,41 +5157,40 @@ Debug:
 
 Пользователь: 1/2, для воды
 
-Время ответа: `8.14` сек.
+Время ответа: `0.23` сек.
 
 Ответ бота:
 
 ```text
-Нашёл для тебя подходящие варианты — посмотри, какой тебе больше подходит:
-
-1. Кран шаровой BASE, рукоятка бабочка 1/2" вн.-вн.  
-   Артикул: VT.217.N.04  
-   Бренд: VALTEC  
-   Цена: 452 RUB  
-   Наличие: в наличии, 57 шт.  
+Нашёл подходящие варианты:
+1. Кран шаровой Rommer с американкой 1/2" ВН/НР, ручка бабочка
+   Артикул: RBV-0005-2510215
+   Бренд: ROMMER
+   Цена: 395 RUB
+   Наличие: в наличии, 1 шт.
+   Характеристики: диаметр подключения, дюйм: 1/2; тип присоединения: Резьбовой; полное наименование: Кран шаровый Rommer с американкой 1/2" ВН/НР, ручка бабочка
+   Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-rommer/kran-sharovyj-rommer-s-amerikankoj-1-2-vn-nr-ruchka-babochka/
+2. Кран шаровой MINI 1/2" вн.-нар.
+   Артикул: VT.331.N.04
+   Бренд: VALTEC
+   Цена: 449 RUB
+   Наличие: в наличии, 53 шт.
+   Характеристики: диаметр подключения, дюйм: 1/2; тип присоединения: Резьбовой; артикул: VT.331.N.04
+   Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-mini-12-vn-nar/
+3. Кран шаровой BASE, рукоятка бабочка 1/2" вн.-вн.
+   Артикул: VT.217.N.04
+   Бренд: VALTEC
+   Цена: 452 RUB
+   Наличие: в наличии, 43 шт.
+   Характеристики: диаметр подключения, дюйм: 1/2; тип присоединения: Резьбовой; артикул: VT.217.N.04
    Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/
-
-2. Кран шаровой BASE, рукоятка бабочка 1/2" вн.-нар.  
-   Артикул: VT.218.N.04  
-   Бренд: VALTEC  
-   Цена: 482 RUB  
-   Наличие: в наличии, 233 шт.  
-   Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-nar/
-
-3. Кран шаровой BASE, стальная рукоятка 1/2" вн.-вн.  
-   Артикул: VT.214.N.04  
-   Бренд: VALTEC  
-   Цена: 503 RUB  
-   Наличие: в наличии, 2 шт.  
-   Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-stalnaya-rukoyatka-12-vn-vn/
-
-Сравни — и выбери!
+Могу сравнить эти варианты по главным отличиям для вашей задачи.
 ```
 
 Товары:
-- `VT.217.N.04` | Кран шаровой BASE, рукоятка бабочка 1/2&quot; вн.-вн. | 452.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/
-- `VT.218.N.04` | Кран шаровой BASE, рукоятка бабочка 1/2&quot; вн.-нар. | 482.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-nar/
-- `VT.214.N.04` | Кран шаровой BASE, стальная рукоятка 1/2&quot; вн.-вн. | 503.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-stalnaya-rukoyatka-12-vn-vn/
+- `RBV-0005-2510215` | Кран шаровой Rommer с американкой 1/2" ВН/НР, ручка бабочка | 395.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-rommer/kran-sharovyj-rommer-s-amerikankoj-1-2-vn-nr-ruchka-babochka/
+- `VT.331.N.04` | Кран шаровой MINI 1/2" вн.-нар. | 449.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-mini-12-vn-nar/
+- `VT.217.N.04` | Кран шаровой BASE, рукоятка бабочка 1/2" вн.-вн. | 452.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/
 
 Debug:
 
@@ -3934,6 +5199,7 @@ Debug:
   "intent": "attribute_request",
   "category": "valves",
   "slots": {
+    "valve_kind": "шаровый кран",
     "size_inch": "1/2",
     "application": "вода"
   },
@@ -3946,14 +5212,29 @@ Debug:
     "GuardrailsAgent",
     "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -3961,12 +5242,12 @@ Debug:
 
 Пользователь: теперь нужен котёл на 100 метров
 
-Время ответа: `2.17` сек.
+Время ответа: `0.05` сек.
 
 Ответ бота:
 
 ```text
-Газовый или электрический?
+Понял, подбираем котёл примерно на 100 м². Газовый или электрический?
 ```
 
 Debug:
@@ -3984,14 +5265,29 @@ Debug:
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": true,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -4003,12 +5299,12 @@ Debug:
 
 Пользователь: нужен насос для отопления
 
-Время ответа: `2.27` сек.
+Время ответа: `0.03` сек.
 
 Ответ бота:
 
 ```text
-Уточните монтажную длину и напор или модель старого насоса.
+Понял, нужен циркуляционный насос. Уточните присоединение, монтажную длину и напор или пришлите полную маркировку старого насоса.
 ```
 
 Debug:
@@ -4026,14 +5322,29 @@ Debug:
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
   "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -4041,7 +5352,7 @@ Debug:
 
 Пользователь: ладно, не насос. теперь нужна канализационная труба 50
 
-Время ответа: `2.59` сек.
+Время ответа: `0.11` сек.
 
 Ответ бота:
 
@@ -4066,14 +5377,29 @@ Debug:
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
   "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": true,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -4085,12 +5411,12 @@ Debug:
 
 Пользователь: как дела?
 
-Время ответа: `2.57` сек.
+Время ответа: `0.03` сек.
 
 Ответ бота:
 
 ```text
-Всё хорошо, спасибо за интерес! Если вам нужно подобрать сантехнические решения — расскажите, о какой категории вы думаете: трубы, насосы, котлы или краны?
+Дела хорошо, спасибо. Готов помочь с подбором товаров Vesta Trading — что нужно?
 ```
 
 Debug:
@@ -4105,14 +5431,29 @@ Debug:
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
   "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -4120,7 +5461,7 @@ Debug:
 
 Пользователь: нужен насос 25/6 130
 
-Время ответа: `9.6` сек.
+Время ответа: `0.17` сек.
 
 Ответ бота:
 
@@ -4130,30 +5471,32 @@ Debug:
    Артикул: VRS.256.13.0
    Бренд: VALTEC
    Цена: 4311 RUB
-   Наличие: в наличии, 12 шт.
+   Наличие: в наличии, 9 шт.
    Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130
    Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-256-130-s-gaykami/
 2. Насос циркуляционный Wilo Star RS 25/6-130-RK
    Артикул: 9168934
    Бренд: Wilo
-   Цена: 7717 RUB
-   Наличие: в наличии, 10 шт.
+   Цена: 7148 RUB
+   Наличие: в наличии, 9 шт.
    Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130
    Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-wilo-star-rs-25-6-130-rk/
 3. Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK
    Артикул: 2459900
    Бренд: Wilo
-   Цена: 11401 RUB
-   Наличие: в наличии, 10 шт.
+   Цена: 10521 RUB
+   Наличие: в наличии, 9 шт.
    Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130-180
    Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-s-montazhnymi-adapterami-i-gajkami-wilo-star-rs-25-6-130-180-rk/
-Следующее действие: Сравнить.
+Могу сравнить эти варианты по главным отличиям для вашей задачи.
+
+Кстати, к насосу часто ставят два шаровых крана с американкой — так его можно снять, не сливая систему. Если нужно, напишите «кран с американкой».
 ```
 
 Товары:
 - `VRS.256.13.0` | Насос циркуляционный VALTEC RS 25/6-130 с гайками | 4311.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-256-130-s-gaykami/
-- `9168934` | Насос циркуляционный Wilo Star RS 25/6-130-RK | 7717.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-wilo-star-rs-25-6-130-rk/
-- `2459900` | Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK | 11401.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-s-montazhnymi-adapterami-i-gajkami-wilo-star-rs-25-6-130-180-rk/
+- `9168934` | Насос циркуляционный Wilo Star RS 25/6-130-RK | 7148.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-wilo-star-rs-25-6-130-rk/
+- `2459900` | Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK | 10521.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-s-montazhnymi-adapterami-i-gajkami-wilo-star-rs-25-6-130-180-rk/
 
 Debug:
 
@@ -4165,7 +5508,8 @@ Debug:
     "connection_size": 25,
     "head_m": 6.0,
     "mounting_length_mm": 130,
-    "pump_type": "циркуляционный"
+    "pump_type": "циркуляционный",
+    "companion_hint_pumps": true
   },
   "agents_used": [
     "IntentRouterAgent",
@@ -4176,14 +5520,29 @@ Debug:
     "GuardrailsAgent",
     "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -4195,12 +5554,12 @@ Debug:
 
 Пользователь: ты красивая
 
-Время ответа: `2.71` сек.
+Время ответа: `0.03` сек.
 
 Ответ бота:
 
 ```text
-Спасибо, но я — просто помощник для подбора сантехники. Если тебе нужно что-то для дома — скажи, в какую категорию: трубы, насосы, котлы или краны? Опиши задачу — помогу подобрать.
+Спасибо, очень приятно. Помогу подобрать товары Vesta Trading по задаче: котёл, насос, трубы, краны, канализацию или радиаторную арматуру.
 ```
 
 Debug:
@@ -4215,14 +5574,29 @@ Debug:
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
   "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -4230,44 +5604,40 @@ Debug:
 
 Пользователь: кран 1/2 для воды
 
-Время ответа: `8.54` сек.
+Время ответа: `0.22` сек.
 
 Ответ бота:
 
 ```text
-Нашли для тебя краны под воду — всё по 1/2 дюйма:
-
-1. Кран шаровой BASE, рукоятка бабочка 1/2" вн.-вн.  
-Артикул: VT.217.N.04  
-Бренд: VALTEC  
-Цена: 452 RUB  
-Наличие: в наличии, 57 шт.  
-Характеристики: диаметр подключения, дюйм: 1/2; тип присоединения: Резьбовой; артикул: VT.217.N.04  
-Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/
-
-2. Кран шаровой BASE, рукоятка бабочка 1/2" вн.-нар.  
-Артикул: VT.218.N.04  
-Бренд: VALTEC  
-Цена: 482 RUB  
-Наличие: в наличии, 233 шт.  
-Характеристики: диаметр подключения, дюйм: 1/2; тип присоединения: Резьбовой; артикул: VT.218.N.04  
-Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-nar/
-
-3. Кран шаровой BASE, стальная рукоятка 1/2" вн.-вн.  
-Артикул: VT.214.N.04  
-Бренд: VALTEC  
-Цена: 503 RUB  
-Наличие: в наличии, 2 шт.  
-Характеристики: диаметр подключения, дюйм: 1/2; тип присоединения: Резьбовой; артикул: VT.214.N.04  
-Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-stalnaya-rukoyatka-12-vn-vn/
-
-Сравни — и выбери то, что подойдёт именно тебе.
+Нашёл подходящие варианты:
+1. Кран шаровой Rommer с американкой 1/2" ВН/НР, ручка бабочка
+   Артикул: RBV-0005-2510215
+   Бренд: ROMMER
+   Цена: 395 RUB
+   Наличие: в наличии, 1 шт.
+   Характеристики: диаметр подключения, дюйм: 1/2; тип присоединения: Резьбовой; полное наименование: Кран шаровый Rommer с американкой 1/2" ВН/НР, ручка бабочка
+   Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-rommer/kran-sharovyj-rommer-s-amerikankoj-1-2-vn-nr-ruchka-babochka/
+2. Кран шаровой MINI 1/2" вн.-нар.
+   Артикул: VT.331.N.04
+   Бренд: VALTEC
+   Цена: 449 RUB
+   Наличие: в наличии, 53 шт.
+   Характеристики: диаметр подключения, дюйм: 1/2; тип присоединения: Резьбовой; артикул: VT.331.N.04
+   Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-mini-12-vn-nar/
+3. Кран шаровой BASE, рукоятка бабочка 1/2" вн.-вн.
+   Артикул: VT.217.N.04
+   Бренд: VALTEC
+   Цена: 452 RUB
+   Наличие: в наличии, 43 шт.
+   Характеристики: диаметр подключения, дюйм: 1/2; тип присоединения: Резьбовой; артикул: VT.217.N.04
+   Ссылка: https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/
+Могу сравнить эти варианты по главным отличиям для вашей задачи.
 ```
 
 Товары:
-- `VT.217.N.04` | Кран шаровой BASE, рукоятка бабочка 1/2&quot; вн.-вн. | 452.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/
-- `VT.218.N.04` | Кран шаровой BASE, рукоятка бабочка 1/2&quot; вн.-нар. | 482.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-nar/
-- `VT.214.N.04` | Кран шаровой BASE, стальная рукоятка 1/2&quot; вн.-вн. | 503.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-stalnaya-rukoyatka-12-vn-vn/
+- `RBV-0005-2510215` | Кран шаровой Rommer с американкой 1/2" ВН/НР, ручка бабочка | 395.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-rommer/kran-sharovyj-rommer-s-amerikankoj-1-2-vn-nr-ruchka-babochka/
+- `VT.331.N.04` | Кран шаровой MINI 1/2" вн.-нар. | 449.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-mini-12-vn-nar/
+- `VT.217.N.04` | Кран шаровой BASE, рукоятка бабочка 1/2" вн.-вн. | 452.0 RUB | в наличии | https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/
 
 Debug:
 
@@ -4277,6 +5647,7 @@ Debug:
   "category": "valves",
   "slots": {
     "size_inch": "1/2",
+    "valve_kind": "шаровый кран",
     "application": "вода"
   },
   "agents_used": [
@@ -4288,28 +5659,41 @@ Debug:
     "GuardrailsAgent",
     "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
 ## 40. Штука для батареи
 
-Категория: `радиаторная арматура`. Приоритет: `P1`. Вердикт: **PARTIAL**.
-Проблемы:
-- после уточнения нет ни товаров, ни продолжения уточнения
+Категория: `радиаторная арматура`. Приоритет: `P1`. Вердикт: **PASS**.
 
 ### Ход 1
 
 Пользователь: нужна штука для батареи
 
-Время ответа: `2.32` сек.
+Время ответа: `0.03` сек.
 
 Ответ бота:
 
@@ -4332,14 +5716,29 @@ Debug:
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
   "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -4347,22 +5746,24 @@ Debug:
 
 Пользователь: перекрывать
 
-Время ответа: `3.35` сек.
+Время ответа: `0.04` сек.
 
 Ответ бота:
 
 ```text
-Подскажите для радиатора: прямое или угловое подключение; размер 1/2 или 3/4; регулировать температуру (термоголовка) или просто перекрывать поток.
+Подскажите для радиатора: прямое или угловое подключение; размер 1/2 или 3/4.
 ```
 
 Debug:
 
 ```json
 {
-  "intent": "broad_category",
+  "intent": "attribute_request",
   "category": "radiator_fittings",
   "slots": {
-    "application": "радиатор"
+    "application": "радиатор",
+    "thermostatic_head": false,
+    "radiator_action": "перекрывать поток"
   },
   "agents_used": [
     "IntentRouterAgent",
@@ -4370,28 +5771,41 @@ Debug:
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
-  "intent_llm_used": true,
-  "response_llm_used": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
+  "intent_llm_used": false,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
   "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
 ## 41. Труба белая
 
-Категория: `трубы`. Приоритет: `P1`. Вердикт: **PARTIAL**.
-Проблемы:
-- clarify_first: не найдены ожидаемые маркеры ['для чего', 'вода', 'диаметр']
+Категория: `трубы`. Приоритет: `P1`. Вердикт: **PASS**.
 
 ### Ход 1
 
 Пользователь: труба белая
 
-Время ответа: `1.93` сек.
+Время ответа: `0.04` сек.
 
 Ответ бота:
 
@@ -4415,14 +5829,29 @@ Debug:
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
   "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -4430,41 +5859,42 @@ Debug:
 
 Пользователь: горячая вода, 20 мм
 
-Время ответа: `5.98` сек.
+Время ответа: `0.23` сек.
 
 Ответ бота:
 
 ```text
-Нашёл для тебя подходящие варианты — всё по 20 мм, как надо:
-
-1. Труба PP-FIBER арм. стекл., PN 20, 20 MM (белый)  
-   Артикул: VTp.700.FB20.20  
-   Бренд: VALTEC  
-   Цена: 114 RUB  
-   Наличие: в наличии, 1330 шт.  
+Нашёл подходящие варианты:
+1. Труба РОСТерм армированная стекловолокном PN 25 (SDR 6) белый 20ммх3,4мм 4м
+   Артикул: PR-AQS6-20
+   Бренд: РОСТерм
+   Цена: 85 RUB
+   Наличие: в наличии, 16 шт.
+   Характеристики: основной материал: Полипропилен; диаметр (мм): 20; артикул: PR-AQS6-20
+   Ссылка: https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-polipropilenovye-rosterm/truba-rosterm-armirovannaja-steklovoloknom-pn-25-sdr-6-belyj-20mmh34mm-4m/
+2. Труба РОСТерм армированная стекловолокном PN 25 (SDR 6) белый 20ммх3,4мм 2м
+   Артикул: PR-AQS6-20/2m
+   Бренд: РОСТерм
+   Цена: 85 RUB
+   Наличие: в наличии, 226 шт.
+   Характеристики: основной материал: Полипропилен; диаметр (мм): 20; артикул: PR-AQS6-20/2m
+   Ссылка: https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-polipropilenovye-rosterm/truba-rosterm-armirovannaja-steklovoloknom-pn-25-sdr-6-belyj-20mmh34mm-2m/
+3. Труба PP-FIBER арм. стекл., PN 20, 20 MM (белый)
+   Артикул: VTp.700.FB20.20
+   Бренд: VALTEC
+   Цена: 114 RUB
+   Наличие: в наличии, 1135 шт.
+   Характеристики: артикул: VTp.700.FB20.20; полное наименование: Труба PP-FIBER арм. стекл., PN 20, 20 MM (белый)
    Ссылка: https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-belye-valtec/truba-pp-fiber-arm-stekl-pn-20-20-mm-belyy/
+Могу сравнить эти варианты по главным отличиям для вашей задачи.
 
-2. Труба PN 20, 20 MM (белый)  
-   Артикул: VTp.700.0020.20  
-   Бренд: VALTEC  
-   Цена: 117 RUB  
-   Наличие: в наличии, 48 шт.  
-   Ссылка: https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-belye-valtec/truba-pn-20-20-mm-belyy/
-
-3. Труба PP-FIBER арм. стекл., PN 20, 25 MM (белый)  
-   Артикул: VTp.700.FB20.25  
-   Бренд: VALTEC  
-   Цена: 168 RUB  
-   Наличие: в наличии, 952 шт.  
-   Ссылка: https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-belye-valtec/truba-pp-fiber-arm-stekl-pn-20-25-mm-belyy/
-
-Сравни — и выбери, что тебе подойдёт.
+Кстати, к трубам обычно нужны краны и переходники. Если нужно, напишите, например, «кран 1/2».
 ```
 
 Товары:
+- `PR-AQS6-20` | Труба РОСТерм армированная стекловолокном PN 25 (SDR 6) белый 20ммх3,4мм 4м | 85.0 RUB | в наличии | https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-polipropilenovye-rosterm/truba-rosterm-armirovannaja-steklovoloknom-pn-25-sdr-6-belyj-20mmh34mm-4m/
+- `PR-AQS6-20/2m` | Труба РОСТерм армированная стекловолокном PN 25 (SDR 6) белый 20ммх3,4мм 2м | 85.0 RUB | в наличии | https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-polipropilenovye-rosterm/truba-rosterm-armirovannaja-steklovoloknom-pn-25-sdr-6-belyj-20mmh34mm-2m/
 - `VTp.700.FB20.20` | Труба PP-FIBER арм. стекл., PN 20, 20 MM (белый) | 114.0 RUB | в наличии | https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-belye-valtec/truba-pp-fiber-arm-stekl-pn-20-20-mm-belyy/
-- `VTp.700.0020.20` | Труба PN 20, 20 MM (белый) | 117.0 RUB | в наличии | https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-belye-valtec/truba-pn-20-20-mm-belyy/
-- `VTp.700.FB20.25` | Труба PP-FIBER арм. стекл., PN 20, 25 MM (белый) | 168.0 RUB | в наличии | https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-belye-valtec/truba-pp-fiber-arm-stekl-pn-20-25-mm-belyy/
 
 Debug:
 
@@ -4475,9 +5905,10 @@ Debug:
   "slots": {
     "pipe_color": "белая",
     "element_type": "труба",
-    "pipe_purpose": "отопление/водоснабжение",
+    "pipe_purpose": "водоснабжение",
     "water_temperature": "горячая",
-    "diameter_mm": 20
+    "diameter_mm": 20,
+    "companion_hint_pipes": true
   },
   "agents_used": [
     "IntentRouterAgent",
@@ -4488,68 +5919,46 @@ Debug:
     "GuardrailsAgent",
     "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
 ## 42. Эта фигня под раковину
 
-Категория: `другое`. Приоритет: `P1`. Вердикт: **PARTIAL**.
-Проблемы:
-- после уточнения нет ни товаров, ни честного no-match/уточнения
+Категория: `другое`. Приоритет: `P1`. Вердикт: **PASS**.
 
 ### Ход 1
 
 Пользователь: нужна эта фигня под раковину
 
-Время ответа: `5.57` сек.
+Время ответа: `0.0` сек.
 
 Ответ бота:
 
 ```text
-Под раковину обычно нужны: сифон (слив), гибкая подводка или угловой кран. Что именно нужно — слив/сифон или запорный кран?
-```
-
-Debug:
-
-```json
-{
-  "intent": "unknown",
-  "category": "other",
-  "slots": {},
-  "agents_used": [
-    "IntentRouterAgent",
-    "ResponseComposerAgent",
-    "GuardrailsAgent"
-  ],
-  "llm_used": true,
-  "intent_llm_used": true,
-  "response_llm_used": true,
-  "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
-  "topic_changed": false,
-  "products_loaded_from": "feed"
-}
-```
-
-### Ход 2
-
-Пользователь: слив
-
-Время ответа: `4.04` сек.
-
-Ответ бота:
-
-```text
-Канализация внутренняя или наружная? И что нужно: труба, отвод, тройник или муфта?
+Под раковиной могут быть разные узлы: сифон/слив отводит воду в канализацию, гибкая подводка подаёт воду, а запорный кран её перекрывает. Что именно нужно — слив/сифон, подводка или кран?
 ```
 
 Debug:
@@ -4559,7 +5968,113 @@ Debug:
   "intent": "broad_category",
   "category": "sewer",
   "slots": {
-    "pipe_purpose": "канализация"
+    "sink_flow": "awaiting_kind"
+  },
+  "agents_used": [
+    "ResponseComposerAgent"
+  ],
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
+  "intent_llm_used": false,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": null,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
+  "topic_changed": false,
+  "products_loaded_from": "cache"
+}
+```
+
+### Ход 2
+
+Пользователь: слив
+
+Время ответа: `0.01` сек.
+
+Ответ бота:
+
+```text
+Понял, нужен слив/сифон. Уточните размер выпуска раковины/мойки и диаметр подключения к канализации, а также одна или две чаши у мойки. По этим данным можно проверить подходящую позицию без угадывания.
+```
+
+Debug:
+
+```json
+{
+  "intent": "broad_category",
+  "category": "sewer",
+  "slots": {
+    "sink_flow": "awaiting_drain_dimensions",
+    "sink_component": "слив/сифон"
+  },
+  "agents_used": [
+    "ResponseComposerAgent"
+  ],
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
+  "intent_llm_used": false,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": null,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
+  "topic_changed": false,
+  "products_loaded_from": "cache"
+}
+```
+
+## 43. Надо чтобы вода шла
+
+Категория: `другое`. Приоритет: `P0`. Вердикт: **PASS**.
+
+### Ход 1
+
+Пользователь: надо чтобы вода шла
+
+Время ответа: `0.05` сек.
+
+Ответ бота:
+
+```text
+Источник воды какой: скважина, колодец или центральный водопровод?
+```
+
+Debug:
+
+```json
+{
+  "intent": "broad_category",
+  "category": "pumps",
+  "slots": {
+    "pump_use": "водоснабжение",
+    "symptom": "проблема с подачей воды"
   },
   "agents_used": [
     "IntentRouterAgent",
@@ -4567,57 +6082,29 @@ Debug:
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
-  "intent_llm_used": true,
-  "response_llm_used": true,
-  "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
-  "topic_changed": false,
-  "products_loaded_from": "feed"
-}
-```
-
-## 43. Надо чтобы вода шла
-
-Категория: `другое`. Приоритет: `P0`. Вердикт: **FAIL**.
-Проблемы:
-- clarify_later: не найдены ожидаемые маркеры ['напор', 'источник']
-- symptom-flow не распознан
-
-### Ход 1
-
-Пользователь: надо чтобы вода шла
-
-Время ответа: `1.99` сек.
-
-Ответ бота:
-
-```text
-Для какой задачи нужен насос: отопление, водоснабжение/полив, повышение давления или откачка воды?
-```
-
-Debug:
-
-```json
-{
-  "intent": "broad_category",
-  "category": "pumps",
-  "slots": {},
-  "agents_used": [
-    "IntentRouterAgent",
-    "SlotFillingAgent",
-    "ResponseComposerAgent",
-    "GuardrailsAgent"
-  ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
   "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -4625,12 +6112,12 @@ Debug:
 
 Пользователь: слабый напор в доме
 
-Время ответа: `1.51` сек.
+Время ответа: `0.04` сек.
 
 Ответ бота:
 
 ```text
-Для какой задачи нужен насос: отопление, водоснабжение/полив, повышение давления или откачка воды?
+При слабом напоре уточните источник воды: центральный водопровод, скважина или колодец? И где нужно повысить напор — в доме или для полива?
 ```
 
 Debug:
@@ -4639,78 +6126,57 @@ Debug:
 {
   "intent": "broad_category",
   "category": "pumps",
-  "slots": {},
+  "slots": {
+    "pump_use": "повышение давления",
+    "symptom": "слабый напор",
+    "application": "дом"
+  },
   "agents_used": [
     "IntentRouterAgent",
     "SlotFillingAgent",
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
   "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
 ## 44. Сложная обвязка с эскалацией только после уточнений
 
-Категория: `fallback`. Приоритет: `P0`. Вердикт: **FAIL**.
-Проблемы:
-- clarify_first: не найдены ожидаемые маркеры ['площад', 'кот', 'бойлер']
+Категория: `fallback`. Приоритет: `P0`. Вердикт: **PASS**.
 
 ### Ход 1
 
 Пользователь: подберите обвязку котла, бойлера и теплого пола, я вообще не разбираюсь
 
-Время ответа: `1.72` сек.
+Время ответа: `0.03` сек.
 
 Ответ бота:
 
 ```text
-По какому котлу и какой системе обвязка/группа безопасности нужна? Уточните модель котла и тип системы (открытая или закрытая, радиаторы/тёплый пол) — без сверки с документацией не буду подтверждать конкретные узлы.
-```
-
-Debug:
-
-```json
-{
-  "intent": "complectation",
-  "category": "boilers",
-  "slots": {},
-  "agents_used": [
-    "IntentRouterAgent",
-    "SlotFillingAgent",
-    "ResponseComposerAgent",
-    "GuardrailsAgent"
-  ],
-  "llm_used": true,
-  "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
-  "topic_changed": false,
-  "products_loaded_from": "feed"
-}
-```
-
-### Ход 2
-
-Пользователь: дом 180 метров, котёл не выбран, нужен ещё бойлер
-
-Время ответа: `0.0` сек.
-
-Ответ бота:
-
-```text
-Без артикула или модели котла не подтвержу обвязку/комплектацию по данным фида. Не буду угадывать узлы системы — лучше передам менеджеру с краткой сводкой.
-Лучше передать вопрос менеджеру.
-Кратко: пользователь хочет: дом 180 метров, котёл не выбран, нужен ещё бойлер. Известно: area_m2: 180.0. Не хватает: нет артикула/модели для проверки комплектации в фиде. Рассматривались товары: не рассматривались.
+Обвязка котла, бойлера и тёплого пола — комплексная инженерная схема; случайную корзину по ней собирать небезопасно. Чтобы передать специалисту не пустую заявку, осталось уточнить: площадь дома; выбранный котёл (тип, модель/артикул) или отметка, что он не выбран; объём или модель бойлера; площадь тёплого пола; число контуров тёплого пола. После ответа сохраню все три подсистемы и передам задачу менеджеру.
 ```
 
 Debug:
@@ -4720,40 +6186,172 @@ Debug:
   "intent": "complectation",
   "category": "boilers",
   "slots": {
-    "area_m2": 180.0
+    "complex_engineering_request": "обвязка котла, бойлера и водяного тёплого пола",
+    "boiler_requirement": "с бойлером",
+    "warm_floor_requirement": "тёплый пол"
   },
   "agents_used": [
     "IntentRouterAgent",
-    "SlotFillingAgent",
+    "GuardrailsAgent",
+    "ResponseComposerAgent"
+  ],
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
+  "intent_llm_used": false,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": null,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
+  "topic_changed": false,
+  "products_loaded_from": "cache"
+}
+```
+
+### Ход 2
+
+Пользователь: дом 180 метров, котёл не выбран, нужен ещё бойлер
+
+Время ответа: `0.04` сек.
+
+Ответ бота:
+
+```text
+Обвязка котла, бойлера и тёплого пола — комплексная инженерная схема; случайную корзину по ней собирать небезопасно. Чтобы передать специалисту не пустую заявку, осталось уточнить: объём или модель бойлера; площадь тёплого пола; число контуров тёплого пола. После ответа сохраню все три подсистемы и передам задачу менеджеру.
+```
+
+Debug:
+
+```json
+{
+  "intent": "attribute_request",
+  "category": "boilers",
+  "slots": {
+    "complex_engineering_request": "обвязка котла, бойлера и водяного тёплого пола",
+    "boiler_requirement": "с бойлером",
+    "warm_floor_requirement": "тёплый пол",
+    "area_m2": 180.0,
+    "project": "частный дом",
+    "boiler_status_known": true
+  },
+  "agents_used": [
+    "IntentRouterAgent",
+    "GuardrailsAgent",
+    "ResponseComposerAgent"
+  ],
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
+  "intent_llm_used": false,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": null,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
+  "topic_changed": false,
+  "products_loaded_from": "cache"
+}
+```
+
+### Ход 3
+
+Пользователь: бойлер 150 л, тёплый пол 60 м², 6 контуров
+
+Время ответа: `0.04` сек.
+
+Ответ бота:
+
+```text
+Спасибо, исходные данные для инженерной заявки зафиксировал. Передаю вопрос менеджеру. Сохранил контекст диалога (запрос: подберите обвязку котла, бойлера и теплого пола, я вообще не разбираюсь | дом 180 метров, котёл не выбран, нужен ещё бойлер | бойлер 150 л, тёплый пол 60 м², 6 контуров; параметры: complex_engineering_request: обвязка котла, бойлера и водяного тёплого пола, boiler_requirement: с бойлером, warm_floor_requirement: тёплый пол, area_m2: 180.0, project: частный дом, boiler_volume_l: 150.0, warm_floor_area_m2: 60.0, warm_floor_contours: 6, key_requirements: с бойлером; тёплый пол). Я сохранил обращение и историю диалога для менеджера. Чтобы менеджер мог связаться с вами, оставьте телефон, email или удобный способ связи. Пока я на связи — могу продолжить подбор по ассортименту.
+```
+
+Debug:
+
+```json
+{
+  "intent": "engineering_handoff",
+  "category": "boilers",
+  "slots": {
+    "complex_engineering_request": "обвязка котла, бойлера и водяного тёплого пола",
+    "boiler_requirement": "с бойлером",
+    "warm_floor_requirement": "тёплый пол",
+    "area_m2": 180.0,
+    "project": "частный дом",
+    "boiler_status_known": true,
+    "boiler_volume_l": 150.0,
+    "warm_floor_area_m2": 60.0,
+    "warm_floor_contours": 6
+  },
+  "agents_used": [
+    "IntentRouterAgent",
+    "GuardrailsAgent",
     "HandoffAgent"
   ],
   "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
+  "intent_llm_requested": true,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
   "response_llm_used": false,
   "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
   "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
 ## 45. Неизвестная комплектация и корректная передача менеджеру
 
-Категория: `fallback`. Приоритет: `P0`. Вердикт: **FAIL**.
-Проблемы:
-- clarify_first: не найдены ожидаемые маркеры ['модель', 'артикул']
+Категория: `fallback`. Приоритет: `P0`. Вердикт: **PASS**.
 
 ### Ход 1
 
 Пользователь: у этого котла встроенный бойлер есть?
 
-Время ответа: `1.51` сек.
+Время ответа: `0.03` сек.
 
 Ответ бота:
 
 ```text
-По какому котлу нужно проверить — укажите модель и систему.
+По какому котлу или товару проверить комплектацию? Напишите модель/артикул и систему — без сверки с карточкой товара не подтвержу узлы.
 ```
 
 Debug:
@@ -4765,18 +6363,31 @@ Debug:
   "slots": {},
   "agents_used": [
     "IntentRouterAgent",
-    "SlotFillingAgent",
-    "ResponseComposerAgent",
-    "GuardrailsAgent"
+    "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -4784,23 +6395,20 @@ Debug:
 
 Пользователь: 2202210
 
-Время ответа: `2.75` сек.
+Время ответа: `0.06` сек.
 
 Ответ бота:
 
 ```text
-Бойлер. Карточка товара: https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-elektricheskij-arderia-e9-9-kvt/
+Не вижу подтверждения комплектации в карточке товара. Лучше проверить карточку/документацию или передать вопрос менеджеру. Проверяемый пункт для 2202210: бойлер; его наличие или включение в поставку карточкой не подтверждено.
 ```
-
-Товары:
-- `2202210` | Котел электрический Arderia E9, 9 кВт | 32602.0 RUB | в наличии | https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-elektricheskij-arderia-e9-9-kvt/
 
 Debug:
 
 ```json
 {
   "intent": "exact_sku",
-  "category": "boilers",
+  "category": "other",
   "slots": {
     "sku": "2202210"
   },
@@ -4809,14 +6417,29 @@ Debug:
     "SlotFillingAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -4828,7 +6451,7 @@ Debug:
 
 Пользователь: нужен насос
 
-Время ответа: `2.14` сек.
+Время ответа: `0.02` сек.
 
 Ответ бота:
 
@@ -4851,14 +6474,29 @@ Debug:
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
   "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -4866,7 +6504,7 @@ Debug:
 
 Пользователь: ау
 
-Время ответа: `3.15` сек.
+Время ответа: `0.04` сек.
 
 Ответ бота:
 
@@ -4889,66 +6527,76 @@ Debug:
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
-  "intent_llm_used": true,
-  "response_llm_used": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
+  "intent_llm_used": false,
+  "intent_llm_requested": true,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
   "response_llm_requested": true,
-  "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
+  "response_llm_fallback_reason": "LLM provider 'disabled' is not configured",
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
 ## 47. Опечатки и переформулировка в одной сессии
 
-Категория: `другое`. Приоритет: `P1`. Вердикт: **PARTIAL**.
-Проблемы:
-- после уточнений ожидались товары, но карточек нет
-- для cheap-сценария нет товарной выдачи
+Категория: `другое`. Приоритет: `P1`. Вердикт: **PASS**.
 
 ### Ход 1
 
 Пользователь: нсос 256 130
 
-Время ответа: `5.49` сек.
+Время ответа: `0.18` сек.
 
 Ответ бота:
 
 ```text
-Нашёл подходящие варианты — вот что подойдёт:
-
-1. Насос циркуляционный VALTEC RS 25/6-130 с гайками  
-   Артикул: VRS.256.13.0  
-   Бренд: VALTEC  
-   Цена: 4311 RUB  
-   Наличие: в наличии, 12 шт.  
-   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130  
+Нашёл подходящие варианты:
+1. Насос циркуляционный VALTEC RS 25/6-130 с гайками
+   Артикул: VRS.256.13.0
+   Бренд: VALTEC
+   Цена: 4311 RUB
+   Наличие: в наличии, 9 шт.
+   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130
    Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-256-130-s-gaykami/
-
-2. Насос циркуляционный Wilo Star RS 25/6-130-RK  
-   Артикул: 9168934  
-   Бренд: Wilo  
-   Цена: 7717 RUB  
-   Наличие: в наличии, 10 шт.  
-   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130  
+2. Насос циркуляционный Wilo Star RS 25/6-130-RK
+   Артикул: 9168934
+   Бренд: Wilo
+   Цена: 7148 RUB
+   Наличие: в наличии, 9 шт.
+   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130
    Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-wilo-star-rs-25-6-130-rk/
-
-3. Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK  
-   Артикул: 2459900  
-   Бренд: Wilo  
-   Цена: 11401 RUB  
-   Наличие: в наличии, 10 шт.  
-   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130-180  
+3. Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK
+   Артикул: 2459900
+   Бренд: Wilo
+   Цена: 10521 RUB
+   Наличие: в наличии, 9 шт.
+   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130-180
    Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-s-montazhnymi-adapterami-i-gajkami-wilo-star-rs-25-6-130-180-rk/
+Могу сравнить эти варианты по главным отличиям для вашей задачи.
 
-Сравнивай — подбери то, что лучше подходит под твою задачу.
+Кстати, к насосу часто ставят два шаровых крана с американкой — так его можно снять, не сливая систему. Если нужно, напишите «кран с американкой».
 ```
 
 Товары:
 - `VRS.256.13.0` | Насос циркуляционный VALTEC RS 25/6-130 с гайками | 4311.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-256-130-s-gaykami/
-- `9168934` | Насос циркуляционный Wilo Star RS 25/6-130-RK | 7717.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-wilo-star-rs-25-6-130-rk/
-- `2459900` | Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK | 11401.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-s-montazhnymi-adapterami-i-gajkami-wilo-star-rs-25-6-130-180-rk/
+- `9168934` | Насос циркуляционный Wilo Star RS 25/6-130-RK | 7148.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-wilo-star-rs-25-6-130-rk/
+- `2459900` | Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK | 10521.0 RUB | в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-s-montazhnymi-adapterami-i-gajkami-wilo-star-rs-25-6-130-180-rk/
 
 Debug:
 
@@ -4958,7 +6606,10 @@ Debug:
   "category": "pumps",
   "slots": {
     "mounting_length_mm": 130,
-    "pump_type": "циркуляционный"
+    "connection_size": 25,
+    "head_m": 6.0,
+    "pump_type": "циркуляционный",
+    "companion_hint_pumps": true
   },
   "agents_used": [
     "IntentRouterAgent",
@@ -4969,14 +6620,29 @@ Debug:
     "GuardrailsAgent",
     "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -4984,13 +6650,40 @@ Debug:
 
 Пользователь: да, тока подешевле
 
-Время ответа: `1.81` сек.
+Время ответа: `0.06` сек.
 
 Ответ бота:
 
 ```text
-Более дешёвых подходящих вариантов в данных фида не вижу. Последний подходящий вариант: VRS.256.13.0, 9168934, 2459900. Могу показать аналоги или передать вопрос менеджеру.
+Аналоги к показанным ранее товарам — проверьте отличия в характеристиках:
+1. Насос циркуляционный Kromwell PS 25/6 130
+   Артикул: PS 25/6 130
+   Бренд: Kromwell
+   Цена: 2898 RUB
+   Наличие: нет в наличии, 0 шт.
+   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130
+   Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-kromwell/nasos-cirkulyacionnyj-kromwell-ps-25-6-130/
+2. Насос циркуляц. (отопл.) CP 25-60 130
+   Артикул: 95046
+   Бренд: UNIPUMP
+   Цена: 3207 RUB
+   Наличие: нет в наличии, 0 шт.
+   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130
+   Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/cirkulyacionnye-nasosy-unipump/nasos-cirkulyac-otopl-cp-25-60-130/
+3. Насос циркуляционный Rommer 25/60-130
+   Артикул: RCP-0002-2561301
+   Бренд: ROMMER
+   Цена: 3532 RUB
+   Наличие: нет в наличии, 0 шт.
+   Характеристики: тип товара: Насос; максимальный напор, м: 6; монтажная длина, мм: 130
+   Ссылка: https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-rommer/nasos-cirkulyacionnyj-rommer-25-60-130/
+Могу показать сопоставимые аналоги.
 ```
+
+Товары:
+- `PS 25/6 130` | Насос циркуляционный Kromwell PS 25/6 130 | 2898.0 RUB | нет в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-kromwell/nasos-cirkulyacionnyj-kromwell-ps-25-6-130/
+- `95046` | Насос циркуляц. (отопл.) CP 25-60 130 | 3207.0 RUB | нет в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/cirkulyacionnye-nasosy-unipump/nasos-cirkulyac-otopl-cp-25-60-130/
+- `RCP-0002-2561301` | Насос циркуляционный Rommer 25/60-130 | 3532.0 RUB | нет в наличии | https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-rommer/nasos-cirkulyacionnyj-rommer-25-60-130/
 
 Debug:
 
@@ -5000,25 +6693,41 @@ Debug:
   "category": "pumps",
   "slots": {
     "mounting_length_mm": 130,
+    "connection_size": 25,
+    "head_m": 6.0,
     "pump_type": "циркуляционный",
-    "cheap": true
+    "companion_hint_pumps": true
   },
   "agents_used": [
     "IntentRouterAgent",
-    "SlotFillingAgent",
     "FeedSearchAgent",
-    "RankingAgent",
-    "ResponseComposerAgent",
-    "GuardrailsAgent"
+    "ProductCardAgent",
+    "GuardrailsAgent",
+    "ResponseComposerAgent"
   ],
-  "llm_used": true,
+  "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -5030,7 +6739,7 @@ Debug:
 
 Пользователь: 6 кВт на 100 метров хватит?
 
-Время ответа: `0.01` сек.
+Время ответа: `0.03` сек.
 
 Ответ бота:
 
@@ -5044,20 +6753,38 @@ Debug:
 {
   "intent": "attribute_request",
   "category": "boilers",
-  "slots": {},
+  "slots": {
+    "power_kw": 6.0,
+    "area_m2": 100.0
+  },
   "agents_used": [
     "IntentRouterAgent",
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
   "llm_used": false,
+  "llm_requested": false,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
   "intent_llm_used": false,
+  "intent_llm_requested": false,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
   "response_llm_used": false,
   "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
   "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```
 
@@ -5065,34 +6792,51 @@ Debug:
 
 Пользователь: точно? а то ты раньше 12 советовал
 
-Время ответа: `3.74` сек.
+Время ответа: `0.03` сек.
 
 Ответ бота:
 
 ```text
-Спасибо за обратную связь — я стараюсь быть точным, но если что-то не так, всегда готов уточнить.  
-Можно ли описать вашу задачу по подбору товаров — например, трубы, насосы, краны или радиаторная арматура?
+Да, позиция та же: 6 кВт на 100 м² недостаточно. 10 кВт — только предварительный ориентир по правилу 1 кВт на 10 м², а вариант около 12 кВт мог быть предложен как запас на теплопотери и ГВС. Это не означает, что больший котёл автоматически лучше: окончательную мощность проверяют расчётом теплопотерь и по минимальной модуляции модели.
 ```
 
 Debug:
 
 ```json
 {
-  "intent": "small_talk",
+  "intent": "unknown",
   "category": "other",
-  "slots": {},
+  "slots": {
+    "power_kw": 6.0,
+    "area_m2": 100.0
+  },
   "agents_used": [
     "IntentRouterAgent",
     "ResponseComposerAgent",
     "GuardrailsAgent"
   ],
-  "llm_used": true,
-  "intent_llm_used": true,
-  "response_llm_used": true,
-  "response_llm_requested": true,
+  "llm_used": false,
+  "llm_requested": true,
+  "llm_transport_succeeded": false,
+  "llm_output_accepted": false,
+  "final_answer_source": "deterministic",
+  "llm_rejection_reason": null,
+  "intent_llm_used": false,
+  "intent_llm_requested": true,
+  "intent_llm_output_accepted": false,
+  "intent_llm_rejection_reason": null,
+  "response_llm_used": false,
+  "response_llm_requested": false,
+  "response_llm_output_accepted": false,
+  "response_llm_rejection_reason": null,
   "response_llm_fallback_reason": null,
-  "any_llm_used": true,
+  "consultant_llm_used": false,
+  "consultant_llm_requested": false,
+  "consultant_llm_output_accepted": false,
+  "consultant_llm_rejection_reason": null,
+  "consultant_llm_fallback_reason": null,
+  "any_llm_used": false,
   "topic_changed": false,
-  "products_loaded_from": "feed"
+  "products_loaded_from": "cache"
 }
 ```

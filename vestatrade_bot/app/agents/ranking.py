@@ -4,6 +4,7 @@ import re
 
 from app.models import Product, SearchQuery
 
+from .product_constraints import normalize_thread_pair, product_thread_pair
 from .utils import normalize_sku, normalize_text
 
 
@@ -103,40 +104,12 @@ class RankingAgent:
         return score
 
     def _thread_matches(self, product: Product, wanted: str) -> bool:
-        return self._thread_code(product) == wanted
+        expected = normalize_thread_pair(wanted)
+        return expected is not None and product_thread_pair(product) == expected
 
     def _thread_code(self, product: Product) -> str | None:
-        """Canonical thread pairing of a product: ff / fm / mm.
-
-        The feed states it as «тип резьбы» for some products and only inside the
-        name for others («вн.-вн.», «ВН/НР»), so both are read.
-        """
-        attr_text = " ".join(
-            normalize_text(str(value))
-            for key, value in product.attributes_normalized.items()
-            if "резьб" in normalize_text(str(key))
-        )
-        name = normalize_text(product.name)
-        for text in (attr_text, name):
-            if not text:
-                continue
-            if "(ff)" in text or re.search(r"внутренн\w*\s+внутренн", text):
-                return "ff"
-            if "(fm)" in text or re.search(r"внутренн\w*\s+наружн|наружн\w*\s+внутренн", text):
-                return "fm"
-            if "(mm)" in text or re.search(r"наружн\w*\s+наружн", text):
-                return "mm"
-            if re.search(r"\bвн\.?\s*[-/]\s*вн\b|\bвр\s*[-/]\s*вр\b", text):
-                return "ff"
-            if re.search(r"\bвн\.?\s*[-/]\s*нар\b|\bвн\s*[-/]\s*нр\b|\bвр\s*[-/]\s*нр\b", text):
-                return "fm"
-            if re.search(r"\bнар\.?\s*[-/]\s*нар\b|\bнр\s*[-/]\s*нр\b", text):
-                return "mm"
-            if text.strip() == "внутренняя":
-                return "ff"
-            if text.strip() == "наружная":
-                return "mm"
-        return None
+        """Backward-compatible delegate to the shared catalogue parser."""
+        return product_thread_pair(product)
 
     def _filter_weak_boilers(self, products: list[Product], query: SearchQuery) -> list[Product]:
         # An explicit rating ("котёл 6 кВт") is an identity-like catalogue

@@ -11,7 +11,6 @@ const input = document.querySelector("#messageInput");
 const statusBox = document.querySelector("#status");
 const feedInfo = document.querySelector("#feedInfo");
 const debugBox = document.querySelector("#debugBox");
-const reloadFeed = document.querySelector("#reloadFeed");
 const resetChat = document.querySelector("#resetChat");
 const statusCard = document.querySelector(".status-card");
 
@@ -169,25 +168,6 @@ document.querySelectorAll(".quick").forEach((button) => {
   button.addEventListener("click", () => {
     sendMessage(button.dataset.message);
   });
-});
-
-reloadFeed.addEventListener("click", async () => {
-  reloadFeed.disabled = true;
-  reloadFeed.textContent = "Обновляю...";
-  try {
-    const response = await fetch(apiUrl("/reload-feed"), { method: "POST" });
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data.detail || "Ошибка перезагрузки фида");
-    }
-    feedInfo.textContent = `Фид обновлён. Товаров: ${data.products_count}. Источник: ${data.source}.`;
-  } catch (error) {
-    feedInfo.textContent = `Не удалось обновить фид: ${error.message}`;
-  } finally {
-    reloadFeed.disabled = false;
-    reloadFeed.textContent = "Обновить фид";
-    refreshHealth();
-  }
 });
 
 resetChat.addEventListener("click", () => {

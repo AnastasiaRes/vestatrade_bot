@@ -9,6 +9,18 @@ from typing import Any
 
 from app.models import Product, SearchQuery
 
+from .product_constraints import (
+    product_inch_sizes,
+    product_thread_facts,
+    single_inch_size_constraint_matches,
+    thread_constraint_matches,
+)
+from .product_identity import (
+    FILTER_PRIMARY_KINDS,
+    VALVE_PRIMARY_KINDS,
+    ProductIdentityFacts,
+    product_identity_facts,
+)
 from .utils import normalize_sku, normalize_text
 
 
@@ -487,6 +499,7 @@ class FeedSearchAgent:
     def __init__(self, products: list[Product] | None = None) -> None:
         self.products: list[Product] = []
         self._canonical_category_cache: dict[int, str] = {}
+        self._product_identity_cache: dict[int, ProductIdentityFacts] = {}
         self._sku_mention_patterns: list[
             tuple[Product, re.Pattern[str], int]
         ] = []
@@ -495,6 +508,7 @@ class FeedSearchAgent:
     def set_products(self, products: list[Product]) -> None:
         self.products = products
         self._canonical_category_cache.clear()
+        self._product_identity_cache.clear()
         self._sku_mention_patterns = self._build_sku_mention_patterns(products)
 
     @staticmethod
@@ -612,10 +626,7 @@ class FeedSearchAgent:
         """Shared final-card predicate for search and consultant paths."""
         if slots.get("in_stock") and not product.is_in_stock:
             return False
-        if (
-            category == "water_heaters"
-            and self.canonical_category(product) != "water_heaters"
-        ):
+        if category != "other" and self.canonical_category(product) != category:
             return False
         return self._slots_match(product, dict(slots), category)
 
@@ -624,21 +635,19 @@ class FeedSearchAgent:
             return []
 
         if query.sku:
+            exact_slots = self._effective_query_slots(query)
             exact = self._search_sku(query.sku)
             exact = [
                 product
                 for product in exact
-                if _product_matches_hard_constraints(product, query.slots)
+                if self._slots_match(
+                    product,
+                    exact_slots,
+                    query.category,
+                )
                 and (
-                    query.category != "water_heaters"
-                    or (
-                        self._category_matches(product, "water_heaters")
-                        and self._semantic_slots_match(
-                            product,
-                            "water_heaters",
-                            dict(query.slots),
-                        )
-                    )
+                    query.category == "other"
+                    or self._category_matches(product, query.category)
                 )
             ]
             if exact:
@@ -733,9 +742,14 @@ class FeedSearchAgent:
         normal clarification scenarios stay in charge.
         """
         text = normalize_text(message)
+        # Tokenise punctuation independently.  ``воды,`` must remain the
+        # generic word ``воды`` rather than becoming a fake identity token.
         tokens = [
             token
-            for token in text.split()
+            for token in re.findall(
+                r"[a-zа-я0-9]+(?:[./xх×-][a-zа-я0-9]+)*",
+                text,
+            )
             if len(token) >= 2 and token not in NAME_QUERY_STOPWORDS
         ]
         if len(tokens) < 4:
@@ -828,6 +842,23 @@ class FeedSearchAgent:
         """
         if token in GENERIC_NAME_TOKENS:
             return False
+        if re.fullmatch(
+            r"(?:вр|вн|нр|нар)(?:[-/xх×](?:вр|вн|нр|нар))?",
+            token,
+        ):
+            return False
+        if any(
+            marker in token
+            for marker in [
+                "полнопроход",
+                "стандартнопроход",
+                "бабоч",
+                "рычаг",
+                "углов",
+                "прямой",
+            ]
+        ):
+            return False
         return not re.fullmatch(r"\d+(?:[/.,x×х]\d+)*(?:мм|м|см|dn|дн)?", token)
 
     def search_alternatives(self, query: SearchQuery) -> list[Product]:
@@ -882,6 +913,22 @@ class FeedSearchAgent:
         if query.category == "boilers" and query.slots.get("power_kw") is not None:
             result_limit = self._explicit_boiler_result_limit(scored, query)
         return [product for _, product in scored[:result_limit]]
+
+    @staticmethod
+    def alternative_relaxed_fields(query: SearchQuery) -> set[str]:
+        """Return the explicit, auditable relaxations for an analogue search.
+
+        Compatibility dimensions stay hard unless this method names the
+        field.  Callers must remove only these fields for the final guard and
+        describe every relaxation in the user-facing answer.
+        """
+
+        text = normalize_text(query.original_text)
+        if query.category == "pumps" and "аналог" in text and not query.cheap:
+            return {"head_m"}
+        if query.category == "boilers":
+            return {"contours"}
+        return set()
 
     def _explicit_boiler_result_limit(
         self,
@@ -1181,9 +1228,20 @@ class FeedSearchAgent:
         name = normalize_text(product.name)
         path = normalize_text(product.category_path)
         type_text = self._attribute_text(product, ["тип товара"])
-        if any(marker in type_text for marker in ["кран", "клапан", "редуктор", "насос"]):
+        identity = self.product_identity(product)
+        if identity.primary_kind in FILTER_PRIMARY_KINDS:
+            return bool(
+                any(marker in path for marker in ["фильтр", "водоподготов", "водоочист"])
+                or any(
+                    marker in type_text
+                    for marker in ["фильтр", "картридж", "корпус фильтра"]
+                )
+            )
+        # A tap/valve/pump merely supplied with a filter (or a filter embedded
+        # in a valve) must not let a secondary token replace the title head.
+        if identity.primary_kind is not None:
             return False
-        if re.search(r"\b(?:кран|клапан|редуктор|насос)\b", name):
+        if any(marker in type_text for marker in ["кран", "клапан", "редуктор", "насос"]):
             return False
         if any(marker in type_text for marker in ["фильтр", "картридж", "корпус фильтра"]):
             return True
@@ -1265,12 +1323,7 @@ class FeedSearchAgent:
         )
 
     def _is_actual_valve(self, product: Product) -> bool:
-        name = normalize_text(product.name)
-        type_text = self._attribute_text(product, ["тип товара"])
-        return bool(
-            re.search(r"\b(?:кран|клапан|вентиль)\b", name)
-            or re.search(r"\b(?:кран|клапан|вентиль)\b", type_text)
-        )
+        return self.product_identity(product).primary_kind in VALVE_PRIMARY_KINDS
 
     def _is_actual_pipe(self, product: Product) -> bool:
         name = normalize_text(product.name)
@@ -1292,6 +1345,16 @@ class FeedSearchAgent:
         category = self._compute_canonical_category(product)
         self._canonical_category_cache[cache_key] = category
         return category
+
+    def product_identity(self, product: Product) -> ProductIdentityFacts:
+        """Return the shared primary-vs-embedded identity for ``product``."""
+        cache_key = id(product)
+        cached = self._product_identity_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        identity = product_identity_facts(product)
+        self._product_identity_cache[cache_key] = identity
+        return identity
 
     def _compute_canonical_category(self, product: Product) -> str:
         """Single canonical bucket for a product.
@@ -1326,7 +1389,8 @@ class FeedSearchAgent:
             return "radiators"
         if self._is_radiator_fitting(product):
             return "radiator_fittings"
-        if self._is_actual_valve(product):
+        primary_category = self.product_identity(product).primary_category
+        if primary_category == "valves":
             return "valves"
         if any(needle in name for needle in ["угольник", "муфта", "тройник", "переходник"]):
             return "fittings"
@@ -1949,6 +2013,91 @@ class FeedSearchAgent:
             ),
         }
         return {key: value for key, value in values.items() if value is not None}
+
+    def product_reference_slots(self, product: Product) -> dict[str, object]:
+        """Recover verified hard facets for analogue follow-ups.
+
+        A command such as ``покажи аналоги`` contains no product dimensions.
+        They must come from the exact source row; otherwise analogue search is
+        either an ungrounded fuzzy lookup or returns nothing.  Only facts with
+        unambiguous catalogue evidence are emitted.
+        """
+
+        category = self.canonical_category(product)
+        if category == "water_heaters":
+            return self.water_heater_reference_slots(product)
+        if category == "pumps":
+            return self.pump_reference_slots(product)
+        if category not in {"valves", "radiator_fittings", "fittings"}:
+            return {}
+
+        slots: dict[str, object] = {}
+        inch_sizes = self._product_inch_sizes(product)
+        if len(inch_sizes) == 1:
+            slots["size_inch"] = next(iter(inch_sizes))
+
+        thread_facts = product_thread_facts(product)
+        if thread_facts.pair is not None:
+            slots["thread_type"] = thread_facts.pair
+        elif len(thread_facts.genders) == 1:
+            slots["thread_gender"] = next(iter(thread_facts.genders))
+
+        product_kinds = [
+            canonical
+            for canonical in [
+                "ball_valve",
+                "thermostatic_head",
+                "thermostatic_valve",
+                "elbow",
+            ]
+            if self._product_kind_matches(product, canonical)
+        ]
+        if len(product_kinds) == 1:
+            slots["product_kind"] = product_kinds[0]
+
+        body_forms = [
+            canonical
+            for canonical in ["straight", "angled"]
+            if self._body_form_matches(product, canonical)
+        ]
+        if len(body_forms) == 1:
+            slots["body_form"] = body_forms[0]
+
+        if category == "valves":
+            handle_types = [
+                canonical
+                for canonical in ["butterfly", "lever", "mini", "t-shaped"]
+                if self._handle_type_matches(product, canonical)
+            ]
+            if len(handle_types) == 1:
+                slots["handle_type"] = handle_types[0]
+            if self._bore_type_matches(product, {"full_bore": True}):
+                slots["full_bore"] = True
+            elif self._bore_type_matches(product, {"full_bore": False}):
+                slots["full_bore"] = False
+            if self._union_matches(product):
+                slots["union"] = True
+
+        if category == "fittings":
+            for system in ["ppr", "pex", "pert", "пнд", "пресс", "обжимной"]:
+                if self._fitting_system_matches(product, system):
+                    slots["fitting_system"] = system
+                    break
+            diameter_values: set[int] = set()
+            for key, value in product.attributes_normalized.items():
+                normalized_key = normalize_text(str(key))
+                if "диаметр" not in normalized_key or "дюйм" in normalized_key:
+                    continue
+                for raw in re.findall(r"\d+(?:[,.]\d+)?", str(value)):
+                    number = float(raw.replace(",", "."))
+                    if number.is_integer() and 6 <= number <= 250:
+                        diameter_values.add(int(number))
+            if len(diameter_values) == 1:
+                slots["diameter_mm"] = next(iter(diameter_values))
+            angles = set(self._product_angles(product))
+            if len(angles) == 1:
+                slots["angle_deg"] = next(iter(angles))
+        return slots
 
     def _water_heater_type_matches(self, product: Product, requested: object) -> bool:
         expected = self._canonical_heater_type(requested)
@@ -2732,36 +2881,26 @@ class FeedSearchAgent:
 
     def _valve_kind_matches(self, product: Product, requested: object) -> bool:
         expected = normalize_text(str(requested))
-        evidence = normalize_text(
-            " ".join(
-                [
-                    product.name,
-                    self._attribute_text(product, ["тип товара", "полное наименование"]),
-                ]
-            )
-        )
+        primary_kind = self.product_identity(product).primary_kind
+        if primary_kind not in VALVE_PRIMARY_KINDS:
+            return False
         if "шаров" in expected:
-            return (
-                "кран" in evidence
-                and "шаров" in evidence
-                and "дренаж" not in evidence
-                and "обратн" not in evidence
-            )
+            return primary_kind == "ball_valve"
         if "дренаж" in expected:
-            return "кран" in evidence and "дренаж" in evidence
+            return primary_kind == "drain_valve"
         if "обратн" in expected:
-            return "клапан" in evidence and "обратн" in evidence
+            return primary_kind == "check_valve"
         if "вентил" in expected:
-            return "вентил" in evidence
+            return primary_kind == "valve"
         if "клапан" in expected:
-            return "клапан" in evidence
+            return primary_kind in {
+                "valve",
+                "check_valve",
+                "thermostatic_valve",
+            }
         if "кран" in expected:
-            return (
-                "кран" in evidence
-                and "дренаж" not in evidence
-                and "обратн" not in evidence
-            )
-        return bool(expected and expected in evidence)
+            return primary_kind in {"valve", "ball_valve", "drain_valve"}
+        return False
 
     def _product_angles(self, product: Product) -> list[float]:
         values: list[float] = []
@@ -2843,11 +2982,8 @@ class FeedSearchAgent:
             secondary = slots.get("secondary_diameter_mm")
             if secondary and not self._fitting_dimension_matches(product, int(secondary)):
                 return False
-        generic_analog_request = (
-            "аналог" in normalize_text(query.original_text)
-            and not query.cheap
-        )
-        if category == "pumps" and not generic_analog_request:
+        relaxed_fields = self.alternative_relaxed_fields(query)
+        if category == "pumps":
             mounting = slots.get("mounting_length_mm")
             if mounting and not self._dimension_matches(
                 product,
@@ -2856,7 +2992,11 @@ class FeedSearchAgent:
             ):
                 return False
             head = slots.get("head_m")
-            if head and not self._head_matches(product, float(head)):
+            if (
+                head
+                and "head_m" not in relaxed_fields
+                and not self._head_matches(product, float(head))
+            ):
                 return False
             connection = slots.get("connection_size")
             if connection and not self._connection_matches(product, int(connection)):
@@ -2952,6 +3092,151 @@ class FeedSearchAgent:
             marker in evidence
             for marker in ["ручн", "запор", "шаров", "настроечн", "вентиль"]
         )
+
+    def _fitting_system_matches(self, product: Product, requested: object) -> bool:
+        """Match the physical fitting system using identity/structured facts only."""
+        expected = normalize_text(str(requested))
+        evidence = normalize_text(
+            " ".join(
+                [
+                    product.sku,
+                    product.name,
+                    product.category_path,
+                    self._attribute_text(
+                        product,
+                        ["материал", "тип присоединения", "тип товара"],
+                    ),
+                ]
+            )
+        )
+        if any(marker in expected for marker in ["ppr", "pprc", "ппр", "полипроп"]):
+            return any(
+                marker in evidence
+                for marker in [
+                    "ppr",
+                    "pprc",
+                    "pp-r",
+                    "ппр",
+                    "полипроп",
+                ]
+            ) or normalize_text(product.sku).startswith("vtp.")
+        if any(marker in expected for marker in ["pex", "pe-x", "пекс"]):
+            return any(marker in evidence for marker in ["pex", "pe-x", "пекс"])
+        if any(marker in expected for marker in ["pert", "pe-rt"]):
+            return any(marker in evidence for marker in ["pert", "pe-rt"])
+        if any(marker in expected for marker in ["пнд", "hdpe"]):
+            return any(marker in evidence for marker in ["пнд", "hdpe"])
+        if "пресс" in expected:
+            return "пресс" in evidence
+        if any(marker in expected for marker in ["обжим", "компресс"]):
+            return any(marker in evidence for marker in ["обжим", "компресс"])
+        if "резьб" in expected:
+            return "резьб" in evidence
+        # An explicit but unsupported system is unknown, therefore unsuitable.
+        return False
+
+    def _handle_type_matches(self, product: Product, requested: object) -> bool:
+        expected = normalize_text(str(requested))
+        evidence = normalize_text(
+            " ".join(
+                [
+                    product.name,
+                    self._attribute_text(
+                        product,
+                        ["тип ручки", "ручка", "рукоятка"],
+                    ),
+                ]
+            )
+        )
+        if any(marker in expected for marker in ["butterfly", "бабоч"]):
+            return "бабоч" in evidence
+        if any(marker in expected for marker in ["lever", "рычаг", "стальная рукоят"]):
+            return "рычаг" in evidence or "стальная рукоят" in evidence
+        if "мини" in expected or expected == "mini":
+            return "мини" in evidence or "mini" in evidence
+        if any(marker in expected for marker in ["t-shaped", "t shaped", "т-образ"]):
+            return "т-образ" in evidence
+        return bool(expected and expected in evidence)
+
+    def _bore_type_matches(self, product: Product, slots: Mapping[str, Any]) -> bool:
+        if "full_bore" not in slots and not slots.get("bore_type"):
+            return True
+
+        if slots.get("bore_type") is not None:
+            expected = normalize_text(str(slots["bore_type"]))
+            wants_full = any(
+                marker in expected for marker in ["full", "полнопроход"]
+            ) and not any(
+                marker in expected
+                for marker in ["standard", "стандартнопроход", "неполнопроход", "редуцирован"]
+            )
+            wants_reduced = any(
+                marker in expected
+                for marker in ["standard", "стандартнопроход", "неполнопроход", "редуцирован"]
+            )
+            if not wants_full and not wants_reduced:
+                return False
+        else:
+            value = slots.get("full_bore")
+            if isinstance(value, str):
+                normalized = normalize_text(value)
+                if normalized in {"true", "1", "yes", "да"}:
+                    wants_full = True
+                elif normalized in {"false", "0", "no", "нет"}:
+                    wants_full = False
+                else:
+                    return False
+            elif isinstance(value, bool):
+                wants_full = value
+            else:
+                return False
+            wants_reduced = not wants_full
+
+        evidence = self._structured_text(product)
+        reduced = any(
+            marker in evidence
+            for marker in ["стандартнопроход", "неполнопроход", "редуцирован"]
+        )
+        full = "полнопроход" in evidence and not reduced
+        return full if wants_full else reduced
+
+    def _body_form_matches(self, product: Product, requested: object) -> bool:
+        expected = normalize_text(str(requested))
+        evidence = normalize_text(
+            " ".join(
+                [
+                    product.name,
+                    self._attribute_text(
+                        product,
+                        ["форма корпуса", "тип конструкции", "исполнение"],
+                    ),
+                ]
+            )
+        )
+        if any(marker in expected for marker in ["straight", "прям"]):
+            return "прям" in evidence and "углов" not in evidence
+        if any(marker in expected for marker in ["angled", "angle", "углов"]):
+            return "углов" in evidence
+        if "осев" in expected:
+            return "осев" in evidence
+        return bool(expected and expected in evidence)
+
+    def _product_kind_matches(self, product: Product, requested: object) -> bool:
+        expected = normalize_text(str(requested))
+        identity = self.product_identity(product)
+        if expected in {"thermostatic head", "термоголовка", "термостатическая головка"}:
+            return identity.primary_kind == "thermostatic_head"
+        if expected in {
+            "thermostatic valve",
+            "термостатический клапан",
+            "термостатический вентиль",
+        }:
+            return identity.primary_kind == "thermostatic_valve"
+        if expected in {"ball valve", "шаровой кран", "кран шаровой"}:
+            return identity.primary_kind == "ball_valve"
+        if expected in {"elbow", "угольник", "уголок", "отвод"}:
+            return identity.primary_kind == "elbow"
+        return False
 
     def _literal_notation_matches(self, product: Product, requested: object) -> bool:
         expected = re.sub(r"\s+", "", normalize_text(str(requested)))
@@ -3110,17 +3395,40 @@ class FeedSearchAgent:
 
     def _semantic_slots_match(self, product: Product, category: str, slots: dict) -> bool:
         """Enforce categorical/usage slots as non-negotiable constraints."""
+        if (slots.get("thread_type") or slots.get("thread_gender")) and not thread_constraint_matches(
+            product,
+            thread_type=slots.get("thread_type"),
+            thread_gender=slots.get("thread_gender"),
+        ):
+            return False
+        if slots.get("fitting_system") and not self._fitting_system_matches(
+            product, slots["fitting_system"]
+        ):
+            return False
+        if slots.get("angle_deg") is not None and not self._angle_matches(
+            product, slots["angle_deg"]
+        ):
+            return False
+        if slots.get("handle_type") and not self._handle_type_matches(
+            product, slots["handle_type"]
+        ):
+            return False
+        if ("full_bore" in slots or slots.get("bore_type")) and not self._bore_type_matches(
+            product, slots
+        ):
+            return False
+        if slots.get("body_form") and not self._body_form_matches(
+            product, slots["body_form"]
+        ):
+            return False
+        if slots.get("product_kind") and not self._product_kind_matches(
+            product, slots["product_kind"]
+        ):
+            return False
         if slots.get("thread_standard") and not self._thread_standard_matches(
             product, slots["thread_standard"]
         ):
             return False
-        if slots.get("thread_gender"):
-            code = self._thread_code(product)
-            expected_gender = normalize_text(str(slots["thread_gender"]))
-            if expected_gender == "female" and code not in {"ff", "fm"}:
-                return False
-            if expected_gender == "male" and code not in {"fm", "mm"}:
-                return False
         if slots.get("metric_thread"):
             requested_metric = re.sub(
                 r"[\s,х×]",
@@ -3663,7 +3971,7 @@ class FeedSearchAgent:
 
         body_form = slots.get("body_form")
         if body_form:
-            checks.append(normalize_text(str(body_form)) in text)
+            checks.append(self._body_form_matches(product, body_form))
 
         if slots.get("union"):
             # «американка» = разъёмное соединение с полусгоном/накидной гайкой.
@@ -3675,6 +3983,19 @@ class FeedSearchAgent:
 
     def _has_strict_slots(self, query: SearchQuery, slots: dict | None = None) -> bool:
         effective_slots = slots if slots is not None else query.slots
+        globally_strict = {
+            "thread_type",
+            "thread_gender",
+            "fitting_system",
+            "angle_deg",
+            "handle_type",
+            "full_bore",
+            "bore_type",
+            "body_form",
+            "product_kind",
+        }
+        if globally_strict.intersection(effective_slots):
+            return True
         if (
             _constraint_number(effective_slots.get("max_price")) is not None
             or _constraint_number(effective_slots.get("min_price")) is not None
@@ -3949,6 +4270,40 @@ class FeedSearchAgent:
             else:
                 return 0
 
+        if slots.get("fitting_system"):
+            if self._fitting_system_matches(product, slots["fitting_system"]):
+                score += 25
+            else:
+                return 0
+
+        if slots.get("thread_type") or slots.get("thread_gender"):
+            if thread_constraint_matches(
+                product,
+                thread_type=slots.get("thread_type"),
+                thread_gender=slots.get("thread_gender"),
+            ):
+                score += 20
+            else:
+                return 0
+
+        if slots.get("product_kind"):
+            if self._product_kind_matches(product, slots["product_kind"]):
+                score += 25
+            else:
+                return 0
+
+        if slots.get("handle_type"):
+            if self._handle_type_matches(product, slots["handle_type"]):
+                score += 20
+            else:
+                return 0
+
+        if "full_bore" in slots or slots.get("bore_type"):
+            if self._bore_type_matches(product, slots):
+                score += 20
+            else:
+                return 0
+
         coupling_type = slots.get("coupling_type")
         if coupling_type:
             if self._coupling_type_matches(product, coupling_type):
@@ -4055,7 +4410,10 @@ class FeedSearchAgent:
 
         body_form = slots.get("body_form")
         if body_form:
-            score += 20 if normalize_text(str(body_form)) in text else -8
+            if self._body_form_matches(product, body_form):
+                score += 20
+            else:
+                return 0
 
         size_inch = slots.get("size_inch")
         if size_inch:
@@ -4096,32 +4454,12 @@ class FeedSearchAgent:
     def _number_matches(self, text: str, number: int) -> bool:
         return bool(re.search(rf"(^|[^0-9]){number}([^0-9]|$)", text))
 
-    def _inch_size_matches(self, product: Product, size_inch: str) -> bool:
-        normalized = re.sub(r"\s+", "", normalize_text(size_inch))
-        candidates: set[str] = set()
-        for key, value in product.attributes_normalized.items():
-            key_norm = normalize_text(key)
-            if "дюйм" not in key_norm and "резьб" not in key_norm:
-                continue
-            value_norm = re.sub(r"\s+", "", normalize_text(str(value)))
-            match = re.fullmatch(
-                r"([1-4]\d?/(?:2|4|8)|[1-4])",
-                value_norm,
-            )
-            if match:
-                candidates.add(match.group(1))
+    def _product_inch_sizes(self, product: Product) -> set[str]:
+        """Extract explicitly evidenced inch connection sizes."""
+        return product_inch_sizes(product)
 
-        # Keep the literal quote: ``normalize_text`` intentionally removes it,
-        # which made names such as ``1/2&quot;`` unsearchable when the feed did not
-        # also provide a dedicated inch attribute.
-        name = html.unescape(product.name).lower().replace("ё", "е")
-        name = re.sub(r"\s+", " ", name)
-        for match in re.finditer(
-            r"(?<![\d/])([1-4]\s+[1-3]\s*/\s*[248]|[1-4]\s*/\s*[248]|[1-4])\s*\"",
-            name,
-        ):
-            candidates.add(re.sub(r"\s+", "", match.group(1)))
-        return normalized in candidates
+    def _inch_size_matches(self, product: Product, size_inch: str) -> bool:
+        return single_inch_size_constraint_matches(product, size_inch)
 
     def _dimension_matches(self, product: Product, number: int, keys: list[str]) -> bool:
         key_texts = [normalize_text(key) for key in keys]

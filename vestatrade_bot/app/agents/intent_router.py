@@ -22,7 +22,12 @@ from .numeric_semantics import (
     numeric_span_has_incompatible_context,
     numeric_span_has_incompatible_unit,
 )
-from .utils import collapse_sku_spaces, normalize_sku, normalize_text
+from .utils import (
+    collapse_sku_spaces,
+    mentions_water_application,
+    normalize_sku,
+    normalize_text,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -41,6 +46,17 @@ ALPHANUM_SKU_RE = re.compile(
 )
 # Артикулы вида 68/2/8: минимум два слэша, чтобы не путать с размерами 1/2 и параметрами 25/6.
 SLASH_SKU_RE = re.compile(r"\b\d{1,4}/\d{1,4}/\d{1,4}\b")
+# A short mixed article such as ``15100Z`` is too ambiguous to recognise in
+# arbitrary prose, but is safe immediately after an explicit catalogue marker.
+# Keep this matcher separate from ALPHANUM_SKU_RE so ordinary words/models do
+# not become exact-SKU requests.
+EXPLICIT_SKU_MARKER_RE = re.compile(
+    r"(?<![a-zа-я0-9])"
+    r"(?:артикул(?:а|у|ом|е)?|арт\.?|sku|код\s+товара)"
+    r"(?![a-zа-я])\s*(?:№|#|:|=|,|-)?\s*"
+    r"(?P<sku>[a-zа-я0-9](?:[a-zа-я0-9._/+\-]{0,62}[a-zа-я0-9])?)",
+    re.IGNORECASE,
+)
 OLD_CIRCULATION_PUMP_RE = re.compile(
     r"\b(?:(grundfos|wilo|valtec|unipump|stout)\s*)?"
     r"((?:ups|up[cс]|up|alpha|star\s*rs|rs)\s*)"
@@ -52,9 +68,11 @@ PUMP_PARAMS_RE = re.compile(
     r"(?<!\d)(25|32|40|50)\s*[-/]\s*(\d{1,2})(?:[\s,/-]+(130|180))?(?!\d)"
 )
 INCH_SIZE_RE = re.compile(
-    r"(?<!\d)(1\s+1\s*/\s*4|1\s*/\s*2|3\s*/\s*4|3\s*/\s*8|1\s*/\s*4)(?!\d)"
+    r"(?<!\d)(1\s+1\s*/\s*4|1\s*/\s*2|3\s*/\s*4|3\s*/\s*8|1\s*/\s*4|½|¾|⅜|¼)(?!\d)"
 )
-INTEGER_INCH_RE = re.compile(r"(?<![\d/])([12])\s*(?:\"|дюйм(?:а|ов)?)(?!\w)")
+INTEGER_INCH_RE = re.compile(
+    r"(?<![\d/])([12])\s*(?:\"|″|дюйм(?:а|ов)?)(?!\w)"
+)
 TROUBLE_SHOOTING_PUMP_HINTS = [
     "хватит",
     "хватает",
@@ -73,6 +91,11 @@ BRANDS = [
     "STOUT",
     "ROMMER",
 ]
+
+BRAND_ALIASES = {
+    "валтек": "VALTEC",
+    "вальтек": "VALTEC",
+}
 
 CATEGORY_KEYWORDS: dict[str, list[str]] = {
     "hydraulic_accumulators": [
@@ -131,7 +154,19 @@ CATEGORY_KEYWORDS: dict[str, list[str]] = {
         "квадрат",
     ],
     "valves": ["кран", "шаровый", "вентиль", "клапан", "американк"],
-    "radiator_fittings": ["термоголов", "термостатическ", "термост-ий", "клапан термост", "радиаторный клапан", "для рад", "для батаре", "д/рад"],
+    "radiator_fittings": [
+        "термоголов",
+        "термогалов",
+        "термостатическ",
+        "термост-ий",
+        "терморегулятор",
+        "регулятор температур",
+        "клапан термост",
+        "радиаторный клапан",
+        "для рад",
+        "для батаре",
+        "д/рад",
+    ],
     "radiators": ["радиатор", "радиаторы", "батаре", "биметалл", "алюминиевый радиатор"],
     "fittings": ["фитинг", "угольник ppr", "муфта ppr", "тройник ppr", "переходник ppr"],
     # Stem form also covers ordinary inflections: ``трубу``, ``трубой``.
@@ -410,7 +445,7 @@ class IntentRouterAgent:
         return any(re.search(pattern, text) for pattern in ALLOW_UNAVAILABLE_PATTERNS)
 
     def _rule_based(self, message: str, session: SessionState | None) -> IntentResult:
-        text = normalize_text(message)
+        text = normalize_text(self._expand_unicode_inch_fractions(message))
         sku_text = collapse_sku_spaces(text)
         allows_unavailable = self._allows_unavailable_stock(text)
         flags = {
@@ -425,13 +460,18 @@ class IntentRouterAgent:
             slots["choose_one"] = True
             slots["result_limit"] = 1
 
+        explicit_sku = self._extract_explicit_sku_candidate(message)
         sku_match = (
             SKU_RE.search(sku_text)
             or NUMERIC_SKU_RE.search(sku_text)
             or SLASH_SKU_RE.search(sku_text)
             or ALPHANUM_SKU_RE.search(sku_text)
         )
-        if (
+        if explicit_sku:
+            # Preserve the user's spelling/case for diagnostics and exact
+            # lookup; catalogue comparison normalises it downstream.
+            slots["sku"] = explicit_sku
+        elif (
             sku_match
             and self._is_valid_sku_candidate(sku_match.group(0))
             and not self._sku_candidate_is_measurement(
@@ -448,6 +488,22 @@ class IntentRouterAgent:
                 text,
             ):
                 slots["brand"] = brand
+                break
+        if not slots.get("brand"):
+            for alias, canonical in BRAND_ALIASES.items():
+                if not re.search(
+                    rf"(?<![a-zа-я0-9]){re.escape(alias)}(?![a-zа-я0-9])",
+                    text,
+                ):
+                    continue
+                slots["brand"] = next(
+                    (
+                        brand
+                        for brand in self._catalog_brands
+                        if normalize_text(brand) == normalize_text(canonical)
+                    ),
+                    canonical,
+                )
                 break
         if (
             slots.get("brand")
@@ -666,6 +722,7 @@ class IntentRouterAgent:
             flags=flags,
             is_topic_change=self._is_topic_change(category, message, session),
             llm_used=False,
+            raw={"explicit_sku_marker": bool(explicit_sku)},
         )
 
     def _detect_category(self, text: str) -> tuple[str, float]:
@@ -769,20 +826,38 @@ class IntentRouterAgent:
             if boiler_is_primary or broader_heating_project:
                 return "boilers", 0.96
             return "pipes", 0.95
-        if re.search(
-            r"\b(?:муфт|тройник|угольник|переходник|фитинг)\w*\b",
-            text,
-        ) and not any(
+        requested_fitting = self._requested_fitting_element(text)
+        if requested_fitting and not any(
             marker in text
             for marker in ["канализац", "канаш", "ht ", "htb", "kg "]
-        ) and not re.search(
-            r"\bне\s+(?:(?:нужн\w*|ищ\w*)\s+)?"
-            r"(?:муфт|тройник|угольник|переходник|фитинг)\w*\b",
-            text,
         ):
-            # A material name describes the fitting system, not the product
-            # category: «муфта PPR 40 на 25» is still a fitting.
+            # The requested product head wins over its compatibility target:
+            # «уголок на пластиковую трубу 20» asks for an elbow, while
+            # ``труба`` only says what it must connect to.
             return "fittings", 0.97
+        if (
+            any(marker in text for marker in ["ppr", "ппр", "полипропилен"])
+            and re.search(r"\b(?:угол(?:ок)?|угольник)\w*\b", text)
+        ):
+            # Colloquial ``PPR угол`` is the same fitting as ``угольник``.
+            # Recognise it before the generic material -> pipe shortcut.
+            return "fittings", 0.97
+        if self._has_non_negated_match(text, r"\bшаров\w*\b"):
+            # Installers routinely omit the noun: ``шаровой полнопроходной
+            # 3/4 ВР-НР`` still unambiguously denotes a ball valve.
+            return "valves", 0.97
+        if (
+            any(marker in text for marker in ["бабоч", "полнопроход"])
+            and (
+                INCH_SIZE_RE.search(text)
+                or INTEGER_INCH_RE.search(text)
+                or self._thread_type_from_text(text)
+            )
+        ):
+            # ``VALTEC 3/4 бабочка`` is common counter shorthand.  Diameter
+            # plus valve-only handle/bore terminology is enough to enter the
+            # valve branch without guessing a SKU.
+            return "valves", 0.94
         # Material/system notation identifies a pipe even when a novice omits
         # the noun: «ПНД ПЭ100 от колодца», «металлопласт на радиаторы».
         # This must run before the generic well/pump context below.
@@ -909,8 +984,31 @@ class IntentRouterAgent:
             return "boilers", 0.96
         if (
             any(marker in text for marker in ["радиатор", "батаре"])
-            and any(marker in text for marker in ["крут", "регулир", "держал"])
-            and "температур" in text
+            and re.search(r"\b(?:клапан|кран)\w*\b", text)
+        ):
+            # ``клапан для радиатора`` is radiator connection/control
+            # equipment.  The generic valve keyword must not win a score tie
+            # and send it to the water shut-off funnel.
+            return "radiator_fittings", 0.97
+        if (
+            re.search(r"\bтермог[оа]лов\w*\b", text)
+            or (
+                any(marker in text for marker in ["радиатор", "батаре"])
+                and "температур" in text
+                and any(
+                    marker in text
+                    for marker in [
+                        "крут",
+                        "регулир",
+                        "регулятор",
+                        "держал",
+                        "убавлял",
+                        "уменьшал",
+                        "сама",
+                        "автомат",
+                    ]
+                )
+            )
         ):
             # Everyday description of a thermostatic head.  It refers to the
             # radiator valve accessory, not to selection of the radiator body.
@@ -940,8 +1038,17 @@ class IntentRouterAgent:
             )
         ):
             return "radiators", 0.9
-        if "ppr" in text and any(
-            marker in text for marker in ["угольник", "муфт", "тройник", "переходник", "фитинг"]
+        if any(marker in text for marker in ["ppr", "ппр", "полипропилен"]) and any(
+            marker in text
+            for marker in [
+                "угол",
+                "угольник",
+                "уголок",
+                "муфт",
+                "тройник",
+                "переходник",
+                "фитинг",
+            ]
         ):
             return "fittings", 0.9
         best_category = "other"
@@ -962,6 +1069,54 @@ class IntentRouterAgent:
         if best_category == "sewer" and "труба" in text:
             best_score = max(best_score, 0.9)
         return best_category, best_score
+
+    @staticmethod
+    def _requested_fitting_element(text: str) -> str | None:
+        """Return the fitting that is the requested product, not a pipe mention.
+
+        Russian counter requests commonly use ``<fitting> на/для трубу`` or
+        ``для трубы нужен <fitting>``.  A first-keyword-wins loop reads
+        ``труба`` as the product in both forms and enters the pipe-design
+        funnel.  Strong fitting nouns are unambiguous in this catalogue; bare
+        ``угол`` is accepted only with pipe/material/degree context.
+        """
+
+        if re.search(
+            r"\bне\s+(?:(?:нужн\w*|ищ\w*)\s+)?"
+            r"(?:муфт|тройник|угольник|уголок|колен|поворот|"
+            r"переходник|фитинг)\w*\b",
+            text,
+        ):
+            return None
+
+        strong_elements = (
+            ("угольник", r"\b(?:угольник|уголок|колен)\w*\b"),
+            ("тройник", r"\bтройник\w*\b"),
+            ("муфта", r"\bмуфт\w*\b"),
+            ("переходник", r"\bпереходник\w*\b"),
+            ("фитинг", r"\bфитинг\w*\b"),
+        )
+        for element, pattern in strong_elements:
+            if re.search(pattern, text):
+                return element
+
+        if re.search(r"\b(?:угол|поворот)\w*\b", text) and (
+            any(
+                marker in text
+                for marker in [
+                    "труб",
+                    "пластик",
+                    "ppr",
+                    "ппр",
+                    "полипропилен",
+                    "pex",
+                    "металлопласт",
+                ]
+            )
+            or re.search(r"\b(?:45|90)\s*(?:°|градус\w*)", text)
+        ):
+            return "угольник"
+        return None
 
     @staticmethod
     def _has_non_negated_match(text: str, pattern: str) -> bool:
@@ -1057,7 +1212,9 @@ class IntentRouterAgent:
         "boilers": r"\bкот(?:ел|ёл|лы|ла|лов)\b",
         "pipes": r"\bтруб(?:а|ы|у|ой|ам)?\b",
         "radiators": r"\bрадиатор(?:ы|а|ов|у|ом)?\b|\bбатаре(?:я|и|ю)\b",
-        "valves": r"\bкран(?:ы|а|ов|у|ом)?\b|\bвентил(?:ь|я|и)\b",
+        "valves": (
+            r"\bкран(?:ы|а|ов|у|ом)?\b|\bвентил(?:ь|я|и)\b|\bшаров\w*\b"
+        ),
         "sewer": r"\bканализаци(?:я|и|ю)\b",
         "radiator_fittings": r"\bтермоголовк(?:а|и|у)\b",
     }
@@ -1075,15 +1232,42 @@ class IntentRouterAgent:
         клиент уже ответил.
         """
         spoken = (
-            (r"пол\s*[-]?\s*дюйм", "1/2"),
-            (r"\bполудюйм", "1/2"),
-            (r"тр(?:и|ех|ех)\s*четверт|\bтрехчетвертн", "3/4"),
+            (r"пол\s*[-]?\s*дюйм|половин\w*\s+дюйм", "1/2"),
+            (r"\bполу\s*[-]?\s*дюйм", "1/2"),
+            (r"тр(?:и|ех)\s*четверт|\bтрехчетвертн", "3/4"),
+            (r"(?:одна\s+)?четверт\w*\s+дюйм", "1/4"),
             (r"\bдюймовк|\bдюймов(?:ый|ая|ую)\b|\bна\s+дюйм\b|\bодин\s+дюйм\b", "1"),
         )
         for pattern, size in spoken:
             if re.search(pattern, text):
                 return size
         return None
+
+    @staticmethod
+    def _expand_unicode_inch_fractions(text: str) -> str:
+        """Expand glyph fractions before NFKC drops their fraction slash."""
+
+        translations = {
+            "½": " 1/2 ",
+            "¾": " 3/4 ",
+            "⅜": " 3/8 ",
+            "¼": " 1/4 ",
+        }
+        result = str(text or "")
+        for glyph, expanded in translations.items():
+            result = result.replace(glyph, expanded)
+        return result
+
+    @staticmethod
+    def _normalize_inch_literal(value: str) -> str:
+        unicode_fractions = {
+            "½": "1/2",
+            "¾": "3/4",
+            "⅜": "3/8",
+            "¼": "1/4",
+        }
+        compact = re.sub(r"\s+", "", str(value or ""))
+        return unicode_fractions.get(compact, compact)
 
     @staticmethod
     def _thread_type_from_text(text: str) -> str | None:
@@ -1098,26 +1282,58 @@ class IntentRouterAgent:
         # переспрашивал то, что клиент уже назвал.
         female = r"(?:вр|вн|мам\w*)\.?"
         male = r"(?:нр|нар|пап\w*)\.?"
+        pair_separator = r"(?:\s*[-/х]\s*|\s+)"
+        female_both_sides = bool(
+            re.search(
+                r"\b(?:обе|две)\s+внутренн\w*\b|"
+                r"\bвнутренн\w*(?:\s+резьб\w*)?\s+"
+                r"(?:с\s+обеих|с\s+двух|по\s+обеим)\s+сторон\w*|"
+                r"\b(?:с\s+обеих|с\s+двух|по\s+обеим)\s+сторон\w*"
+                r"[^.!?]{0,20}\bвнутренн\w*",
+                text,
+            )
+        )
+        male_both_sides = bool(
+            re.search(
+                r"\b(?:обе|две)\s+наружн\w*\b|"
+                r"\bнаружн\w*(?:\s+резьб\w*)?\s+"
+                r"(?:с\s+обеих|с\s+двух|по\s+обеим)\s+сторон\w*|"
+                r"\b(?:с\s+обеих|с\s+двух|по\s+обеим)\s+сторон\w*"
+                r"[^.!?]{0,20}\bнаружн\w*",
+                text,
+            )
+        )
+        mixed_sides = bool(
+            re.search(
+                r"\b(?:одна|с\s+одной(?:\s+сторон\w*)?)\s+внутренн\w*"
+                r"[^.!?]{0,35}\b(?:другая|с\s+другой(?:\s+сторон\w*)?)\s+наружн\w*|"
+                r"\b(?:одна|с\s+одной(?:\s+сторон\w*)?)\s+наружн\w*"
+                r"[^.!?]{0,35}\b(?:другая|с\s+другой(?:\s+сторон\w*)?)\s+внутренн\w*",
+                text,
+            )
+        )
         if (
-            re.search(rf"\b{female}\s*[-/х]\s*{female}", text)
+            re.search(rf"\b{female}{pair_separator}{female}", text)
             or "ff" in text.split()
             or re.search(r"\bвв\b", text)
             or re.search(r"\bвнутренн\w*\s*[-/х]\s*внутренн\w*", text)
+            or female_both_sides
         ):
             return "ff"
-        if re.search(rf"\b{female}\s*[-/х]\s*{male}", text) or re.search(
-            rf"\b{male}\s*[-/х]\s*{female}", text
+        if re.search(rf"\b{female}{pair_separator}{male}", text) or re.search(
+            rf"\b{male}{pair_separator}{female}", text
         ) or any(code in text.split() for code in ["fm", "mf"]) or re.search(
             r"\b(?:внутренн\w*\s*[-/х]\s*наружн\w*|"
             r"наружн\w*\s*[-/х]\s*внутренн\w*)",
             text,
-        ):
+        ) or mixed_sides:
             return "fm"
         if (
-            re.search(rf"\b{male}\s*[-/х]\s*{male}", text)
+            re.search(rf"\b{male}{pair_separator}{male}", text)
             or "mm" in text.split()
             or re.search(r"\bнн\b", text)
             or re.search(r"\bнаружн\w*\s*[-/х]\s*наружн\w*", text)
+            or male_both_sides
         ):
             return "mm"
         return None
@@ -1216,7 +1432,9 @@ class IntentRouterAgent:
             slots["required_features"] = ["wifi"]
             slots["allow_alternatives"] = False
 
-        if category == "fittings" and "ppr" in text:
+        if category == "fittings" and any(
+            marker in text for marker in ["ppr", "ппр", "полипропилен"]
+        ):
             slots["fitting_system"] = "ppr"
 
         if category == "boilers" and self._is_builtin_selection_constraint(
@@ -1629,6 +1847,12 @@ class IntentRouterAgent:
             slots["application"] = "радиатор"
         if "дач" in text:
             slots["application"] = "дача"
+        if (
+            category == "valves"
+            and not slots.get("application")
+            and mentions_water_application(text)
+        ):
+            slots["application"] = "вода"
         if "скваж" in text:
             # Covers common typos such as «скважны» as well as inflected forms.
             slots["water_source"] = "скважина"
@@ -1749,15 +1973,26 @@ class IntentRouterAgent:
         ):
             slots["pump_type"] = "повысительный"
 
-        for marker, element in [
-            ("труб", "труба"),
-            ("отвод", "отвод"),
-            ("тройник", "тройник"),
-            ("муфт", "муфта"),
-        ]:
-            if marker in text and not self._is_negated(text, marker):
-                slots["element_type"] = element
-                break
+        requested_fitting = (
+            self._requested_fitting_element(text)
+            if category == "fittings"
+            else None
+        )
+        if requested_fitting:
+            slots["element_type"] = requested_fitting
+        else:
+            for marker, element in [
+                ("труб", "труба"),
+                ("отвод", "отвод"),
+                ("угольник", "угольник"),
+                ("уголок", "угольник"),
+                ("угол", "угольник"),
+                ("тройник", "тройник"),
+                ("муфт", "муфта"),
+            ]:
+                if marker in text and not self._is_negated(text, marker):
+                    slots["element_type"] = element
+                    break
         if category == "sewer" and not slots.get("element_type"):
             if any(
                 marker in text
@@ -1790,10 +2025,54 @@ class IntentRouterAgent:
             slots["thermostatic_head"] = False
             slots["radiator_action"] = "перекрывать поток"
         elif category == "radiator_fittings" and (
-            "регулир" in text or "температур" in text
+            "регулир" in text or "регулятор" in text or "температур" in text
         ):
             slots["thermostatic_head"] = True
             slots["radiator_action"] = "регулировать температуру"
+
+        # Product kind is a hard identity boundary.  A thermostatic head,
+        # thermostatic radiator valve and complete radiator are related but
+        # not interchangeable catalogue items.
+        if re.search(r"\bтермог[оа]лов\w*\b", text):
+            slots["product_kind"] = "thermostatic_head"
+        elif category == "radiator_fittings" and (
+            re.search(r"\bтермостатическ\w*\s+клапан\w*\b", text)
+            or (
+                re.search(r"\bклапан\w*\b", text)
+                and any(
+                    marker in text
+                    for marker in ["регулир", "термостат", "температур"]
+                )
+            )
+        ) and not re.search(r"\bдля\s+клапан\w*\b", text):
+            slots["product_kind"] = "thermostatic_valve"
+            slots["radiator_action"] = "регулировать температуру"
+        elif (
+            category == "radiator_fittings"
+            and re.search(r"\b(?:клапан|кран)\w*\b", text)
+            and slots.get("thermostatic_head") is False
+        ):
+            slots["product_kind"] = "radiator_shutoff_valve"
+        elif category == "valves" and "шаров" in text:
+            slots["product_kind"] = "ball_valve"
+        elif category == "fittings" and requested_fitting == "угольник":
+            slots["product_kind"] = "elbow"
+
+        if "бабоч" in text:
+            slots["handle_type"] = "butterfly"
+        elif "рычаг" in text:
+            slots["handle_type"] = "lever"
+
+        if "полнопроход" in text:
+            slots["full_bore"] = True
+
+        if category in {"fittings", "sewer", "valves", "radiator_fittings"}:
+            explicit_angle = re.search(
+                r"(?<!\d)(15|22|30|45|60|67|87|88|90)\s*(?:°|градус\w*)",
+                text,
+            )
+            if explicit_angle:
+                slots["angle_deg"] = int(explicit_angle.group(1))
 
         area_match = re.search(
             r"(\d{2,4})\s*(?:м2|м²|квадрат|кв\.?\s*м|кв\b)",
@@ -2511,7 +2790,9 @@ class IntentRouterAgent:
         if category in {"valves", "radiator_fittings", "radiators", "fittings", "pipes"}:
             inch_match = INCH_SIZE_RE.search(text) or INTEGER_INCH_RE.search(text)
             if inch_match:
-                slots["size_inch"] = re.sub(r"\s+", "", inch_match.group(1))
+                slots["size_inch"] = self._normalize_inch_literal(
+                    inch_match.group(1)
+                )
             else:
                 spoken = self._spoken_inch_size(text)
                 if spoken:
@@ -2530,6 +2811,11 @@ class IntentRouterAgent:
             slots["name_tokens"] = name_tokens
 
         if category in {"pipes", "sewer", "radiators"}:
+            corrected_length = re.search(
+                r"\b(?:нужн\w*|надо|требуется|имею\s+в\s+виду)"
+                r"[^\d]{0,16}(\d{3,5})(?:\s*мм)?\b",
+                text,
+            )
             explicit_length = re.search(
                 r"(?:длина|длиной|длину)\D{0,12}(\d{2,5})\s*мм",
                 text,
@@ -2544,7 +2830,9 @@ class IntentRouterAgent:
                 if category in {"pipes", "sewer"}
                 else []
             )
-            if explicit_length:
+            if corrected_length and re.search(r"\b(?:не|нет|перепутал|ошиб)\w*\b", text):
+                slots["length_mm"] = int(corrected_length.group(1))
+            elif explicit_length:
                 slots["length_mm"] = int(explicit_length.group(1))
             elif dimension_pair:
                 slots["length_mm"] = int(dimension_pair.group(2))
@@ -2554,6 +2842,13 @@ class IntentRouterAgent:
                 slots["length_mm"] = length_candidates[-1]
 
         if category == "fittings":
+            mixed_fitting_pair = re.search(
+                r"(?<!\d)(\d{2,3})\s*[xх×*]\s*"
+                r"(?:1\s+1/4|1\s+1/2|3/4|1/2|3/8|1/4|2|1)(?![\d/])",
+                text,
+            )
+            if mixed_fitting_pair:
+                slots["diameter_mm"] = int(mixed_fitting_pair.group(1))
             fitting_pair = re.search(
                 r"(?<!\d)(\d{2,3})\s*(?:[xх×-]|на)\s*(\d{2,3})(?!\d)", text
             )
@@ -2950,6 +3245,41 @@ class IntentRouterAgent:
         return any(char.isdigit() for char in normalized)
 
     @staticmethod
+    def _is_valid_explicit_sku_candidate(value: str) -> bool:
+        """Validate a token whose SKU intent is established by a marker.
+
+        This deliberately does not relax ``_is_valid_sku_candidate``: short
+        mixed tokens are accepted only in the explicit ``артикул …`` context.
+        """
+        candidate = str(value or "").strip()
+        if not candidate or len(candidate) > 64:
+            return False
+        if not re.fullmatch(
+            r"[a-zа-я0-9](?:[a-zа-я0-9._/+\-]{0,62}[a-zа-я0-9])?",
+            candidate,
+            flags=re.IGNORECASE,
+        ):
+            return False
+        if not any(char.isdigit() for char in candidate):
+            return False
+        # An isolated engineering fraction is a size even if a user happens
+        # to put it after a catalogue-related word.
+        if re.fullmatch(r"\d+\s*/\s*\d+", candidate):
+            return False
+        if candidate.isalnum() and not candidate.isdigit() and not candidate.isascii():
+            return False
+        return True
+
+    def _extract_explicit_sku_candidate(self, message: str) -> str | None:
+        """Return a SKU-like token only when this turn explicitly labels it."""
+        marked_text = collapse_sku_spaces(str(message or ""))
+        for match in EXPLICIT_SKU_MARKER_RE.finditer(marked_text):
+            candidate = match.group("sku")
+            if self._is_valid_explicit_sku_candidate(candidate):
+                return candidate
+        return None
+
+    @staticmethod
     def _sku_candidate_is_measurement(text: str, value: str) -> bool:
         """Do not reinterpret a budget, quantity or engineering value as SKU."""
         candidate = normalize_text(value)
@@ -3215,7 +3545,7 @@ class IntentRouterAgent:
         message: str,
         session: SessionState | None,
     ) -> None:
-        text = normalize_text(message)
+        text = normalize_text(self._expand_unicode_inch_fractions(message))
         slots = result.slots
         explicit_category, explicit_score = self._detect_category(text)
         if explicit_category == "water_heaters" and explicit_score >= 0.9:
@@ -3267,7 +3597,14 @@ class IntentRouterAgent:
         ):
             result.category = "sewer"
 
-        if not self._is_valid_sku_candidate(str(slots.get("sku", ""))):
+        explicit_sku = self._extract_explicit_sku_candidate(message)
+        routed_sku = str(slots.get("sku", ""))
+        explicit_sku_matches = bool(
+            explicit_sku
+            and normalize_sku(routed_sku) == normalize_sku(explicit_sku)
+            and self._is_valid_explicit_sku_candidate(routed_sku)
+        )
+        if not self._is_valid_sku_candidate(routed_sku) and not explicit_sku_matches:
             slots.pop("sku", None)
             if result.intent_type == "exact_sku":
                 result.intent_type = "unknown"
@@ -3809,13 +4146,14 @@ class IntentRouterAgent:
             llm_result.category = rule_result.category
 
         if llm_result.intent_type == "exact_sku":
+            explicit_sku = self._extract_explicit_sku_candidate(message)
             sku_match = (
                 SKU_RE.search(sku_text)
                 or NUMERIC_SKU_RE.search(sku_text)
                 or SLASH_SKU_RE.search(sku_text)
                 or ALPHANUM_SKU_RE.search(sku_text)
             )
-            if not sku_match:
+            if not sku_match and not explicit_sku:
                 llm_result.intent_type = rule_result.intent_type
                 llm_result.slots.pop("sku", None)
 
@@ -3837,6 +4175,9 @@ class IntentRouterAgent:
                     match.group(0),
                 )
             }
+            explicit_sku = self._extract_explicit_sku_candidate(message)
+            if explicit_sku:
+                current_skus.add(normalize_sku(explicit_sku))
             if normalize_sku(str(llm_sku)) not in current_skus:
                 llm_result.slots.pop("sku", None)
                 if llm_result.intent_type == "exact_sku":

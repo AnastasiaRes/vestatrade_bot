@@ -1926,6 +1926,9 @@ def test_show_analogs_followup_excludes_already_shown_products(orchestrator) -> 
     assert "PUMP-25-40" in skus
     assert "PUMP-25-60" not in skus
     assert "Аналоги" in response.answer
+    assert "напор" in response.answer.lower()
+    assert "6 м" in response.answer
+    assert "4 м" in response.answer
 
 
 def test_cheaper_analog_does_not_return_more_expensive_products(orchestrator) -> None:

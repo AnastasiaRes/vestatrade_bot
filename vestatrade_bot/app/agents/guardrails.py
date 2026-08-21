@@ -79,6 +79,7 @@ class GuardrailsAgent:
         )
         result_limit = _requested_result_limit(query.slots)
         semantic_matcher = FeedSearchAgent()
+        effective_slots = semantic_matcher._effective_query_slots(query)
 
         if result_limit is not None and len(cards) > result_limit:
             issues.append(
@@ -99,6 +100,18 @@ class GuardrailsAgent:
             if query.in_stock_only and not product.is_in_stock:
                 issues.append(
                     f"card {card.sku} is unavailable for an in-stock-only request"
+                )
+            if (
+                query.category != "other"
+                and semantic_matcher.canonical_category(product) != query.category
+            ):
+                issues.append(
+                    f"card {card.sku} belongs to category "
+                    f"{semantic_matcher.canonical_category(product)}, not {query.category}"
+                )
+            if query.brand and normalize_text(query.brand) not in normalize_text(product.brand):
+                issues.append(
+                    f"card {card.sku} does not match requested brand {query.brand}"
                 )
             if max_price is not None and card.price > max_price:
                 issues.append(
@@ -175,10 +188,10 @@ class GuardrailsAgent:
                             f"water-heater characteristic {slot_key}={requested}"
                         )
 
-            semantic_matches = semantic_matcher._semantic_slots_match(
+            semantic_matches = semantic_matcher.matches_constraints(
                 product,
                 query.category,
-                query.slots,
+                effective_slots,
             )
             if not semantic_matches:
                 if query.slots.get("contours"):

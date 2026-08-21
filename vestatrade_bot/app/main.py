@@ -5,10 +5,11 @@ import logging
 from pathlib import Path
 from threading import RLock
 from typing import Any
+from uuid import uuid4
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
@@ -39,7 +40,10 @@ def startup_load_feed() -> None:
             count, source = orchestrator.reload_products(refresh=True)
         logger.info("Loaded %s products from %s on startup", count, source)
     except Exception as exc:
-        logger.warning("Startup feed load failed, bot will try cache on demand: %s", exc)
+        logger.warning(
+            "Startup feed load failed; bot will try cache on demand error_type=%s",
+            type(exc).__name__,
+        )
 
 
 @asynccontextmanager
@@ -60,6 +64,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+@app.exception_handler(Exception)
+async def unhandled_error(request: Request, exc: Exception) -> JSONResponse:
+    """Return a stable error contract without exposing implementation details."""
+
+    trace_id = uuid4().hex
+    # Exception strings from HTTP/Redis clients can contain credential-bearing
+    # URLs.  Keep correlation and type, but never serialize the raw exception.
+    logger.error(
+        "Unhandled API error trace_id=%s method=%s path=%s error_type=%s",
+        trace_id,
+        request.method,
+        request.url.path,
+        type(exc).__name__,
+    )
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": {
+                "code": "INTERNAL_ERROR",
+                "message": "Не удалось обработать запрос. Повторите попытку позже.",
+                "trace_id": trace_id,
+            }
+        },
+    )
 
 
 @app.get("/health")
@@ -83,6 +113,20 @@ async def health() -> dict[str, Any]:
         ),
         "llm_max_retries": settings.llm_max_retries,
     }
+
+
+@app.get("/ready")
+async def ready() -> JSONResponse:
+    products_loaded = len(orchestrator.search_agent.products)
+    is_ready = products_loaded > 0
+    return JSONResponse(
+        status_code=200 if is_ready else 503,
+        content={
+            "status": "ready" if is_ready else "not_ready",
+            "products_loaded": products_loaded,
+            "products_loaded_from": orchestrator.products_loaded_from,
+        },
+    )
 
 
 @app.get("/")
@@ -138,11 +182,28 @@ async def chat(request: ChatRequest) -> ChatResponse:
 def reload_feed(
     x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
 ) -> dict[str, Any]:
-    if settings.reload_feed_token and x_admin_token != settings.reload_feed_token:
+    # Reload mutates process-wide catalog state and may initiate an external
+    # fetch.  A missing server-side token therefore disables the endpoint.
+    if not settings.reload_feed_token:
+        raise HTTPException(status_code=503, detail="feed reload is disabled")
+    if x_admin_token != settings.reload_feed_token:
         raise HTTPException(status_code=403, detail="invalid reload token")
     try:
         with _feed_reload_lock:
             count, source = orchestrator.reload_products(refresh=True)
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        trace_id = uuid4().hex
+        logger.error(
+            "Feed reload failed trace_id=%s error_type=%s",
+            trace_id,
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "FEED_RELOAD_FAILED",
+                "message": "Не удалось обновить каталог.",
+                "trace_id": trace_id,
+            },
+        ) from exc
     return {"status": "ok", "products_count": count, "source": source}

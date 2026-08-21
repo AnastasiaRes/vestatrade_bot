@@ -132,6 +132,14 @@ def test_generic_category_request_is_not_treated_as_an_exact_name_lookup() -> No
     query = SearchQuery(original_text="кран шаровой 1/2 для воды", category="valves")
 
     assert agent.search_by_name("кран шаровой 1/2 для воды", query) == []
+    assert agent.search_by_name(
+        "Нужен шаровой кран 1/2 для воды, ВР-НР",
+        SearchQuery(
+            original_text="Нужен шаровой кран 1/2 для воды, ВР-НР",
+            category="valves",
+            slots={"size_inch": "1/2", "thread_type": "fm"},
+        ),
+    ) == []
 
 
 def test_full_product_name_lookup_still_works() -> None:

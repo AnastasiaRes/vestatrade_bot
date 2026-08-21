@@ -290,7 +290,9 @@ def _extract_common_dimensions(text: str, category: str, slots: dict[str, Any]) 
 
         dimensions = re.search(
             r"(?<!\d)(\d{2,3})\s*[xх×*]\s*(\d{1,2}(?:[,.]\d{1,2})?)"
-            r"(?:\s*мм)?(?!\d)",
+            # Do not consume the numerator of a threaded fitting dimension
+            # such as ``20×1/2`` as a 1 mm pipe wall.
+            r"(?:\s*мм)?(?![\d/])",
             text,
         )
         if dimensions:

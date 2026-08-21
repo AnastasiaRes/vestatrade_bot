@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -76,8 +76,12 @@ class ProductCard(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    session_id: str
-    message: str
+    session_id: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
+    message: str = Field(min_length=1, max_length=8_000)
 
 
 class ChatProductSummary(BaseModel):
@@ -126,6 +130,11 @@ class SlotFillingResult(BaseModel):
     slots: dict[str, Any] = Field(default_factory=dict)
     needs_clarification: bool = False
     question: str | None = None
+    # Canonical facts expected from the next user turn.  New selection
+    # contracts populate this directly so dialogue state does not depend on
+    # reverse-engineering a particular Russian rendering of the question.
+    expected_slots: list[str] = Field(default_factory=list)
+    blocking: bool = False
 
 
 class GuardrailsResult(BaseModel):
@@ -168,6 +177,10 @@ class ProductSelectionSnapshot(BaseModel):
     product_skus: list[str] = Field(default_factory=list)
     constraints: dict[str, Any] = Field(default_factory=dict)
     user_message: str = ""
+    # Monotonic order of catalogue displays inside one product branch.  The
+    # order of ``product_skus`` is the order the customer actually saw; neither
+    # later refinements nor an LLM interpretation may rewrite it.
+    display_index: int | None = None
     updated_at: str = Field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
@@ -177,6 +190,66 @@ class ProductBranchState(BaseModel):
     """Chronological, category-scoped product referents for one dialogue."""
 
     selections: list[ProductSelectionSnapshot] = Field(default_factory=list)
+    # ``selections`` is deliberately bounded below to keep a session compact.
+    # Preserve the immutable first display separately so conversational
+    # references such as "the very first one you showed" keep their identity
+    # even after many later pages/refinements.
+    first_display: ProductSelectionSnapshot | None = None
+    next_display_index: int = 0
+
+
+class LastSearchOutcome(BaseModel):
+    """Grounded result of the latest catalogue search.
+
+    An empty result is still a dialogue fact.  Without a typed record, a
+    confirmation such as ``so the exact 45-degree fitting is absent?`` is
+    routed as a brand-new request and may even switch product families.  The
+    history length ties the fact to the immediately preceding assistant turn,
+    which prevents an old negative result from leaking into a later topic.
+    """
+
+    status: Literal["no_exact_match"] = "no_exact_match"
+    category: str
+    constraints: dict[str, Any] = Field(default_factory=dict)
+    original_text: str = ""
+    sku: str | None = None
+    brand: str | None = None
+    history_length: int = 0
+    answer_text: str = ""
+    updated_at: str = Field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+
+
+class ProductFocusState(BaseModel):
+    """One unambiguous catalogue identity that follow-up turns may reference.
+
+    This is deliberately independent from ``last_products``.  The latter is a
+    presentation view and may legitimately be empty (for example when an exact
+    out-of-stock SKU is hidden by an ``in stock only`` filter) or replaced by a
+    page of analogues.  Losing the identity in either case makes a subsequent
+    ``what is its price?`` or ``compare with the original`` impossible to
+    ground safely.
+    """
+
+    sku: str
+    category: str | None = None
+    origin: str = "shown"
+    updated_at: str = Field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+
+
+class ProductRelationContext(BaseModel):
+    """Grounded source/target identities for an analogue result set."""
+
+    relation: str = "analog"
+    source_sku: str
+    alternative_skus: list[str] = Field(default_factory=list)
+    category: str | None = None
+    updated_at: str = Field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
 
 
 class SessionState(BaseModel):
@@ -194,6 +267,15 @@ class SessionState(BaseModel):
     # active compatibility view, while this map survives topic switches and
     # lets the controller restore a named/qualified previous selection.
     product_branches: dict[str, ProductBranchState] = Field(default_factory=dict)
+    # Empty catalogue results must survive one immediate confirmation turn in
+    # the same way that shown cards survive an attribute follow-up.
+    last_search_outcome: LastSearchOutcome | None = None
+    # Stable identity focus is not the same thing as the cards in the latest
+    # response.  Keep it when an exact product is hidden by a commercial
+    # filter, and keep the analogue relation when ``last_products`` becomes the
+    # alternatives page.
+    product_focus: ProductFocusState | None = None
+    product_relation: ProductRelationContext | None = None
     # All cards already emitted for the active catalogue result set. Unlike
     # ``last_products`` this survives pagination so "покажи ещё" cannot repeat
     # page one after page two.

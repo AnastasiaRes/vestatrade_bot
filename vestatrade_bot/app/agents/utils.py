@@ -28,6 +28,17 @@ def normalize_text(text: str | None) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+_WATER_APPLICATION_RE = re.compile(
+    r"\bвод(?:а|ы|е|у|ой|ою)\b|\bводян\w*\b|"
+    r"\bводоснаб\w*\b|\b(?:гвс|хвс)\b"
+)
+
+
+def mentions_water_application(text: str | None) -> bool:
+    """Recognise Russian case forms of ``вода`` in a product application."""
+    return bool(_WATER_APPLICATION_RE.search(normalize_text(text)))
+
+
 def normalize_sku(text: str | None) -> str:
     return normalize_text(text).replace(" ", "")
 

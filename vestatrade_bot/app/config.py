@@ -57,6 +57,9 @@ class Settings(BaseModel):
     llm_retry_delay_seconds: float
     input_price_per_1m_tokens_usd: float
     output_price_per_1m_tokens_usd: float
+    session_store_url: str | None = None
+    session_ttl_seconds: int = 86_400
+    session_lock_timeout_seconds: float = 30.0
 
     @property
     def llm_model(self) -> str:
@@ -154,5 +157,16 @@ def get_settings() -> Settings:
                 "LLM_OUTPUT_PRICE_PER_1M_TOKENS_USD",
                 os.getenv("OPENROUTER_OUTPUT_PRICE_PER_1M_TOKENS_USD", "0"),
             )
+        ),
+        session_store_url=(
+            os.getenv("SESSION_STORE_URL") or os.getenv("REDIS_URL") or None
+        ),
+        session_ttl_seconds=max(
+            60,
+            int(os.getenv("SESSION_TTL_SECONDS", "86400")),
+        ),
+        session_lock_timeout_seconds=max(
+            1.0,
+            float(os.getenv("SESSION_LOCK_TIMEOUT_SECONDS", "30")),
         ),
     )
