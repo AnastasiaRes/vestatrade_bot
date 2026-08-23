@@ -406,12 +406,32 @@ class GuardrailsAgent:
         if mode == "small_talk":
             issues.extend(self._missing_small_talk_anchors(draft, answer))
 
+        # Ссылка проверяется во всех режимах и посимвольно: LLM однажды
+        # обрезала адрес карточки до «...rukoyatka-bab», и покупатель получил
+        # битую ссылку при формально корректном тексте.
+        issues.extend(self._altered_links(draft, answer))
+
         return GuardrailsResult(
             ok=not issues,
             issues=issues,
             need_handoff=False,
             safe_message=draft if issues else None,
         )
+
+    _LINK_RE = re.compile(r"https?://[^\s<>()\[\]\"']+")
+
+    @classmethod
+    def _altered_links(cls, draft: str, answer: str) -> list[str]:
+        """Любая ссылка в ответе обязана дословно совпадать со ссылкой черновика."""
+        grounded = {
+            url.rstrip(".,;")
+            for url in cls._LINK_RE.findall(str(draft or ""))
+        }
+        issues: list[str] = []
+        for url in cls._LINK_RE.findall(str(answer or "")):
+            if url.rstrip(".,;") not in grounded:
+                issues.append(f"link not grounded in draft: {url}")
+        return issues
 
     def _cheap_ordered(self, cards: list[ProductCard]) -> bool:
         def key(card: ProductCard) -> tuple[bool, float]:

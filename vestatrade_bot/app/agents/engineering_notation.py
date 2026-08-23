@@ -321,14 +321,19 @@ def _extract_common_dimensions(text: str, category: str, slots: dict[str, Any]) 
                 pressure.group(1).replace(",", ".")
             )
 
+    # Обозначение метрической резьбы однозначно само по себе. Раньше оно
+    # разбиралось только внутри «резьбовых» категорий, поэтому ответ «M30x1,5»
+    # на прямой вопрос бота оставался нераспознанным и диалог упирался в тупик.
+    # Кириллическая «м» и «х» — обычная раскладка покупателя.
+    metric_thread = re.search(
+        r"(?<![a-zа-яa-z])[mм]\s*(\d{1,3})\s*[xх×*]\s*(\d+(?:[,.]\d+)?)",
+        text,
+    )
+    if metric_thread:
+        pitch = metric_thread.group(2).replace(",", ".")
+        slots["metric_thread"] = f"M{int(metric_thread.group(1))}x{pitch}"
+
     if category in THREADED_CATEGORIES:
-        metric_thread = re.search(
-            r"(?<![a-zа-я])m\s*(\d{1,3})\s*[xх×]\s*(\d+(?:[,.]\d+)?)",
-            text,
-        )
-        if metric_thread:
-            pitch = metric_thread.group(2).replace(",", ".")
-            slots["metric_thread"] = f"M{int(metric_thread.group(1))}x{pitch}"
         thread_standard = re.search(
             r"(?<![a-zа-я])(?P<standard>g|rp|rc|r)\s*"
             r"(?P<size>1\s+1/4|1\s+1/2|3/4|1/2|3/8|1/4|2|1)(?![\d/])",
@@ -608,12 +613,16 @@ def _extract_radiator_notation(text: str, slots: dict[str, Any]) -> None:
         slots["radiator_height_mm"] = int(height.group(1))
 
     panel_type = re.search(
-        r"\bтип\s*(10|11|20|21|22|30|33)\b|"
-        r"\b(?:c|cv|vc|vk)\s*(10|11|20|21|22|30|33)(?=[-\s]|$)",
+        r"\bтип\s*(10|11|12|20|21|22|30|33)\b|"
+        # «22 тип», «22 типа», «22-й тип» — то же самое, что «тип 22».
+        r"\b(10|11|12|20|21|22|30|33)\s*(?:-?[ий])?\s*тип\w*\b|"
+        r"\b(?:c|cv|vc|vk)\s*(10|11|12|20|21|22|30|33)(?=[-\s]|$)",
         text,
     )
     if panel_type:
-        slots["radiator_panel_type"] = int(panel_type.group(1) or panel_type.group(2))
+        slots["radiator_panel_type"] = int(
+            next(group for group in panel_type.groups() if group)
+        )
 
     delta_t = re.search(r"(?:δ|∆|d)\s*t\s*(?:=|:)?\s*(\d{1,3})\b", text)
     if delta_t:

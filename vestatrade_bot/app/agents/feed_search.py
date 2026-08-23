@@ -10,18 +10,20 @@ from typing import Any
 from app.models import Product, SearchQuery
 
 from .product_constraints import (
+    normalize_inch_size,
     product_inch_sizes,
     product_thread_facts,
     single_inch_size_constraint_matches,
     thread_constraint_matches,
 )
+from .trade_vocabulary import is_reducer_element
 from .product_identity import (
     FILTER_PRIMARY_KINDS,
     VALVE_PRIMARY_KINDS,
     ProductIdentityFacts,
     product_identity_facts,
 )
-from .utils import normalize_sku, normalize_text
+from .utils import fold_model_key, normalize_sku, normalize_text
 
 
 logger = logging.getLogger(__name__)
@@ -499,6 +501,8 @@ class FeedSearchAgent:
     def __init__(self, products: list[Product] | None = None) -> None:
         self.products: list[Product] = []
         self._canonical_category_cache: dict[int, str] = {}
+        self._model_key_cache: dict[str, str] = {}
+        self._brand_word_key_cache: set[str] | None = None
         self._product_identity_cache: dict[int, ProductIdentityFacts] = {}
         self._sku_mention_patterns: list[
             tuple[Product, re.Pattern[str], int]
@@ -509,6 +513,10 @@ class FeedSearchAgent:
         self.products = products
         self._canonical_category_cache.clear()
         self._product_identity_cache.clear()
+        # Ключ модели считается из бренда и названия: после перезагрузки фида
+        # у того же артикула они могли измениться.
+        self._model_key_cache.clear()
+        self._brand_word_key_cache = None
         self._sku_mention_patterns = self._build_sku_mention_patterns(products)
 
     @staticmethod
@@ -913,6 +921,69 @@ class FeedSearchAgent:
         if query.category == "boilers" and query.slots.get("power_kw") is not None:
             result_limit = self._explicit_boiler_result_limit(scored, query)
         return [product for _, product in scored[:result_limit]]
+
+    # Когда точного совпадения нет, честный ответ продавца — «точного нет, но
+    # есть вот такое, отличается вот этим». Ослабляем ровно одну группу
+    # параметров, чтобы отличие можно было назвать одной фразой.
+    NEAREST_RELAXATION_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+        ("угол", ("angle_deg",)),
+        ("тип ручки", ("handle_type",)),
+        ("резьбовой выход", ("thread_gender", "thread_type", "size_inch")),
+        ("длина", ("length_mm",)),
+        ("бренд", ("brand",)),
+        ("присоединительный размер", ("size_inch",)),
+        ("диаметр", ("diameter_mm",)),
+        ("габариты", ("radiator_height_mm", "length_mm")),
+    )
+
+    def search_nearest_variants(
+        self,
+        query: SearchQuery,
+        *,
+        max_groups: int = 2,
+        per_group: int = 2,
+    ) -> list[tuple[str, list[Product]]]:
+        """Ближайшие варианты, каждый с одним названным отличием."""
+        if not self.products or query.category == "other":
+            return []
+        results: list[tuple[str, list[Product]]] = []
+        seen_skus: set[str] = set()
+        for label, fields in self.NEAREST_RELAXATION_GROUPS:
+            relaxed_here = [
+                field
+                for field in fields
+                if query.slots.get(field) not in (None, "", [], {})
+                or (field == "brand" and query.brand)
+            ]
+            if not relaxed_here:
+                continue
+            relaxed_slots = {
+                key: value
+                for key, value in query.slots.items()
+                if key not in fields
+            }
+            relaxed = SearchQuery(
+                original_text=query.original_text,
+                category=query.category,
+                slots=relaxed_slots,
+                sku=None,
+                brand=None if "brand" in fields else query.brand,
+                cheap=query.cheap,
+                in_stock_only=query.in_stock_only,
+                limit=query.limit,
+            )
+            found = [
+                product
+                for product in self.search(relaxed)
+                if normalize_text(product.sku) not in seen_skus
+            ][:per_group]
+            if not found:
+                continue
+            seen_skus.update(normalize_text(product.sku) for product in found)
+            results.append((label, found))
+            if len(results) >= max_groups:
+                break
+        return results
 
     @staticmethod
     def alternative_relaxed_fields(query: SearchQuery) -> set[str]:
@@ -1399,6 +1470,227 @@ class FeedSearchAgent:
         if self._is_actual_pipe(product):
             return "pipes"
         return "other"
+
+    def search_unsupported_family(
+        self,
+        pattern: str,
+        message: str,
+        limit: int = 3,
+        required_word: str | None = None,
+    ) -> list[Product]:
+        """Позиции семейства вне зоны подбора — поиск по названию.
+
+        Инженерные проверки здесь не применяются и не обещаются: для этих
+        групп у бота нет ни правил совместимости, ни контракта уточнений.
+        Ранжирование простое — совпадение слов запроса, затем наличие и цена.
+        """
+        family_re = re.compile(pattern)
+        # Покупатель назвал конкретный предмет («унитаз»), а в семейство входят
+        # и смежные позиции. Без этого на запрос про унитаз в ответ попадало
+        # крепление для умывальника — формально та же группа, но не то.
+        word_re = re.compile(re.escape(required_word)) if required_word else family_re
+        candidates = [
+            product
+            for product in self.products
+            if product.price is not None
+            and product.url
+            and word_re.search(
+                normalize_text(f"{product.name} {product.category_path}")
+            )
+        ]
+        if not candidates:
+            return []
+
+        tokens = [
+            token
+            for token in re.findall(
+                r"[a-zа-я0-9]+(?:[./xх×-][a-zа-я0-9]+)*",
+                normalize_text(message),
+            )
+            if len(token) >= 2
+            and token not in NAME_QUERY_STOPWORDS
+            and not family_re.fullmatch(token)
+        ]
+
+        def overlap(product: Product) -> int:
+            blob = normalize_text(
+                " ".join(
+                    [
+                        product.name,
+                        product.brand or "",
+                        *[
+                            f"{key} {value}"
+                            for key, value in product.attributes_normalized.items()
+                        ],
+                    ]
+                )
+            )
+            return sum(1 for token in tokens if token in blob)
+
+        def is_the_product_itself(product: Product) -> bool:
+            """Товар — это сам предмет, а не аксессуар к нему.
+
+            «Унитаз подвесной Iddis» против «Обрамление для унитаза»: слово
+            покупателя стоит в начале названия или в «Тип товара» только у
+            самого изделия.
+            """
+            if not required_word:
+                return True
+            # И в типе товара смотрим только на головное слово: «Сиденье для
+            # унитаза» — это сиденье, а не унитаз.
+            declared = normalize_text(self._attribute_text(product, ["тип товара"]))
+            if declared and required_word in declared.split(" ", 1)[0]:
+                return True
+            # Именно первое слово названия: «Раковина универсальная» — это
+            # раковина, а «Выпуск для раковины» — аксессуар к ней.
+            head_word = normalize_text(product.name).split(" ", 1)[0]
+            return required_word in head_word
+
+        candidates.sort(
+            key=lambda product: (
+                not is_the_product_itself(product),
+                -overlap(product),
+                not product.is_in_stock,
+                product.price if product.price is not None else float("inf"),
+            )
+        )
+        return candidates[:limit]
+
+    def _brand_word_keys(self) -> set[str]:
+        """Слова, из которых состоят названия брендов каталога."""
+        if self._brand_word_key_cache is None:
+            words: set[str] = set()
+            for product in self.products:
+                for word in re.split(r"[\s./-]+", str(product.brand or "")):
+                    key = fold_model_key(word)
+                    if len(key) >= 2:
+                        words.add(key)
+            self._brand_word_key_cache = words
+        return self._brand_word_key_cache
+
+    def _model_key(self, product: Product) -> str:
+        """Ключ модели товара с кэшем по артикулу.
+
+        Кэш намеренно по SKU, а не по ``id`` объекта: временные объекты
+        переиспользуют адреса, и кэш по ``id`` начинает возвращать чужие
+        значения.
+        """
+        cached = self._model_key_cache.get(product.sku)
+        if cached is None:
+            cached = fold_model_key(f"{product.brand or ''} {product.name}")
+            self._model_key_cache[product.sku] = cached
+        return cached
+
+    # Модельная фраза в реплике: буквы вплотную к числам («UPС 25-40 180»,
+    # «Star RS 25/6», «SB28»). Ищется по исходному тексту, потому что
+    # нормализация могла привести кириллическую «С» к латинской «S», и точный
+    # ключ модели переставал совпадать с фидом.
+    # Маркировка всегда начинается с латинской буквы («UPС», «Star RS», «SB»),
+    # поэтому русское слово перед ней («насос UPС 25-40») в фразу не попадает.
+    _MODEL_PHRASE_RE = re.compile(
+        r"[a-z][a-zа-яё]{1,9}\s*[-/]?\s*[a-zа-яё]{0,4}\s*\d{1,4}"
+        r"(?:\s*[-/]\s*\d{1,4}){0,3}",
+        re.IGNORECASE,
+    )
+
+    def find_named_models(
+        self,
+        *,
+        brand: str | None = None,
+        name_tokens: list[str] | None = None,
+        old_model: str | None = None,
+        message: str | None = None,
+        category: str | None = None,
+        limit: int = 3,
+    ) -> list[Product]:
+        """Товары по явно названной модели: «Wilo Star RS 25/6», «Arderia D24».
+
+        Покупатель, назвавший конкретную модель, не должен получать вопрос про
+        площадь дома: модель уже определяет товар. Сопоставление идёт по ключу
+        модели, поэтому смешанные алфавиты в фиде и разные разделители
+        («25/6» против «25-6») ему не мешают.
+        """
+        if not self.products:
+            return []
+
+        token_keys = [
+            key
+            for key in (fold_model_key(token) for token in (name_tokens or []))
+            if len(key) >= 2
+        ]
+        brand_key = fold_model_key(brand) if brand else ""
+        old_model_key = fold_model_key(old_model) if old_model else ""
+
+        attempts: list[list[str]] = []
+        if len(old_model_key) >= 4:
+            attempts.append([old_model_key])
+        if brand_key and token_keys:
+            attempts.append([brand_key, *token_keys])
+        # Пара токенов без бренда — это тоже маркировка: «KERMI FKO», где
+        # серия важна функционально (FKO — боковое подключение, FTV — нижнее
+        # со встроенным клапаном), и подмена одной на другую недопустима.
+        # Но если все токены — это просто слова бренда («PRO AQUA»), то перед
+        # нами обычный запрос по бренду и параметрам, а не по маркировке.
+        if (
+            not brand_key
+            and len(token_keys) >= 2
+            and any(key not in self._brand_word_keys() for key in token_keys)
+        ):
+            attempts.append(list(token_keys))
+        # Модельный токен с цифрой («d24», «sb28») однозначен и без бренда.
+        digit_tokens = [key for key in token_keys if any(ch.isdigit() for ch in key)]
+        if digit_tokens:
+            attempts.append(digit_tokens)
+        # Фразы из самой реплики: они сохраняют алфавит, которым писал
+        # покупатель, и переживают нормализацию бренда. Разбирается только
+        # тогда, когда роутер уже увидел бренд или маркировку — иначе
+        # «котёл на 100 м2» превращается в модельный ключ и ловит случайное.
+        has_model_context = bool(brand_key or old_model_key or token_keys)
+        for phrase in (
+            self._MODEL_PHRASE_RE.findall(str(message or ""))
+            if has_model_context
+            else []
+        ):
+            phrase_key = fold_model_key(phrase)
+            if len(phrase_key) >= 6 and any(ch.isdigit() for ch in phrase_key):
+                attempts.append([phrase_key])
+        if not attempts:
+            return []
+
+        for required in attempts:
+            matches = [
+                product
+                for product in self.products
+                if all(part in self._model_key(product) for part in required)
+            ]
+            if not matches:
+                continue
+            if category:
+                in_category = [
+                    product
+                    for product in matches
+                    if self.canonical_category(product) == category
+                ]
+                # Категорию мог не угадать роутер; тогда показываем найденное.
+                matches = in_category or matches
+            # Числа из реплики уточняют исполнение внутри серии: «RWH 80
+            # Citadel Unic» — это 80 литров, а не любой объём этой серии.
+            message_numbers = re.findall(r"\d{2,4}", str(message or ""))
+            if message_numbers:
+                exact = [
+                    product
+                    for product in matches
+                    if all(number in self._model_key(product) for number in message_numbers)
+                ]
+                matches = exact or matches
+            matches.sort(
+                key=lambda product: (
+                    not product.is_in_stock,
+                    product.price if product.price is not None else float("inf"),
+                )
+            )
+            return matches[:limit]
+        return []
 
     def retrieve_for_consult(
         self,
@@ -3013,7 +3305,9 @@ class FeedSearchAgent:
                 return False
         if category in {"valves", "radiator_fittings"}:
             size_inch = slots.get("size_inch")
-            if size_inch and not self._inch_size_matches(product, str(size_inch)):
+            if size_inch and not self._inch_size_matches(
+                product, str(size_inch), slots
+            ):
                 return False
             diameter = slots.get("diameter_mm")
             if diameter and not self._dimension_matches(
@@ -3393,8 +3687,60 @@ class FeedSearchAgent:
             return False
         return True
 
+    def _material_spec_matches(self, product: Product, requested: object) -> bool:
+        """Материал из строки спецификации: нужны все названные составляющие.
+
+        «Полипропилен, Латунь» — это комбинированное исполнение, и чистый
+        полипропилен ему не равен. Если материал в фиде не указан вовсе,
+        отсутствие данных не считается противоречием.
+        """
+        declared = normalize_text(self._attribute_text(product, ["материал"]))
+        if not declared:
+            return True
+        wanted = [
+            part.strip()
+            for part in normalize_text(str(requested or "")).split(",")
+            if part.strip()
+        ]
+        return all(part in declared for part in wanted)
+
+    def _combined_metal_matches(self, product: Product) -> bool:
+        """Комбинированное исполнение: полимер плюс латунная резьбовая часть."""
+        material = normalize_text(self._attribute_text(product, ["материал"]))
+        if "латун" in material:
+            return True
+        name = normalize_text(product.name)
+        return "комбинирован" in name or "латун" in name
+
+    def _trade_element_matches(self, product: Product, requested: object) -> bool:
+        """Семейство товара, названное монтажным словом, — жёсткое условие.
+
+        Значение приходит из словаря и совпадает с «Тип товара» в выгрузке,
+        поэтому сначала проверяется сам атрибут, и лишь затем название: у части
+        позиций тип не заполнен, но семейство стоит в наименовании.
+        """
+        expected = normalize_text(str(requested or ""))
+        if not expected:
+            return True
+        declared = self._attribute_text(product, ["тип товара", "тип"])
+        if declared and expected in normalize_text(declared):
+            return True
+        # У части позиций семейство стоит только в названии: «евроконус»
+        # у соединителей и адаптеров коллектора — как раз такой случай.
+        return expected in normalize_text(product.name)
+
     def _semantic_slots_match(self, product: Product, category: str, slots: dict) -> bool:
         """Enforce categorical/usage slots as non-negotiable constraints."""
+        if slots.get("trade_element") and not self._trade_element_matches(
+            product, slots["trade_element"]
+        ):
+            return False
+        if slots.get("combined_metal") and not self._combined_metal_matches(product):
+            return False
+        if slots.get("material_spec") and not self._material_spec_matches(
+            product, slots["material_spec"]
+        ):
+            return False
         if (slots.get("thread_type") or slots.get("thread_gender")) and not thread_constraint_matches(
             product,
             thread_type=slots.get("thread_type"),
@@ -3871,7 +4217,7 @@ class FeedSearchAgent:
 
         size_inch = slots.get("size_inch")
         if size_inch:
-            checks.append(self._inch_size_matches(product, str(size_inch)))
+            checks.append(self._inch_size_matches(product, str(size_inch), slots))
 
         length = slots.get("length_mm")
         if length:
@@ -4417,7 +4763,7 @@ class FeedSearchAgent:
 
         size_inch = slots.get("size_inch")
         if size_inch:
-            if self._inch_size_matches(product, str(size_inch)):
+            if self._inch_size_matches(product, str(size_inch), slots):
                 score += 20
             elif query.category in {"valves", "radiator_fittings"}:
                 return 0
@@ -4458,7 +4804,15 @@ class FeedSearchAgent:
         """Extract explicitly evidenced inch connection sizes."""
         return product_inch_sizes(product)
 
-    def _inch_size_matches(self, product: Product, size_inch: str) -> bool:
+    def _inch_size_matches(
+        self,
+        product: Product,
+        size_inch: str,
+        slots: dict | None = None,
+    ) -> bool:
+        if is_reducer_element((slots or {}).get("trade_element")):
+            expected = normalize_inch_size(size_inch)
+            return bool(expected and expected in self._product_inch_sizes(product))
         return single_inch_size_constraint_matches(product, size_inch)
 
     def _dimension_matches(self, product: Product, number: int, keys: list[str]) -> bool:
@@ -4500,7 +4854,19 @@ class FeedSearchAgent:
             if fitting_diameter and int(fitting_diameter.group(1)) == number:
                 return True
             return self._diameter_matches_name(fallback, number)
-        if "длина" in key_texts:
+        wants_height = any("высот" in key for key in key_texts)
+        wants_length = any("длина" in key for key in key_texts)
+        if wants_height or wants_length:
+            identity = normalize_text(f"{product.category_path} {product.name}")
+            if "радиатор" in identity or "конвектор" in identity:
+                height, length = self._radiator_dimensions_from_name(product.name)
+                target = height if wants_height else length
+                if target is not None:
+                    # Габариты в названии — единственное доказательство размера.
+                    # Свободный поиск числа по названию здесь недопустим: у
+                    # «22 300 x 500» иначе совпадала бы «высота 500».
+                    return target == number
+        if wants_length:
             return self._length_matches_name(fallback, number)
         return self._number_matches(fallback, number)
 
@@ -4536,8 +4902,47 @@ class FeedSearchAgent:
         return bool(
             re.search(rf"[xх×]\s*{number}([^0-9]|$)", compact)
             or re.search(rf"\d+\s*/\s*\d+\s*/\s*{number}([^0-9]|$)", compact)
+            # Серии вида «VC22-500-1000» и «CV 22-500-1000» кодируют длину
+            # через дефис, а не через «х» или «/».
+            or re.search(rf"\d+\s*-\s*\d+\s*-\s*{number}([^0-9]|$)", compact)
             or re.search(rf"(^|[^0-9]){number}\s*(?:мм|mm)([^0-9]|$)", compact)
         )
+
+    @staticmethod
+    def _radiator_dimensions_from_name(name: str) -> tuple[int | None, int | None]:
+        """Высота и длина радиатора, зашитые в название.
+
+        В выгрузке у панельных радиаторов нет отдельных <param> с габаритами —
+        они есть только в названии, причём в четырёх разных нотациях:
+        «VC22-500-900», «AXIS 22 500 x 1000», «Радиатор 11/500/1000» и
+        «тип 22 высота 300 длина 900». Без разбора названия подбор по размеру
+        сваливался на соседний типоразмер.
+        """
+        text = normalize_text(str(name or "").replace("*", "х"))
+        height = length = None
+        explicit_height = re.search(r"высот\w*\D{0,6}(\d{3,4})", text)
+        if explicit_height:
+            height = int(explicit_height.group(1))
+        explicit_length = re.search(r"длин\w*\D{0,6}(\d{3,4})", text)
+        if explicit_length:
+            length = int(explicit_length.group(1))
+        if height is not None and length is not None:
+            return height, length
+        triple = re.search(
+            r"(?<!\d)(\d{2})\s*[-/]\s*(\d{3,4})\s*[-/]\s*(\d{3,4})(?!\d)", text
+        )
+        if triple:
+            return (
+                height if height is not None else int(triple.group(2)),
+                length if length is not None else int(triple.group(3)),
+            )
+        pair = re.search(r"(?<!\d)(\d{3,4})\s*[xх×]\s*(\d{3,4})(?!\d)", text)
+        if pair:
+            return (
+                height if height is not None else int(pair.group(1)),
+                length if length is not None else int(pair.group(2)),
+            )
+        return height, length
 
     def _fitting_dimension_matches(self, product: Product, number: int) -> bool:
         text = normalize_text(

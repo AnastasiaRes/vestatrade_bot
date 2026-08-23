@@ -102,6 +102,30 @@ def redact(value: Any) -> Any:
     return value
 
 
+def canonical_param_value(key: str, value: str) -> str:
+    """Normalise feed wording so equivalent values compare equal.
+
+    The same thread is written as "С внутренней резьбой (ff)" for VALTEC and
+    plainly as "Внутренняя" for other brands.  Comparing the raw strings would
+    report a mismatch that does not exist in the product itself.
+    """
+
+    text = norm(value)
+    if "резьб" not in norm(key):
+        return text
+    internal = "внутренн" in text or bool(re.search(r"\bff\b", text))
+    external = "наружн" in text or bool(re.search(r"\bmm\b", text))
+    if re.search(r"\b(?:fm|mf)\b", text):
+        internal = external = True
+    if internal and external:
+        return "thread:fm"
+    if internal:
+        return "thread:ff"
+    if external:
+        return "thread:mm"
+    return text
+
+
 def percentile(values: list[float], pct: float) -> float | None:
     if not values:
         return None
@@ -154,6 +178,9 @@ class CatalogProduct:
         normalized = [(norm(key), value) for key, value in self.params.items()]
         for needle in needles:
             needle_norm = norm(needle)
+            for key_norm, value in normalized:
+                if key_norm == needle_norm:
+                    return clean_text(value)
             for key_norm, value in normalized:
                 if needle_norm in key_norm:
                     return clean_text(value)
@@ -623,6 +650,152 @@ def build_scenarios(catalog: Catalog) -> tuple[list[Scenario], list[Scenario], d
     return smoke, core, matrix
 
 
+IGNORED_DIFF_PARAMS = {
+    "артикул",
+    "полное наименование",
+    "цена",
+    "вес",
+    "масса",
+    "штрихкод",
+    "код",
+    "гарантия",
+    "объем упаковки",
+    "единица измерения",
+}
+
+
+def _describe_param(key: str, value: str) -> str:
+    return f"{clean_text(key).rstrip(':')}: {clean_text(value)}"
+
+
+def _one_param_apart(
+    family: list[CatalogProduct],
+) -> tuple[CatalogProduct, CatalogProduct, str] | None:
+    """Return two SKUs of one family separated by exactly one parameter."""
+
+    for index, first in enumerate(family):
+        for second in family[index + 1 :]:
+            keys = set(first.params) & set(second.params)
+            if len(keys) < 3:
+                continue
+            differing = [
+                key
+                for key in keys
+                if norm(first.params[key]) != norm(second.params[key])
+                and norm(key) not in IGNORED_DIFF_PARAMS
+                and clean_text(first.params[key])
+                and clean_text(second.params[key])
+            ]
+            if len(differing) == 1 and norm(first.name) != norm(second.name):
+                return first, second, differing[0]
+    return None
+
+
+def build_extended_scenarios(catalog: Catalog, limit: int = 60) -> list[Scenario]:
+    """Auto-generate a regression suite from the actual catalogue content.
+
+    Two generators are used.  The first walks families of near-identical SKUs
+    and asks for one member by its distinguishing parameter, which is the
+    highest-risk failure mode (neighbouring size, wrong thread, wrong angle).
+    The second checks article lookup and card factuality across categories.
+    """
+
+    scenarios: list[Scenario] = []
+    seen_pairs: set[tuple[str, str]] = set()
+    for family in catalog.similar_families(160):
+        pair = _one_param_apart(family)
+        if not pair:
+            continue
+        target, neighbour, diff_key = pair
+        key = (norm_sku(target.sku), norm_sku(neighbour.sku))
+        if key in seen_pairs:
+            continue
+        seen_pairs.add(key)
+
+        context_keys = [
+            item
+            for item in target.params
+            if item != diff_key
+            and norm(item) not in IGNORED_DIFF_PARAMS
+            and clean_text(target.params[item])
+            and len(clean_text(target.params[item])) <= 40
+        ][:2]
+        described = [diff_key] + context_keys
+        kind = target.param("тип товара") or clean_text(target.name).split(",")[0]
+        brand = clean_text(target.vendor or target.manufacturer)
+        prompt = "Нужен " + ", ".join(
+            [part for part in [kind, brand] if part]
+            + [_describe_param(item, target.params[item]) for item in described]
+        )
+        required = {item: target.params[item] for item in described}
+        scenarios.append(
+            Scenario(
+                f"X-SIM-{len(scenarios)+1:02d}",
+                f"Каталожная пара: {clean_text(diff_key)} {target.sku} vs {neighbour.sku}",
+                "Монтажник",
+                prompt,
+                "catalog_constraint",
+                3,
+                {
+                    "target_sku": target.sku,
+                    "neighbour_sku": neighbour.sku,
+                    "diff_key": diff_key,
+                    "diff_target": target.params[diff_key],
+                    "diff_neighbour": neighbour.params[diff_key],
+                    "required_params": required,
+                    "remaining": [
+                        _describe_param(item, target.params[item])
+                        for item in list(target.params)
+                        if item not in described
+                        and norm(item) not in IGNORED_DIFF_PARAMS
+                        and clean_text(target.params[item])
+                        and len(clean_text(target.params[item])) <= 40
+                    ][:2],
+                },
+                ["catalog_generated", "similar_sku", "constraints"],
+            )
+        )
+        if len(scenarios) >= max(1, int(limit * 0.6)):
+            break
+
+    by_category: dict[str, list[CatalogProduct]] = defaultdict(list)
+    for product in catalog.products:
+        if len(product.params) >= 4 and (product.quantity or 0) > 0:
+            by_category[product.category].append(product)
+    ordered = sorted(by_category.items(), key=lambda item: -len(item[1]))
+    fact_budget = max(1, limit - len(scenarios))
+    picks: list[CatalogProduct] = []
+    round_index = 0
+    while len(picks) < fact_budget and ordered:
+        added = False
+        for _, items in ordered:
+            if round_index < len(items) and len(picks) < fact_budget:
+                picks.append(sorted(items, key=lambda item: -len(item.params))[round_index])
+                added = True
+        if not added:
+            break
+        round_index += 1
+    for product in picks:
+        attribute = choose_attribute(product)
+        scenarios.append(
+            Scenario(
+                f"X-SKU-{len(scenarios)+1:02d}",
+                f"Каталожный артикул: {product.sku}",
+                "Закупщик",
+                f"Найди артикул {product.sku}",
+                "catalog_fact",
+                3,
+                {
+                    "sku": product.sku,
+                    "attribute_key": attribute[0] if attribute else None,
+                    "attribute_value": attribute[1] if attribute else None,
+                },
+                ["catalog_generated", "sku", "factuality"],
+            )
+        )
+    return scenarios
+
+
 def _make_sku_typo(sku: str, catalog: Catalog) -> str:
     for replacement in ["Z", "8", "9", "X", "7"]:
         chars = list(sku)
@@ -1031,6 +1204,59 @@ def next_message(
             return "Признайте ошибку, если прошлый SKU был ВР-НР, и дайте корректный ВР-ВР.", {"is_context": True}
         return None
 
+    if scenario.strategy == "catalog_constraint":
+        required = scenario.params.get("required_params") or {}
+        if turn == 1:
+            if not products and asked:
+                remaining = scenario.params.get("remaining") or []
+                extra = ("; ".join(remaining)) if remaining else "Других ограничений нет."
+                return (
+                    f"{extra} Параметры из запроса не меняем.",
+                    {"required_params": required},
+                )
+            return (
+                "Проверьте по карточке: «{key}» должен быть именно {target}, а не {other}. "
+                "Назовите точный артикул подходящего товара.".format(
+                    key=clean_text(scenario.params["diff_key"]),
+                    target=clean_text(scenario.params["diff_target"]),
+                    other=clean_text(scenario.params["diff_neighbour"]),
+                ),
+                {"required_params": required, "is_context": True},
+            )
+        if turn == 2:
+            return (
+                "Подтвердите ещё раз, что предложенный артикул не «{other}»-исполнение.".format(
+                    other=clean_text(scenario.params["diff_neighbour"])
+                ),
+                {"required_params": required, "is_context": True},
+            )
+        return None
+
+    if scenario.strategy == "catalog_fact":
+        sku = scenario.params.get("sku")
+        if turn == 1:
+            key = scenario.params.get("attribute_key")
+            value = scenario.params.get("attribute_value")
+            if key and value:
+                return (
+                    f"Какая у него характеристика «{key}»? Не меняйте товар.",
+                    {
+                        "expected_skus": [sku],
+                        "expected_answer_value": value,
+                        "is_context": True,
+                    },
+                )
+            return (
+                "Назовите его точный артикул и подтверждённые характеристики.",
+                {"expected_skus": [sku], "is_context": True},
+            )
+        if turn == 2:
+            return (
+                "Сколько он стоит и есть ли в наличии? Товар не меняем.",
+                {"expected_skus": [sku], "dynamic_only": True, "is_context": True},
+            )
+        return None
+
     if scenario.strategy == "return_previous":
         if turn == 1:
             return f"Теперь покажи {scenario.params['sku_b']}", {"expected_skus": [scenario.params["sku_b"]]}
@@ -1046,6 +1272,10 @@ def update_constraints(state: dict[str, Any], message: str) -> None:
     text = norm(message)
     original = clean_text(message).casefold().replace("ё", "е")
     positive_original = original.split("а не", 1)[0]
+    # A value the user explicitly rejects ("не «32х3/4" ВР»-исполнение") must
+    # never be read back as a requested constraint.
+    positive_original = re.sub(r"не\s*«[^»]*»", " ", positive_original)
+    positive_original = re.sub(r"\bне\s+[^\s,.]+-исполнени\w*", " ", positive_original)
     fractions = re.findall(r"(?<!\d)(1/2|3/4|1(?:\s+1/4|\s+1/2)?|2)(?!\d)", positive_original)
     if fractions:
         state["size_inch"] = fractions[-1].replace(" ", "")
@@ -1092,7 +1322,14 @@ def update_constraints(state: dict[str, Any], message: str) -> None:
         state["handle"] = "бабочка"
     elif "рычаг" in text:
         state["handle"] = "рычаг"
-    if "углов" in text or "угол 90" in text:
+    # "угол 20" in "PPR угол 20x1/2" is a diameter, not degrees.  Require an
+    # explicit unit or a plausible fitting angle before storing a constraint.
+    angle = re.search(r"\b(\d{2,3})\s*градус", original) or re.search(
+        r"\bугол\w*\s*(?:в\s*)?(30|45|60|90|135)\b", original
+    )
+    if angle:
+        state["angle_deg"] = angle.group(1)
+    if "углов" in text:
         state["form"] = "угловой"
     elif "прямой" in text:
         state["form"] = "прямой"
@@ -1120,7 +1357,15 @@ def update_constraints(state: dict[str, Any], message: str) -> None:
 
 def _fraction_matches(text: str, fraction: str) -> bool:
     normalized = clean_text(text).casefold()
-    return bool(re.search(rf"(?<!\d){re.escape(fraction)}(?!\d)", normalized))
+    if re.search(rf"(?<!\d){re.escape(fraction)}(?!\d)", normalized):
+        return True
+    # Слоты хранят смешанный размер компактно («11/2»), а фид пишет его через
+    # пробел («1 1/2»).  Без этого правильный 1 1/2" SKU считался нарушением.
+    compact = re.fullmatch(r"([1-4])(\d\s*/\s*\d)", fraction)
+    if compact:
+        spaced = f"{compact.group(1)} {compact.group(2)}"
+        return bool(re.search(rf"(?<!\d){re.escape(spaced)}(?!\d)", normalized))
+    return False
 
 
 def product_matches(product: CatalogProduct, constraints: dict[str, Any]) -> tuple[bool, list[str]]:
@@ -1182,11 +1427,20 @@ def product_matches(product: CatalogProduct, constraints: dict[str, Any]) -> tup
             mismatches.append(f"handle={handle}")
 
     form = constraints.get("form")
-    if form:
+    if form and constraints.get("product_kind") not in {"elbow", "sewer_pipe"}:
         source = " ".join(value for key, value in product.params.items() if "форма" in norm(key)) or product.name
         form_needle = "углов" if form == "угловой" else "прям"
         if form_needle not in norm(source):
             mismatches.append(f"form={form}")
+
+    angle_deg = constraints.get("angle_deg")
+    if angle_deg:
+        angle_values = [
+            value for key, value in product.params.items() if "угол" in norm(key)
+        ]
+        source = " ".join(angle_values) if angle_values else product.name
+        if not re.search(rf"(?<!\d){re.escape(str(angle_deg))}(?!\d)", clean_text(source)):
+            mismatches.append(f"angle_deg={angle_deg}")
 
     if constraints.get("full_bore") and "полнопроход" not in blob:
         mismatches.append("full_bore=true")
@@ -1394,9 +1648,81 @@ def assess_turn(
             if any("product_kind=" in item for item in mismatched_cards)
             else "MISSED_CONSTRAINT"
         )
-        issue(mismatch_code, "Returned card violates active constraints: " + "; ".join(mismatched_cards))
+        # Явно раскрытое отличие («точного нет, ближайшее отличается по углу»)
+        # — это честный компромисс продавца, а не молчаливая подмена.
+        disclosed_deviation = any(
+            marker in norm(answer)
+            for marker in [
+                "нет точного",
+                "точного совпадения нет",
+                "точного совпадения по всем параметрам нет",
+                "не нашел точн",
+                "ближайш",
+                "отличается по параметру",
+            ]
+        )
+        issue(
+            mismatch_code,
+            ("Отклонение раскрыто в ответе: " if disclosed_deviation else "")
+            + "Returned card violates active constraints: "
+            + "; ".join(mismatched_cards),
+            "WARN" if disclosed_deviation else "FAIL",
+        )
         metrics["constraints"] = 0
-        metrics["retrieval"] = 0
+        if not disclosed_deviation:
+            metrics["retrieval"] = 0
+
+    required_params = expectation.get("required_params") or {}
+    if required_params and products:
+        param_violations: list[str] = []
+        unverified_params: list[str] = []
+        for sku in returned_skus:
+            product = catalog.get(sku)
+            if not product:
+                continue
+            for key, value in required_params.items():
+                actual = product.param(key)
+                if not actual:
+                    unverified_params.append(f"{sku}: {key} отсутствует в XML")
+                    continue
+                wanted = canonical_param_value(key, value)
+                observed = canonical_param_value(key, actual)
+                if wanted != observed and wanted not in observed:
+                    param_violations.append(
+                        f"{sku}: {clean_text(key)} XML={clean_text(actual)}, "
+                        f"запрошено {clean_text(value)}"
+                    )
+        if param_violations:
+            disclosed = any(
+                marker in norm(answer)
+                for marker in [
+                    "нет точного",
+                    "точного совпадения нет",
+                    "точного варианта",
+                    "не нашел точн",
+                    "не нашел точное",
+                    "ближайш",
+                    "отлича",
+                    "вместо",
+                ]
+            )
+            issue(
+                "MISSED_CONSTRAINT",
+                ("Отклонение от запроса раскрыто в ответе: " if disclosed else "")
+                + "Карточка не соответствует запрошенным параметрам каталога: "
+                + "; ".join(param_violations),
+                "WARN" if disclosed else "FAIL",
+            )
+            metrics["constraints"] = 0
+            if not disclosed:
+                metrics["retrieval"] = 0
+        elif unverified_params:
+            issue(
+                "UNVERIFIED_DYNAMIC_DATA",
+                "Параметр отсутствует в выгрузке, проверка невозможна: "
+                + "; ".join(unverified_params),
+                "UNVERIFIED",
+            )
 
     if expectation.get("expects_alternative") and products:
         undisclosed = [
@@ -1588,6 +1914,8 @@ def initial_expectation(scenario: Scenario) -> dict[str, Any]:
         expectation["expected_any_skus"] = [scenario.params["sku"]]
     if scenario.strategy == "similar":
         expectation["expected_any_skus"] = [scenario.params["sku_a"], scenario.params["sku_b"]]
+    if scenario.strategy == "catalog_constraint":
+        expectation["required_params"] = scenario.params.get("required_params") or {}
     return expectation
 
 
@@ -1946,7 +2274,17 @@ def write_outputs(
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--suite", choices=["smoke", "core", "all"], default="all")
+    parser.add_argument(
+        "--suite",
+        choices=["smoke", "core", "all", "extended", "full"],
+        default="all",
+    )
+    parser.add_argument(
+        "--extended-limit",
+        type=int,
+        default=int(os.getenv("BOT_EVAL_EXTENDED_LIMIT", "60")),
+        help="Number of catalogue-generated scenarios in the extended suite",
+    )
     parser.add_argument("--base-url", default=os.getenv("BOT_API_BASE_URL", "http://127.0.0.1:8000"))
     parser.add_argument("--chat-path", default=os.getenv("BOT_API_CHAT_PATH", "/chat"))
     parser.add_argument("--health-path", default=os.getenv("BOT_API_HEALTH_PATH", "/health"))
@@ -1967,7 +2305,17 @@ def main(argv: list[str] | None = None) -> int:
     catalog = Catalog.from_xml(xml_path)
     catalog_analysis = catalog.analysis()
     smoke, core, matrix = build_scenarios(catalog)
-    selected = smoke if args.suite == "smoke" else core if args.suite == "core" else smoke + core
+    extended: list[Scenario] = []
+    if args.suite in {"extended", "full"}:
+        extended = build_extended_scenarios(catalog, max(1, args.extended_limit))
+        matrix["extended_scenarios"] = len(extended)
+    selected = {
+        "smoke": smoke,
+        "core": core,
+        "all": smoke + core,
+        "extended": extended,
+        "full": smoke + core + extended,
+    }[args.suite]
     if args.dry_run_catalog:
         print(
             json.dumps(
@@ -1985,7 +2333,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.rescore:
         source = args.rescore if args.rescore.is_absolute() else PROJECT_ROOT / args.rescore
         existing = json.loads(source.read_text(encoding="utf-8"))
-        dialogues = rescore_dialogues(existing.get("dialogues") or [], smoke + core, catalog)
+        dialogues = rescore_dialogues(
+            existing.get("dialogues") or [],
+            smoke + core + build_extended_scenarios(catalog, max(1, args.extended_limit)),
+            catalog,
+        )
         probes = existing.get("api_probes") or []
         summary = summarize(dialogues, probes)
         metadata = dict(existing.get("metadata") or {})

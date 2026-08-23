@@ -15,6 +15,7 @@ from .selection_contracts import (
     missing_requirements,
 )
 from .slot_answer_resolver import bind_local_refusals
+from .trade_vocabulary import is_system_agnostic_element
 from .utils import mentions_water_application, merge_slots, normalize_text
 
 
@@ -428,7 +429,14 @@ class SlotFillingAgent:
 
     def _fittings(self, slots: dict) -> SlotFillingResult:
         missing = []
-        if not slots.get("fitting_system"):
+        if (
+            not slots.get("fitting_system")
+            and not is_system_agnostic_element(slots.get("element_type"))
+            # Комбинированные фитинги — резьбовое соединение полимера с
+            # металлом; в канализации их практически нет, и вопрос о системе
+            # только мешает.
+            and not slots.get("combined_metal")
+        ):
             missing.append("система: PPR или канализация")
         if not slots.get("element_type"):
             missing.append("тип: муфта, угольник, тройник или переходник")

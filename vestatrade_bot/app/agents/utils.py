@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import re
 import unicodedata
+from collections.abc import Sequence
 from typing import Any
 
 
@@ -37,6 +38,92 @@ _WATER_APPLICATION_RE = re.compile(
 def mentions_water_application(text: str | None) -> bool:
     """Recognise Russian case forms of ``вода`` in a product application."""
     return bool(_WATER_APPLICATION_RE.search(normalize_text(text)))
+
+
+# Замена и отрицание меняют смысл реплики целиком: «с рычагом вместо бабочки»
+# и «не бабочка, а рычаг» называют оба значения, но просят только одно. Раньше
+# извлекалось первое встреченное слово, поэтому бот подбирал ровно то, от чего
+# покупатель отказался. Спаны отказа считаются один раз и переиспользуются
+# всеми атрибутами, чтобы этот класс ошибок не пришлось чинить для каждого
+# слота заново.
+_REJECTION_PATTERNS = (
+    r"(?:вместо|взамен)\s+(?P<span>[^,.;!?]{1,40})",
+    r"(?:замен\w*|поменя\w*|смени\w*)\s+(?P<span>[^,.;!?]{1,30}?)\s+на\b",
+    r"(?:,|\bа)\s*не\s+(?P<span>[^,.;!?]{1,40})",
+    r"(?:^|[.;!?]\s*)не\s+(?P<span>[^,.;!?]{1,40})",
+    r"\bбез\s+(?P<span>[^,.;!?]{1,40})",
+    r"\bне\s+(?P<span>[^,.;!?]{1,25})",
+)
+
+
+def rejected_spans(text: str | None) -> list[tuple[int, int]]:
+    """Участки реплики, которые покупатель назвал, чтобы от них отказаться."""
+    normalized = normalize_text(text)
+    spans: list[tuple[int, int]] = []
+    for pattern in _REJECTION_PATTERNS:
+        for match in re.finditer(pattern, normalized):
+            spans.append((match.start("span"), match.end("span")))
+    return spans
+
+
+def resolve_preferred_option(
+    text: str | None,
+    options: Sequence[tuple[str, str]],
+    *,
+    infer_binary_opposite: bool = True,
+) -> str | None:
+    """Выбрать значение, которое покупатель действительно просит.
+
+    ``options`` — пары «regex-маркер, каноническое значение». Значение внутри
+    спана отказа не выигрывает никогда. Из нескольких принятых значений
+    выбирается последнее: в одной реплике поздняя формулировка обычно уточняет
+    раннюю («бабочку не надо, дайте рычаг»).
+
+    При ``infer_binary_opposite`` отказ от единственного названного значения в
+    паре («без бабочки») трактуется как выбор второго.
+    """
+    normalized = normalize_text(text)
+    if not normalized:
+        return None
+    negative_spans = rejected_spans(normalized)
+
+    def is_rejected(position: int) -> bool:
+        return any(start <= position < end for start, end in negative_spans)
+
+    accepted: list[tuple[int, str]] = []
+    rejected_values: set[str] = set()
+    for pattern, value in options:
+        for match in re.finditer(pattern, normalized):
+            if is_rejected(match.start()):
+                rejected_values.add(value)
+            else:
+                accepted.append((match.start(), value))
+    if accepted:
+        return max(accepted, key=lambda item: item[0])[1]
+    if infer_binary_opposite and len(options) == 2 and len(rejected_values) == 1:
+        return next(
+            value for _, value in options if value not in rejected_values
+        )
+    return None
+
+
+# В фиде встречаются смешанные алфавиты: у насоса «UPС 25-40 180» буква «С»
+# кириллическая, и текстовый поиск по латинскому «UPC» его не находил. Ключ
+# модели складывает похожие буквы в латиницу и выбрасывает разделители, поэтому
+# «UPС 25-40», «UPC 25/40» и «upc2540» дают одно и то же значение.
+_MODEL_HOMOGLYPHS = str.maketrans(
+    {
+        "а": "a", "в": "b", "е": "e", "к": "k", "м": "m", "н": "h",
+        "о": "o", "р": "p", "с": "c", "т": "t", "у": "y", "х": "x",
+        "і": "i", "ј": "j", "ѕ": "s",
+    }
+)
+
+
+def fold_model_key(text: str | None) -> str:
+    """Ключ модели: латиница и цифры, без разделителей и алфавитных различий."""
+    folded = normalize_text(text).translate(_MODEL_HOMOGLYPHS)
+    return re.sub(r"[^a-z0-9]", "", folded)
 
 
 def normalize_sku(text: str | None) -> str:

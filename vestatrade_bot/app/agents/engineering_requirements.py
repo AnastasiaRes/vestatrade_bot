@@ -653,6 +653,64 @@ class EngineeringRequirementsAgent:
         }
         session.project_context = context
 
+    # Факты уровня проекта, а не отдельной подсистемы. Новая цель намеренно
+    # стартует без слотов предыдущей ветки, иначе параметры крана утекли бы в
+    # подбор насоса. Но часть фактов относится ко всему объекту: если в проекте
+    # уже выбран котёл и радиаторы, то трубы в этом же проекте — отопительные,
+    # и переспрашивать «труба для чего?» бессмысленно.
+    #
+    # Вывод делается по состоянию проекта, а не по формулировке реплики:
+    # «а трубы какие?», «чем разводить?», «что по трубам» и «трубы под это»
+    # обрабатываются одинаково.
+    HEATING_GOAL_CATEGORIES = frozenset({"boilers", "radiators", "radiator_fittings"})
+
+    def _project_inherited_facts(
+        self,
+        category: str,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Факты объекта, которые можно не спрашивать заново в новой подсистеме."""
+
+        goals = [
+            goal
+            for goal in (context.get("goals") or {}).values()
+            if isinstance(goal, dict)
+        ]
+        if not goals:
+            return {}
+
+        def first_slot(key: str) -> Any:
+            for goal in goals:
+                value = (goal.get("slots") or {}).get(key)
+                if self._present(value):
+                    return value
+            return None
+
+        facts: dict[str, Any] = {}
+        heating_project = any(
+            goal.get("category") in self.HEATING_GOAL_CATEGORIES
+            or goal.get("scope") == "warm_floor"
+            for goal in goals
+        )
+        if category == "pipes" and heating_project:
+            facts["pipe_purpose"] = "отопление"
+            facts["_inherited_from_project"] = ["pipe_purpose"]
+
+        # Площадь объекта — общий факт: она одинакова для котла, радиаторов и
+        # тёплого пола.
+        # Площадь дома нельзя переносить в трубы: там она читается как площадь
+        # тёплого пола, и «посчитай фитинги» превращалось в расчёт петель на
+        # 120 м² пола, хотя 120 м² — это площадь дома для подбора котла.
+        area = first_slot("area_m2")
+        if area is not None and category in {"radiators", "boilers"}:
+            facts["area_m2"] = area
+
+        # Источник тепла для тёплого пола известен, если котёл уже выбран.
+        boiler_type = first_slot("boiler_type")
+        if category == "pipes" and boiler_type:
+            facts["warm_floor_heat_source"] = f"{boiler_type} котёл"
+        return facts
+
     def activate_goal(
         self,
         message: str,
@@ -785,7 +843,11 @@ class EngineeringRequirementsAgent:
             # Otherwise a well-pump goal can inherit ``warm_floor`` merely
             # because the user switched tasks from a floor calculation.
             scope = self._scope_from_slots(explicit)
-            session.slots = explicit
+            # Явно названное в этой реплике всегда важнее унаследованного.
+            session.slots = merge_slots(
+                self._project_inherited_facts(category, context),
+                explicit,
+            )
             session.clear_pending_question_state()
             goals[goal_id] = {
                 "category": category,

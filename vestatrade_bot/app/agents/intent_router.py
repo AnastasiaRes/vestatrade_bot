@@ -22,11 +22,14 @@ from .numeric_semantics import (
     numeric_span_has_incompatible_context,
     numeric_span_has_incompatible_unit,
 )
+from .product_constraints import normalize_thread_gender, normalize_thread_pair
+from .trade_vocabulary import match_trade_term
 from .utils import (
     collapse_sku_spaces,
     mentions_water_application,
     normalize_sku,
     normalize_text,
+    resolve_preferred_option,
 )
 
 
@@ -67,8 +70,15 @@ OLD_CIRCULATION_PUMP_RE = re.compile(
 PUMP_PARAMS_RE = re.compile(
     r"(?<!\d)(25|32|40|50)\s*[-/]\s*(\d{1,2})(?:[\s,/-]+(130|180))?(?!\d)"
 )
+# Смешанные размеры («1 1/2») должны разбираться целиком: раньше в шаблоне был
+# только «1 1/4», поэтому «1 1/2» усекалось до «1/2» и подбор уходил на размер
+# втрое меньше запрошенного.
 INCH_SIZE_RE = re.compile(
-    r"(?<!\d)(1\s+1\s*/\s*4|1\s*/\s*2|3\s*/\s*4|3\s*/\s*8|1\s*/\s*4|½|¾|⅜|¼)(?!\d)"
+    r"(?<![\d/])("
+    r"[1-4]\s*[-\s]\s*(?:1\s*/\s*2|1\s*/\s*4|3\s*/\s*4|3\s*/\s*8)"
+    r"|[1-4]\s*(?:½|¾|⅜|¼)"
+    r"|1\s*/\s*2|3\s*/\s*4|3\s*/\s*8|1\s*/\s*4|½|¾|⅜|¼"
+    r")(?!\d)"
 )
 INTEGER_INCH_RE = re.compile(
     r"(?<![\d/])([12])\s*(?:\"|″|дюйм(?:а|ов)?)(?!\w)"
@@ -172,6 +182,11 @@ CATEGORY_KEYWORDS: dict[str, list[str]] = {
     # Stem form also covers ordinary inflections: ``трубу``, ``трубой``.
     "pipes": [
         "труб",
+        # «Разводка» и «чем разводить» — обиходное название трубной обвязки.
+        # Стем «разводк» намеренно не ловит «разводной ключ».
+        "разводк",
+        "чем разводить",
+        "развести труб",
         "ppr",
         "ппр",
         "полипропилен",
@@ -234,6 +249,17 @@ OUT_OF_SCOPE = [
 ]
 
 CHEAP_WORDS = ["подешев", "дешев", "недорог", "бюджет"]
+# «Какой из них дешевле?» — это выбор внутри уже показанного набора, а не
+# просьба искать что-то ещё дешевле. Без этого различия бот уходил в новый
+# поиск, терял показанные карточки и не отвечал на заданный вопрос.
+# «Есть дешевле?» и «покажи подешевле» остаются поиском.
+SHOWN_SET_CHOICE_RE = re.compile(
+    r"(?:как(?:ой|ая|ое|ие)|котор(?:ый|ая|ое|ые)|что)\s+"
+    r"(?:из\s+(?:них|этих|перечисленных|показанных|предложенных|вариантов)\s+)?"
+    r"(?:лучше|дешевл\w*|дороже|надежнее|предпочтительнее)"
+    r"|\bиз\s+(?:них|этих|показанных|предложенных|перечисленных)\b"
+    r"|\bсреди\s+(?:них|этих)\b"
+)
 STOCK_WORDS = [
     "в наличии",
     "из наличия",
@@ -449,7 +475,8 @@ class IntentRouterAgent:
         sku_text = collapse_sku_spaces(text)
         allows_unavailable = self._allows_unavailable_stock(text)
         flags = {
-            "cheap": any(word in text for word in CHEAP_WORDS),
+            "cheap": any(word in text for word in CHEAP_WORDS)
+            and not SHOWN_SET_CHOICE_RE.search(text),
             "in_stock": any(word in text for word in STOCK_WORDS)
             and not allows_unavailable,
             "small_talk": any(word in text for word in SMALL_TALK),
@@ -622,7 +649,21 @@ class IntentRouterAgent:
         if category == "other" and PUMP_PARAMS_RE.search(text):
             category = "pumps"
             category_score = max(category_score, 0.7)
-        self._extract_slots(text, category, slots)
+        # Монтажное название узла («американка», «сгон», «футорка») однозначно
+        # задаёт семейство товаров. Без этого «американка» считалась краном, а
+        # «сгон» — трубой, и покупатель получал уточнение не по своему товару.
+        trade_term = match_trade_term(text)
+        if trade_term is not None and category != trade_term.category:
+            category = trade_term.category
+            category_score = max(category_score, 0.8)
+
+        self._extract_slots(text, category, slots, raw_message=message)
+        if trade_term is not None:
+            slots.setdefault("element_type", trade_term.element)
+            # Отдельный слот: значение взято из словаря и точно совпадает с
+            # «Тип товара» в фиде, поэтому по нему можно фильтровать жёстко.
+            # Историческим значениям element_type («фитинг») так доверять нельзя.
+            slots.setdefault("trade_element", trade_term.element)
 
         if category == "boilers" and session and session.category == "boilers":
             # In an active boiler branch the adjective immediately following a
@@ -1232,6 +1273,12 @@ class IntentRouterAgent:
         клиент уже ответил.
         """
         spoken = (
+            # Составные размеры проверяются первыми: в «полтора дюйма» иначе
+            # сработает общее правило «дюйм» и размер станет 1".
+            (r"\bполтор\w*\s*дюйм", "11/2"),
+            (r"\bдюйм\w*\s+с\s+половин\w*", "11/2"),
+            (r"\bдюйм\w*\s+с\s+четверть?\w*", "11/4"),
+            (r"\bдв\w*\s+с\s+половин\w*\s+дюйм", "21/2"),
             (r"пол\s*[-]?\s*дюйм|половин\w*\s+дюйм", "1/2"),
             (r"\bполу\s*[-]?\s*дюйм", "1/2"),
             (r"тр(?:и|ех)\s*четверт|\bтрехчетвертн", "3/4"),
@@ -1258,6 +1305,71 @@ class IntentRouterAgent:
             result = result.replace(glyph, expanded)
         return result
 
+    # Строки спецификации, скопированные с сайта: «Тип резьбы: Внутренняя»,
+    # «Межосевое расстояние, мм: 346». Метки перечислены явно — общий
+    # «что-то: значение» ловит границы меток ненадёжно и создаёт ложные слоты.
+    SPEC_VALUE = r"\s*:\s*([^;,\n]{1,40})"
+    SPEC_PATTERNS: tuple[tuple[str, str], ...] = (
+        ("thread", r"тип\s+резьб\w*" + SPEC_VALUE),
+        (
+            "inch",
+            r"(?:диаметр\s+подключения|присоединительн\w*\s+резьб\w*)"
+            r"[^:\n]{0,14}" + SPEC_VALUE,
+        ),
+        ("center", r"межосев\w*[^:\n]{0,20}" + SPEC_VALUE),
+        ("handle", r"тип\s+ручки" + SPEC_VALUE),
+        ("angle", r"угол[^:\n]{0,14}" + SPEC_VALUE),
+        ("material", r"материал[^:\n]{0,14}\s*:\s*([^;\n]{1,40})"),
+        ("diameter", r"диаметр[^:\n]{0,14}" + SPEC_VALUE),
+    )
+
+    @classmethod
+    def _slots_from_spec_lines(cls, text: str) -> dict[str, Any]:
+        """Ограничения из строк вида «Параметр: значение»."""
+        found: dict[str, Any] = {}
+        for kind, pattern in cls.SPEC_PATTERNS:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if not match:
+                continue
+            value = match.group(1).strip()
+            if not value:
+                continue
+            if kind == "thread":
+                pair = normalize_thread_pair(value)
+                if pair:
+                    found.setdefault("thread_type", pair)
+                    continue
+                gender = normalize_thread_gender(value)
+                if gender:
+                    found.setdefault("thread_gender", gender)
+            elif kind == "inch":
+                inch = INCH_SIZE_RE.search(value) or INTEGER_INCH_RE.search(value)
+                if inch:
+                    found.setdefault(
+                        "size_inch", cls._normalize_inch_literal(inch.group(1))
+                    )
+            elif kind == "center":
+                number = re.search(r"(\d{2,4})", value)
+                if number:
+                    found.setdefault("radiator_size_mm", int(number.group(1)))
+            elif kind == "handle":
+                handle = resolve_preferred_option(
+                    value, (("бабоч", "butterfly"), ("рычаг|рукоят", "lever"))
+                )
+                if handle:
+                    found.setdefault("handle_type", handle)
+            elif kind == "angle":
+                number = re.search(r"(\d{2,3})", value)
+                if number and 10 <= int(number.group(1)) <= 180:
+                    found.setdefault("angle_deg", int(number.group(1)))
+            elif kind == "material":
+                found.setdefault("material_spec", value)
+            elif kind == "diameter" and "size_inch" not in found:
+                number = re.search(r"(\d{2,3})", value)
+                if number and 10 <= int(number.group(1)) <= 250:
+                    found.setdefault("diameter_mm", int(number.group(1)))
+        return found
+
     @staticmethod
     def _normalize_inch_literal(value: str) -> str:
         unicode_fractions = {
@@ -1266,7 +1378,11 @@ class IntentRouterAgent:
             "⅜": "3/8",
             "¼": "1/4",
         }
-        compact = re.sub(r"\s+", "", str(value or ""))
+        compact = re.sub(r"\s+", "", str(value or "")).replace("-", "")
+        for symbol, fraction in unicode_fractions.items():
+            if compact.endswith(symbol):
+                whole = compact[: -len(symbol)]
+                return f"{whole}{fraction}" if whole else fraction
         return unicode_fractions.get(compact, compact)
 
     @staticmethod
@@ -1397,7 +1513,13 @@ class IntentRouterAgent:
         )
         return bool(before or after)
 
-    def _extract_slots(self, text: str, category: str, slots: dict[str, Any]) -> None:
+    def _extract_slots(
+        self,
+        text: str,
+        category: str,
+        slots: dict[str, Any],
+        raw_message: str | None = None,
+    ) -> None:
         max_price = self._extract_price_bound(text, upper=True)
         if max_price is not None:
             slots["max_price"] = max_price
@@ -2058,10 +2180,12 @@ class IntentRouterAgent:
         elif category == "fittings" and requested_fitting == "угольник":
             slots["product_kind"] = "elbow"
 
-        if "бабоч" in text:
-            slots["handle_type"] = "butterfly"
-        elif "рычаг" in text:
-            slots["handle_type"] = "lever"
+        handle_type = resolve_preferred_option(
+            text,
+            (("бабоч", "butterfly"), ("рычаг|рукоят", "lever")),
+        )
+        if handle_type:
+            slots["handle_type"] = handle_type
 
         if "полнопроход" in text:
             slots["full_bore"] = True
@@ -2802,6 +2926,24 @@ class IntentRouterAgent:
                 slots["thread_type"] = thread_type
             if any(marker in text for marker in ["американк", "полусгон", "накидн"]):
                 slots["union"] = True
+        # «Комбинированный» фитинг — с латунной резьбовой частью. Без этого
+        # требования на запрос комбинированной муфты выдавался чистый
+        # полипропилен: диаметр совпадал, а исполнение — нет.
+        # Только явно названное комбинированное исполнение. Упоминание латуни
+        # само по себе — это спецификация материала («Материал: Латунь»), и
+        # обрабатывается отдельным ограничением, иначе запрос латунной
+        # заглушки превращался в поиск полимерно-латунного фитинга.
+        if re.search(r"комбинирован\w*", text):
+            slots["combined_metal"] = True
+
+        # Покупатели копируют строки спецификации с сайта: «Тип резьбы:
+        # Внутренняя», «Межосевое расстояние, мм: 346». Раньше такие
+        # ограничения не извлекались вообще, и бот выдавал соседнее
+        # исполнение. Естественные формулировки имеют приоритет.
+        for slot_key, slot_value in self._slots_from_spec_lines(
+            raw_message if raw_message is not None else text
+        ).items():
+            slots.setdefault(slot_key, slot_value)
 
         # Серия/модельное имя («BASE», «MINI») живёт в названии товара, а в
         # атрибутах фида её почти нет, поэтому запоминаем токен и учитываем его
@@ -2816,10 +2958,18 @@ class IntentRouterAgent:
                 r"[^\d]{0,16}(\d{3,5})(?:\s*мм)?\b",
                 text,
             )
+            # «мм» после длины необязательно — «высота 500, длина 1000» люди
+            # пишут без единиц. Единица «м/метр» по-прежнему не длина изделия,
+            # иначе «трасса длиной 30 метров» станет длиной радиатора.
             explicit_length = re.search(
-                r"(?:длина|длиной|длину)\D{0,12}(\d{2,5})\s*мм",
+                r"(?:длина|длиной|длину|длинной)\D{0,12}(\d{2,5})\s*(мм|м|метр\w*)?",
                 text,
             )
+            if explicit_length:
+                unit = (explicit_length.group(2) or "").strip()
+                value = int(explicit_length.group(1))
+                if unit not in {"", "мм"} or (not unit and value < 100):
+                    explicit_length = None
             dimension_pair = re.search(r"(\d{2,3})\s*[xх×*]\s*(\d{3,5})", text)
             length_candidates = (
                 [
@@ -2887,8 +3037,18 @@ class IntentRouterAgent:
                 r"высот\w*\D{0,12}(\d{2,4})(?:\s*мм)?",
                 text,
             )
+            # Габариты радиатора чаще всего называют парой: «500 на 1000»,
+            # «500х1000», «500/1000». Явные «высота»/«длина» имеют приоритет,
+            # поэтому пара разбирается до эвристики одиночного размера и
+            # использует setdefault.
+            size_pair = re.search(
+                r"(?<!\d)(\d{3,4})\s*(?:[xх×*/]|на)\s*(\d{3,4})(?!\d)",
+                text,
+            )
             if height_match:
                 slots["radiator_height_mm"] = int(height_match.group(1))
+            elif size_pair:
+                slots["radiator_height_mm"] = int(size_pair.group(1))
             elif not center_match and "length_mm" not in slots:
                 standalone_mm = [
                     int(match.group(1))
@@ -2897,8 +3057,12 @@ class IntentRouterAgent:
                 ]
                 if standalone_mm:
                     slots["radiator_size_mm"] = standalone_mm[0]
+            if size_pair:
+                slots.setdefault("length_mm", int(size_pair.group(2)))
 
-        if any(word in text for word in CHEAP_WORDS):
+        if any(word in text for word in CHEAP_WORDS) and not SHOWN_SET_CHOICE_RE.search(
+            text
+        ):
             slots["cheap"] = True
         if "самый дешев" in text or "самого дешев" in text or "дешевле всех" in text:
             slots["sort_mode"] = "price_asc"
@@ -3263,9 +3427,15 @@ class IntentRouterAgent:
         if not any(char.isdigit() for char in candidate):
             return False
         # An isolated engineering fraction is a size even if a user happens
-        # to put it after a catalogue-related word.
-        if re.fullmatch(r"\d+\s*/\s*\d+", candidate):
-            return False
+        # to put it after a catalogue-related word.  Дюймовым размером считаем
+        # только настоящую дюймовую дробь (1/2, 3/4, 5/8): в фиде есть
+        # артикулы вида «65/54» и «65/2», и раньше бот уверенно отвечал, что
+        # такого товара нет, хотя товар есть и в наличии.
+        fraction = re.fullmatch(r"(\d+)\s*/\s*(\d+)", candidate)
+        if fraction:
+            numerator, denominator = (int(part) for part in fraction.groups())
+            if numerator < denominator and denominator in {2, 3, 4, 8, 16}:
+                return False
         if candidate.isalnum() and not candidate.isdigit() and not candidate.isascii():
             return False
         return True
@@ -3702,7 +3872,9 @@ class IntentRouterAgent:
             "filters",
             "controls",
         }:
-            self._extract_slots(text, result.category, slots)
+            self._extract_slots(
+                text, result.category, slots, raw_message=message
+            )
 
         if (
             session

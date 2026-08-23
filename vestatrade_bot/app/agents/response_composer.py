@@ -6,6 +6,7 @@ from typing import Any
 from app.models import ProductCard, SearchQuery
 from app.openrouter_client import OpenRouterClient
 
+from .product_card import constrained_characteristic_keys
 from .product_constraints import normalize_thread_pair
 from .utils import normalize_text
 
@@ -1425,6 +1426,25 @@ class ResponseComposerAgent:
                     5
                     if query.category == "water_heaters"
                     else 4 if query.category == "boilers" else 3
+                )
+                # Параметры, которые покупатель задал сам, обрезать нельзя:
+                # иначе подтвердить требование по карточке невозможно.
+                # ProductCardAgent ставит их первыми, поэтому достаточно
+                # расширить срез до их количества.
+                # Запрошенные поля добавляются к обычным, а не вытесняют их:
+                # иначе «тип ручки» исчезал из карточки ровно тогда, когда
+                # покупатель уточнял резьбу и размер.
+                characteristic_limit = min(
+                    6,
+                    max(
+                        characteristic_limit,
+                        len(
+                            constrained_characteristic_keys(
+                                card.characteristics, query.slots
+                            )
+                        )
+                        + 1,
+                    ),
                 )
                 attrs = "; ".join(
                     f"{key}: {value}"

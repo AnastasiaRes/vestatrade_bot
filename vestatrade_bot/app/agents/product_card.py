@@ -99,6 +99,51 @@ RELEVANT_ATTRS: dict[str, list[str]] = {
 }
 
 
+# Требование покупателя должно быть видно в карточке. Статический список
+# RELEVANT_ATTRS отражает «обычно важное» для категории и не знает, что именно
+# спросили в этом диалоге: на запрос «полнопроходной прямой» карточка
+# показывала диаметр/резьбу/ручку, и подтвердить полнопроходность было нечем,
+# хотя поле есть в фиде.
+CONSTRAINT_ATTR_MARKERS: dict[str, tuple[str, ...]] = {
+    "full_bore": ("пропускная способность",),
+    "body_form": ("форма корпуса",),
+    "form": ("форма корпуса",),
+    "handle_type": ("тип ручки", "рукоят"),
+    "thread_type": ("тип резьбы",),
+    "thread_gender": ("тип резьбы",),
+    "size_inch": ("диаметр подключения", "дюйм"),
+    "diameter_mm": ("диаметр",),
+    "angle_deg": ("угол",),
+    "material": ("материал",),
+    "radiator_panel_type": ("тип",),
+    "radiator_connection": ("тип подключения", "подключение"),
+    "radiator_size_mm": ("межосев",),
+    "sections": ("секц",),
+    "voltage_v": ("напряжение", "питание"),
+}
+
+
+def constrained_characteristic_keys(
+    characteristics: dict[str, str],
+    slots: dict | None,
+) -> list[str]:
+    """Ключи карточки, которые отвечают активным условиям запроса."""
+    active = slots or {}
+    markers: list[str] = []
+    for slot_key, slot_markers in CONSTRAINT_ATTR_MARKERS.items():
+        value = active.get(slot_key)
+        if value is None or value == "" or value is False:
+            continue
+        markers.extend(slot_markers)
+    if not markers:
+        return []
+    return [
+        key
+        for key in characteristics
+        if any(marker in normalize_text(str(key)) for marker in markers)
+    ]
+
+
 class ProductCardAgent:
     def build_cards(self, products: list[Product], query: SearchQuery, limit: int = 3) -> list[ProductCard]:
         cards: list[ProductCard] = []
@@ -171,6 +216,12 @@ class ProductCardAgent:
             4 if query.category == "pipes" else 3
         )
         picked: dict[str, str] = {}
+        # Поля, по которым покупатель поставил условие, попадают в карточку
+        # первыми и расширяют лимит: иначе подтвердить требование нечем.
+        constrained = self._constrained_attributes(attrs, product, query)
+        if constrained:
+            picked.update(constrained)
+            max_attributes = max(max_attributes, len(picked) + 2)
         for key in preferred:
             for attr_key, value in attrs.items():
                 if key in attr_key and value and self._safe_attribute(product, attr_key, value):
@@ -186,6 +237,34 @@ class ProductCardAgent:
             if len(picked) >= max_attributes:
                 break
         return picked
+
+    def _constrained_attributes(
+        self,
+        attrs: dict[str, str],
+        product: Product,
+        query: SearchQuery,
+    ) -> dict[str, str]:
+        """Атрибуты фида, отвечающие активным условиям запроса."""
+        slots = query.slots or {}
+        markers: list[str] = []
+        for slot_key, slot_markers in CONSTRAINT_ATTR_MARKERS.items():
+            value = slots.get(slot_key)
+            if value is None or value == "" or value is False:
+                continue
+            markers.extend(slot_markers)
+        if not markers:
+            return {}
+        selected: dict[str, str] = {}
+        for marker in markers:
+            for attr_key, value in attrs.items():
+                if attr_key in selected or not value:
+                    continue
+                if marker in normalize_text(str(attr_key)) and self._safe_attribute(
+                    product, attr_key, value
+                ):
+                    selected[attr_key] = value
+                    break
+        return selected
 
     def _pick_water_heater_characteristics(
         self,
