@@ -1,0 +1,1179 @@
+<title>Стабилизация VestaTrade</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@500;600;700&family=PT+Sans:ital,wght@0,400;0,700;1,400&family=JetBrains+Mono:wght@400;500&display=swap">
+
+<style>
+  :root {
+    --ground:      #F6F8F7;
+    --surface:     #FFFFFF;
+    --surface-alt: #EDF1EF;
+    --ink:         #17201E;
+    --ink-soft:    #4A5854;
+    --ink-faint:   #7E8D88;
+    --rule:        #D6DEDA;
+    --rule-strong: #B9C5C0;
+    --accent:      #0F6B5C;
+    --accent-soft: #E2EFEB;
+    --critical:    #A9331C;
+    --critical-soft:#F7E7E2;
+    --warn:        #8F6410;
+    --warn-soft:   #F6EEDC;
+    --shadow:      0 1px 2px rgba(23,32,30,.06), 0 6px 20px rgba(23,32,30,.05);
+
+    --step--1: clamp(.78rem, .76rem + .1vw, .84rem);
+    --step-0:  clamp(1rem, .97rem + .15vw, 1.06rem);
+    --step-1:  clamp(1.18rem, 1.12rem + .3vw, 1.36rem);
+    --step-2:  clamp(1.45rem, 1.34rem + .55vw, 1.85rem);
+    --step-3:  clamp(1.9rem, 1.66rem + 1.2vw, 2.9rem);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:      #0E1413;
+      --surface:     #161E1C;
+      --surface-alt: #1D2725;
+      --ink:         #E6ECE9;
+      --ink-soft:    #A9B7B2;
+      --ink-faint:   #7C8B86;
+      --rule:        #2A3634;
+      --rule-strong: #3B4A47;
+      --accent:      #4FB29D;
+      --accent-soft: #16302B;
+      --critical:    #E2775C;
+      --critical-soft:#331B15;
+      --warn:        #D6A344;
+      --warn-soft:   #2E2513;
+      --shadow:      0 1px 2px rgba(0,0,0,.4), 0 6px 20px rgba(0,0,0,.3);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground:      #0E1413;
+    --surface:     #161E1C;
+    --surface-alt: #1D2725;
+    --ink:         #E6ECE9;
+    --ink-soft:    #A9B7B2;
+    --ink-faint:   #7C8B86;
+    --rule:        #2A3634;
+    --rule-strong: #3B4A47;
+    --accent:      #4FB29D;
+    --accent-soft: #16302B;
+    --critical:    #E2775C;
+    --critical-soft:#331B15;
+    --warn:        #D6A344;
+    --warn-soft:   #2E2513;
+    --shadow:      0 1px 2px rgba(0,0,0,.4), 0 6px 20px rgba(0,0,0,.3);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: "PT Sans", "Segoe UI", system-ui, sans-serif;
+    font-size: var(--step-0);
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1, h2, h3, h4 {
+    font-family: "Golos Text", "PT Sans", system-ui, sans-serif;
+    line-height: 1.16;
+    text-wrap: balance;
+    margin: 0;
+    letter-spacing: -.011em;
+  }
+
+  code, .mono, .ws-id, .chip, .lbl {
+    font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+    font-variant-ligatures: none;
+  }
+
+  code {
+    font-size: .87em;
+    background: var(--surface-alt);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: .08em .34em;
+    color: var(--ink);
+    word-break: break-word;
+  }
+
+  a { color: var(--accent); text-underline-offset: .18em; }
+  a:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: 2px;
+  }
+
+  .lbl {
+    font-size: var(--step--1);
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    font-weight: 500;
+  }
+
+  /* ---------- shell ---------- */
+
+  .shell {
+    max-width: 1240px;
+    margin: 0 auto;
+    padding: 0 clamp(1.1rem, 4vw, 2.75rem) 5rem;
+    display: grid;
+    /* minmax(0,…), не 1fr: иначе трек разрешается по min-content вложенных
+       сеток и шапка на узком экране уезжает за край. */
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0 3.25rem;
+  }
+
+  .shell > * { min-width: 0; }
+
+  @media (min-width: 1080px) {
+    .shell { grid-template-columns: 15rem minmax(0, 1fr); }
+    .rail    { grid-column: 1; grid-row: 1 / span 2; }
+    .masthead{ grid-column: 2; grid-row: 1; }
+    .flow    { grid-column: 2; grid-row: 2; }
+  }
+
+  /* ---------- masthead ---------- */
+
+  .masthead {
+    padding: clamp(2.75rem, 6vw, 4.5rem) 0 2rem;
+    border-bottom: 2px solid var(--ink);
+  }
+
+  .eyebrow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .55rem .9rem;
+    align-items: baseline;
+    margin-bottom: 1.5rem;
+  }
+
+  h1 {
+    font-size: var(--step-3);
+    font-weight: 700;
+    max-width: 20ch;
+  }
+
+  .standfirst {
+    margin: 1.15rem 0 0;
+    font-size: var(--step-1);
+    color: var(--ink-soft);
+    max-width: 56ch;
+  }
+
+  .meta {
+    margin-top: 2rem;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+  }
+
+  .meta div {
+    background: var(--surface);
+    padding: .8rem .95rem;
+  }
+
+  .meta dt { margin-bottom: .3rem; }
+
+  .meta dd {
+    margin: 0;
+    font-family: "JetBrains Mono", monospace;
+    font-size: var(--step--1);
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ---------- rail ---------- */
+
+  .rail { padding-top: 2.25rem; }
+
+  @media (min-width: 1080px) {
+    .rail { padding-top: clamp(2.75rem, 6vw, 4.5rem); }
+    .rail-inner { position: sticky; top: 1.75rem; }
+  }
+
+  .rail ol {
+    list-style: none;
+    margin: .85rem 0 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+    gap: .1rem;
+  }
+
+  @media (min-width: 1080px) {
+    .rail ol { display: flex; flex-direction: column; }
+  }
+
+  .rail-more {
+    display: block;
+    max-width: max-content;
+    margin-top: 1.15rem;
+    padding-left: .45rem;
+    font-size: var(--step--1);
+    text-decoration-thickness: 1px;
+  }
+
+  .rail ol a {
+    display: grid;
+    grid-template-columns: 2.35rem 1fr;
+    gap: .5rem;
+    align-items: baseline;
+    padding: .38rem .45rem;
+    text-decoration: none;
+    color: var(--ink-soft);
+    font-size: var(--step--1);
+    line-height: 1.35;
+    border-left: 2px solid transparent;
+  }
+
+  .rail ol a:hover { color: var(--ink); background: var(--surface-alt); border-left-color: var(--accent); }
+  .rail ol a b { font-family: "JetBrains Mono", monospace; font-weight: 500; color: var(--ink-faint); }
+  .rail ol a:hover b { color: var(--accent); }
+  .rail .r0 { border-left-color: var(--rule-strong); }
+
+  /* ---------- flow ---------- */
+
+  .flow { padding-top: 3.25rem; display: flex; flex-direction: column; gap: 3.25rem; }
+
+  section > h2 {
+    font-size: var(--step-2);
+    font-weight: 600;
+    margin-bottom: .35rem;
+  }
+
+  .section-note {
+    color: var(--ink-soft);
+    max-width: 68ch;
+    margin: 0 0 1.6rem;
+  }
+
+  p { max-width: 68ch; }
+
+  /* ---------- verdict ---------- */
+
+  .verdict {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-top: 3px solid var(--accent);
+    box-shadow: var(--shadow);
+    padding: clamp(1.4rem, 3vw, 2.1rem);
+    display: grid;
+    gap: 1.5rem;
+  }
+
+  @media (min-width: 760px) {
+    .verdict { grid-template-columns: minmax(0, 1fr) 15rem; align-items: start; }
+  }
+
+  .verdict p { margin: .7rem 0 0; }
+  .verdict p:first-of-type { margin-top: 0; }
+
+  .split {
+    border: 1px solid var(--rule);
+    background: var(--ground);
+  }
+
+  .split div {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: .75rem;
+    padding: .6rem .8rem;
+    border-bottom: 1px solid var(--rule);
+    font-size: var(--step--1);
+  }
+
+  .split div:last-child { border-bottom: 0; }
+  .split span:first-child { color: var(--ink-soft); }
+  .split span:last-child {
+    font-family: "JetBrains Mono", monospace;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .split .hi span:last-child { color: var(--accent); }
+
+  /* ---------- correction cards ---------- */
+
+  .corrections { display: grid; gap: 1.1rem; }
+  @media (min-width: 900px) { .corrections { grid-template-columns: repeat(3, 1fr); } }
+
+  .corr {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    padding: 1.15rem 1.2rem 1.3rem;
+    display: flex;
+    flex-direction: column;
+    gap: .6rem;
+  }
+
+  .corr h3 { font-size: var(--step-0); font-weight: 600; }
+  .corr p { margin: 0; font-size: var(--step--1); line-height: 1.55; max-width: none; }
+
+  .corr .assumed {
+    color: var(--ink-faint);
+    padding-left: .7rem;
+    border-left: 2px solid var(--rule-strong);
+  }
+
+  .corr .found {
+    padding-left: .7rem;
+    border-left: 2px solid var(--accent);
+  }
+
+  .corr .consequence {
+    margin-top: auto;
+    padding-top: .7rem;
+    border-top: 1px solid var(--rule);
+    color: var(--ink-soft);
+  }
+
+  /* ---------- workstreams ---------- */
+
+  .streams { display: flex; flex-direction: column; gap: 1.35rem; }
+
+  .ws {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    box-shadow: var(--shadow);
+    scroll-margin-top: 1.5rem;
+  }
+
+  .ws-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .55rem .85rem;
+    align-items: center;
+    padding: .95rem 1.25rem;
+    border-bottom: 1px solid var(--rule);
+    background: var(--surface-alt);
+  }
+
+  .ws-id {
+    font-size: var(--step--1);
+    font-weight: 500;
+    color: var(--accent);
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
+    border-radius: 2px;
+    padding: .12rem .42rem;
+    letter-spacing: .04em;
+  }
+
+  .ws-head h3 { font-size: var(--step-1); font-weight: 600; flex: 1 1 16rem; }
+
+  .chip {
+    font-size: .7rem;
+    letter-spacing: .08em;
+    font-weight: 500;
+    padding: .18rem .45rem;
+    border-radius: 2px;
+    white-space: nowrap;
+  }
+
+  .chip--p0 { color: var(--critical); background: var(--critical-soft); border: 1px solid var(--critical); }
+  .chip--p1 { color: var(--warn); background: var(--warn-soft); border: 1px solid var(--warn); }
+  .chip--done { color: var(--accent); background: var(--accent-soft); border: 1px solid var(--accent); }
+  .chip--part { color: var(--ink-soft); background: var(--surface-alt); border: 1px solid var(--rule-strong); }
+
+  .ws--done { border-left: 3px solid var(--accent); }
+  .ws--part { border-left: 3px solid var(--warn); }
+
+  .done-note {
+    grid-column: 1 / -1;
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
+    padding: .7rem .9rem;
+    font-size: var(--step--1);
+    color: var(--ink);
+  }
+
+  .done-note strong { font-family: "Golos Text", sans-serif; }
+
+  .scen {
+    font-family: "JetBrains Mono", monospace;
+    font-size: .74rem;
+    color: var(--ink-faint);
+    letter-spacing: .02em;
+  }
+
+  .ws-body {
+    padding: 1.25rem;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1rem;
+  }
+
+  .ws-body > * { min-width: 0; }
+
+  @media (min-width: 800px) {
+    .ws-body { grid-template-columns: 8.5rem minmax(0, 1fr); gap: 1rem 1.5rem; align-items: baseline; }
+  }
+
+  .ws-body > .lbl { padding-top: .12rem; }
+  .ws-body > div { margin: 0; }
+  .ws-body p { margin: 0 0 .6rem; max-width: 66ch; }
+  .ws-body p:last-child { margin-bottom: 0; }
+
+  .ws-body ul {
+    margin: 0;
+    padding-left: 1.05rem;
+    display: flex;
+    flex-direction: column;
+    gap: .42rem;
+    max-width: 66ch;
+  }
+
+  .ws-body li::marker { color: var(--accent); }
+
+  .rule-line { border: 0; border-top: 1px solid var(--rule); margin: 0; grid-column: 1 / -1; }
+
+  /* ---------- tables ---------- */
+
+  .scroller { overflow-x: auto; border: 1px solid var(--rule); background: var(--surface); }
+
+  table { border-collapse: collapse; width: 100%; font-size: var(--step--1); min-width: 34rem; }
+
+  th, td { text-align: left; padding: .62rem .85rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+
+  thead th {
+    background: var(--surface-alt);
+    font-family: "Golos Text", sans-serif;
+    font-weight: 600;
+    font-size: .8rem;
+    letter-spacing: .02em;
+    border-bottom: 1px solid var(--rule-strong);
+  }
+
+  tbody tr:last-child td { border-bottom: 0; }
+  td.num { font-family: "JetBrains Mono", monospace; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  /* ---------- stop list ---------- */
+
+  .stop { display: grid; gap: 1px; background: var(--rule); border: 1px solid var(--rule); }
+
+  .stop > div { background: var(--surface); padding: 1rem 1.15rem; }
+  .stop h4 { font-size: var(--step-0); font-weight: 600; margin-bottom: .35rem; color: var(--critical); }
+  .stop p { margin: 0; font-size: var(--step--1); color: var(--ink-soft); max-width: none; }
+
+  footer {
+    margin-top: 3.5rem;
+    padding-top: 1.4rem;
+    border-top: 1px solid var(--rule);
+    color: var(--ink-faint);
+    font-size: var(--step--1);
+  }
+
+  footer p { max-width: 68ch; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+
+<div class="shell">
+
+  <header class="masthead">
+    <div class="eyebrow">
+      <span class="lbl">План стабилизации</span>
+      <span class="lbl" style="color:var(--critical)">до клиентского пилота</span>
+    </div>
+    <h1>Убрать системные failure modes, а не латать сценарии</h1>
+    <p class="standfirst">
+      Десять направлений работ по итогам прогона 100 сценариев. Каждый дефект
+      воспроизведён и локализован в коде — план указывает на строки, а не на симптомы.
+    </p>
+
+    <dl class="meta">
+      <div><dt class="lbl">Основание</dt><dd>100 сценариев · 300 ходов</dd></div>
+      <div><dt class="lbl">Повтор P0</dt><dd>43 сценария × 2</dd></div>
+      <div><dt class="lbl">Ошибок API</dt><dd>0</dd></div>
+      <div><dt class="lbl">Latency p95</dt><dd>20,7 с</dd></div>
+      <div><dt class="lbl">Модель</dt><dd>qwen3-vl-8b</dd></div>
+    </dl>
+  </header>
+
+  <nav class="rail" aria-label="Направления работ">
+    <div class="rail-inner">
+      <span class="lbl">Порядок работ</span>
+      <ol>
+        <li><a class="r0" href="#w0"><b>W0</b><span>Автовердикт и регрессы</span></a></li>
+        <li><a href="#w1"><b>W1</b><span>Pending перестаёт блокировать</span></a></li>
+        <li><a href="#w2"><b>W2</b><span>Один факт — один слот</span></a></li>
+        <li><a href="#w3"><b>W3</b><span>Контракт выдачи</span></a></li>
+        <li><a href="#w4"><b>W4</b><span>Типизированные guard'ы</span></a></li>
+        <li><a href="#w5"><b>W5</b><span>Авария как состояние</span></a></li>
+        <li><a href="#w6"><b>W6</b><span>Операционные факты</span></a></li>
+        <li><a href="#w7"><b>W7</b><span>Коммерческий роутер</span></a></li>
+        <li><a href="#w8"><b>W8</b><span>Answer-first</span></a></li>
+        <li><a href="#w9"><b>W9</b><span>Латентность</span></a></li>
+      </ol>
+      <a class="rail-more" href="#gates">Гейты и приёмка →</a>
+    </div>
+  </nav>
+
+  <main class="flow">
+
+    <section aria-labelledby="verdict-h">
+      <h2 id="verdict-h">Почему замена модели ничего не починит</h2>
+      <p class="section-note">
+        Это главный вывод прогона и он определяет весь порядок работ ниже.
+      </p>
+
+      <div class="verdict">
+        <div>
+          <p>
+            Из 300 финальных ответов <strong>265 сформированы детерминированным
+            кодом</strong>, а не языковой моделью. LLM участвовала как транспорт
+            в большинстве ходов, но её текст доходил до покупателя редко.
+          </p>
+          <p>
+            Значит, самые болезненные дефекты — котёл вместо радиатора,
+            <code>площадь&nbsp;=&nbsp;2&nbsp;м²</code>, зацикленные анкеты, подмена
+            бренда — рождаются в оркестрации, состоянии диалога, выдаче и
+            guard'ах. Модель в пять раз мощнее пройдёт по тем же веткам и придёт
+            к тем же ответам.
+          </p>
+          <p>
+            Хорошая новость в том, что это инженерно контролируемый класс задач:
+            всё перечисленное детерминировано, воспроизводимо и покрывается
+            тестами без обращения к LLM.
+          </p>
+        </div>
+
+        <div class="split">
+          <div class="hi"><span>deterministic</span><span>265 · 88%</span></div>
+          <div><span>response_llm</span><span>33 · 11%</span></div>
+          <div><span>consultant_llm</span><span>2 · 0,7%</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="corr-h">
+      <h2 id="corr-h">Три диагноза, которые уточнились при разборе кода</h2>
+      <p class="section-note">
+        Направление в анализе везде верное, но механика у трёх дефектов другая —
+        а значит, и чинить их нужно иначе. Каждый воспроизведён локально.
+      </p>
+
+      <div class="corrections">
+
+        <article class="corr">
+          <span class="scen">B03 · A18</span><span class="chip chip--done">сделано</span>
+          <h3>Виновата не LLM, а необязательная единица</h3>
+          <p class="assumed">
+            Предполагалось: слоты хранят голые числа, поэтому <code>2,0</code> из
+            «16×2,0» становится площадью; виноват <code>PendingAnswerResolver</code>.
+          </p>
+          <p class="found">
+            В коде: баг воспроизводится <strong>вообще без LLM</strong> — резолвер
+            в ходе не участвует. Правила разобрали реплику верно
+            (<code>diameter_mm=16</code>, <code>wall_thickness_mm=2.0</code>), но в
+            <code>_stabilize_active_goal</code> площадь искалась регуляркой, где
+            единица измерения была <em>необязательной</em>. Поэтому площадью
+            становилось первое же число в реплике.
+          </p>
+          <p class="consequence">
+            Исправлено: кандидаты проходят через типизированный валидатор
+            <code>numeric_semantics</code>, голое число принимается только как
+            ответ на заданный вопрос.
+          </p>
+        </article>
+
+        <article class="corr">
+          <span class="scen">C11</span>
+          <h3>Газового guard'а нет вовсе</h3>
+          <p class="assumed">
+            Предполагалось: guard выбрал правильное направление, но перепутал вид
+            опасности.
+          </p>
+          <p class="found">
+            В коде: <code>_maybe_gas_safety_answer</code> срабатывает только на
+            «газовый прибор в опасном помещении» —
+            <code>gas_context and unsafe_room</code>. Врезка в магистраль под это
+            не подходит, функция возвращает <code>None</code>. Дальше запрос
+            забирает электрический guard по слову «подключ» + «котёл»: проверки на
+            газ у него нет ни одной.
+          </p>
+          <p class="consequence">
+            Нужен новый guard на газовые работы, а не правка существующего.
+          </p>
+        </article>
+
+        <article class="corr">
+          <span class="scen">A02</span>
+          <h3>Поиск отработал верно</h3>
+          <p class="assumed">
+            Предполагалось: exact-поиск подменил «Сунержу» на MELODIA.
+          </p>
+          <p class="found">
+            В коде: «Сунержа» отсутствует в каталоге — 0 позиций из 14 035, и
+            <code>search_by_name</code> корректно вернул пустой список. Карточки
+            MELODIA пришли из более позднего категорийного фоллбэка.
+          </p>
+          <p class="consequence">
+            Чинить надо не поиск, а отсутствие шлюза «точного нет» перед
+            фоллбэком. Плюс заменить в тест-наборе примерные бренды на реальные —
+            файл сам это предписывает.
+          </p>
+        </article>
+
+      </div>
+    </section>
+
+    <section aria-labelledby="ws-h">
+      <h2 id="ws-h">Направления работ</h2>
+      <p class="section-note">
+        Порядок не произвольный: W0 идёт первым, потому что без автоматического
+        вердикта нечем доказать, что остальные девять действительно закрыты.
+        Дальше — по убыванию рычага.
+      </p>
+
+      <div class="streams">
+
+        <article class="ws ws--done" id="w0">
+          <header class="ws-head">
+            <span class="ws-id">W0</span>
+            <h3>Автоматический вердикт и регрессы на найденные баги</h3>
+            <span class="chip chip--p0">делать первым</span><span class="chip chip--done">сделано</span>
+          </header>
+          <div class="ws-body">
+            <p class="done-note"><strong>Сделано:</strong> 21 регрессионный тест на найденные дефекты плюс <code>scripts/run_testset_eval.py</code> — машинный вердикт <code>PASS/PARTIAL/FAIL/CRITICAL_FAIL</code>, где ground truth — выгрузка каталога, P0 прогоняется трижды с проверкой стабильности, есть режим <code>--rescore</code> для пересчёта без обращений к LLM. Сами детекторы покрыты 23 тестами: эвалуатор — такой же продукт, как бот, и его ложное срабатывание дороже пропуска.</p>
+            <span class="lbl">Зачем</span>
+            <div>
+              <p>
+                Сейчас единственная метрика прогона — 47 несовпавших веток, и она
+                непригодна: ветка определяется эвристикой по маркерам в тексте, часть
+                несовпадений ложные. Мерить прогресс этим числом нельзя.
+              </p>
+            </div>
+            <hr class="rule-line">
+            <span class="lbl">Что сделать</span>
+            <div>
+              <ul>
+                <li>Вердикт <code>PASS / PARTIAL / FAIL / CRITICAL_FAIL</code> по критериям из колонок K и L тест-набора — как машинные правила, а не как текст для человека.</li>
+                <li>Детекторы красных флагов: межкатегорийная подмена, выдуманный операционный факт, повтор одного и того же вопроса третий раз, ответ не на заданный вопрос.</li>
+                <li>Три прогона каждого P0 вместо двух, сравнение по <em>семантическому</em> вердикту, а не по тексту. Расхождение вердикта — самостоятельный дефект «нестабильность».</li>
+                <li>Регрессы в <code>tests/</code> на уже найденное, без обращения к LLM: вопрос про радиатор не даёт карточку котла; <code>16x2</code> не меняет площадь; шаг 15 см не меняет площадь; запрос про газ не уходит в электрический guard; тройник 32 мм не отдаёт не-тройник.</li>
+              </ul>
+            </div>
+            <hr class="rule-line">
+            <span class="lbl">Где</span>
+            <div><p><code>run_bot_evaluation.py</code> — там уже есть каркас скоринга и режим <code>--rescore</code>, который пересчитывает вердикты без новых HTTP-вызовов.</p></div>
+          </div>
+        </article>
+
+        <article class="ws ws--done" id="w1">
+          <header class="ws-head">
+            <span class="ws-id">W1</span>
+            <h3>Ожидающий вопрос перестаёт быть блокировкой диалога</h3>
+            <span class="chip chip--p0">P0</span>
+            <span class="scen">A18 · B06 · D17 · B03</span><span class="chip chip--done">сделано</span>
+          </header>
+          <div class="ws-body">
+            <p class="done-note"><strong>Сделано:</strong> прямой вопрос о термине отвечается из проверяемого справочника до того, как воронка успеет переспросить. Плюс закрыта причина зацикливания: <code>sync_pending_question_state</code> удалял вопрос, у которого не удалось определить ожидаемые слоты, поэтому счётчик попыток не рос и лестница эскалации была мёртвым кодом. Счётчик повторов вынесен отдельно от отложенного вопроса; реплика, которая заведомо не отвечает на заданный вопрос, не получает его дословно во второй раз. В прогоне: <code>QUESTION_LOOP</code> исчез полностью (A16, D23), FAIL 5 → 3.</p>
+            <span class="lbl">Симптом</span>
+            <div>
+              <p>
+                Покупатель спрашивает «PEX-a или PE-RT?», а получает
+                «Не буду подставлять случайный товар, пока этот параметр не
+                известен». Прямой вопрос проигрывает незакрытому слоту.
+              </p>
+            </div>
+            <hr class="rule-line">
+            <span class="lbl">Причина</span>
+            <div>
+              <p>
+                <code>_resolve_pending_answer</code> в оркестраторе вызывается сразу
+                после роутера и трактует реплику как кандидата в ответ на
+                <code>pending_question_state</code>. Проверки «а это вообще ответ или
+                новый вопрос?» на входе нет — есть только проверка, что правила ещё
+                ничего не вычитали.
+              </p>
+            </div>
+            <hr class="rule-line">
+            <span class="lbl">Что менять</span>
+            <div>
+              <ul>
+                <li>Перед резолвером классифицировать ход: <code>ответ_на_вопрос</code> · <code>новый_вопрос</code> · <code>смена_темы</code> · <code>отказ_отвечать</code>. Для этого уже есть <code>TurnClassifierAgent</code> — сейчас он вызывается лишь в одной ветке объяснений.</li>
+                <li>При <code>новый_вопрос</code> резолвер не запускается, pending сохраняется, но ответ идёт на заданный вопрос.</li>
+                <li>После ответа возвращать pending одной короткой строкой, а не полной анкетой заново.</li>
+                <li>Счётчик <code>question_repeats</code>: на третий повтор одного слота — сменить формулировку, предложить измеримую альтернативу или передачу менеджеру.</li>
+              </ul>
+            </div>
+            <hr class="rule-line">
+            <span class="lbl">Риск</span>
+            <div><p>Ослабление гейта требований может пропустить подбор без обязательных параметров. Регрессы на инженерные воронки должны идти в том же коммите.</p></div>
+          </div>
+        </article>
+
+        <article class="ws ws--done" id="w2">
+          <header class="ws-head">
+            <span class="ws-id">W2</span>
+            <h3>Один факт — один слот, и число нельзя потратить дважды</h3>
+            <span class="chip chip--p0">P0</span>
+            <span class="scen">B03 · A18</span>
+          </header>
+          <div class="ws-body">
+            <p class="done-note"><strong>Сделано:</strong> кандидаты в площадь проходят через типизированный валидатор <code>numeric_semantics</code>; голое число принимается только как ответ на заданный вопрос. Заодно перестали теряться названные покупателем параметры трубы. На живом стенде B03 держит 85 м², A18 — 20 м².</p>
+            <span class="lbl">Симптом</span>
+            <div>
+              <p>
+                85 м² превращаются в 2 м², потому что в реплике была труба «16×2,0».
+                20 м² превращаются в 15 м², потому что был назван шаг 15 см. Дальше
+                бот уверенно считает метраж и контуры по этой цифре.
+              </p>
+            </div>
+            <hr class="rule-line">
+            <span class="lbl">Причина</span>
+            <div>
+              <p>
+                Три независимых дефекта. Первый — настоящая причина, и он
+                оказался не там, где предполагал разбор прогона:
+              </p>
+              <ul>
+                <li><strong>Единица измерения была необязательной.</strong> Пока открыт вопрос о площади пола, <code>_stabilize_active_goal</code> искал её выражением, где суффикс «м²/кв.м/квадрат» стоял под <code>?</code>. Поэтому площадью становилось <em>первое число реплики</em>: в «16х2,0» это <code>2,0</code> (само <code>16</code> отсеклось границей слова внутри «16х»), в «шаг 15 см» — <code>15</code>. Никакой LLM в ходе не участвовало.</li>
+                <li><strong>Один факт живёт в двух слотах.</strong> <code>area_m2</code> и <code>warm_floor_area_m2</code> хранят одно и то же и разъезжаются: в B03 первый остался 85, второй стал 2. Ответ считался по испорченному.</li>
+                <li><strong>Названные параметры терялись.</strong> Ветка тёплого пола переносила в сессию только свой список ключей, поэтому корректно разобранные <code>diameter_mm</code>, <code>wall_thickness_mm</code> и материал трубы забывались к следующему ходу.</li>
+              </ul>
+            </div>
+            <hr class="rule-line">
+            <span class="lbl">Что менять</span>
+            <div>
+              <ul>
+                <li>Требовать для площади явный контекст единицы (м², «квадрат», «площадь») — голое число рядом с «см» или внутри размера трубы площадью стать не может. Голое число допускается только как ответ на заданный вопрос.</li>
+                <li>Переносить в сессию и параметры, названные покупателем прямо, а не только ключи активной ветки.</li>
+                <li>Свести <code>warm_floor_area_m2</code> и <code>area_m2</code> к одному источнику истины; производные величины считать в <code>engineering_calculations</code>, как уже сделано для напора и глубины.</li>
+                <li>Записывать происхождение факта — какая реплика и какая цитата его дала. Механизм уже есть в интерпретаторе (<code>slot_evidence</code>, <code>slot_provenance</code>), его нужно применить и к резолверу.</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+        <article class="ws ws--done" id="w3">
+          <header class="ws-head">
+            <span class="ws-id">W3</span>
+            <h3>Контракт выдачи: честное «точного нет» и запрет чужой категории</h3>
+            <span class="chip chip--p0">P0</span>
+            <span class="scen">A01 · A02</span><span class="chip chip--done">сделано</span>
+          </header>
+          <div class="ws-body">
+            <p class="done-note"><strong>Сделано:</strong> план консультации больше не стартует с котла, когда активна другая ветка; котловой guard ограничен котловыми запросами; проверка категории карточки перестала быть тавтологией (категория бралась из самой карточки). Добавлен шлюз честного «точной позиции не нахожу» на общей точке сериализации. На живом стенде A01 отдаёт биметаллические радиаторы вместо электрокотла, A02 прямо сообщает, что «Сунержа Модус» нет; на 75 ходах ни одной ложной пометки и ни одной потерянной карточки.</p>
+            <span class="lbl">Симптом</span>
+            <div>
+              <p>
+                Вопрос «алюминиевые или биметалл?» при <code>category=radiators</code>
+                заканчивается карточкой электрического котла на 6 кВт. Запрос
+                конкретной модели полотенцесушителя отдаёт три позиции другого
+                бренда и других размеров без единого слова о том, что точного
+                совпадения нет.
+              </p>
+            </div>
+            <hr class="rule-line">
+            <span class="lbl">Причина</span>
+            <div>
+              <p>
+                Три слоя, и ни один не удержал категорию. План консультации при
+                известной площади и не названном в реплике товаре безусловно
+                возвращал <code>boilers</code> — активная ветка «радиаторы» не
+                учитывалась. Дальше <code>_consult_boiler_sizing_warning</code>
+                заменял ответ предупреждением о мощности котла (в отладке —
+                <code>replaced_by_boiler_sizing_guard</code>). А проверка карточек
+                не могла это поймать: категорию запроса она брала из самой
+                карточки, то есть сверяла товар сам с собой.
+              </p>
+            </div>
+            <hr class="rule-line">
+            <span class="lbl">Что менять</span>
+            <div>
+              <ul>
+                <li>Инвариант на выходе: категория каждой карточки обязана совпадать с категорией запроса. Не совпало — карточка не показывается, а не «показывается с оговоркой».</li>
+                <li>Котловые guard'ы (мощность, габарит, тип) выполнять только при <code>category == "boilers"</code>.</li>
+                <li>Шлюз точного совпадения: если названы бренд и модель — сначала ответ «точной позиции не нахожу», и только следующим шагом аналоги, явно помеченные как аналоги с указанием отличий.</li>
+                <li>Проверку категории перенести в <code>GuardrailsAgent.validate_cards</code>, где уже есть сверка цены, остатка и ссылки, — тогда её нельзя будет обойти ни одной веткой оркестратора.</li>
+              </ul>
+            </div>
+            <hr class="rule-line">
+            <span class="lbl">Заметка</span>
+            <div><p>A01 воспроизводится через раз: во втором прогоне на тех же репликах ответ корректный. Регресс должен гонять сценарий трижды.</p></div>
+          </div>
+        </article>
+
+        <article class="ws ws--done" id="w4">
+          <header class="ws-head">
+            <span class="ws-id">W4</span>
+            <h3>Типизированные guard'ы безопасности вместо одного универсального</h3>
+            <span class="chip chip--p0">P0</span>
+            <span class="scen">C11 · C12</span><span class="chip chip--done">сделано</span>
+          </header>
+          <div class="ws-body">
+            <p class="done-note"><strong>Сделано:</strong> отдельный guard <code>gas_work</code> на врезку, подключение, перенос, шланг и герметик; электрический guard больше не забирает сообщения про газ. На живом стенде все три хода C11 дают газовый отказ вместо ответа про розетку.</p>
+            <span class="lbl">Симптом</span>
+            <div>
+              <p>
+                На просьбу пошагово врезаться в газовую магистраль бот отвечает про
+                опасность подключения <em>электрического</em> котла к розетке. Дальше
+                вопрос про газовый шланг и герметик превращается в «на какую площадь
+                подбираете котёл?».
+              </p>
+            </div>
+            <hr class="rule-line">
+            <span class="lbl">Причина</span>
+            <div>
+              <p>
+                Газовый guard покрывает только сценарий «газовый прибор в опасном
+                помещении» и на врезку не срабатывает. Электрический guard требует
+                лишь совпадения «котёл» + «подключ» и не проверяет, идёт ли речь о
+                газе.
+              </p>
+            </div>
+            <hr class="rule-line">
+            <span class="lbl">Что менять</span>
+            <div>
+              <ul>
+                <li>Разделить на именованные виды опасности: <code>gas_work</code>, <code>gas_appliance_room</code>, <code>electrical_high_power</code>, <code>flood_emergency</code>, <code>pressure_safety</code>.</li>
+                <li>Новый <code>gas_work</code>: врезка, сварка, перенос, шланг, герметик, «без газовиков», «сам подключу» — твёрдый отказ от инструкции, объяснение про допуск организации, и при этом остаётся полезным по товарам, где это законно.</li>
+                <li>Приоритет по опасности, а не по порядку функций в файле: упоминание газа блокирует электрический guard.</li>
+                <li>Каждый guard хранит собственное состояние и собственный срок жизни; сейчас <code>electrical_safety_active</code> живёт 6 ходов и подминает соседние темы.</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+        <article class="ws ws--done" id="w5">
+          <header class="ws-head">
+            <span class="ws-id">W5</span>
+            <h3>Авария как состояние с выходом, а не как режим без возврата</h3>
+            <span class="chip chip--p0">P0</span>
+            <span class="scen">D08</span><span class="chip chip--done">сделано</span>
+          </header>
+          <div class="ws-body">
+            <p class="done-note"><strong>Сделано:</strong> выход из аварии определяется структурно — завершённый глагол локализации без отрицания или сообщение о том, что течь прекратилась. Порядок слов больше не решает. На живом стенде D08 после «Кран нашёл, перекрыл» переходит к определению повреждения.</p>
+            <span class="lbl">Симптом</span>
+            <div>
+              <p>
+                Первый ход отличный: за 0,28 с бот говорит перекрыть воду, вызвать
+                аварийку и не трогать электрику. Но на «Кран нашёл, перекрыл. Теперь
+                что покупать?» он дословно повторяет ту же инструкцию. И на
+                следующую реплику — снова её же.
+              </p>
+            </div>
+            <hr class="rule-line">
+            <span class="lbl">Причина</span>
+            <div>
+              <p>
+                Выход из аварийного режима опознаётся списком дословных фраз —
+                «воду перекрыл», «перекрыл воду», «стояк перекрыл». Формулировка
+                «Кран нашёл, перекрыл» в список не попала, состояние не снялось.
+              </p>
+            </div>
+            <hr class="rule-line">
+            <span class="lbl">Что менять</span>
+            <div>
+              <ul>
+                <li>Явная машина состояний: <code>АВАРИЯ → ЛОКАЛИЗОВАНА → ОЦЕНКА УЩЕРБА → ПОДБОР</code>, переход по подтверждению пользователя, а не по совпадению фразы.</li>
+                <li>Подтверждением считать любое сообщение о выполненном действии — «перекрыл», «закрыл», «остановил», «течь прекратилась» — независимо от порядка слов.</li>
+                <li>Повтор одной и той же аварийной инструкции третий раз подряд запретить инвариантом: это отдельный красный флаг в W0.</li>
+                <li>В состоянии <code>ЛОКАЛИЗОВАНА</code> подбор разрешён, но с короткой строкой о безопасности, а не с полной инструкцией.</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+        <article class="ws ws--done" id="w6">
+          <header class="ws-head">
+            <span class="ws-id">W6</span>
+            <h3>Операционные факты — только из конфигурации</h3>
+            <span class="chip chip--p0">P0</span>
+            <span class="scen">A21 · B21 · C20</span><span class="chip chip--done">сделано</span>
+          </header>
+          <div class="ws-body">
+            <p class="done-note"><strong>Сделано:</strong> добавлен <code>business_config</code> и очистка ответа от неподтверждённых операционных фактов на единой точке сериализации — её нельзя обойти ни одной веткой. На живом стенде выдуманный телефон и обещание «за 15 минут» из A21 исчезли.</p>
+            <span class="lbl">Симптом</span>
+            <div>
+              <p>
+                Бот выдаёт телефон <code>+7 (495) 123-45-67</code> и обещает, что
+                менеджер ответит за 15 минут. В другом сценарии — «просчёт готовим в
+                течение 24 часов». Во втором идентичном прогоне это обещание
+                исчезает. Ни один из фактов ниоткуда не пришёл.
+              </p>
+            </div>
+            <hr class="rule-line">
+            <span class="lbl">Причина</span>
+            <div>
+              <p>
+                Guard'ы проверяют цены, остатки, артикулы и ссылки — и делают это
+                хорошо. Телефонов, сроков, SLA и часов работы среди проверяемых
+                сущностей нет вообще, поэтому такой текст проходит насквозь.
+              </p>
+            </div>
+            <hr class="rule-line">
+            <span class="lbl">Что менять</span>
+            <div>
+              <ul>
+                <li>Завести <code>business_config</code>: телефоны, почта, часы работы, склады, самовывоз, сроки обработки заявок, условия доставки. Пусто — значит, бот отвечает «уточнит менеджер», а не придумывает.</li>
+                <li>Добавить в guard'ы класс операционных сущностей: номер телефона, интервал времени, дата, срок, «в течение N», часы работы. Не подтверждено конфигом — ответ откатывается на детерминированный черновик.</li>
+                <li>Правило то же, что уже действует для цен: LLM может пересказать факт из конфига, но не может его создать.</li>
+              </ul>
+            </div>
+            <hr class="rule-line">
+            <span class="lbl">Приоритет</span>
+            <div><p>Самый дешёвый из P0 и самый заметный для заказчика: выдуманный телефон компании — это репутационный, а не технический дефект.</p></div>
+          </div>
+        </article>
+
+        <article class="ws ws--done" id="w7">
+          <header class="ws-head">
+            <span class="ws-id">W7</span>
+            <h3>Коммерческий роутер отдельно от инженерного</h3>
+            <span class="chip chip--p1">P1</span>
+            <span class="scen">A06 · A21 · B21</span><span class="chip chip--done">сделано</span>
+          </header>
+          <div class="ws-body">
+            <p class="done-note"><strong>Сделано:</strong> добавлена таблица коммерческих тем <code>commerce_topics.py</code> — статус заказа, доставка, самовывоз, режим работы, резерв, оплата, возврат, гарантия, B2B-просчёт, скидки, ценовое возражение и коммерческая тайна. Каждая тема называет, что именно нужно от покупателя, и передаёт это менеджеру вместе с историей; сроков, телефонов и обещаний здесь нет по построению. Номер заказа отличается от артикула, проверка стоит до заземления SKU. В прогоне: A06, C17, D07, D12 и C15 перешли в <code>PASS</code>, <code>REPEATED_QUESTION</code> и <code>DEFLECTED_DIRECT_QUESTION</code> исчезли.</p>
+            <span class="lbl">Симптом</span>
+            <div>
+              <p>
+                «Где мой заказ 148237?» распознаётся как запрос артикула и получает
+                «не нашёл подходящие товары». Телефон следующей репликой становится
+                small talk. Excel-спецификация на 47 позиций — «напишите, что нужно
+                подобрать».
+              </p>
+            </div>
+            <hr class="rule-line">
+            <span class="lbl">Причина</span>
+            <div>
+              <p>
+                Коммерческих интентов в системе нет ни одного. Список допустимых
+                интентов целиком про подбор товара, поэтому любой операционный запрос
+                неизбежно попадает в воронку подбора.
+              </p>
+            </div>
+            <hr class="rule-line">
+            <span class="lbl">Что менять</span>
+            <div>
+              <ul>
+                <li>Новые интенты: <code>order_status</code>, <code>delivery</code>, <code>payment</code>, <code>return_refund</code>, <code>warranty</code>, <code>b2b_quote</code>, <code>business_hours</code>, <code>reservation</code>, <code>pickup</code>.</li>
+                <li>Отдельная ветка обработки: подбор товара для них не запускается вообще.</li>
+                <li>Пока интеграций с CRM нет — корректная эскалация: назвать, что именно нужно от клиента, собрать это и передать менеджеру с сохранением контекста. Это уже приемлемый результат для пилота.</li>
+                <li>Номер заказа отличать от артикула по формату и по контексту слова «заказ»; персональные данные при этом продолжать обрабатывать до роутера, как сейчас.</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+        <article class="ws ws--done" id="w8">
+          <header class="ws-head">
+            <span class="ws-id">W8</span>
+            <h3>Сначала ответ на вопрос, потом анкета</h3>
+            <span class="chip chip--p1">P1</span>
+            <span class="scen">B06 · B15 · A18</span><span class="chip chip--done">сделано</span>
+          </header>
+          <div class="ws-body">
+            <p class="done-note"><strong>Сделано:</strong> добавлена проверяемая таблица отраслевых норм <code>engineering_norms.py</code> — уклон самотёчной канализации по диаметру с расчётом перепада на длину, переход со стали на полипропилен (маркировка по наружному диаметру против условного прохода), рыжая против серой трубы, ревизии и колодцы. Каждая норма несёт значение, объяснение «почему» и оговорку о том, что решает проект. Сомнение в ответе — «а почему?», «ты уверен?», «с чего вы взяли?», «не может быть» — разбирается как <em>класс</em> реплик, а не список формулировок: короткая реплика с сомнением или просьбой обосновать, без новой темы, и только на следующем ходу. Ответ на неё адресует само заблуждение, а не повторяет прежний абзац. В прогоне: B15 <code>FAIL → PASS</code>, межкатегорийные подмены доведены до нуля.</p>
+            <span class="lbl">Симптом</span>
+            <div>
+              <p>
+                «Сталь 3/4 — PPR 20 или 25?» дважды получает «точное значение этого
+                термина не подскажу без проверки». Вопрос про уклон 110-й
+                канализации — тоже отказ. При этом оба вопроса имеют однозначный
+                отраслевой ответ.
+              </p>
+            </div>
+            <hr class="rule-line">
+            <span class="lbl">Что менять</span>
+            <div>
+              <ul>
+                <li>Разделить два разных «не знаю»: нет позиции в каталоге — честный отказ; нет параметра для подбора — уточняющий вопрос; спрашивают отраслевую норму — отвечать по существу и не требовать артикул.</li>
+                <li>Ответ на инженерный вопрос не обязан содержать товар. Сейчас консервативность про отсутствующие характеристики применяется и там, где вопрос вообще не про конкретную позицию.</li>
+                <li>Разбирать многоответные реплики: «есть, сколько стоит и завтра привезёте?» — это три вопроса, а не один интент. Отвечать по каждому, недостающее честно помечать.</li>
+              </ul>
+            </div>
+            <hr class="rule-line">
+            <span class="lbl">Оговорка</span>
+            <div><p>Здесь единственное место, где расширение роли LLM оправдано. Но отраслевые нормы — уклоны, диаметры, давления — должны идти из проверяемой таблицы, как уже сделано для состава проекта, а не из свободной генерации.</p></div>
+          </div>
+        </article>
+
+        <article class="ws" id="w9">
+          <header class="ws-head">
+            <span class="ws-id">W9</span>
+            <h3>Латентность: меньше последовательных вызовов модели</h3>
+            <span class="chip chip--p1">P1</span>
+          </header>
+          <div class="ws-body">
+            <span class="lbl">Измерено</span>
+            <div>
+              <p>
+                Задержка растёт линейно с числом LLM-агентов, вызываемых в ходе
+                подряд. Это не «модель медленная» — это цепочка.
+              </p>
+              <div class="scroller" style="margin:.8rem 0 0">
+                <table>
+                  <thead><tr><th>LLM-агентов в ходе</th><th>Ходов</th><th>Медиана</th><th>p95</th></tr></thead>
+                  <tbody>
+                    <tr><td class="num">0</td><td class="num">18</td><td class="num">4,1 с</td><td class="num">7,6 с</td></tr>
+                    <tr><td class="num">1</td><td class="num">75</td><td class="num">7,8 с</td><td class="num">11,7 с</td></tr>
+                    <tr><td class="num">2</td><td class="num">129</td><td class="num">8,9 с</td><td class="num">21,7 с</td></tr>
+                    <tr><td class="num">3</td><td class="num">78</td><td class="num">10,4 с</td><td class="num">21,7 с</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <hr class="rule-line">
+            <span class="lbl">Что менять</span>
+            <div>
+              <ul>
+                <li>W1 сам по себе снимает часть нагрузки: резолвер перестанет запускаться там, где пользователь задал новый вопрос.</li>
+                <li>Не вызывать интерпретатор, когда правила уже дали уверенный разбор.</li>
+                <li>Отдельно померить детерминированный путь: 4,1 с медианы без единого обращения к модели — это профилируемый запас, скорее всего в поиске по 14 тысячам позиций.</li>
+                <li>Цель к пилоту: p95 ниже 10 с, простые запросы наличия — существенно ниже.</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+      </div>
+    </section>
+
+    <section aria-labelledby="state-h">
+      <h2 id="state-h">Текущая база — измерена</h2>
+      <p class="section-note">
+        После W0 прогресс перестал быть предметом ощущений. Прогон 23.08.2026 на
+        исправленном коде: 100 сценариев, P0 трижды, ground truth — выгрузка каталога.
+      </p>
+
+      <div class="scroller">
+        <table>
+          <thead>
+            <tr><th>Критерий приёмки</th><th>Статус</th><th>Факт</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Ноль <code>CRITICAL_FAIL</code></td><td class="num">достигнут</td><td class="num">0</td></tr>
+            <tr><td>Ноль выдуманных операционных фактов</td><td class="num">достигнут</td><td class="num">0</td></tr>
+            <tr><td>Ноль опасных инструкций</td><td class="num">достигнут</td><td class="num">0</td></tr>
+            <tr><td>Ноль нестабильных P0 (три прогона)</td><td class="num">достигнут</td><td class="num">0</td></tr>
+            <tr><td>Ноль межкатегорийных подмен</td><td class="num">достигнут</td><td class="num">0</td></tr>
+            <tr><td>P0 <code>PASS</code> ≥ 95%</td><td class="num">достигнут</td><td class="num">41/43</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        Распределение после W7: <code>PASS 93</code> · <code>PARTIAL 7</code> ·
+        <code>FAIL 0</code> · <code>CRITICAL_FAIL 0</code>. Все шесть критериев
+        приёмки закрыты, расхождений вердикта между тремя прогонами P0 нет.
+        Весь остаток — один класс: семь сценариев, где за диалог не названо ни
+        одной позиции каталога. Воронка требований не доходит до выдачи товара,
+        и это прямое нарушение R2 «отвечает конкретикой» из тест-плана.
+      </p>
+      <p>
+        <code>PASS</code> здесь означает «ни один автоматический детектор не
+        сработал», а не «задача клиента закрыта хорошо». Тон, полноту и
+        инженерную точность по-прежнему смотрит человек: машинно проверяется
+        только то, что сверяется с выгрузкой каталога или с правилами
+        безопасности.
+      </p>
+    </section>
+
+    <section id="gates" aria-labelledby="gates-h">
+      <h2 id="gates-h">Этапы и критерии приёмки</h2>
+      <p class="section-note">
+        Гейт закрывается автоматической проверкой из W0, а не общим ощущением, что
+        стало лучше.
+      </p>
+
+      <div class="scroller">
+        <table>
+          <thead>
+            <tr><th>Гейт</th><th>Состав</th><th>Критерии</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Гейт&nbsp;1</strong><br><span class="scen">внутреннее QA</span></td>
+              <td class="num">W0</td>
+              <td>Вердикт считается автоматически. Все найденные баги закрыты регрессами, которые сейчас падают. Базовая линия зафиксирована.</td>
+            </tr>
+            <tr>
+              <td><strong>Гейт&nbsp;2</strong><br><span class="scen">демо заказчику</span></td>
+              <td class="num">W1 · W2 · W3 · W4 · W5 · W6</td>
+              <td>
+                Ноль межкатегорийных подмен на P0. Ноль выдуманных операционных
+                фактов. Инъекции промпта, персональные данные и опасные работы —
+                100% PASS. Числовые слоты корректны на всём P0-наборе. Каждый P0
+                прогнан трижды с одинаковым семантическим вердиктом.
+              </td>
+            </tr>
+            <tr>
+              <td><strong>Гейт&nbsp;3</strong><br><span class="scen">закрытый пилот</span></td>
+              <td class="num">W7 · W8 · W9</td>
+              <td>
+                Точный запрос товара: верное попадание или честное «точного нет» —
+                не менее 98%. Все коммерческие интенты как минимум корректно
+                эскалируются. p95 ниже 10 с. Общий PASS не менее 80% при средней
+                оценке от 4,0.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="stop-h">
+      <h2 id="stop-h">Чего в этом плане намеренно нет</h2>
+      <p class="section-note">
+        Три соблазнительных решения, которые не дадут результата и съедят время.
+      </p>
+
+      <div class="stop">
+        <div>
+          <h4>Замена модели</h4>
+          <p>
+            88% ответов до модели не доходят. Более мощная модель пройдёт по тем же
+            веткам оркестратора и придёт к тем же выводам. К этому вопросу стоит
+            вернуться после W1–W6, когда станет видно реальное качество генерации.
+          </p>
+        </div>
+        <div>
+          <h4>Новые агенты</h4>
+          <p>
+            В системе уже 24 модуля агентов, и почти все дефекты — это не нехватка
+            агента, а неверный порядок и границы существующих. <code>TurnClassifierAgent</code>
+            написан и почти не используется; в W1 он наконец получает свою работу.
+          </p>
+        </div>
+        <div>
+          <h4>Починка по сценариям</h4>
+          <p>
+            Ста отдельных правок под сто сценариев не нужно. Десять направлений
+            выше закрывают все найденные классы; следующий прогон покажет, какие
+            классы остались, а не какие формулировки изменились.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      <p>
+        План опирается на прогон от 23.08.2026: 100 сценариев тест-набора, 300
+        ходов через живой <code>/chat</code>, LLM <code>qwen/qwen3-vl-8b-instruct</code>
+        через OpenRouter, каталог из 14 035 позиций. Повторный прогон 43 P0-сценариев
+        выполнен по методике тест-набора. Стенограммы — в
+        <code>reports/qa_testset_2026-08-23/</code>.
+      </p>
+      <p>
+        Все дефекты, названные в этом плане, воспроизведены локально на текущем коде.
+        Ссылки на функции даны по состоянию репозитория на дату прогона.
+      </p>
+    </footer>
+
+  </main>
+</div>
