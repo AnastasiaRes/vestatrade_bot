@@ -22,9 +22,14 @@ def _boiler_ladder(bot: ChatOrchestrator, sid: str) -> list[str]:
         "нужен котел",
         "дом 100 квадратов",
         "нужно и отопление и горячая вода",
+        # «Что посоветуете?» теперь получает сравнение газового и
+        # электрического по существу, а не анкету, поэтому лестница эскалации
+        # начинается на ход позже — набор реплик продлён, чтобы проверять то же
+        # самое: выход на предложение менеджера и остановку на нём.
         "хорошо, что посоветуете?",
         "а всё-таки?",
         "ну хоть что-нибудь",
+        "ну правда, никак?",
     ]:
         answers.append(bot.handle_chat(sid, message).answer)
     return answers
@@ -64,7 +69,7 @@ def test_escalation_ends_by_offering_a_manager_not_another_question(orchestrator
 def test_third_attempt_explains_the_blocker_before_offering_handoff(orchestrator) -> None:
     answers = _boiler_ladder(orchestrator, "ladder-explain")
 
-    third = answers[3].lower()
+    third = answers[4].lower()
     assert "случайный товар" in third
     assert "паспорте" in third or "шильдике" in third
 

@@ -47,12 +47,18 @@ from app.models import (
 from app.openrouter_client import OpenRouterClient
 from app.session_store import SessionStore, build_session_store
 
+from .commerce_topics import (
+    compose_commerce_answer,
+    match_commerce_topic,
+    order_number,
+)
 from .consultant import ConsultantAgent
 from .engineering_calculations import normalize_engineering_slots
 from .engineering_interpreter import (
     EngineeringInterpretation,
     EngineeringInterpreterAgent,
 )
+from .engineering_norms import match_engineering_norm
 from .engineering_requirements import EngineeringRequirementsAgent
 from .catalog_scope import UnsupportedFamily, match_unsupported_family
 from .feed_search import FeedSearchAgent
@@ -60,6 +66,7 @@ from .selection_contracts import slot_answer_hint
 from .guardrails import GuardrailsAgent
 from .handoff import HandoffAgent
 from .intent_router import IntentRouterAgent
+from .numeric_semantics import numeric_slot_has_compatible_context
 from .product_constraints import normalize_thread_pair
 from .product_card import ProductCardAgent
 from .project_specification import (
@@ -442,6 +449,38 @@ WATER_EMERGENCY_FIRST_RESPONSE = (
     "материал и размер повреждённого участка."
 )
 
+# Containment used to be recognised by a list of literal phrases («воду
+# перекрыл», «перекрыл воду», …).  Live QA sent «Кран нашёл, перекрыл» — the
+# same fact in a word order nobody had written down — and the bot repeated the
+# full emergency instruction twice more.  Leaving an emergency is a state
+# transition, so it is detected structurally: a completed containment verb that
+# is not negated, or an explicit statement that the flow stopped.
+_CONTAINMENT_VERB_RE = re.compile(
+    r"\b(?:перекрыл\w*|перекрыт\w*|закрыл\w*|закрыт\w*|"
+    r"отключил\w*|отключен\w*|остановил\w*|остановлен\w*)\b"
+)
+_CONTAINMENT_NEGATION_RE = re.compile(
+    r"\b(?:не|нечем|никак|пока\s+не|так\s+и\s+не)\b(?:\s+\S+){0,2}\s+"
+    r"(?:перекрыл\w*|закрыл\w*|отключил\w*|остановил\w*)\b"
+)
+_FLOW_STOPPED_RE = re.compile(
+    r"(?:течь|теч\w*|вод\w*|поток\w*|теплоносител\w*)\s+"
+    r"(?:больше\s+не\s+\w+|прекратил\w*|останов\w*)"
+    r"|(?:перестал\w*\s+(?:течь|лить|капать))"
+    r"|(?:больше\s+не\s+(?:течет|течёт|льет|льёт))"
+)
+
+
+def _reports_flow_contained(text: str) -> bool:
+    """Whether the customer says the leak is now stopped."""
+
+    if _CONTAINMENT_NEGATION_RE.search(text):
+        return False
+    if _FLOW_STOPPED_RE.search(text):
+        return True
+    return bool(_CONTAINMENT_VERB_RE.search(text))
+
+
 WATER_EMERGENCY_CONTAINED_RESPONSE = (
     "Хорошо, что воду перекрыли. Товар пока не советую: сначала нужно точно определить "
     "повреждение. Напишите, где именно течь — труба, гибкая подводка, сифон или соединение "
@@ -821,6 +860,11 @@ class ChatOrchestrator:
         )
 
     def _handle_chat(self, session_id: str, message: str) -> ChatResponse:
+        # The final serialization layer needs the customer's own words to run
+        # turn-scoped checks (an identity named but absent from the catalogue).
+        # Threading a parameter through every ``_response`` call site would be
+        # far more invasive than reusing the request-scoped store.
+        self._request_agents.message = message
         session = self.sessions.get(session_id)
         session.topic_changed = False
         session.slots.pop("fallback_after_repeat", None)
@@ -944,6 +988,30 @@ class ChatOrchestrator:
             return self._response(
                 session_id,
                 emergency_answer,
+                [],
+                False,
+                intent,
+                session,
+                agents_used,
+            )
+
+        # Gas *work* is a different hazard from a gas appliance in an unsafe
+        # room, and both differ from mains electricity.  It is checked first so
+        # a request to tap into a gas line cannot be claimed by the electrical
+        # guard on the shared word «подключить».
+        gas_work = self._maybe_gas_work_answer(message, session)
+        if gas_work:
+            intent = IntentResult(
+                intent_type="gas_work_safety",
+                category=session.category or "boilers",
+                confidence=1.0,
+            )
+            agents_used.append("GuardrailsAgent")
+            self._append_history(session, message, gas_work)
+            self.sessions.save(session)
+            return self._response(
+                session_id,
+                gas_work,
                 [],
                 False,
                 intent,
@@ -1243,6 +1311,29 @@ class ChatOrchestrator:
         intent = self.intent_router.route(message, session)
         intent.raw = dict(intent.raw or {})
         intent.raw["requested_fields"] = self._requested_card_fields(message)
+
+        # Заказы, доставка, оплата, возврат, гарантия, B2B и режим работы — не
+        # подбор товара. Проверка стоит здесь, до заземления артикулов: иначе
+        # «где мой заказ 148237?» опознаётся как артикул и получает «не нашёл
+        # подходящие товары».
+        commerce = self._maybe_commerce_answer(message, session, agents_used)
+        if commerce is not None:
+            commerce_intent = IntentResult(
+                intent_type=commerce[0],
+                category="other",
+                confidence=1.0,
+            )
+            self._append_history(session, message, commerce[1])
+            self.sessions.save(session)
+            return self._response(
+                session_id,
+                commerce[1],
+                [],
+                False,
+                commerce_intent,
+                session,
+                agents_used,
+            )
         # Bind a short reply to the pending question before anything else looks
         # at the slots.  The rule layer stays authoritative; this only runs when
         # the rules read nothing that answers what was actually asked.
@@ -1988,6 +2079,23 @@ class ChatOrchestrator:
                 agents_used,
             )
 
+        # Вопрос о термине, который бот сам назвал в своём вопросе, отвечается
+        # раньше общего объяснения терминов: там ищется термин в реплике
+        # покупателя, а его там нет — есть только «они» или «это».
+        pending_term = self._maybe_pending_term_answer(message, session, agents_used)
+        if pending_term is not None:
+            self._append_history(session, message, pending_term)
+            self.sessions.save(session)
+            return self._response(
+                session_id,
+                pending_term,
+                [],
+                False,
+                intent,
+                session,
+                agents_used,
+            )
+
         term_answer = self._maybe_term_explanation(message, intent)
         if term_answer:
             agents_used.append("ResponseComposerAgent")
@@ -2514,6 +2622,54 @@ class ChatOrchestrator:
             self._append_history(session, message, answer)
             self.sessions.save(session)
             return self._response(session_id, answer, [], False, intent, session, agents_used)
+
+        # An industry norm — sewer slope, steel-to-PPR sizing, outdoor vs indoor
+        # pipe — is a reference value, not a product attribute from the feed.
+        # Refusing to state it («не подскажу без проверки») applies caution to
+        # the wrong thing, so the checkable table answers first.
+        # Продолжением темы считается только следующий ход: иначе «точно?»
+        # через три реплики воскресило бы давно закрытую норму.
+        norm_at = session.slots.get("last_engineering_norm_at")
+        previous_norm = (
+            str(session.slots.get("last_engineering_norm") or "") or None
+            if isinstance(norm_at, int) and len(session.history) - norm_at == 2
+            else None
+        )
+        norm = match_engineering_norm(message, previous_norm=previous_norm)
+        if norm is not None:
+            session.slots["last_engineering_norm"] = norm.key
+            session.slots["last_engineering_norm_at"] = len(session.history)
+            agents_used.append("EngineeringNormsAgent")
+            norm_answer = self._guard_composed_answer(norm.text, "generic", agents_used)
+            self._append_history(session, message, norm_answer)
+            self.sessions.save(session)
+            return self._response(
+                session_id,
+                norm_answer,
+                [],
+                False,
+                intent,
+                session,
+                agents_used,
+            )
+
+        # A question the verified glossary can answer is answered before any
+        # funnel gets to re-ask its parameter.  This has to sit ahead of the
+        # project/warm-floor branch: live QA showed «PEX-a или PE-RT?» being
+        # swallowed there and returned as the same mandatory question again.
+        glossary_answer = self._maybe_glossary_answer(message, agents_used)
+        if glossary_answer is not None:
+            self._append_history(session, message, glossary_answer)
+            self.sessions.save(session)
+            return self._response(
+                session_id,
+                glossary_answer,
+                [],
+                False,
+                intent,
+                session,
+                agents_used,
+            )
 
         project_response = self._maybe_project_cart_response(
             session_id, message, intent, session, agents_used
@@ -5693,6 +5849,12 @@ class ChatOrchestrator:
             if not product:
                 continue
             category = self.search_agent.canonical_category(product)
+            # The card's own category cannot validate the card: deriving the
+            # query category from the product made the guard a tautology, so a
+            # boiler could be shown for a radiator request without objection.
+            # Requested categories are authoritative.
+            if categories and category not in categories:
+                continue
             if not self.search_agent.matches_constraints(
                 product,
                 category,
@@ -5736,7 +5898,11 @@ class ChatOrchestrator:
             self._float_slot(session.slots.get("area_m2")),
             message,
         )
-        sizing_warning = self._consult_boiler_sizing_warning(session, cards)
+        sizing_warning = self._consult_boiler_sizing_warning(
+            session,
+            cards,
+            category=self._primary_session_category(categories),
+        )
         if sizing_warning:
             # Do not leave a contradictory free-form claim such as «идеально
             # подходит» after the warning.  In this edge case the catalog list plus
@@ -5780,9 +5946,16 @@ class ChatOrchestrator:
         self,
         session: SessionState,
         cards: list[ProductCard],
+        category: str | None = None,
     ) -> str | None:
         area = self._float_slot(session.slots.get("area_m2"))
         if not area or not cards:
+            return None
+        # A boiler-specific guard may only speak inside a boiler request.  It
+        # used to fire on any turn that had an area in the slots and a boiler
+        # among the cards, which is how a radiator question ended up answered
+        # with boiler sizing advice.
+        if category is not None and category != "boilers":
             return None
         boiler_entries: list[tuple[float, Product, ProductCard]] = []
         for card in cards:
@@ -6084,6 +6257,12 @@ class ChatOrchestrator:
         ]:
             if warm_floor_key in intent.slots:
                 session.slots[warm_floor_key] = intent.slots[warm_floor_key]
+        # Pipe facts the customer stated outright are project facts too.  The
+        # allowlist above dropped them, so «труба PE-RT 16х2,0» was parsed
+        # correctly and then forgotten by the next turn.
+        for pipe_key in ["pipe_material", "diameter_mm", "wall_thickness_mm"]:
+            if intent.slots.get(pipe_key) is not None:
+                session.slots[pipe_key] = intent.slots[pipe_key]
         if intent.slots.get("system_type"):
             session.slots["system_type"] = intent.slots["system_type"]
         if intent.slots.get("floors"):
@@ -6288,7 +6467,15 @@ class ChatOrchestrator:
             named = ["boilers", "pumps"]
         if named:
             return named, slots
-        # Проект известен (площадь/источник), товар не назван — стартуем с котла.
+        # Товар в этой реплике не назван — значит, это продолжение уже идущей
+        # ветки, и категорию задаёт она. Раньше здесь безусловно возвращались
+        # котлы, и «А алюминиевые или биметалл?» в разговоре про радиаторы
+        # приносило карточку электрокотла: площадь 14 м² была в слотах, а
+        # активная категория не учитывалась.
+        active_category = session.category
+        if active_category in self.engineering_requirements.CATEGORIES:
+            return [active_category], slots
+        # Проект известен (площадь/источник), ветки нет — стартуем с котла.
         if session.slots.get("area_m2") or session.slots.get("heat_sources"):
             return ["boilers"], slots
         return [], slots
@@ -8463,7 +8650,23 @@ class ChatOrchestrator:
         # «Чем газовый котёл лучше электрического?» — слова разнесены, поэтому
         # одной подстрокой такое не поймать.
         comparative = bool(re.search(r"\bчем\b.{0,40}\b(?:лучше|хуже|выгоднее|надежнее)", text))
-        if not comparative and not any(marker in text for marker in consult_markers):
+        # Просьба помочь с выбором — это класс, а не список формулировок.
+        # Плоский перечень выше знал «что выбрать», но не «как выбрать»,
+        # «что посоветуете», «что мне брать», «на чём остановиться».
+        asks_for_choice = bool(
+            re.search(
+                r"\b(?:что|чего|какой|какая|какое|какую|каких|чем|как|на\s+чем)\b"
+                r"[^.?!]{0,24}"
+                r"\b(?:лучше|хуже|выбрать|выбирать|брать|взять|посовет|"
+                r"предпочт|оптимальн|остановит|определит|рекоменд)",
+                text,
+            )
+        )
+        if not (
+            comparative
+            or asks_for_choice
+            or any(marker in text for marker in consult_markers)
+        ):
             return None
 
         pending = normalize_text(session.pending_question or "")
@@ -8587,6 +8790,54 @@ class ChatOrchestrator:
             return answer
         session.slots[flag] = True
         return f"{answer}\n\n{hint}"
+
+    def _maybe_commerce_answer(
+        self,
+        message: str,
+        session: SessionState,
+        agents_used: list[str],
+    ) -> tuple[str, str] | None:
+        """Ответить по коммерческой теме и не запускать подбор товара.
+
+        Возвращает пару «интент, ответ». Интеграции с CRM нет, поэтому
+        честный результат здесь — назвать, что именно нужно от покупателя, и
+        передать это менеджеру вместе с историей. Это лучше, чем воронка
+        подбора трубы в ответ на вопрос о возврате.
+        """
+
+        topic = match_commerce_topic(message)
+        if topic is None:
+            return None
+        # Уже идущая передача менеджеру обрабатывается своим сценарием: там
+        # собирают контакт и согласие, перебивать её нельзя.
+        if session.pending_handoff:
+            return None
+
+        order_id = order_number(message)
+        if order_id:
+            session.slots["order_id"] = order_id
+        known: list[str] = []
+        if session.slots.get("order_id"):
+            known.append("номер заказа")
+        if self.handoff.extract_contact(message):
+            known.append("телефон или почта, на которые он оформлен")
+
+        # Повтор той же темы без новых фактов не должен повторять весь список
+        # требований: покупатель его уже прочитал, и разговор буксует.
+        repeat = 0
+        if session.slots.get("commerce_topic") == topic.key and not order_id and not known:
+            repeat = int(session.slots.get("commerce_topic_repeat") or 0) + 1
+        session.slots["commerce_topic"] = topic.key
+        session.slots["commerce_topic_repeat"] = repeat
+
+        agents_used.append("CommerceRouterAgent")
+        answer = compose_commerce_answer(
+            topic,
+            order_id=order_id,
+            already_known=tuple(known),
+            repeat=repeat,
+        )
+        return f"commerce_{topic.key}", answer
 
     def _maybe_meta_question(self, message: str) -> str | None:
         """Questions about commercial terms not in the feed (discount/delivery/warranty/payment)."""
@@ -12150,6 +12401,118 @@ class ChatOrchestrator:
             "и перед повторным запуском поручите его проверку специалисту."
         )
 
+    # Words that make a turn about gas as a medium rather than about a product
+    # that merely happens to burn it.  Used both to trigger the gas-work guard
+    # and to keep the electrical guard away from gas questions.
+    _GAS_MEDIUM_MARKERS = (
+        "газ",
+        "магистрал",
+        "газопровод",
+        "газовик",
+        "горгаз",
+        "голубое топливо",
+    )
+    _GAS_WORK_MARKERS = (
+        "врез",
+        "подключ",
+        "подсоедин",
+        "переподключ",
+        "перенест",
+        "перенос",
+        "сварить",
+        "сварка",
+        "шланг",
+        "герметик",
+        "фум",
+        "резьб",
+        "смонтир",
+        "монтаж",
+        "установ",
+        "запуст",
+        "опресс",
+    )
+    _GAS_SELF_SERVICE_MARKERS = (
+        "сам",
+        "самостоятельн",
+        "своими руками",
+        "без газовик",
+        "не вызыва",
+        "не вызвать",
+        "пошагов",
+        "инструкц",
+        "последовательност",
+        "как правильно",
+    )
+
+    def _mentions_gas_medium(self, text: str) -> bool:
+        # «газовый котёл» as a product name is not by itself a gas-work turn;
+        # the caller pairs this with an action or a self-service marker.
+        return any(marker in text for marker in self._GAS_MEDIUM_MARKERS)
+
+    def _maybe_gas_work_answer(
+        self,
+        message: str,
+        session: SessionState,
+    ) -> str | None:
+        """Refuse to guide gas work, without dropping the customer.
+
+        Live QA showed the previous behaviour: a request to tap into a gas main
+        produced an answer about connecting an *electric* boiler to a socket,
+        because the electrical guard matched the word «подключить» first and had
+        no notion of gas at all.  Connecting, welding, moving or sealing a gas
+        line is a licensed activity, so it gets its own refusal — and the refusal
+        has to survive the follow-up questions that always come after it.
+        """
+
+        text = normalize_text(message)
+        if not text:
+            return None
+
+        active = bool(session.slots.get("gas_work_safety_active"))
+        expires_at = session.slots.get("gas_work_safety_expires_at")
+        if (
+            active
+            and isinstance(expires_at, int)
+            and len(session.history) > expires_at
+        ):
+            active = False
+            for key in ["gas_work_safety_active", "gas_work_safety_expires_at"]:
+                session.slots.pop(key, None)
+
+        mentions_gas = self._mentions_gas_medium(text)
+        names_action = any(marker in text for marker in self._GAS_WORK_MARKERS)
+        self_service = any(
+            marker in text for marker in self._GAS_SELF_SERVICE_MARKERS
+        )
+
+        if mentions_gas and (names_action or self_service):
+            triggered = True
+        elif active and (names_action or self_service or mentions_gas):
+            # «Ну хотя бы какой шланг и герметик взять» is a continuation of the
+            # same request even when it no longer repeats the word «магистраль».
+            triggered = True
+        else:
+            triggered = False
+
+        if not triggered:
+            return None
+
+        session.slots["gas_work_safety_active"] = True
+        session.slots["gas_work_safety_expires_at"] = len(session.history) + 6
+
+        return (
+            "Инструкцию по подключению к газу я не дам — ни пошагово, ни "
+            "материалами. Врезку, подключение и пуск газового оборудования "
+            "выполняет только организация с допуском на газоопасные работы: "
+            "самовольное подключение незаконно и опасно, а при утечке "
+            "страховка и гарантия на оборудование не действуют. "
+            "Порядок такой: заявка в газовую службу, проект и техусловия, "
+            "монтаж силами допущенной организации, затем пуск и акт. "
+            "Чем помогу: подобрать сам котёл и обвязку после котла — трубы, "
+            "краны, фильтр, группу безопасности, — и подготовить перечень к "
+            "приходу специалистов."
+        )
+
     def _maybe_gas_safety_answer(
         self,
         message: str,
@@ -12512,6 +12875,13 @@ class ChatOrchestrator:
     ) -> str | None:
         """Stop unsafe electrical-installation advice before catalogue routing."""
         text = normalize_text(message)
+        # Hazards are typed: a question about gas is never answered with advice
+        # about mains electricity, however many shared words the two have.
+        if self._mentions_gas_medium(text) and not any(
+            marker in text
+            for marker in ["электр", "розет", "220", "380", "квт", "кабел", "узо"]
+        ):
+            return None
         safety_expires_at = session.slots.get("electrical_safety_expires_at")
         safety_active = bool(session.slots.get("electrical_safety_active"))
         if (
@@ -12941,28 +13311,7 @@ class ChatOrchestrator:
         """Keep an active leak out of catalog search until the danger is contained."""
         text = normalize_text(message)
         emergency_state = session.slots.get("water_emergency")
-        water_shut = any(
-            marker in text
-            for marker in [
-                "воду перекрыл",
-                "воду перекрыла",
-                "воду перекрыли",
-                "перекрыл воду",
-                "перекрыла воду",
-                "стояк перекрыл",
-                "стояк перекрыли",
-                "подачу воды перекрыл",
-                "подача воды остановлена",
-                "вода больше не течет",
-                "вода больше не течёт",
-                "радиатор перекрыл",
-                "батарею перекрыл",
-                "краны радиатора перекрыл",
-                "отопление перекрыл",
-                "теплоноситель больше не течет",
-                "теплоноситель больше не течёт",
-            ]
-        )
+        water_shut = _reports_flow_contained(text)
         flood_markers = ["затоп", "заливает", "топит сосед", "потоп"]
         rupture_markers = ["прорвало", "прорыв", "лопнула", "разорвало"]
         water_fixture_markers = [
@@ -13641,16 +13990,29 @@ class ChatOrchestrator:
                 intent.slots["warm_floor_heat_source"] = "котёл"
 
         if pending_asks_floor_area or (warm_floor_scope and warm_floor_correction):
-            area_match = re.search(
-                r"(?<!\d)(\d{1,4}(?:[,.]\d+)?)\s*"
-                r"(?:м2|м²|кв(?:\.?\s*м)?|квадрат\w*|метр\w*)?\b",
-                text,
-            )
+            # The unit used to be optional here, so the first number in the turn
+            # became the floor area whatever it actually measured: «труба 16х2,0»
+            # set 2 m² and «шаг 15 см» set 15 m² over an already known area.
+            # Candidates now go through the shared typed validator, which admits
+            # a bare number only as the answer to the question that was asked.
             area_token = (
-                warm_floor_correction.group(1)
-                if warm_floor_correction
-                else area_match.group(1) if area_match else None
+                warm_floor_correction.group(1) if warm_floor_correction else None
             )
+            if area_token is None:
+                for candidate in re.finditer(
+                    r"(?<!\d)(\d{1,4}(?:[,.]\d+)?)", text
+                ):
+                    value = float(candidate.group(1).replace(",", "."))
+                    if numeric_slot_has_compatible_context(
+                        "warm_floor_area_m2",
+                        value,
+                        message=text,
+                        pending_slot_keys=(
+                            ["warm_floor_area_m2"] if pending_asks_floor_area else []
+                        ),
+                    ):
+                        area_token = candidate.group(1)
+                        break
             if area_token:
                 area = float(area_token.replace(",", "."))
                 if 1 <= area <= 10000:
@@ -14890,6 +15252,152 @@ class ChatOrchestrator:
             parts.append(str(query.brand))
         return " ".join(parts)
 
+    # Ссылка на термин из вопроса самого бота: «они», «это», «такое».
+    _ANAPHORIC_TERM_RE = re.compile(
+        r"\b(?:чем\s+)?(?:они|их|это|этот|эта|эти|такое|таком)\b"
+    )
+    _ASKS_DIFFERENCE_RE = re.compile(r"\b(?:отлич\w*|разниц\w*|разн\w*)\b")
+    _ASKS_HOW_TO_TELL_RE = re.compile(
+        r"\b(?:как|чем)\b[^.?!]{0,24}\b(?:определ\w*|узна\w*|пон\w*|различ\w*|измер\w*|посмотр\w*)"
+    )
+
+    # Как определить величину на месте. Отвечает на «как узнать?», когда
+    # покупатель не знает параметр, а не не знает слова.
+    _MEASUREMENT_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
+        (
+            ("резьб", "вр-вр", "вр-нр", "нр-нр", "вр/вр", "вр/нр", "нр/нр"),
+            "Определить просто по виду. Внутренняя резьба (ВР) нарезана внутри "
+            "детали — ответная труба или фитинг вкручивается ВНУТРЬ. Наружная "
+            "(НР) нарезана снаружи, по внешней поверхности — на неё гайка "
+            "накручивается СВЕРХУ. Посмотрите на оба конца имеющейся детали: "
+            "если резьбу видно снаружи — это НР, если приходится заглядывать "
+            "внутрь — ВР. Размер (1/2, 3/4) при этом меряют не линейкой по "
+            "резьбе, а берут из маркировки или по наружному диаметру трубы.",
+        ),
+        (
+            ("диаметр", "размер в мм", "типоразмер"),
+            "Наружный диаметр трубы измеряют штангенциркулем или обхватывают "
+            "ниткой и делят длину на 3,14. У металлических резьбовых труб "
+            "маркировка идёт по условному проходу (внутреннему), у "
+            "полипропилена и PEX — по наружному, поэтому одно и то же число "
+            "в двух системах означает разное.",
+        ),
+        (
+            ("монтажн", "межосев"),
+            "Монтажная длина — расстояние между плоскостями присоединения, по "
+            "которому деталь встаёт в разрыв трубы. Меряют рулеткой от торца "
+            "до торца уже снятой детали либо по расстоянию между ответными "
+            "патрубками.",
+        ),
+    )
+
+    def _maybe_pending_term_answer(
+        self,
+        message: str,
+        session: SessionState,
+        agents_used: list[str],
+    ) -> str | None:
+        """Объяснить термин, который бот сам назвал в своём вопросе.
+
+        Живой пробой: на «Уточните тип резьбы: ВР-ВР, ВР-НР или НР-НР» ответ
+        «а чем они отличаются?» возвращал тот же вопрос. Справочник искал
+        термин в реплике покупателя, а термин стоял в вопросе бота — «они» и
+        «это» до него не дотягивались. Определения при этом были.
+        """
+
+        pending = str(session.pending_question or "")
+        if not pending:
+            return None
+        pending_text = normalize_text(pending)
+        # Выбор между типами товара разбирает `_maybe_consultation_answer` —
+        # там сравнение по существу (газ и дымоход против выделенной мощности),
+        # а здесь получилось бы определение слова «котёл». Условия те же, что
+        # использует сам консультационный путь.
+        if ("газов" in pending_text and "электрическ" in pending_text) or (
+            "одноконтурн" in pending_text and "двухконтурн" in pending_text
+        ):
+            return None
+        text = normalize_text(message)
+        if not text or len(text.split()) > 9:
+            return None
+        # У реплики не должно быть своего термина: тогда её разбирает обычный
+        # путь справочника, и подменять его контекстом вопроса не нужно.
+        if self.composer.has_glossary_definition(message):
+            return None
+
+        asks_difference = bool(self._ASKS_DIFFERENCE_RE.search(text))
+        asks_how = bool(self._ASKS_HOW_TO_TELL_RE.search(text))
+        asks_meaning = bool(self._ANAPHORIC_TERM_RE.search(text)) and any(
+            marker in text
+            for marker in ("что", "значит", "такое", "не понимаю", "не знаю")
+        )
+        if not (asks_difference or asks_how or asks_meaning):
+            return None
+
+        parts: list[str] = []
+        if asks_difference or asks_meaning:
+            parts.extend(self.composer.glossary_definitions(pending))
+        if asks_how or not parts:
+            pending_text = normalize_text(pending)
+            for markers, hint in self._MEASUREMENT_HINTS:
+                if any(marker in pending_text for marker in markers):
+                    parts.append(hint)
+                    break
+        if not parts:
+            return None
+
+        agents_used.append("ResponseComposerAgent")
+        # Вопрос остаётся открытым, но повторяется одной строкой, а не анкетой.
+        parts.append(f"Возвращаюсь к подбору: {pending}")
+        return self._guard_composed_answer(" ".join(parts), "generic", agents_used)
+
+    def _maybe_glossary_answer(
+        self,
+        message: str,
+        agents_used: list[str],
+    ) -> str | None:
+        """Answer a terminology or comparison question from the verified table.
+
+        A confirmed glossary hit outranks the probabilistic turn classifier, so
+        this needs neither an LLM nor a pending-question check.  The gate stays
+        narrow on purpose: an ordinary «?» is not enough, because a product
+        request such as «А если взять электрический котёл?» would otherwise come
+        back as a definition of «котёл» instead of a new selection.
+        """
+
+        text = normalize_text(message)
+        if not text:
+            return None
+        asks_about_term = bool(
+            re.search(r"\bили\b", text)
+            or any(
+                marker in text
+                for marker in [
+                    "что лучше",
+                    "какой лучше",
+                    "какая лучше",
+                    "какое лучше",
+                    "какую лучше",
+                    "что выбрать",
+                    "какой выбрать",
+                    "какую выбрать",
+                    "в чем разница",
+                    "что такое",
+                    "что значит",
+                    "чем отлич",
+                    "объясни",
+                    "расскажи",
+                ]
+            )
+        )
+        if not asks_about_term:
+            return None
+        if not self.composer.has_glossary_definition(message):
+            return None
+        agents_used.append("ResponseComposerAgent")
+        answer = self.composer.compose_term_consult(message)
+        return self._guard_composed_answer(answer, "generic", agents_used)
+
     def _maybe_explain_requested_topic(
         self,
         message: str,
@@ -14935,6 +15443,33 @@ class ChatOrchestrator:
                 "расскажи",
             ]
         )
+        # «PEX-a или PE-RT?», «что лучше», «в чём разница» — это тоже просьба
+        # объяснить, а не игнорирование анкеты. Без этих форм живой прогон
+        # возвращал покупателю тот же обязательный вопрос вместо ответа.
+        compares_options = bool(
+            re.search(r"\bили\b", text)
+            or any(
+                marker in text
+                for marker in [
+                    "что лучше",
+                    "какой лучше",
+                    "какая лучше",
+                    "какое лучше",
+                    "какую лучше",
+                    "что выбрать",
+                    "в чем разница",
+                    "какой выбрать",
+                    "какую выбрать",
+                ]
+            )
+        )
+        if not (looks_like_question or compares_options):
+            return None
+
+        glossary_answer = self._maybe_glossary_answer(message, agents_used)
+        if glossary_answer is not None:
+            return glossary_answer
+
         if not looks_like_question:
             return None
 
@@ -16216,6 +16751,195 @@ class ChatOrchestrator:
         text = re.sub(r"(?m)^\s{0,3}#{1,6}\s+", "", text)
         return text.strip()
 
+    # Интенты, где названная марка не означает запрос товара.
+    _NON_CATALOG_INTENTS = frozenset(
+        {
+            "small_talk",
+            "out_of_scope",
+            "handoff_request",
+            "handoff_control",
+            "assistant_boundary",
+            "gas_safety",
+            "gas_work_safety",
+            "electrical_safety",
+            "water_heater_safety",
+            "emergency",
+        }
+    )
+
+    _CLARIFICATION_MEMORY = 6
+
+    # Глаголы-просьбы: покупатель ставит новую задачу, а не отвечает на вопрос.
+    _NEW_REQUEST_VERBS = (
+        "собери",
+        "соберите",
+        "посчита",
+        "предложи",
+        "покажи",
+        "дайте",
+        "дай ",
+        "пришли",
+        "отправ",
+        "оформ",
+        "замени",
+        "сравни",
+        "проверь",
+        "найди",
+        "подбери",
+    )
+
+    _QUESTION_WORDS = (
+        "что такое",
+        "что значит",
+        "чем отлич",
+        "в чем разница",
+        "почему",
+        "зачем",
+        "сколько стоит",
+        "как ",
+        "когда ",
+        "где ",
+    )
+
+    def _turn_looks_like_answer(self, message: str) -> bool:
+        """Похож ли ход на ответ боту, а не на новую просьбу или вопрос.
+
+        Намеренно грубо и детерминированно: это не замена интерпретации слотов,
+        а защита от повтора одного и того же уточнения в ответ на реплику,
+        которая на него заведомо не отвечает.
+        """
+
+        text = normalize_text(message)
+        if not text:
+            return False
+        if any(verb in text for verb in self._NEW_REQUEST_VERBS):
+            return False
+        if any(word in text for word in self._QUESTION_WORDS):
+            return False
+        if "?" in message:
+            return False
+        # Короткая реплика без просьб и вопросов — почти всегда ответ:
+        # «PPR», «20 мм», «для отопления».
+        return len(text.split()) <= 8
+
+    def _escalate_repeated_clarification(
+        self,
+        answer: str,
+        cards: list[ProductCard],
+        intent: IntentResult,
+        session: SessionState,
+    ) -> str:
+        """Не задавать один и тот же уточняющий вопрос третий раз.
+
+        Лестница эскалации в оркестраторе существовала, но для части вопросов
+        никогда не запускалась: ``sync_pending_question_state`` удаляет вопрос,
+        у которого не удалось определить ожидаемые слоты, и счётчик попыток не
+        рос. В живом прогоне это дало «Уточните система: PPR или канализация»
+        три хода подряд, что бы покупатель ни писал.
+
+        Счётчик повторов держится отдельно от отложенного вопроса и поэтому не
+        зависит от того, удалось ли разобрать его слоты.
+        """
+
+        if cards or not answer.strip():
+            return answer
+        # Безопасность и авария повторяются намеренно: пока течь не остановлена,
+        # покупатель обязан получать ту же инструкцию, сколько бы раз ни писал.
+        if intent.intent_type in self._NON_CATALOG_INTENTS:
+            return answer
+        normalized = normalize_text(answer)
+        # Повторное объяснение — не повторный вопрос. Содержательный ответ,
+        # который заканчивается предложением уточнить, эскалировать нельзя:
+        # на «а в чём разница?» покупатель обязан получить разницу и во второй
+        # раз. Голая воронка отличается от объяснения длиной.
+        if len(answer.strip()) > 300:
+            return answer
+        asks = answer.strip().endswith("?") or any(
+            marker in normalized
+            for marker in ("уточните", "подскажите", "укажите", "напишите")
+        )
+        refuses = any(
+            marker in normalized
+            for marker in ("не дам", "нельзя", "не подключайте", "допуск", "не вправе")
+        )
+        # Существующая лестница эскалации в `_set_structured_pending_question`
+        # знает конкретный слот и формулирует точнее. Если она уже дошла до
+        # предложения менеджера, подменять её своей — значит выдать покупателю
+        # два разных «давайте передадим» подряд.
+        if "менеджер" in normalized:
+            return answer
+        if not asks or refuses:
+            return answer
+
+        signature = normalized[:120]
+        seen = list(session.recent_clarifications or [])
+        # Если реплика заведомо не отвечает на заданный вопрос, ждать третьего
+        # повтора незачем: повторять его дословно бессмысленно уже во второй раз.
+        message = str(getattr(self._request_agents, "message", "") or "")
+        threshold = 2 if self._turn_looks_like_answer(message) else 1
+        if seen.count(signature) >= threshold:
+            # Третий раз повторять бессмысленно: объясняем, что мешает, и даём
+            # покупателю выход вместо той же фразы.
+            session.recent_clarifications = (seen + [signature])[-self._CLARIFICATION_MEMORY :]
+            return (
+                "Вижу, что спрашиваю одно и то же и мы не двигаемся. "
+                "Без этого параметра я не подставлю случайный товар, но и "
+                "буксовать не буду. Могу пойти двумя путями: показать, что есть "
+                "в наличии по остальным вашим условиям, чтобы вы выбрали "
+                "подходящее исполнение, — или передать задачу менеджеру с тем, "
+                "что уже известно. Напишите «покажите варианты» или "
+                "«передай менеджеру»."
+            )
+        session.recent_clarifications = (seen + [signature])[-self._CLARIFICATION_MEMORY :]
+        return answer
+
+    def _exact_identity_disclaimer(
+        self,
+        answer: str,
+        cards: list[ProductCard],
+        intent: IntentResult,
+        session: SessionState,
+    ) -> str:
+        """Сказать прямо, что названной позиции в каталоге нет.
+
+        Живой прогон: на «Полотенцесушитель Сунержа Модус 800х500 есть в
+        наличии?» бот молча показывал три позиции MELODIA другого размера. Ни
+        «Сунержа», ни «Модус» в каталоге не существует, и покупатель имеет право
+        узнать об этом раньше, чем увидит чужие карточки.
+
+        Проверка стоит на общей точке сериализации, поэтому её нельзя обойти
+        отдельной веткой оркестратора.
+        """
+
+        if not cards:
+            return answer
+        if intent.intent_type in self._NON_CATALOG_INTENTS:
+            return answer
+        # Свободный текст внутри идущей воронки — это ответ на вопрос бота,
+        # а не заявка на конкретную марку.
+        if session.pending_question:
+            return answer
+        message = str(getattr(self._request_agents, "message", "") or "")
+        if not message:
+            return answer
+        unknown = self.search_agent.unknown_identity_tokens(message)
+        if not unknown:
+            return answer
+        # Показанное действительно не является названным: карточки пришли из
+        # категорийного поиска, а не по этой марке.
+        shown = normalize_text(
+            " ".join(f"{card.sku} {card.name}" for card in cards)
+        )
+        if any(normalize_text(token) in shown for token in unknown):
+            return answer
+        named = ", ".join(dict.fromkeys(unknown))
+        disclaimer = (
+            f"Точной позиции «{named}» в каталоге не нахожу. "
+            "Ниже — близкие аналоги из ассортимента; сверьте размеры и "
+            "подключение, они могут отличаться от запрошенной модели."
+        )
+        return f"{disclaimer}\n{answer}"
+
     def _response(
         self,
         session_id: str,
@@ -16283,7 +17007,24 @@ class ChatOrchestrator:
             if "GuardrailsAgent" not in agents_used:
                 agents_used.append("GuardrailsAgent")
 
+        answer = self._exact_identity_disclaimer(answer, cards, intent, session)
+        answer = self._escalate_repeated_clarification(answer, cards, intent, session)
         answer = self._sanitize_customer_answer(answer)
+        # Operational facts — a company phone, a turnaround promise, opening
+        # hours, a delivery date — cannot be derived from the feed, so no branch
+        # is allowed to state one that business config does not confirm.  This
+        # sits at the single serialization boundary precisely so a future branch
+        # cannot bypass it the way the consultant path did.
+        answer, operational_issues = self.guardrails.strip_unverified_operational_claims(
+            answer
+        )
+        if operational_issues:
+            logger.warning(
+                "Removed unverified operational claims: %s",
+                "; ".join(operational_issues),
+            )
+            if "GuardrailsAgent" not in agents_used:
+                agents_used.append("GuardrailsAgent")
         if (
             session.history
             and session.history[-1].get("role") == "assistant"

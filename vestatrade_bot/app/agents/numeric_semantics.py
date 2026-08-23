@@ -32,6 +32,7 @@ _TEMPERATURE_UNIT = r"(?:°\s*[cс]|градус\w*|c\b)"
 _PRESSURE_UNIT = r"(?:бар\w*|bar\b|атм(?:осфер\w*)?)"
 _MONEY_UNIT = r"(?:руб\w*|р\b|тыс(?:яч\w*)?|т\s*\.?\s*р\.?|к\b)"
 _METRE_UNIT = r"(?:м\b|метр(?:а|ов)?)"
+_AREA_UNIT = r"(?:м\s*(?:2|²)|кв\.?\s*м|квадрат\w*(?:\s+метр\w*)?)"
 
 
 def _as_float(value: str) -> float:
@@ -74,10 +75,7 @@ def _unit_family_after(text: str, end: int) -> str | None:
         ("temperature", rf"{_TEMPERATURE_UNIT}"),
         ("pressure", rf"{_PRESSURE_UNIT}"),
         ("flow", r"(?:л\s*/\s*мин|м\s*(?:3|³)\s*/\s*ч)\b"),
-        (
-            "area",
-            r"(?:м\s*(?:2|²)|кв\.?\s*м|квадрат\w*(?:\s+метр\w*)?)\b",
-        ),
+        ("area", rf"{_AREA_UNIT}\b"),
         ("power", r"(?:квт|вт|w|kw)\b"),
         ("voltage", r"(?:вольт\w*|v)\b"),
         ("volume", r"(?:л\b|литр\w*)"),
@@ -439,6 +437,30 @@ def _value_has_metric_dimension_context(text: str, value: float) -> bool:
     return False
 
 
+def _value_has_area_context(text: str, value: float) -> bool:
+    """Whether this number is stated as an area rather than some other quantity.
+
+    The live run showed why a bare positional match is not enough: in
+    ``труба 16х2,0 pe-rt, шаг 15`` both ``2,0`` and ``15`` are numbers, but one
+    is a wall thickness and the other a laying pitch in centimetres.  Neither
+    may become a floor area, so an explicit unit or an explicit label is
+    required here.
+    """
+
+    normalized = normalize_text(text)
+    for mention in _mentions_for_value(normalized, value):
+        if _is_compound_component(normalized, mention.start, mention.end):
+            continue
+        family = _unit_family_after(normalized, mention.end)
+        if family:
+            if family == "area":
+                return True
+            continue
+        if _quantity_family_before(normalized, mention.start) == "area":
+            return True
+    return False
+
+
 def numeric_slot_has_compatible_context(
     key: str,
     value: float,
@@ -487,6 +509,19 @@ def numeric_slot_has_compatible_context(
         if any(_value_has_money_context(part, value) for part in candidates):
             return True
         return key in pending and _is_bare_scalar_answer(message, value)
+
+    if key in {"area_m2", "warm_floor_area_m2"}:
+        if any(_value_has_area_context(part, value) for part in candidates):
+            return True
+        # A bare number is admitted only as the answer to a question the bot
+        # actually asked; otherwise any digit in the turn could become an area.
+        # Plain metres count there: asked «какая площадь тёплого пола?», people
+        # routinely answer «240 метров» and mean square metres.
+        return key in pending and _is_bare_scalar_answer(
+            message,
+            value,
+            unit_pattern=rf"(?:{_AREA_UNIT}|{_METRE_UNIT})",
+        )
 
     if key == "diameter_mm":
         if any(_value_has_metric_dimension_context(part, value) for part in candidates):

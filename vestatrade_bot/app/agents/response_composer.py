@@ -265,6 +265,36 @@ class ResponseComposerAgent:
             "у него проход меньше и сопротивление выше.",
         ),
         (
+            ("pex-a или pe-rt", "pe-rt или pex-a", "пекс-а или пе-рт", "pex или pe-rt"),
+            "PEX-a и PE-RT для тёплого пола оба подходят: рабочая температура "
+            "контура низкая (обычно 35–45 °C). Разница в другом. PEX-a — сшитый "
+            "полиэтилен с самой высокой степенью сшивки и эффектом памяти формы: "
+            "залом можно отогреть строительным феном, труба держит форму, "
+            "монтируется аксиальными фитингами с надвижной гильзой. PE-RT — "
+            "термостойкий полиэтилен без сшивки: заметно гибче, дешевле, проще в "
+            "укладке с малым шагом, но памяти формы у него нет и запас по "
+            "температуре меньше. Для длинных контуров и повышенных температур "
+            "берут PEX-a, для обычного пола в жилой комнате достаточно PE-RT. "
+            "В обоих случаях труба обязана иметь кислородный барьер EVOH, иначе "
+            "металлические узлы системы будут корродировать.",
+        ),
+        (
+            ("pex-a", "пекс-а", "pe-x a"),
+            "PEX-a — сшитый полиэтилен пероксидным способом, самая высокая степень "
+            "сшивки среди PEX. Обладает памятью формы: залом отогревают феном, и "
+            "труба восстанавливается. Держит повышенные температуры и давление, "
+            "монтируется аксиальными фитингами с надвижной гильзой. Для тёплого "
+            "пола нужен вариант с кислородным барьером EVOH.",
+        ),
+        (
+            ("pe-rt", "пе-рт", "перт"),
+            "PE-RT — термостойкий полиэтилен без сшивки. Гибче и дешевле PEX, "
+            "удобен для укладки тёплого пола с малым шагом, соединяется как "
+            "сваркой, так и обжимными фитингами. Памяти формы нет, запас по "
+            "температуре меньше, чем у PEX-a. Для тёплого пола нужен вариант с "
+            "кислородным барьером EVOH.",
+        ),
+        (
             ("американк", "полусгон"),
             "Американка — разъёмное резьбовое соединение с накидной гайкой. Позволяет снять "
             "прибор или насос, не разбирая трубопровод.",
@@ -354,6 +384,40 @@ class ResponseComposerAgent:
             "например, из системы обратно в водопровод.",
         ),
     )
+
+    def glossary_definitions(self, message: str, limit: int = 4) -> list[str]:
+        """Все определения из справочника, встреченные в тексте.
+
+        ``_glossary_definition`` возвращает одно — самое длинное совпадение.
+        Этого хватает для «что такое X», но не для «чем они отличаются?» по
+        вопросу вида «ВР-ВР, ВР-НР или НР-НР»: там нужно объяснить все
+        предложенные варианты, а не первый из них.
+        """
+
+        text = normalize_text(message)
+        found: list[tuple[int, str]] = []
+        seen: set[str] = set()
+        for spellings, definition in self.TERM_GLOSSARY:
+            if definition in seen:
+                continue
+            for spelling in spellings:
+                needle = normalize_text(spelling)
+                if needle and needle in text:
+                    found.append((text.index(needle), definition))
+                    seen.add(definition)
+                    break
+        found.sort(key=lambda item: item[0])
+        return [definition for _, definition in found[:limit]]
+
+    def has_glossary_definition(self, message: str) -> bool:
+        """Whether this turn names a term the verified glossary can define.
+
+        A confirmed table hit is stronger evidence about what the customer wants
+        than a probabilistic turn classifier, so callers may use it to answer a
+        question directly instead of returning the parameter funnel.
+        """
+
+        return self._glossary_definition(message) is not None
 
     def _glossary_definition(self, message: str) -> str | None:
         text = normalize_text(message)

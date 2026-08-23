@@ -503,6 +503,7 @@ class FeedSearchAgent:
         self._canonical_category_cache: dict[int, str] = {}
         self._model_key_cache: dict[str, str] = {}
         self._brand_word_key_cache: set[str] | None = None
+        self._catalog_word_key_cache: set[str] | None = None
         self._product_identity_cache: dict[int, ProductIdentityFacts] = {}
         self._sku_mention_patterns: list[
             tuple[Product, re.Pattern[str], int]
@@ -517,6 +518,7 @@ class FeedSearchAgent:
         # у того же артикула они могли измениться.
         self._model_key_cache.clear()
         self._brand_word_key_cache = None
+        self._catalog_word_key_cache = None
         self._sku_mention_patterns = self._build_sku_mention_patterns(products)
 
     @staticmethod
@@ -1441,6 +1443,11 @@ class FeedSearchAgent:
 
         if self._is_actual_hydraulic_accumulator(product):
             return "hydraulic_accumulators"
+        # Водо- и теплосчётчики: 62 позиции каталога, которым до сих пор не
+        # соответствовала ни одна внутренняя категория — они все попадали в
+        # «other» и были недоступны для подбора.
+        if "счетчик" in path or "счетчик" in name or "водомер" in name:
+            return "meters"
         if self._is_actual_filter(product):
             return "filters"
         if self._is_actual_water_heater(product):
@@ -1592,6 +1599,59 @@ class FeedSearchAgent:
         r"(?:\s*[-/]\s*\d{1,4}){0,3}",
         re.IGNORECASE,
     )
+
+    # Слово-имя: латиница целиком либо кириллица с заглавной. Числа, единицы и
+    # размеры сюда не попадают — они не являются идентичностью товара.
+    _NAME_TOKEN_RE = re.compile(r"[A-Za-zА-ЯЁа-яё][A-Za-zА-ЯЁа-яё.\-]{2,}")
+
+    def _catalog_word_keys(self) -> set[str]:
+        """Все слова из названий и брендов каталога, свёрнутые в ключи."""
+        if self._catalog_word_key_cache is None:
+            words: set[str] = set()
+            for product in self.products:
+                source = f"{product.name} {product.brand or ''} {product.category_path}"
+                for word in re.split(r"[\s./\-,()«»\"]+", source):
+                    key = fold_model_key(word)
+                    if len(key) >= 3:
+                        words.add(key)
+            self._catalog_word_key_cache = words
+        return self._catalog_word_key_cache
+
+    def unknown_identity_tokens(self, message: str) -> list[str]:
+        """Слова-имена из реплики, которых нет в каталоге ни в каком виде.
+
+        Покупатель, назвавший «Сунержа Модус», заслуживает честного «такой
+        позиции не нахожу», а не трёх позиций другого бренда молча. Здесь
+        намеренно узкое определение имени: латинское слово или кириллическое
+        с заглавной буквы не в начале фразы. Первое слово пропускается, потому
+        что предложение и так начинается с заглавной, а падежные формы
+        нарицательных («Котла», «Трубы») не должны считаться марками.
+        """
+
+        if not self.products or not message:
+            return []
+        known = self._catalog_word_keys()
+        brand_words = self._brand_word_keys()
+        text = str(message)
+        unknown: list[str] = []
+        for match in self._NAME_TOKEN_RE.finditer(text):
+            token = match.group(0).strip(".-")
+            if len(token) < 3:
+                continue
+            is_latin = bool(re.fullmatch(r"[A-Za-z.\-]+", token))
+            # Заглавная в начале предложения ничего не значит: «Когда будет?»
+            # после точки — обычный вопрос, а не марка.
+            starts_sentence = not text[: match.start()].strip() or bool(
+                re.search(r"[.!?]\s*$", text[: match.start()])
+            )
+            is_capitalised = token[:1].isupper()
+            if not is_latin and not (is_capitalised and not starts_sentence):
+                continue
+            key = fold_model_key(token)
+            if len(key) < 3 or key in known or key in brand_words:
+                continue
+            unknown.append(token)
+        return unknown
 
     def find_named_models(
         self,

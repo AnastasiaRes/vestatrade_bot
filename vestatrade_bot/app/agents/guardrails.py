@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 
+from app.business_config import BusinessFacts, get_business_facts
 from app.models import GuardrailsResult, Product, ProductCard, SearchQuery
 
 from .feed_search import (
@@ -58,7 +59,108 @@ CLARIFICATION_TERMS = [
 ]
 
 
+# Операционные факты, которые модель не имеет права придумывать. Шаблоны
+# намеренно узкие: цена «14 RUB», остаток «57 шт.», температура «95 °C» и
+# артикул с цифрами обязаны проходить насквозь.
+_PHONE_RE = re.compile(
+    r"(?:\+?\s*7|\b8)\s*[\s(-]?\s*\d{3}\s*[)\s-]?\s*\d{3}\s*[-\s]?\s*\d{2}\s*[-\s]?\s*\d{2}\b"
+)
+_DURATION_PROMISE_RE = re.compile(
+    r"(?:в\s+течение|за|через|в\s+пределах)\s+"
+    # Диапазон и словесная форма считаются тем же обещанием: «за 24 часа»,
+    # «в течение 2–3 рабочих дней» и «в течение суток» одинаково непроверяемы.
+    r"(?:\d{1,3}(?:\s*[–—-]\s*\d{1,3})?\s*)?"
+    r"(?:минут\w*|мин\.?|часов|часа|час\b|рабочих\s+дн\w*|дн\w*|"
+    r"сутки|суток|недел\w*)",
+    re.IGNORECASE,
+)
+_BUSINESS_HOURS_RE = re.compile(
+    r"(?:круглосуточн\w*"
+    r"|\bработаем\s+(?:с|по|в)\s+\S+"
+    r"|\b(?:в|по)\s+(?:воскресень\w*|субботу|суббот\w*|выходны\w*)\b[^.!?]{0,40}работа\w*"
+    r"|работа\w*[^.!?]{0,30}\b(?:в|по)\s+(?:воскресень\w*|субботу|выходны\w*)\b"
+    r"|\bс\s+\d{1,2}[:.]\d{2}\s+до\s+\d{1,2}[:.]\d{2}\b"
+    r"|\bс\s+\d{1,2}\s+до\s+\d{1,2}\s+(?:часов|час\w*)\b)",
+    re.IGNORECASE,
+)
+_DELIVERY_DATE_RE = re.compile(
+    r"(?:привез\w*|достав\w*|отгруз\w*|будет\s+у\s+вас)\s+"
+    r"(?:сегодня|завтра|послезавтра|в\s+пятницу|к\s+пятнице|до\s+конца\s+дня)",
+    re.IGNORECASE,
+)
+
+_OPERATIONAL_FALLBACK = (
+    "Контакты, график и сроки подтверждает менеджер — я их не называю, "
+    "чтобы не ввести в заблуждение."
+)
+
+
 class GuardrailsAgent:
+    def strip_unverified_operational_claims(
+        self,
+        answer: str,
+        facts: BusinessFacts | None = None,
+    ) -> tuple[str, list[str]]:
+        """Убрать из ответа операционные факты, не подтверждённые конфигурацией.
+
+        Телефон компании, обещание «ответим за 15 минут», график работы и дата
+        доставки — это не свойства товара, их нельзя вывести из фида. Пока они
+        не заданы в ``business_config``, любое такое утверждение считается
+        выдуманным: предложение с ним удаляется целиком, а покупатель получает
+        честную отсылку к менеджеру.
+
+        Возвращает очищенный текст и список сработавших правил.
+        """
+
+        text = str(answer or "")
+        if not text.strip():
+            return text, []
+        known = facts if facts is not None else get_business_facts()
+
+        issues: list[str] = []
+        kept: list[str] = []
+        # Режем по предложениям и строкам: выдуманный факт удаляется вместе со
+        # своим предложением, а полезная часть ответа остаётся.
+        for line in text.split("\n"):
+            pieces = re.split(r"(?<=[.!?])\s+", line)
+            surviving: list[str] = []
+            for piece in pieces:
+                reason = self._unverified_operational_reason(piece, known)
+                if reason:
+                    issues.append(reason)
+                    continue
+                surviving.append(piece)
+            joined = " ".join(part for part in surviving if part.strip())
+            if joined.strip() or not line.strip():
+                kept.append(joined)
+
+        cleaned = "\n".join(kept)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+        if issues and not cleaned:
+            cleaned = _OPERATIONAL_FALLBACK
+        elif issues:
+            cleaned = f"{cleaned}\n{_OPERATIONAL_FALLBACK}"
+        return cleaned, issues
+
+    @staticmethod
+    def _unverified_operational_reason(
+        sentence: str,
+        facts: BusinessFacts,
+    ) -> str | None:
+        if not sentence.strip():
+            return None
+        phone = _PHONE_RE.search(sentence)
+        if phone and not facts.knows_phone(phone.group(0)):
+            return f"unverified phone number: {phone.group(0).strip()}"
+        duration = _DURATION_PROMISE_RE.search(sentence)
+        if duration and not facts.states_duration(duration.group(0)):
+            return f"unverified turnaround promise: {duration.group(0).strip()}"
+        if _BUSINESS_HOURS_RE.search(sentence) and not facts.business_hours:
+            return "unverified business hours"
+        if _DELIVERY_DATE_RE.search(sentence) and not facts.delivery:
+            return "unverified delivery date"
+        return None
+
     def validate_cards(
         self,
         cards: list[ProductCard],

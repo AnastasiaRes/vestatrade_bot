@@ -292,6 +292,10 @@ class SessionState(BaseModel):
     pending_question_state: PendingQuestionState | None = None
     pending_complectation_parts: list[str] = Field(default_factory=list)
     question_repeats: int = 0
+    # Подписи недавно заданных уточняющих вопросов. Держатся отдельно от
+    # ``pending_question_state``: тот удаляется, когда ожидаемые слоты вопроса
+    # определить не удалось, и именно такие вопросы зацикливались.
+    recent_clarifications: list[str] = Field(default_factory=list)
     handoff_status: str = "none"
     pending_handoff: dict[str, Any] | None = None
     handoff_ticket_id: str | None = None

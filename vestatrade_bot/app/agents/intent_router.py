@@ -127,9 +127,27 @@ CATEGORY_KEYWORDS: dict[str, list[str]] = {
         "газовая колонк",
         "газовый колонк",
     ],
+    "meters": [
+        "счетчик",
+        "водосчет",
+        "теплосчет",
+        "водомер",
+        "прибор учета",
+        "узел учета",
+    ],
     "filters": [
         "фильтр для воды",
         "фильтр вод",
+        # «Фильтр грубой очистки» и «косой фильтр» — самые ходовые названия, и
+        # ни одно из них не содержало слова «вода», поэтому категория не
+        # определялась вовсе.
+        "фильтр грубой очистки",
+        "грубой очистки",
+        "косой фильтр",
+        "сетчатый фильтр",
+        "магистральный фильтр",
+        "грязевик",
+        "фильтр",
         "картридж",
         "водоочист",
         "водоподготов",
@@ -339,6 +357,7 @@ VALID_INTENTS = {
     "unknown",
 }
 VALID_CATEGORIES = {
+    "meters",
     "pipes",
     "pumps",
     "boilers",
@@ -353,6 +372,20 @@ VALID_CATEGORIES = {
     "fittings",
     "other",
 }
+
+
+# Обороты, вводящие место установки, а не сам товар: «перед насосной станцией»,
+# «после котла», «вместо стальной». Объект такого предлога — ориентир, и
+# считать его запрошенной категорией нельзя.
+_LANDMARK_RE = re.compile(
+    r"\b(?:перед|после|до|за|возле|около|рядом\s+с|вместо|"
+    r"на\s+входе\s+в|на\s+выходе\s+из|на\s+вводе\s+в)\b"
+    r"(?:\s+\S+){1,4}"
+)
+
+
+def _strip_landmark_phrases(text: str) -> str:
+    return re.sub(r"\s{2,}", " ", _LANDMARK_RE.sub(" ", text)).strip()
 
 
 class IntentRouterAgent:
@@ -1092,23 +1125,54 @@ class IntentRouterAgent:
             ]
         ):
             return "fittings", 0.9
+        # Предмет запроса важнее места установки: в «фильтр перед насосной
+        # станцией» покупателю нужен фильтр, а насосная станция — ориентир.
+        # Считаем по тексту без таких оборотов; если так категория не
+        # определяется, возвращаемся к полному тексту.
+        subject_text = _strip_landmark_phrases(text)
+        best_category, best_score = self._score_categories(
+            subject_text, water_heater_accessory
+        )
+        if best_category == "other" and subject_text != text:
+            best_category, best_score = self._score_categories(
+                text, water_heater_accessory
+            )
+        if best_category == "sewer" and "труба" in text:
+            best_score = max(best_score, 0.9)
+        return best_category, best_score
+
+    def _score_categories(
+        self,
+        text: str,
+        water_heater_accessory: bool,
+    ) -> tuple[str, float]:
         best_category = "other"
         best_score = 0.0
+        best_position = len(text) + 1
         for category, keywords in CATEGORY_KEYWORDS.items():
             if category == "water_heaters" and water_heater_accessory:
                 continue
-            hits = sum(
-                1
-                for keyword in keywords
-                if normalize_text(keyword) in text and not self._is_negated(text, normalize_text(keyword))
-            )
-            if hits:
-                score = min(0.95, 0.55 + hits * 0.15)
-                if score > best_score:
-                    best_category = category
-                    best_score = score
-        if best_category == "sewer" and "труба" in text:
-            best_score = max(best_score, 0.9)
+            hits = 0
+            position = len(text) + 1
+            for keyword in keywords:
+                needle = normalize_text(keyword)
+                if needle not in text or self._is_negated(text, needle):
+                    continue
+                hits += 1
+                position = min(position, text.index(needle))
+            if not hits:
+                continue
+            score = min(0.95, 0.55 + hits * 0.15)
+            # Уточнение системы сильнее общего названия детали: «труба
+            # канализационная» — это канализация, хотя «труба» стоит первой.
+            if category == "sewer" and "канализац" in text:
+                score = max(score, 0.9)
+            # При равном счёте выигрывает названное раньше: в «фильтр перед
+            # насосом» предмет запроса — фильтр, в «насос с фильтром» — насос.
+            if score > best_score or (score == best_score and position < best_position):
+                best_category = category
+                best_score = score
+                best_position = position
         return best_category, best_score
 
     @staticmethod
