@@ -44,8 +44,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import platform
 import re
+import subprocess
 import sys
 import time
 import uuid
@@ -130,6 +133,9 @@ class DialogueRun:
     outcome: str = ""
     buyer_state: str = ""
     buyer_note: str = ""
+    execution_status: str = "valid"
+    failure_stage: str = ""
+    failure_reason: str = ""
 
     @property
     def id(self) -> str:
@@ -138,6 +144,23 @@ class DialogueRun:
     def flag(self, code: str, note: str) -> None:
         self.defects[code] += 1
         self.evidence.append(f"{code}: {note}")
+
+    def fail_execution(self, status: str, stage: str, reason: str) -> None:
+        """Пометить прогон невалидным, не смешивая сбой с исходом покупателя."""
+        self.execution_status = status
+        self.failure_stage = stage
+        self.failure_reason = reason
+
+
+@dataclass(frozen=True)
+class BuyerTurnResult:
+    """Результат одного шага модели-покупателя вместе с качеством выполнения."""
+
+    state: str = ""
+    message: str = ""
+    why: str = ""
+    error_kind: str = ""
+    error_detail: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -288,7 +311,15 @@ def run_replay(
     run = DialogueRun(scenario=scenario, session_id=session_id)
     for n, user_message in enumerate(scenario.get("recorded_user_turns") or [], start=1):
         started = time.monotonic()
-        response = bot.handle_chat(session_id, user_message)
+        try:
+            response = bot.handle_chat(session_id, user_message)
+        except Exception as exc:
+            run.fail_execution(
+                "bot_error",
+                "bot",
+                f"{type(exc).__name__}: {exc}",
+            )
+            break
         debug = response.debug or {}
         run.turns.append(
             Turn(
@@ -302,9 +333,10 @@ def run_replay(
                 category=debug.get("category"),
             )
         )
-    for detector in DETECTORS:
-        detector(run)
-    detect_fabricated_sku(run, catalog_skus)
+    if run.execution_status == "valid":
+        for detector in DETECTORS:
+            detector(run)
+        detect_fabricated_sku(run, catalog_skus)
     return run
 
 
@@ -343,13 +375,15 @@ state:
   gave_up   — дальше бессмысленно: консультант ходит по кругу.
 Если state не continue, message оставь пустым."""
 
+_MIN_BOT_TURNS_BEFORE_GIVE_UP = 3
+
 
 def _buyer_turn(
     client: OpenRouterClient,
     scenario: dict[str, Any],
     history: list[dict[str, str]],
-) -> tuple[str, str, str]:
-    """Следующая реплика покупателя, его состояние и краткое обоснование."""
+) -> BuyerTurnResult:
+    """Следующая реплика покупателя либо отдельный сбой её генерации."""
 
     # Только персона и цель. ``pass_criteria`` и ``red_flags`` описывают, что
     # должен делать КОНСУЛЬТАНТ, — в первом прогоне покупатель принял их за
@@ -370,18 +404,39 @@ def _buyer_turn(
     parsed, ok = client.complete_json(
         agent="LiveBuyer",
         messages=messages,
-        fallback={"state": "gave_up", "message": "", "why": "покупатель не ответил"},
+        fallback={"state": "__buyer_error__", "message": "", "why": ""},
     )
-    state = str(parsed.get("state") or "gave_up")
+    fallback_reason = str(getattr(client, "last_fallback_reason", None) or "").strip()
+    if not ok or fallback_reason:
+        return BuyerTurnResult(
+            error_kind="buyer_provider_error",
+            error_detail=fallback_reason or "модель-покупатель не вернула результат",
+        )
+    if getattr(client, "last_json_output_accepted", None) is False:
+        return BuyerTurnResult(
+            error_kind="buyer_invalid_output",
+            error_detail="модель-покупатель вернула невалидный JSON",
+        )
+    if not isinstance(parsed, dict):
+        return BuyerTurnResult(
+            error_kind="buyer_invalid_output",
+            error_detail="ответ модели-покупателя не является JSON-объектом",
+        )
+
+    state = str(parsed.get("state") or "").strip()
     if state not in {"continue", "satisfied", "gave_up"}:
-        state = "gave_up"
+        return BuyerTurnResult(
+            error_kind="buyer_protocol_error",
+            error_detail=f"неизвестное состояние покупателя: {state or '<empty>'}",
+        )
     message = str(parsed.get("message") or "").strip()
     why = str(parsed.get("why") or "").strip()
     if state == "continue" and not message:
-        state, why = "gave_up", why or "пустая реплика покупателя"
-    if not ok and state == "continue":
-        state, why = "gave_up", "не удалось получить реплику покупателя"
-    return state, message, why
+        return BuyerTurnResult(
+            error_kind="buyer_protocol_error",
+            error_detail="пустая реплика покупателя при state=continue",
+        )
+    return BuyerTurnResult(state=state, message=message, why=why)
 
 
 def classify_outcome(run: "DialogueRun", buyer_state: str) -> str:
@@ -414,11 +469,46 @@ def run_live(
 ) -> DialogueRun:
     session_id = f"live-{scenario['id']}-{uuid.uuid4().hex[:8]}"
     run = DialogueRun(scenario=scenario, session_id=session_id)
+    recorded_turns = scenario.get("recorded_user_turns") or []
+    opening_message = str(recorded_turns[0] if recorded_turns else "").strip()
+    if not opening_message:
+        run.fail_execution(
+            "harness_error",
+            "harness",
+            "в сценарии отсутствует фиксированная первая реплика recorded_user_turns[0]",
+        )
+        return run
+
     history: list[dict[str, str]] = []
     buyer_state = "continue"
     for n in range(1, max_turns + 1):
-        buyer_state, message, why = _buyer_turn(client, scenario, history)
+        # Первый ход — часть тестового сценария, а не генерация другой моделью.
+        # Это удерживает live-прогоны на одинаковой задаче и делает сравнение
+        # между версиями бота содержательным.
+        buyer_turn = (
+            BuyerTurnResult(state="continue", message=opening_message)
+            if n == 1
+            else _buyer_turn(client, scenario, history)
+        )
+        if buyer_turn.error_kind:
+            run.fail_execution(
+                buyer_turn.error_kind,
+                "buyer",
+                buyer_turn.error_detail,
+            )
+            run.buyer_note = buyer_turn.error_detail
+            break
+        buyer_state = buyer_turn.state
+        message = buyer_turn.message
+        why = buyer_turn.why
         if buyer_state != "continue":
+            if buyer_state == "gave_up" and len(run.turns) < _MIN_BOT_TURNS_BEFORE_GIVE_UP:
+                run.fail_execution(
+                    "buyer_protocol_error",
+                    "buyer",
+                    "покупатель сдался раньше трёх ответов бота: "
+                    f"получено {len(run.turns)}",
+                )
             run.buyer_note = why
             break
         started = time.monotonic()
@@ -443,7 +533,7 @@ def run_live(
             )
         )
         if error:
-            run.flag("tech_error", f"ход {n}: {error}")
+            run.fail_execution("bot_error", "bot", f"ход {n}: {error}")
             run.buyer_note = "технический сбой"
             break
         history.append({"role": "user", "content": message})
@@ -451,10 +541,11 @@ def run_live(
     else:
         buyer_state = "continue"
 
-    for detector in DETECTORS:
-        detector(run)
-    detect_fabricated_sku(run, catalog_skus)
-    run.outcome = classify_outcome(run, buyer_state)
+    if run.execution_status == "valid":
+        for detector in DETECTORS:
+            detector(run)
+        detect_fabricated_sku(run, catalog_skus)
+        run.outcome = classify_outcome(run, buyer_state)
     run.buyer_state = buyer_state
     return run
 
@@ -464,12 +555,187 @@ def run_live(
 # ---------------------------------------------------------------------------
 
 
-def build_report(runs: list[DialogueRun], mode: str, elapsed: float) -> dict[str, Any]:
-    turns = [turn for run in runs for turn in run.turns]
+def _sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _sha256_file(path: Path) -> str:
+    try:
+        return _sha256_bytes(path.read_bytes())
+    except OSError:
+        return ""
+
+
+def _stable_json_bytes(value: Any) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+
+
+def _runtime_tree_sha256() -> str:
+    """Отпечаток исполняемого Python-кода, включая незакоммиченные правки."""
+    files = sorted((PROJECT_ROOT / "app").rglob("*.py"))
+    files.append(Path(__file__).resolve())
+    business_config = PROJECT_ROOT / "data" / "business_config.json"
+    if business_config.exists():
+        files.append(business_config)
+
+    digest = hashlib.sha256()
+    for path in sorted(set(files)):
+        try:
+            relative = path.resolve().relative_to(PROJECT_ROOT.resolve()).as_posix()
+            payload = path.read_bytes()
+        except (OSError, ValueError):
+            continue
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(payload)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _git_manifest() -> dict[str, Any]:
+    """Версия Git без требования, что harness запущен внутри clone."""
+
+    def invoke(*args: str) -> str:
+        try:
+            completed = subprocess.run(
+                ["git", "-C", str(PROJECT_ROOT), *args],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        if completed.returncode != 0:
+            return ""
+        return completed.stdout.strip()
+
+    commit = invoke("rev-parse", "HEAD") or None
+    status = invoke(
+        "status",
+        "--porcelain",
+        "--",
+        "app",
+        "scripts/run_live_dialogues.py",
+        "data/live_dialogue_testset.json",
+        "data/business_config.json",
+    )
+    dirty = bool(status) if commit else None
+    return {
+        "commit": commit,
+        "dirty": dirty,
+        "status_sha256": _sha256_bytes(status.encode("utf-8")) if status else "",
+        "runtime_tree_sha256": _runtime_tree_sha256(),
+        "reproducible": bool(commit) and dirty is False,
+    }
+
+
+def _catalog_sha256(products: list[Any]) -> str:
+    """Порядконезависимый отпечаток реально загруженного каталога."""
+    canonical: list[dict[str, Any]] = []
+    for product in products:
+        if hasattr(product, "model_dump"):
+            payload = product.model_dump(mode="json")
+        elif hasattr(product, "dict"):
+            payload = product.dict()
+        elif isinstance(product, dict):
+            payload = dict(product)
+        else:
+            payload = {"value": str(product)}
+        # Это время создания объекта, а не бизнес-данные карточки. Оно делает
+        # одинаковый каталог разным при повторном чтении того же источника.
+        payload.pop("updated_at", None)
+        canonical.append(payload)
+    canonical.sort(
+        key=lambda item: (
+            str(item.get("sku") or ""),
+            str(item.get("name") or ""),
+            _stable_json_bytes(item),
+        )
+    )
+    return _sha256_bytes(_stable_json_bytes(canonical))
+
+
+def _display_path(path: Path) -> str:
+    try:
+        return path.resolve().relative_to(PROJECT_ROOT.resolve()).as_posix()
+    except ValueError:
+        return str(path.resolve())
+
+
+def build_manifest(
+    args: argparse.Namespace,
+    bot: ChatOrchestrator,
+    scenarios: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Собрать безопасный manifest всех входов, влияющих на результат."""
+    testset_path = Path(args.testset)
+    products = list(getattr(bot.search_agent, "products", None) or [])
+    settings = getattr(getattr(bot, "llm_client", None), "settings", None)
+    llm: dict[str, Any] = {}
+    if settings is not None:
+        # Явный allowlist: ключи, URL приватных хранилищ и локальные пути сюда
+        # никогда не попадут.
+        llm = {
+            "provider": settings.llm_provider,
+            "model": settings.llm_model,
+            "strong_model": settings.llm_model_strong,
+            "timeout_seconds": settings.llm_timeout_seconds,
+            "request_timeout_seconds": settings.llm_request_timeout_seconds,
+            "max_retries": settings.llm_max_retries,
+            "retry_delay_seconds": settings.llm_retry_delay_seconds,
+        }
+
+    business_config = PROJECT_ROOT / "data" / "business_config.json"
+    return {
+        "schema_version": 1,
+        "git": _git_manifest(),
+        "inputs": {
+            "testset_path": _display_path(testset_path),
+            "testset_sha256": _sha256_file(testset_path),
+            "scenario_ids": [str(scenario.get("id") or "") for scenario in scenarios],
+            "catalog_source": str(getattr(bot, "products_loaded_from", "")),
+            "catalog_products": len(products),
+            "catalog_sha256": _catalog_sha256(products),
+            "business_config_sha256": _sha256_file(business_config),
+            "buyer_prompt_sha256": _sha256_bytes(_BUYER_SYSTEM.encode("utf-8")),
+            "harness_sha256": _sha256_file(Path(__file__).resolve()),
+        },
+        "llm": llm,
+        "run": {
+            "mode": args.mode,
+            "workers": args.workers,
+            "max_turns": args.max_turns,
+            "limit": args.limit,
+            "only": args.only,
+        },
+        "runtime": {
+            "python": platform.python_version(),
+            "implementation": platform.python_implementation(),
+            "platform": platform.platform(),
+        },
+    }
+
+
+def build_report(
+    runs: list[DialogueRun],
+    mode: str,
+    elapsed: float,
+    manifest: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    valid_runs = [run for run in runs if run.execution_status == "valid"]
+    attempted_turns = [turn for run in runs for turn in run.turns]
+    turns = [turn for run in valid_runs for turn in run.turns]
     latencies = sorted(turn.latency_sec for turn in turns)
     defects: Counter = Counter()
     dialogues_with: Counter = Counter()
-    for run in runs:
+    for run in valid_runs:
         defects.update(run.defects)
         for code in run.defects:
             dialogues_with[code] += 1
@@ -483,14 +749,23 @@ def build_report(runs: list[DialogueRun], mode: str, elapsed: float) -> dict[str
         "mode": mode,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "elapsed_sec": round(elapsed, 1),
+        "manifest": manifest or {},
+        # ``dialogues`` остаётся числом попыток для совместимости со старыми
+        # потребителями. Все продуктовые метрики ниже имеют явный знаменатель.
         "dialogues": len(runs),
+        "dialogues_attempted": len(runs),
+        "dialogues_valid": len(valid_runs),
+        "dialogues_invalid": len(runs) - len(valid_runs),
+        "metric_denominator_dialogues": len(valid_runs),
+        "execution_outcomes": dict(Counter(run.execution_status for run in runs)),
+        "turns_attempted": len(attempted_turns),
         "turns": len(turns),
         "turns_with_cards": sum(1 for turn in turns if turn.products),
         "dialogues_with_cards": sum(
-            1 for run in runs if any(turn.products for turn in run.turns)
+            1 for run in valid_runs if any(turn.products for turn in run.turns)
         ),
         "answer_sources": dict(Counter(turn.source for turn in turns)),
-        "outcomes": dict(Counter(run.outcome for run in runs if run.outcome)),
+        "outcomes": dict(Counter(run.outcome for run in valid_runs if run.outcome)),
         "latency_sec": {
             "p50": pct(latencies, 0.50),
             "p95": pct(latencies, 0.95),
@@ -508,6 +783,9 @@ def build_report(runs: list[DialogueRun], mode: str, elapsed: float) -> dict[str
                 "outcome": run.outcome,
                 "buyer_state": run.buyer_state,
                 "buyer_note": run.buyer_note,
+                "execution_status": run.execution_status,
+                "failure_stage": run.failure_stage,
+                "failure_reason": run.failure_reason,
                 "defects": dict(run.defects),
                 "evidence": run.evidence,
             }
@@ -517,10 +795,16 @@ def build_report(runs: list[DialogueRun], mode: str, elapsed: float) -> dict[str
 
 
 def render_markdown(report: dict[str, Any]) -> str:
+    attempted = report.get("dialogues_attempted", report["dialogues"])
+    valid = report.get("dialogues_valid", report["dialogues"])
+    invalid = report.get("dialogues_invalid", attempted - valid)
+    git_info = (report.get("manifest") or {}).get("git") or {}
+    inputs = (report.get("manifest") or {}).get("inputs") or {}
     lines = [
         f"# Прогон тест-набора — режим `{report['mode']}`",
         "",
-        f"- Диалогов: **{report['dialogues']}**, ходов: **{report['turns']}**",
+        f"- Диалогов: **{attempted}** попыток / **{valid}** валидных / "
+        f"**{invalid}** невалидных; ходов в валидных: **{report['turns']}**",
         f"- Ходов с карточками: **{report['turns_with_cards']}**",
         f"- Диалогов с показанным товаром: **{report['dialogues_with_cards']}**",
         f"- Латентность p50 / p95 / max: "
@@ -530,6 +814,31 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
         f"- Исходы: `{report.get('outcomes')}`",
         "",
+        f"- Статусы выполнения: `{report.get('execution_outcomes')}`",
+        "",
+        "## Воспроизводимость",
+        "",
+        f"- Commit: `{git_info.get('commit') or 'unknown'}`; "
+        f"dirty: `{git_info.get('dirty')}`; "
+        f"runtime: `{git_info.get('runtime_tree_sha256') or 'unknown'}`",
+        f"- Testset: `{inputs.get('testset_sha256') or 'unknown'}`; "
+        f"catalog: `{inputs.get('catalog_sha256') or 'unknown'}`",
+        "",
+    ]
+    invalid_runs = [
+        run for run in report["runs"] if run.get("execution_status", "valid") != "valid"
+    ]
+    if invalid_runs:
+        lines += ["## Невалидные диалоги", ""]
+        for run in invalid_runs:
+            reason = run.get("failure_reason") or "причина не записана"
+            stage = run.get("failure_stage") or "unknown"
+            lines.append(
+                f"- **{run['id']}** — `{run['execution_status']}` "
+                f"(этап `{stage}`): {reason}"
+            )
+        lines.append("")
+    lines += [
         "## Дефекты",
         "",
         "| Код | Срабатываний | Диалогов |",
@@ -541,6 +850,8 @@ def render_markdown(report: dict[str, Any]) -> str:
         lines.append("| — | 0 | 0 |")
     lines += ["", "## Диалоги с замечаниями", ""]
     for run in report["runs"]:
+        if run.get("execution_status", "valid") != "valid":
+            continue
         if not run["defects"]:
             continue
         lines.append(f"**{run['id']}** ({run['priority']}) — {run['defects']}")
@@ -590,6 +901,7 @@ def main(argv: list[str]) -> int:
         f"({bot.products_loaded_from}); сценариев: {len(scenarios)}",
         file=sys.stderr,
     )
+    manifest = build_manifest(args, bot, scenarios)
 
     started = time.monotonic()
     runs: list[DialogueRun] = []
@@ -621,8 +933,11 @@ def main(argv: list[str]) -> int:
                     run = future.result()
                 except Exception as exc:
                     run = DialogueRun(scenario=scenario, session_id="")
-                    run.outcome = "harness_error"
-                    run.flag("tech_error", f"{type(exc).__name__}: {exc}")
+                    run.fail_execution(
+                        "harness_error",
+                        "harness",
+                        f"{type(exc).__name__}: {exc}",
+                    )
                 runs.append(run)
                 done += 1
                 print(
@@ -634,7 +949,7 @@ def main(argv: list[str]) -> int:
         runs.sort(key=lambda item: item.id)
     elapsed = time.monotonic() - started
 
-    report = build_report(runs, args.mode, elapsed)
+    report = build_report(runs, args.mode, elapsed, manifest)
     output_dir = args.output_dir or (
         PROJECT_ROOT / "reports" / f"replay_{datetime.now().strftime('%Y-%m-%d_%H%M')}"
     )
@@ -642,12 +957,19 @@ def main(argv: list[str]) -> int:
     (output_dir / "report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
+    (output_dir / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     (output_dir / "report.md").write_text(render_markdown(report), encoding="utf-8")
     (output_dir / "transcripts.jsonl").write_text(
         "".join(
             json.dumps(
                 {
                     "id": run.id,
+                    "execution_status": run.execution_status,
+                    "failure_stage": run.failure_stage,
+                    "failure_reason": run.failure_reason,
+                    "outcome": run.outcome,
                     "turns": [turn.__dict__ for turn in run.turns],
                 },
                 ensure_ascii=False,
