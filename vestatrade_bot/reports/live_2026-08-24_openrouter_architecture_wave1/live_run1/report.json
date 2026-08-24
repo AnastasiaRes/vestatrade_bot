@@ -1,0 +1,252 @@
+{
+  "mode": "live",
+  "generated_at": "2026-08-24T11:39:52.357189+00:00",
+  "elapsed_sec": 164.2,
+  "manifest": {
+    "schema_version": 1,
+    "git": {
+      "commit": "352c00cf9a474537f6a1a2c19d56441a054da560",
+      "dirty": true,
+      "status_sha256": "02a42eb13c89149213115319fa8c9164683dd27946fb34113847f3bec62daf15",
+      "runtime_tree_sha256": "9bcde75f9c05f0e352c237cbe50be7edf18498e170cd665233a5e3ea745f4796",
+      "reproducible": false
+    },
+    "inputs": {
+      "testset_path": "reports/live_2026-08-24_openrouter_architecture_wave1_testset.json",
+      "testset_sha256": "b658540017f1931c566b95b4bba34b1a029eef583b953b4ec64ed4ac8bf73a14",
+      "scenario_ids": [
+        "ARCH-COMPOUND-01",
+        "ARCH-STORE-CONTACT-02",
+        "ARCH-CONTACT-ROLES-03",
+        "ARCH-CARD-CONTEXT-04",
+        "ARCH-INDUSTRIAL-05",
+        "ARCH-COMMERCE-06",
+        "ARCH-MODEL-VOLUME-07",
+        "ARCH-RADIATOR-STATE-08"
+      ],
+      "catalog_source": "cache",
+      "catalog_products": 14035,
+      "catalog_sha256": "d8ba7325469f729071f92b0c2759e6b2a35b6cceb32c8c9e104c1aaad02b3b75",
+      "business_config_sha256": "e9407dea8d935e0b26ec5a680eb994da034da866580e09d1d05131e0123ada5e",
+      "buyer_prompt_sha256": "b016dd2edf4a1554a6f25949d26d3473e33ff5787c96019f99f6172f7a1e5f29",
+      "harness_sha256": "3fddad2fa28e060838b6b84aec14cb089708eaa3407176bd8bfe39c98e4f0bfa"
+    },
+    "llm": {
+      "provider": "openrouter",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "strong_model": "qwen/qwen3-vl-8b-instruct",
+      "timeout_seconds": 60.0,
+      "request_timeout_seconds": 180.0,
+      "max_retries": 2,
+      "retry_delay_seconds": 1.0
+    },
+    "run": {
+      "mode": "live",
+      "workers": 2,
+      "max_turns": 8,
+      "limit": null,
+      "only": null
+    },
+    "runtime": {
+      "python": "3.12.2",
+      "implementation": "CPython",
+      "platform": "macOS-15.6-arm64-arm-64bit"
+    }
+  },
+  "dialogues": 8,
+  "dialogues_attempted": 8,
+  "dialogues_valid": 8,
+  "dialogues_invalid": 0,
+  "metric_denominator_dialogues": 8,
+  "execution_outcomes": {
+    "valid": 8
+  },
+  "turns_attempted": 37,
+  "turns": 37,
+  "turns_with_cards": 10,
+  "dialogues_with_cards": 4,
+  "answer_sources": {
+    "deterministic": 35,
+    "response_llm": 2
+  },
+  "outcomes": {
+    "user_gave_up": 5,
+    "user_repeated": 1,
+    "bot_loop": 2
+  },
+  "latency_sec": {
+    "p50": 6.07,
+    "p95": 13.4,
+    "max": 18.8
+  },
+  "defect_hits": {
+    "Д11": 6,
+    "no_cards": 4,
+    "Д11-круг": 2
+  },
+  "defect_dialogues": {
+    "Д11": 6,
+    "no_cards": 4,
+    "Д11-круг": 2
+  },
+  "runs": [
+    {
+      "id": "ARCH-CARD-CONTEXT-04",
+      "block": "shown set attributes and links",
+      "priority": "P0",
+      "turns": 6,
+      "cards_shown": 4,
+      "outcome": "user_gave_up",
+      "buyer_state": "gave_up",
+      "buyer_note": "Консультант трижды не отвечает по сути — повторяет один и тот же запрос, игнорируя уже предоставленные данные. Нет прогресса, нет ответа на ключевой вопрос о допустимости антифриза для Rifar Base BVL. Дальше бессмысленно.",
+      "execution_status": "valid",
+      "failure_stage": "",
+      "failure_reason": "",
+      "defects": {},
+      "evidence": []
+    },
+    {
+      "id": "ARCH-COMMERCE-06",
+      "block": "product delivery and discount composition",
+      "priority": "P1",
+      "turns": 6,
+      "cards_shown": 3,
+      "outcome": "user_gave_up",
+      "buyer_state": "gave_up",
+      "buyer_note": "Консультант не отвечает по сути, повторяет одну и ту же информацию, не даёт цену и ответы на вопросы, несмотря на трижды повторённые просьбы.",
+      "execution_status": "valid",
+      "failure_stage": "",
+      "failure_reason": "",
+      "defects": {
+        "Д11": 1
+      },
+      "evidence": [
+        "Д11: ход 6: ответ повторён дословно"
+      ]
+    },
+    {
+      "id": "ARCH-COMPOUND-01",
+      "block": "compound catalogue and consented handoff",
+      "priority": "P0",
+      "turns": 4,
+      "cards_shown": 1,
+      "outcome": "user_repeated",
+      "buyer_state": "gave_up",
+      "buyer_note": "Консультант трижды не отправляет черновик обращения, несмотря на прямое указание — ходит по кругу.",
+      "execution_status": "valid",
+      "failure_stage": "",
+      "failure_reason": "",
+      "defects": {
+        "Д11": 1
+      },
+      "evidence": [
+        "Д11: ход 4: ответ повторён дословно"
+      ]
+    },
+    {
+      "id": "ARCH-CONTACT-ROLES-03",
+      "block": "contact ownership and preview consent",
+      "priority": "P0",
+      "turns": 6,
+      "cards_shown": 0,
+      "outcome": "user_gave_up",
+      "buyer_state": "gave_up",
+      "buyer_note": "Бот не реагирует на суть — повторяет технические детали, игнорируя инструкцию для себя. Не может показать итог менеджеру и ждать подтверждения, как требует клиент. Цикл бесцельный.",
+      "execution_status": "valid",
+      "failure_stage": "",
+      "failure_reason": "",
+      "defects": {
+        "Д11": 1,
+        "no_cards": 1
+      },
+      "evidence": [
+        "Д11: ход 5: ответ повторён дословно",
+        "no_cards: ни одного показанного товара за диалог"
+      ]
+    },
+    {
+      "id": "ARCH-INDUSTRIAL-05",
+      "block": "industrial component versus pipe landmark",
+      "priority": "P0",
+      "turns": 3,
+      "cards_shown": 0,
+      "outcome": "bot_loop",
+      "buyer_state": "gave_up",
+      "buyer_note": "Консультант трижды повторяет одно и то же без попытки дать честный ответ о наличии или отсутствии арматуры. Нет смысла продолжать — он не справляется с задачей.",
+      "execution_status": "valid",
+      "failure_stage": "",
+      "failure_reason": "",
+      "defects": {
+        "Д11": 1,
+        "Д11-круг": 1,
+        "no_cards": 1
+      },
+      "evidence": [
+        "Д11: ход 2: ответ повторён дословно",
+        "Д11-круг: ход 3: тот же ответ третий раз",
+        "no_cards: ни одного показанного товара за диалог"
+      ]
+    },
+    {
+      "id": "ARCH-MODEL-VOLUME-07",
+      "block": "exact product identity and commercial terms",
+      "priority": "P1",
+      "turns": 5,
+      "cards_shown": 2,
+      "outcome": "bot_loop",
+      "buyer_state": "gave_up",
+      "buyer_note": "Консультант трижды ходит по кругу — просит контакт, не показывает цену за 200 м, не отвечает на просьбу о точной модели. Нет прогресса, нет решения.",
+      "execution_status": "valid",
+      "failure_stage": "",
+      "failure_reason": "",
+      "defects": {
+        "Д11": 1,
+        "Д11-круг": 1
+      },
+      "evidence": [
+        "Д11: ход 4: ответ повторён дословно",
+        "Д11-круг: ход 5: тот же ответ третий раз"
+      ]
+    },
+    {
+      "id": "ARCH-RADIATOR-STATE-08",
+      "block": "multi-turn radiator state",
+      "priority": "P1",
+      "turns": 4,
+      "cards_shown": 0,
+      "outcome": "user_gave_up",
+      "buyer_state": "gave_up",
+      "buyer_note": "Консультант трижды не отвечает по сути и повторяет одно и то же — не подбирает, не помогает, а только спрашивает. Нет смысла продолжать.",
+      "execution_status": "valid",
+      "failure_stage": "",
+      "failure_reason": "",
+      "defects": {
+        "no_cards": 1
+      },
+      "evidence": [
+        "no_cards: ни одного показанного товара за диалог"
+      ]
+    },
+    {
+      "id": "ARCH-STORE-CONTACT-02",
+      "block": "store contact direction and unavailable channel",
+      "priority": "P0",
+      "turns": 3,
+      "cards_shown": 0,
+      "outcome": "user_gave_up",
+      "buyer_state": "gave_up",
+      "buyer_note": "Консультант повторяет одно и то же без попытки дать адрес магазина или альтернативный контакт — не отвечает по сути, игнорирует запрос на конкретную информацию.",
+      "execution_status": "valid",
+      "failure_stage": "",
+      "failure_reason": "",
+      "defects": {
+        "Д11": 1,
+        "no_cards": 1
+      },
+      "evidence": [
+        "Д11: ход 3: ответ повторён дословно",
+        "no_cards: ни одного показанного товара за диалог"
+      ]
+    }
+  ]
+}

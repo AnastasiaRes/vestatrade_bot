@@ -499,6 +499,7 @@ def compose_store_contact_answer(
     *,
     city: str | None = None,
     with_volatile_caveat: bool = True,
+    requested_channels: tuple[str, ...] = (),
 ) -> str:
     """Compose store-to-customer contacts from verified business facts only.
 
@@ -507,6 +508,42 @@ def compose_store_contact_answer(
     callback.  Branch contacts are city-specific; global contacts are included
     only when they are explicitly present in the business configuration.
     """
+
+    requested = set(requested_channels)
+    if "manager" in requested:
+        return (
+            "Проверенного прямого телефона или email конкретного менеджера в "
+            "конфигурации нет. Я также не вижу складские и коммерческие данные "
+            "вне загруженного каталога, поэтому вручную подтвердить остаток или "
+            "индивидуальную цену не могу. Могу подготовить обращение менеджеру: "
+            "для обратной связи понадобится ваш "
+            "телефон или email, затем я покажу состав и отдельно попрошу согласие "
+            "на передачу."
+        )
+    email_only = bool(requested.intersection({"email", "messenger"})) and (
+        "phone" not in requested
+    )
+
+    if email_only:
+        labels = []
+        if "email" in requested:
+            labels.append("email")
+        if "messenger" in requested:
+            labels.append("мессенджера")
+        requested_label = " или ".join(labels) or "письменного канала"
+        if facts.emails:
+            return "Проверенная общая почта магазина: " + ", ".join(facts.emails) + "."
+        location = f" для точки в городе {city}" if city else ""
+        if facts.site_url:
+            return (
+                f"Проверенного {requested_label}{location} в конфигурации нет. "
+                f"Для самостоятельного обращения используйте официальный сайт "
+                f"{facts.site_url}; оставлять мне личный контакт не нужно."
+            )
+        return (
+            f"Проверенного {requested_label}{location} в конфигурации нет. "
+            "Личный контакт покупателя для этого не нужен."
+        )
 
     if city:
         branches = facts.branches_in(city)
@@ -651,11 +688,23 @@ def _grounded_answer(
     return None
 
 
-_CITY_MENTION_RE = re.compile(
-    r"\b(?:в|во|из|до|по)\s+г(?:ород|\.)?\s*([А-ЯЁ][а-яё-]{2,})"
-    r"|\bдоставк\w*\s+в\s+([А-ЯЁ][а-яё-]{2,})"
-    r"|\bя\s+из\s+([А-ЯЁ][а-яё-]{2,})"
+_CITY_NAME_PATTERN = r"[А-ЯЁ][а-яё-]{2,}(?:\s+[А-ЯЁ][а-яё-]{2,}){0,2}"
+_DELIVERY_CITY_RE = re.compile(
+    rf"\bдоставк\w*[^.!?]{{0,64}}?\b(?:в|до)\s+"
+    rf"(?:г(?:ород|\.)?\s*)?({_CITY_NAME_PATTERN})"
 )
+_EXPLICIT_CITY_RE = re.compile(
+    rf"\b(?:в|во|из|до|по)\s+(?:г(?:ород|\.)?\s*)?({_CITY_NAME_PATTERN})"
+)
+_FROM_CITY_RE = re.compile(rf"\bя\s+из\s+({_CITY_NAME_PATTERN})")
+_LEADING_CITY_RE = re.compile(rf"^\s*({_CITY_NAME_PATTERN})\s*,")
+_NON_CITY_LEADING_WORDS = {
+    "добрый",
+    "здравствуйте",
+    "подскажите",
+    "привет",
+    "слушайте",
+}
 
 
 def extract_any_city(message: str) -> str | None:
@@ -665,8 +714,19 @@ def extract_any_city(message: str) -> str | None:
     ответить про транспортные компании, а не спрашивать, в каком городе
     покупатель хочет забрать товар самовывозом.
     """
-    match = _CITY_MENTION_RE.search(str(message or ""))
-    if not match:
+    source = str(message or "")
+    # Delivery wording is the strongest relation in the sentence.  Prefer it
+    # to a capitalised discourse opener: in "Привет, доставка в Краснодар"
+    # the former is not a city, even though it has the same surface shape as
+    # the useful short answer "Краснодар, 15-й этаж".
+    for pattern in (_DELIVERY_CITY_RE, _FROM_CITY_RE, _EXPLICIT_CITY_RE):
+        match = pattern.search(source)
+        if match:
+            return match.group(1).strip()
+    leading = _LEADING_CITY_RE.search(source)
+    if not leading:
         return None
-    name = next((group for group in match.groups() if group), None)
-    return name.strip() if name else None
+    name = leading.group(1).strip()
+    if normalize_text(name).split()[0] in _NON_CITY_LEADING_WORDS:
+        return None
+    return name

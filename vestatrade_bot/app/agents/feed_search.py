@@ -1574,9 +1574,12 @@ class FeedSearchAgent:
             words: set[str] = set()
             for product in self.products:
                 for word in re.split(r"[\s./-]+", str(product.brand or "")):
-                    key = fold_model_key(word)
-                    if len(key) >= 2:
-                        words.add(key)
+                    for key in (
+                        fold_model_key(word),
+                        transliterate_model_key(word),
+                    ):
+                        if len(key) >= 2:
+                            words.add(key)
             self._brand_word_key_cache = words
         return self._brand_word_key_cache
 
@@ -1589,7 +1592,20 @@ class FeedSearchAgent:
         """
         cached = self._model_key_cache.get(product.sku)
         if cached is None:
-            cached = fold_model_key(f"{product.brand or ''} {product.name}")
+            identity_attributes = " ".join(
+                str(value)
+                for key, value in product.attributes_normalized.items()
+                if any(
+                    marker in normalize_text(str(key))
+                    for marker in ["полное наименование", "модель", "серия"]
+                )
+            )
+            source = f"{product.brand or ''} {product.name} {identity_attributes}"
+            # Keep both visual-homoglyph and phonetic transliteration keys.
+            # A catalogue may spell a brand as ``РЕХАУ`` while the customer
+            # writes ``REHAU``; either spelling must resolve the same explicit
+            # model without loosening any dimensional constraints.
+            cached = f"{fold_model_key(source)}|{transliterate_model_key(source)}"
             self._model_key_cache[product.sku] = cached
         return cached
 
@@ -1616,9 +1632,12 @@ class FeedSearchAgent:
             for product in self.products:
                 source = f"{product.name} {product.brand or ''} {product.category_path}"
                 for word in re.split(r"[\s./\-,()«»\"]+", source):
-                    key = fold_model_key(word)
-                    if len(key) >= 3:
-                        words.add(key)
+                    for key in (
+                        fold_model_key(word),
+                        transliterate_model_key(word),
+                    ):
+                        if len(key) >= 3:
+                            words.add(key)
             self._catalog_word_key_cache = words
         return self._catalog_word_key_cache
 
@@ -3433,7 +3452,7 @@ class FeedSearchAgent:
             if diameter and not self._dimension_matches(
                 product,
                 int(diameter),
-                ["диаметр", "размер"],
+                self._diameter_attribute_keys(category),
             ):
                 return False
             if slots.get("union") and not self._union_matches(product):
@@ -4333,7 +4352,13 @@ class FeedSearchAgent:
         ]
         diameter = slots.get("diameter_mm")
         if diameter:
-            checks.append(self._dimension_matches(product, int(diameter), ["диаметр", "размер"]))
+            checks.append(
+                self._dimension_matches(
+                    product,
+                    int(diameter),
+                    self._diameter_attribute_keys(category),
+                )
+            )
 
         size_inch = slots.get("size_inch")
         if size_inch:
@@ -4719,7 +4744,11 @@ class FeedSearchAgent:
 
         diameter = slots.get("diameter_mm")
         if diameter:
-            score += 25 if self._dimension_matches(product, int(diameter), ["диаметр", "размер"]) else -12
+            score += 25 if self._dimension_matches(
+                product,
+                int(diameter),
+                self._diameter_attribute_keys(query.category),
+            ) else -12
 
         length = slots.get("length_mm")
         if length:
@@ -4989,6 +5018,28 @@ class FeedSearchAgent:
         if wants_length:
             return self._length_matches_name(fallback, number)
         return self._number_matches(fallback, number)
+
+    @staticmethod
+    def _diameter_attribute_keys(category: str) -> list[str]:
+        """Return category-aware evidence labels for a diameter constraint.
+
+        Pipe feeds normally call the field simply ``diameter``.  Industrial
+        valve feeds use DN terminology such as ``nominal diameter`` or
+        ``nominal bore`` for the same request, so treating only the former as
+        evidence incorrectly removes an otherwise exact valve.
+        """
+        keys = ["диаметр", "размер"]
+        if category in {"valves", "radiator_fittings"}:
+            keys.extend(
+                [
+                    "условный проход",
+                    "условный диаметр",
+                    "номинальный диаметр",
+                    "dn",
+                    "ду",
+                ]
+            )
+        return keys
 
     def _voltage_matches(self, product: Product, requested: int) -> bool:
         """Match equivalent nominal mains labels without mixing voltage classes."""

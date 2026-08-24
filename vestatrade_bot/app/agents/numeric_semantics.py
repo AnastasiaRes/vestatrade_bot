@@ -293,6 +293,42 @@ def extract_total_length_m(text: str) -> float | None:
     """
 
     normalized = normalize_text(text)
+    # Spoken order quantities occur frequently in voice-like chats.  Keep the
+    # vocabulary deliberately in the quantity parser rather than the intent
+    # router so the same value is available to every pipe selection path.
+    # A number word without a metre/total marker is ignored: bare «двести» can
+    # just as easily be a budget or an article fragment.
+    word_numbers = {
+        "сто": 100.0,
+        "двести": 200.0,
+        "триста": 300.0,
+        "четыреста": 400.0,
+        "пятьсот": 500.0,
+        "шестьсот": 600.0,
+        "семьсот": 700.0,
+        "восемьсот": 800.0,
+        "девятьсот": 900.0,
+        "тысяча": 1000.0,
+    }
+    word_pattern = "|".join(word_numbers)
+    explicit_word = re.search(
+        rf"\b(?:всего|суммарн\w*|итого|общ(?:ая|ий|его)\s+"
+        rf"(?:длин\w*|метраж\w*)|метраж\w*)[^.!?]{{0,28}}"
+        rf"(?P<value>{word_pattern})(?:\s*метр\w*)?\b",
+        normalized,
+    ) or re.search(
+        rf"\b(?:нужн\w*|требу\w*)[^.!?]{{0,18}}"
+        rf"(?P<value>{word_pattern})\s*метр\w*\b",
+        normalized,
+    )
+    if explicit_word:
+        return word_numbers[explicit_word.group("value")]
+    generic_word_metres = re.search(
+        rf"\b(?P<value>{word_pattern})\s*метр\w*\b",
+        normalized,
+    )
+    if generic_word_metres:
+        return word_numbers[generic_word_metres.group("value")]
     value = rf"(?P<value>{_SCALAR_NUMBER})\s*{_METRE_UNIT}"
     explicit_patterns = (
         re.compile(

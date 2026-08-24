@@ -44,7 +44,9 @@ _IDENTIFIER_CONTEXT_RE = re.compile(
 _CUSTOMER_CONTACT_CONTEXT_RE = re.compile(
     r"(?:\b(?:мой|моя|мои)\s+(?:(?:рабоч|личн|контактн)\w*\s+)?"
     r"(?:email|e-mail|имейл|почт|телефон|номер|контакт)\w*"
-    r"|\b(?:для\s+связи|связаться\s+со\s+мной)\b)[^.!?]{0,24}$",
+    r"|\b(?:для\s+связи|связаться\s+со\s+мной)\b"
+    r"|\b(?:ответ|пис|звон)\w*\s+мне\b[^.!?]{0,20}\b(?:на|по)\b)"
+    r"[^.!?]{0,24}$",
     re.IGNORECASE,
 )
 _THIRD_PARTY_CONTACT_CONTEXT_RE = re.compile(
@@ -53,6 +55,13 @@ _THIRD_PARTY_CONTACT_CONTEXT_RE = re.compile(
     r"|\b(?:производител|поставщик|завод|бренд|дистрибьютор)\w*"
     r"[^.!?]{0,20}(?:email|e-mail|имейл|почт|телефон|номер|контакт)\w*)"
     r"[^.!?]{0,16}$",
+    re.IGNORECASE,
+)
+_THIRD_PARTY_CONTACT_SUFFIX_RE = re.compile(
+    r"^[^.!?]{0,56}(?:\bпринадлеж\w*\s+(?:производител|поставщик|завод|бренд|"
+    r"дистрибьютор)\w*\b|\b(?:это\s+)?(?:email|почт|телефон|контакт)\w*\s+"
+    r"(?:производител|поставщик|завод|бренд|дистрибьютор)\w*\b|"
+    r"\b(?:не\s+мой|не\s+моя|не\s+мои|не\s+я)\b)",
     re.IGNORECASE,
 )
 
@@ -334,15 +343,20 @@ class HandoffAgent:
 
         for start, contact in candidates:
             prefix = text[max(0, start - 80) : start]
+            suffix = text[start + len(contact) : start + len(contact) + 80]
             if (
                 _CUSTOMER_CONTACT_CONTEXT_RE.search(prefix.rstrip())
                 and not _THIRD_PARTY_CONTACT_CONTEXT_RE.search(prefix.rstrip())
+                and not _THIRD_PARTY_CONTACT_SUFFIX_RE.search(suffix)
             ):
                 return contact
 
         for start, contact in candidates:
             prefix = text[max(0, start - 80) : start]
-            if not _THIRD_PARTY_CONTACT_CONTEXT_RE.search(prefix.rstrip()):
+            suffix = text[start + len(contact) : start + len(contact) + 80]
+            if not _THIRD_PARTY_CONTACT_CONTEXT_RE.search(
+                prefix.rstrip()
+            ) and not _THIRD_PARTY_CONTACT_SUFFIX_RE.search(suffix):
                 return contact
         return None
 

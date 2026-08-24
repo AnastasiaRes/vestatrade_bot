@@ -1217,7 +1217,38 @@ class ResponseComposerAgent:
 
     def compose_no_match(self, query: SearchQuery) -> str:
         slots = query.slots
-        if query.category == "valves" and slots.get("diameter_mm"):
+        industrial_valve = bool(
+            query.category == "valves"
+            and (
+                slots.get("nominal_diameter_dn") is not None
+                or slots.get("operating_temperature_c") is not None
+                or slots.get("operating_pressure_bar") is not None
+                or "пар" in normalize_text(str(slots.get("application") or ""))
+            )
+        )
+        if industrial_valve:
+            details: list[str] = []
+            dn = slots.get("nominal_diameter_dn") or slots.get("diameter_mm")
+            if dn is not None:
+                details.append(f"DN {float(dn):g}")
+            if slots.get("application"):
+                details.append(f"среда: {slots['application']}")
+            if slots.get("operating_temperature_c") is not None:
+                details.append(
+                    f"температура до {float(slots['operating_temperature_c']):g} °C"
+                )
+            if slots.get("operating_pressure_bar") is not None:
+                details.append(
+                    f"давление {float(slots['operating_pressure_bar']):g} бар"
+                )
+            requested = ", ".join(details) or "заданные промышленные параметры"
+            draft = (
+                "В текущем каталоге не вижу промышленного вентиля или другой "
+                f"запорной арматуры, подтверждённой под условия: {requested}. "
+                "Трубу или бытовой водяной кран вместо неё не предлагаю. Можно "
+                "подготовить эти параметры для проверки менеджером."
+            )
+        elif query.category == "valves" and slots.get("diameter_mm"):
             draft = (
                 f"Не вижу точного совпадения по крану с диаметром {slots['diameter_mm']} мм в текущем ассортименте. "
                 "Уточните размер в дюймах — 1/2, 3/4 или 1 — либо передам вопрос менеджеру."

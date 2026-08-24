@@ -28,10 +28,12 @@ from .product_constraints import normalize_thread_gender, normalize_thread_pair
 from .trade_vocabulary import match_trade_term
 from .utils import (
     collapse_sku_spaces,
+    fold_model_key,
     mentions_water_application,
     normalize_sku,
     normalize_text,
     resolve_preferred_option,
+    transliterate_model_key,
 )
 
 
@@ -400,6 +402,7 @@ class IntentRouterAgent:
         self._cache: dict[str, IntentResult] = {}
         self._cache_lock = RLock()
         self._catalog_brands: list[str] = []
+        self._catalog_brand_aliases: dict[str, str] = {}
         self.set_catalog_brands(catalog_brands or [])
 
     @staticmethod
@@ -436,6 +439,12 @@ class IntentRouterAgent:
             key=lambda value: len(normalize_text(value)),
             reverse=True,
         )
+        aliases: dict[str, str] = {}
+        for brand in self._catalog_brands:
+            for key in (fold_model_key(brand), transliterate_model_key(brand)):
+                if len(key) >= 3:
+                    aliases.setdefault(key, brand)
+        self._catalog_brand_aliases = aliases
         with self._cache_lock:
             self._cache.clear()
 
@@ -556,6 +565,14 @@ class IntentRouterAgent:
                 slots["brand"] = brand
                 break
         if not slots.get("brand"):
+            for token in re.findall(r"[A-Za-zА-ЯЁа-яё][A-Za-zА-ЯЁа-яё.-]{2,}", message):
+                canonical = self._catalog_brand_aliases.get(
+                    transliterate_model_key(token)
+                ) or self._catalog_brand_aliases.get(fold_model_key(token))
+                if canonical:
+                    slots["brand"] = canonical
+                    break
+        if not slots.get("brand"):
             for alias, canonical in BRAND_ALIASES.items():
                 if not re.search(
                     rf"(?<![a-zа-я0-9]){re.escape(alias)}(?![a-zа-я0-9])",
@@ -614,6 +631,27 @@ class IntentRouterAgent:
         ):
             category = "radiators"
             category_score = 0.85
+        if (
+            session
+            and session.category == "radiators"
+            and category in {"other", "pipes"}
+            and re.search(
+                r"\b(?:межосев\w*|\d{1,2}\s*секц\w*|"
+                r"(?:одно|двух)трубн\w*|"
+                r"систем\w*\s+(?:отоплен\w*\s+)?"
+                r"(?:центральн|централизованн|автономн|индивидуальн)\w*|"
+                r"(?:центральн|централизованн|автономн|индивидуальн)\w*"
+                r"\s+систем\w*)\b",
+                text,
+            )
+            and not self._names_category_noun(text, "pipes")
+        ):
+            # «двухтрубная система» describes the heating circuit, not a pipe
+            # product.  Likewise, section count and interaxial distance are
+            # elliptical answers inside an active radiator selection.  Resolve
+            # the conversational frame before category-gated slot extraction.
+            category = "radiators"
+            category_score = max(category_score, 0.9)
         if category == "other" and session and session.category and self._looks_like_attribute_followup(text):
             category = session.category
             category_score = 0.65
@@ -982,6 +1020,36 @@ class IntentRouterAgent:
         notation_category, notation_score = engineering_category_hint(text)
         if notation_category:
             return notation_category, notation_score
+
+        # Resolve the requested component before treating an installation
+        # landmark as the product.  In engineering requests a pipe is often
+        # only the place where a valve/armature is installed ("вентиль на
+        # паровую трубу").  The product noun plus industrial operating context
+        # is stronger evidence than the generic word "труба".  Keep radiator
+        # valves out of this branch: they have their own compatibility funnel.
+        industrial_context = bool(
+            re.search(r"\b(?:пар\w*|ду\s*-?\s*\d+|dn\s*-?\s*\d+|\d+(?:[,.]\d+)?\s*(?:бар|bar))\b", text)
+            or re.search(r"\b(?:промышленн|трубопроводн)\w*\b", text)
+        )
+        explicit_industrial_valve = bool(
+            self._has_non_negated_match(
+                text,
+                r"\b(?:вентил|задвиж|затвор)\w*\b",
+            )
+            or (
+                self._has_non_negated_match(text, r"\bарматур\w*\b")
+                and re.search(
+                    r"\b(?:запорн|регулирующ|промышленн|трубопроводн)\w*\b",
+                    text,
+                )
+            )
+        )
+        if (
+            explicit_industrial_valve
+            and industrial_context
+            and not any(marker in text for marker in ["радиатор", "батаре"])
+        ):
+            return "valves", 0.99
         # A pressure vessel is not a pump merely because its purpose mentions
         # protecting a pump.  Recognise both the trade term and a customer's
         # functional description before generic pump keywords are scored.
@@ -1333,7 +1401,8 @@ class IntentRouterAgent:
         "pipes": r"\bтруб(?:а|ы|у|ой|ам)?\b",
         "radiators": r"\bрадиатор(?:ы|а|ов|у|ом)?\b|\bбатаре(?:я|и|ю)\b",
         "valves": (
-            r"\bкран(?:ы|а|ов|у|ом)?\b|\bвентил(?:ь|я|и)\b|\bшаров\w*\b"
+            r"\bкран(?:ы|а|ов|у|ом)?\b|\bвентил(?:ь|я|и)\b|\bшаров\w*\b|"
+            r"\b(?:запорн|регулирующ|промышленн|трубопроводн)\w*\s+арматур\w*\b"
         ),
         "sewer": r"\bканализаци(?:я|и|ю)\b",
         "radiator_fittings": r"\bтермоголовк(?:а|и|у)\b",
@@ -2059,6 +2128,8 @@ class IntentRouterAgent:
                 slots["water_temperature"] = "горячая"
             elif "холод" in text or "хвс" in text:
                 slots["water_temperature"] = "холодная"
+            if re.search(r"\bпар(?:[ауеы]|ом|ов\w*)?\b", text):
+                slots["application"] = "пар"
 
         if "батаре" in text:
             slots["application"] = "радиатор"
@@ -2190,26 +2261,27 @@ class IntentRouterAgent:
         ):
             slots["pump_type"] = "повысительный"
 
-        requested_fitting = (
-            self._requested_fitting_element(text)
-            if category == "fittings"
-            else None
-        )
-        if requested_fitting:
-            slots["element_type"] = requested_fitting
-        else:
-            for marker, element in [
-                ("труб", "труба"),
-                ("отвод", "отвод"),
-                ("угольник", "угольник"),
-                ("уголок", "угольник"),
-                ("угол", "угольник"),
-                ("тройник", "тройник"),
-                ("муфт", "муфта"),
-            ]:
-                if marker in text and not self._is_negated(text, marker):
-                    slots["element_type"] = element
-                    break
+        if category in {"pipes", "sewer", "fittings"}:
+            requested_fitting = (
+                self._requested_fitting_element(text)
+                if category == "fittings"
+                else None
+            )
+            if requested_fitting:
+                slots["element_type"] = requested_fitting
+            else:
+                for marker, element in [
+                    ("труб", "труба"),
+                    ("отвод", "отвод"),
+                    ("угольник", "угольник"),
+                    ("уголок", "угольник"),
+                    ("угол", "угольник"),
+                    ("тройник", "тройник"),
+                    ("муфт", "муфта"),
+                ]:
+                    if marker in text and not self._is_negated(text, marker):
+                        slots["element_type"] = element
+                        break
         if category == "sewer" and not slots.get("element_type"):
             if any(
                 marker in text
@@ -3120,7 +3192,10 @@ class IntentRouterAgent:
                 r"(?:центральн|централизованн)\w*", bare_system_answer
             ) or re.search(
                 r"\b(?:центральн|централизованн)\w*\s+отоплен\w*\b|"
-                r"\bотоплен\w*\s+(?:центральн|централизованн)\w*\b",
+                r"\bотоплен\w*\s+(?:центральн|централизованн)\w*\b|"
+                r"\bсистем\w*\s+(?:отоплен\w*\s+)?"
+                r"(?:центральн|централизованн)\w*\b|"
+                r"\b(?:центральн|централизованн)\w*\s+систем\w*\b",
                 text,
             ):
                 slots["heating_system_type"] = "центральное"
@@ -3128,7 +3203,10 @@ class IntentRouterAgent:
                 r"(?:автономн|индивидуальн)\w*", bare_system_answer
             ) or re.search(
                 r"\b(?:автономн|индивидуальн)\w*\s+отоплен\w*\b|"
-                r"\bотоплен\w*\s+(?:автономн|индивидуальн)\w*\b",
+                r"\bотоплен\w*\s+(?:автономн|индивидуальн)\w*\b|"
+                r"\bсистем\w*\s+(?:отоплен\w*\s+)?"
+                r"(?:автономн|индивидуальн)\w*\b|"
+                r"\b(?:автономн|индивидуальн)\w*\s+систем\w*\b",
                 text,
             ):
                 slots["heating_system_type"] = "автономное"

@@ -65,6 +65,10 @@ CLARIFICATION_TERMS = [
 _PHONE_RE = re.compile(
     r"(?:\+?\s*7|\b8)\s*[\s(-]?\s*\d{3}\s*[)\s-]?\s*\d{3}\s*[-\s]?\s*\d{2}\s*[-\s]?\s*\d{2}\b"
 )
+_EMAIL_RE = re.compile(
+    r"[\w.+-]+@(?:[\w-]+\.)+(?:[^\W\d_]{2,}|xn--[\w-]{2,})(?![\w-])",
+    re.IGNORECASE,
+)
 _DURATION_PROMISE_RE = re.compile(
     r"(?:в\s+течение|за|через|в\s+пределах)\s+"
     # Диапазон и словесная форма считаются тем же обещанием: «за 24 часа»,
@@ -100,6 +104,8 @@ class GuardrailsAgent:
         self,
         answer: str,
         facts: BusinessFacts | None = None,
+        *,
+        allowed_emails: tuple[str, ...] = (),
     ) -> tuple[str, list[str]]:
         """Убрать из ответа операционные факты, не подтверждённые конфигурацией.
 
@@ -125,7 +131,11 @@ class GuardrailsAgent:
             pieces = re.split(r"(?<=[.!?])\s+", line)
             surviving: list[str] = []
             for piece in pieces:
-                reason = self._unverified_operational_reason(piece, known)
+                reason = self._unverified_operational_reason(
+                    piece,
+                    known,
+                    allowed_emails=allowed_emails,
+                )
                 if reason:
                     issues.append(reason)
                     continue
@@ -146,12 +156,23 @@ class GuardrailsAgent:
     def _unverified_operational_reason(
         sentence: str,
         facts: BusinessFacts,
+        *,
+        allowed_emails: tuple[str, ...] = (),
     ) -> str | None:
         if not sentence.strip():
             return None
         phone = _PHONE_RE.search(sentence)
         if phone and not facts.knows_phone(phone.group(0)):
             return f"unverified phone number: {phone.group(0).strip()}"
+        allowed = {
+            str(email or "").strip().casefold().rstrip(".,;:")
+            for email in allowed_emails
+            if str(email or "").strip()
+        }
+        for email in _EMAIL_RE.finditer(sentence):
+            value = email.group(0).strip().casefold().rstrip(".,;:")
+            if value not in allowed and not facts.knows_email(value):
+                return f"unverified email: {email.group(0).strip()}"
         duration = _DURATION_PROMISE_RE.search(sentence)
         if duration and not facts.states_duration(duration.group(0)):
             return f"unverified turnaround promise: {duration.group(0).strip()}"

@@ -283,6 +283,13 @@ def detect_fabricated_sku(run: DialogueRun, catalog_skus: set[str]) -> None:
 
 def detect_no_progress(run: DialogueRun) -> None:
     """Диалог закончился без единой карточки товара."""
+    # Some scenarios intentionally verify a terminal non-catalogue answer
+    # (store contacts, consent protocol) or an honest hard no-match.  Counting
+    # those as retrieval failures made the live dashboard punish exactly the
+    # safe behaviour the scenario asks for.  Legacy testsets keep the old
+    # default; targeted scenarios can declare the expectation explicitly.
+    if run.scenario.get("expects_cards") is False:
+        return
     if not any(turn.products for turn in run.turns):
         run.flag("no_cards", "ни одного показанного товара за диалог")
 

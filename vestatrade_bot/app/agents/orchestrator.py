@@ -1217,12 +1217,19 @@ class ChatOrchestrator:
         # A request for the shop's phone/email is directional.  It must be
         # answered before a pending callback workflow can reinterpret the same
         # words as a missing customer contact (live B20).
-        if turn_plan.has(TurnAction.ANSWER_STORE_CONTACT):
+        if (
+            turn_plan.has(TurnAction.ANSWER_STORE_CONTACT)
+            and not turn_frame.catalog_request_present
+        ):
             facts = get_business_facts()
             city = find_city(message, facts) or session.slots.get("customer_city")
             if city:
                 session.slots["customer_city"] = city
-            answer = compose_store_contact_answer(facts, city=city)
+            answer = compose_store_contact_answer(
+                facts,
+                city=city,
+                requested_channels=turn_frame.requested_contact_channels,
+            )
             contact_intent = IntentResult(
                 intent_type="store_contact",
                 category="other",
@@ -1334,10 +1341,7 @@ class ChatOrchestrator:
                 category=session.category or "other",
                 confidence=1.0,
             )
-            catalog_turn = bool(
-                turn_plan.has(TurnAction.CATALOG_BROWSE)
-                or turn_plan.has(TurnAction.CATALOG_PRICE)
-            )
+            catalog_turn = bool(turn_frame.catalog_request_present)
             if self._is_handoff_opt_out(message) or self._is_handoff_refusal(message):
                 response = self._handle_handoff_opt_out(
                     message,
@@ -1365,9 +1369,32 @@ class ChatOrchestrator:
                     self.sessions.save(session)
                     return response
 
-        pre_handoff_command = self._wants_manager_handoff(message) and not (
-            turn_plan.has(TurnAction.CATALOG_BROWSE)
-            or turn_plan.has(TurnAction.CATALOG_PRICE)
+        recorded_handoff_answer = self._post_handoff_capability_answer(
+            message,
+            session,
+        )
+        if recorded_handoff_answer is not None:
+            recorded_intent = IntentResult(
+                intent_type="handoff_control",
+                category=session.category or "other",
+                confidence=1.0,
+            )
+            agents_used.extend(["HandoffAgent", "GuardrailsAgent"])
+            self._append_history(session, message, recorded_handoff_answer)
+            self.sessions.save(session)
+            return self._response(
+                session_id,
+                recorded_handoff_answer,
+                [],
+                True,
+                recorded_intent,
+                session,
+                agents_used,
+            )
+
+        pre_handoff_command = bool(
+            turn_plan.has(TurnAction.CONTINUE_HANDOFF)
+            and not turn_frame.catalog_request_present
         )
         if pre_handoff_command or session.slots.get("financial_context"):
             boundary_intent = IntentResult(
@@ -1518,6 +1545,15 @@ class ChatOrchestrator:
         intent.raw = dict(intent.raw or {})
         intent.raw["requested_fields"] = self._requested_card_fields(message)
         intent.raw["selection_mode"] = turn_frame.selection_mode.value
+        if (
+            turn_frame.selection_mode == SelectionMode.RECOMMEND
+            and intent.intent_type == "stock_request"
+        ):
+            # "Посоветуйте батарею, которая есть на складе" is a product
+            # selection with an availability constraint.  Stock is not the
+            # primary act and must not replace the compatibility questions
+            # with a second request for a model the customer does not know.
+            intent.intent_type = "attribute_request"
         if (
             intent.is_topic_change
             and intent.category != session.category
@@ -2111,17 +2147,28 @@ class ChatOrchestrator:
                     agents_used,
                 )
             selected_index = self._select_ordinal_index(message, link_cards)
-            link_text = normalize_text(message)
-            include_name = "назван" in link_text or "итог" in link_text
-            answer = self.composer.compose_link_answer(
-                link_cards,
-                selected_index,
-                include_name=include_name,
-            )
             if selected_index is not None and 0 <= selected_index < len(link_cards):
                 response_cards = [link_cards[selected_index]]
             else:
                 response_cards = link_cards
+            requested_fields = self._effective_requested_fields(message, intent)
+            if set(requested_fields) - {"sku", "url"}:
+                # A URL is one requested field, not permission to discard
+                # height, power, compatibility and other fields named in the
+                # same turn.
+                answer = self._contextual_fallback(
+                    message,
+                    response_cards,
+                    requested_fields,
+                )
+            else:
+                link_text = normalize_text(message)
+                include_name = "назван" in link_text or "итог" in link_text
+                answer = self.composer.compose_link_answer(
+                    link_cards,
+                    selected_index,
+                    include_name=include_name,
+                )
             agents_used.append("ResponseComposerAgent")
             answer = self._guard_composed_answer(answer, "link", agents_used)
             self._append_history(session, message, answer)
@@ -2271,9 +2318,69 @@ class ChatOrchestrator:
                     named_models, model_query, limit=3
                 )
                 if model_cards:
-                    model_answer = self.composer.compose_products(
-                        model_cards, model_query
+                    named_requested_fields = self._requested_card_fields(message)
+                    if session.last_products and any(
+                        field
+                        in {
+                            "temperature",
+                            "thread",
+                            "power",
+                            "head",
+                            "flow",
+                            "mounting_length",
+                            "height",
+                            "width",
+                            "diameter",
+                            "material",
+                            "pressure",
+                            "heat_output",
+                            "coolant",
+                            "hydraulic_shock",
+                            "compatibility",
+                        }
+                        for field in named_requested_fields
+                    ):
+                        model_answer = self._contextual_fallback(
+                            message,
+                            model_cards,
+                            named_requested_fields,
+                        )
+                    else:
+                        model_answer = self.composer.compose_products(
+                            model_cards, model_query
+                        )
+                    identity_lines: list[str] = []
+                    for card in model_cards:
+                        product = self._find_product_by_sku(card.sku)
+                        if product is None:
+                            continue
+                        full_name = self._catalog_full_name(product)
+                        if full_name and normalize_text(full_name) != normalize_text(card.name):
+                            identity_lines.append(
+                                f"Полное наименование в каталоге для артикула "
+                                f"{card.sku}: {full_name}."
+                            )
+                            confirmed_identity = self._confirmed_identity_label(
+                                intent.slots,
+                                product,
+                            )
+                            if confirmed_identity:
+                                identity_lines.append(
+                                    f"Запрошенное обозначение «{confirmed_identity}» "
+                                    "присутствует в полном наименовании этой карточки. "
+                                    "Дополнительные слова в той же строке описывают "
+                                    "товар и сами по себе не означают другую модель."
+                                )
+                    query_note = self._compose_query_note(
+                        model_query,
+                        named_models,
+                        model_cards,
                     )
+                    additions = [*identity_lines]
+                    if query_note:
+                        additions.append(query_note)
+                    if additions:
+                        model_answer = f"{model_answer}\n\n" + "\n".join(additions)
                     agents_used.append("ResponseComposerAgent")
                     model_answer = self._guard_composed_answer(
                         model_answer, "products", agents_used
@@ -2711,6 +2818,28 @@ class ChatOrchestrator:
             response = self._handle_complectation(message, session, intent, agents_used)
             self.sessions.save(session)
             return response
+
+        named_stock_followup = self._maybe_named_shown_stock_followup(
+            message,
+            intent,
+            session,
+        )
+        if named_stock_followup:
+            answer, cards = named_stock_followup
+            agents_used.extend(["ResponseComposerAgent", "GuardrailsAgent"])
+            intent.raw = dict(intent.raw or {})
+            intent.raw["product_control"] = "card_fact"
+            self._append_history(session, message, answer)
+            self.sessions.save(session)
+            return self._response(
+                session_id,
+                answer,
+                cards,
+                False,
+                intent,
+                session,
+                agents_used,
+            )
 
         focused_stock = self._maybe_focused_stock_answer(message, intent, session)
         if focused_stock:
@@ -4620,6 +4749,58 @@ class ChatOrchestrator:
                 matched.append(card)
         if len(matched) == 1:
             return matched[0], False
+
+        # Human follow-ups name a series much more often than its SKU:
+        # «а Rifar Base BVL можно с антифризом?».  The previous resolver only
+        # considered alphanumeric model codes, so a plainly named card was
+        # treated as an ambiguous reference to the whole page.  Score uncommon
+        # lexical tokens across the currently shown set and accept only a
+        # unique best match; this generalises to arbitrary catalogue names and
+        # does not depend on a phrase list for one model.
+        stopwords = {
+            "радиатор",
+            "радиаторы",
+            "биметаллический",
+            "биметаллические",
+            "секция",
+            "секций",
+            "цвет",
+            "белый",
+            "труба",
+            "насос",
+            "котел",
+            "кран",
+        }
+        message_tokens = set(re.findall(r"[a-zа-яё0-9]+", text))
+        token_counts: dict[str, int] = {}
+        card_tokens: dict[str, set[str]] = {}
+        for card in cards:
+            tokens = {
+                token
+                for token in re.findall(r"[a-zа-яё0-9]+", normalize_text(card.name))
+                if len(token) >= 3
+                and token not in stopwords
+                and not token.isdigit()
+            }
+            card_tokens[card.sku] = tokens
+            for token in tokens:
+                token_counts[token] = token_counts.get(token, 0) + 1
+        scored = [
+            (
+                sum(
+                    2 if token_counts.get(token) == 1 else 1
+                    for token in tokens.intersection(message_tokens)
+                ),
+                card,
+            )
+            for card in cards
+            for tokens in [card_tokens.get(card.sku, set())]
+        ]
+        scored.sort(key=lambda item: item[0], reverse=True)
+        if scored and scored[0][0] > 0 and (
+            len(scored) == 1 or scored[0][0] > scored[1][0]
+        ):
+            return scored[0][1], False
         return None, True
 
     def _complectation_target_question(self, cards: list[ProductCard]) -> str:
@@ -9140,6 +9321,7 @@ class ChatOrchestrator:
         topic = match_commerce_topic(message)
         facts = get_business_facts()
         named_city = find_city(message, facts)
+        requested_delivery_city = extract_any_city(message)
         if topic is None:
             # «Я в Санкт-Петербурге» само по себе коммерческой темой не
             # выглядит, но если это ответ на наш же вопрос «какой у вас
@@ -9151,7 +9333,7 @@ class ChatOrchestrator:
             topic = next((item for item in TOPICS if item.key == awaiting), None)
             if topic is None:
                 return None
-            if not named_city:
+            if not named_city and not requested_delivery_city:
                 # Покупатель дожимает, не назвав город. Живой прогон (A09):
                 # такая реплика не попадала ни в одну тему и уходила в
                 # small talk — бот терял нить собственного вопроса.
@@ -9198,6 +9380,12 @@ class ChatOrchestrator:
         city = named_city or session.slots.get("customer_city")
         if city:
             session.slots["customer_city"] = city
+        if topic.key == "delivery":
+            if requested_delivery_city:
+                session.slots["delivery_city"] = requested_delivery_city
+            requested_delivery_city = (
+                requested_delivery_city or session.slots.get("delivery_city")
+            )
         # Оговорка про актуальность — один раз за разговор: в каждом ответе
         # она превратилась бы в тот самый повтор, от которого мы уходим.
         caveat_shown = bool(session.slots.get("volatile_caveat_shown"))
@@ -9208,7 +9396,7 @@ class ChatOrchestrator:
             repeat=repeat,
             facts=facts,
             city=city,
-            requested_city=extract_any_city(message),
+            requested_city=requested_delivery_city,
             with_volatile_caveat=not caveat_shown,
         )
         volatile = facts.volatile_caveat()
@@ -9515,6 +9703,26 @@ class ChatOrchestrator:
     @staticmethod
     def _is_handoff_opt_out(message: str) -> bool:
         text = normalize_text(message)
+        # "Do not send until I confirm" is the consent protocol itself, not a
+        # refusal to prepare the preview.  Treat a negated transfer verb as an
+        # opt-out only when it is unconditional.
+        preview_before_send = bool(
+            re.search(
+                r"\bне\s+(?:передава|отправля|сохраня|создава)\w*\b"
+                r"[^.!?]{0,80}\b(?:пока|до)\b[^.!?]{0,50}"
+                r"\b(?:подтверж|соглас)\w*\b",
+                text,
+            )
+            or re.search(
+                r"\b(?:сначала|сперва)\b[^.!?]{0,70}"
+                r"\b(?:покаж|preview|превью|итог)\w*\b[^.!?]{0,100}"
+                r"\b(?:после|только\s+после)\b[^.!?]{0,40}"
+                r"\b(?:подтверж|соглас)\w*\b",
+                text,
+            )
+        )
+        if preview_before_send:
+            return False
         return any(
             marker in text
             for marker in [
@@ -9544,6 +9752,84 @@ class ChatOrchestrator:
                     "не даю соглас",
                 ]
             )
+        )
+
+    @staticmethod
+    def _post_handoff_capability_answer(
+        message: str,
+        session: SessionState,
+    ) -> str | None:
+        """Answer workflow questions after a consented local record.
+
+        A recorded draft is a terminal state, but customers naturally ask what
+        happened next.  Sending those turns back through product routing caused
+        generic small talk or a fresh engineering funnel.  Keep the external
+        capability boundary explicit and idempotent instead.
+        """
+
+        if session.handoff_status != "locally_recorded" or not session.handoff_ticket_id:
+            return None
+        text = normalize_text(message)
+        workflow_question = bool(
+            re.search(
+                r"\b(?:черновик|заявк|обращен|итог|preview|превью|crm|"
+                r"менеджер|подтвержден|согласие|передач|отправ|перешл|"
+                r"почт|email|e-mail|сохран)\w*\b",
+                text,
+            )
+        )
+        if not workflow_question:
+            return None
+        ticket = session.handoff_ticket_id
+        if re.search(r"\b(?:отправ|перешл|пошл)\w*\b", text) and re.search(
+            r"\b(?:почт|email|e-mail|письм)\w*\b",
+            text,
+        ):
+            return (
+                "Я не умею отправлять письма или пересылать черновик на email. "
+                "Согласованный итог был показан вам до подтверждения; после вашей "
+                f"явной фразы сохранена только локальная запись {ticket}. "
+                "Получение менеджером или внешней CRM не подтверждено."
+            )
+        questions = int(session.slots.get("_post_handoff_questions") or 0) + 1
+        session.slots["_post_handoff_questions"] = questions
+        if questions > 1:
+            return (
+                "Новых данных для передачи нет: точный состав локального черновика "
+                "я перечислил в предыдущем ответе. Внешнего канала отправки в этой "
+                "сессии нет, поэтому повторное подтверждение не изменит статус: "
+                f"запись {ticket} остаётся локальной."
+            )
+        try:
+            summary = HandoffSummary(**(session.pending_handoff or {}))
+        except (TypeError, ValueError):
+            summary = None
+        if summary is None:
+            payload = "согласованные краткое описание и контакт"
+        else:
+            parts = [f"запрос: {summary.wanted}"]
+            if summary.products_considered:
+                parts.append(
+                    "товары: " + ", ".join(summary.products_considered)
+                )
+            if summary.known_slots:
+                parts.append(
+                    "параметры: "
+                    + ", ".join(
+                        f"{key}: {value}"
+                        for key, value in summary.known_slots.items()
+                    )
+                )
+            if summary.contact:
+                parts.append(
+                    "контакт: "
+                    + HandoffAgent.mask_contact(summary.contact)
+                )
+            payload = "; ".join(parts)
+        return (
+            "Вот точный состав, который был показан до подтверждения и сохранён "
+            f"в локальной записи {ticket}: {payload}. Я не могу доставить его "
+            "менеджеру или во внешнюю CRM из этой сессии; повторную запись не создаю."
         )
 
     @staticmethod
@@ -9662,9 +9948,10 @@ class ChatOrchestrator:
             return None
 
         if status == "locally_recorded" and session.handoff_ticket_id:
-            answer = (
+            answer = self._post_handoff_capability_answer(message, session) or (
                 f"Этот локальный черновик уже сохранён, номер: "
-                f"{session.handoff_ticket_id}. Повторную запись не создаю."
+                f"{session.handoff_ticket_id}. Повторную запись не создаю; "
+                "получение менеджером или внешней CRM не подтверждено."
             )
             if "HandoffAgent" not in agents_used:
                 agents_used.append("HandoffAgent")
@@ -10303,9 +10590,15 @@ class ChatOrchestrator:
             ("head", ["напор"]),
             ("flow", ["производительност", "расход"]),
             ("mounting_length", ["монтажн", "длин"]),
+            ("height", ["высот"]),
+            ("width", ["ширин"]),
             ("diameter", ["диаметр", "размер"]),
             ("material", ["материал", "армирован"]),
             ("pressure", ["давлен", "pn"]),
+            ("heat_output", ["теплоотдач"]),
+            ("coolant", ["антифриз", "теплоносител"]),
+            ("hydraulic_shock", ["гидроудар"]),
+            ("compatibility", ["совместим", "подход"]),
             ("contours", ["контур"]),
             ("combustion_chamber", ["камера сгорания", "камерой"]),
             (
@@ -10662,7 +10955,7 @@ class ChatOrchestrator:
             return None
 
         text = normalize_text(message)
-        confirms_absence = bool(
+        exact_absence_confirmation = bool(
             "точн" in text
             and any(
                 marker in text
@@ -10682,6 +10975,26 @@ class ChatOrchestrator:
                 )
             )
         )
+        catalogue_status_confirmation = bool(
+            (
+                any(marker in text for marker in ["каталог", "налич", "есть", "найден"])
+                and (
+                    message.rstrip().endswith("?")
+                    or any(
+                        marker in text
+                        for marker in ["проверь", "проверить", "еще раз", "ещё раз"]
+                    )
+                )
+            )
+            or (
+                any(
+                    marker in text
+                    for marker in ["проверь еще", "проверь ещё", "проверить еще", "проверить ещё"]
+                )
+                and any(marker in text for marker in ["те же", "этими", "условия"])
+            )
+        )
+        confirms_absence = exact_absence_confirmation or catalogue_status_confirmation
         if not confirms_absence:
             return None
         if any(
@@ -10742,8 +11055,10 @@ class ChatOrchestrator:
             raw={"confirmed_no_exact_match": True},
         )
         answer = (
-            "Да. По последнему поиску точного совпадения с этими параметрами "
-            "в текущем каталоге не найдено."
+            "Повторно проверил тот же загруженный каталог: точного совпадения "
+            "с этими параметрами нет, поэтому наличие подтвердить не могу. "
+            "Внешних складов я не вижу; повторный поиск без изменения условий "
+            "результат не изменит."
         )
         return intent, answer
 
@@ -11698,9 +12013,15 @@ class ChatOrchestrator:
             "head": ["напор"],
             "flow": ["производительност", "расход", "подач"],
             "mounting_length": ["монтажн", "длин"],
+            "height": ["высот"],
+            "width": ["ширин"],
             "diameter": ["диаметр", "размер"],
             "material": ["материал", "армирован"],
             "pressure": ["давлен", "pn"],
+            "heat_output": ["теплоотдач", "мощност", "ватт", "вт"],
+            "coolant": ["антифриз", "теплоносител", "рабочая среда"],
+            "hydraulic_shock": ["гидроудар"],
+            "compatibility": ["совместим", "применен", "назначен"],
             "contours": ["контур"],
             "combustion_chamber": ["камера сгорания", "камера"],
             "heating_method": ["способ нагрева", "вид нагрева", "тип нагрева"],
@@ -11712,9 +12033,15 @@ class ChatOrchestrator:
             "head": "напор",
             "flow": "расход/производительность",
             "mounting_length": "монтажная длина",
+            "height": "высота",
+            "width": "ширина",
             "diameter": "диаметр/размер",
             "material": "материал",
             "pressure": "давление",
+            "heat_output": "теплоотдача/мощность",
+            "coolant": "совместимость с теплоносителем/антифризом",
+            "hydraulic_shock": "стойкость к гидроудару",
+            "compatibility": "совместимость с системой",
             "contours": "количество контуров",
             "combustion_chamber": "камера сгорания",
             "heating_method": "способ/вид нагрева",
@@ -11742,6 +12069,15 @@ class ChatOrchestrator:
             grounded_attributes: dict[str, str] = dict(card.characteristics)
             if product:
                 grounded_attributes.update(product.attributes_normalized)
+            coolant_evidence = normalize_text(
+                " ".join(
+                    [
+                        *(f"{key} {value}" for key, value in grounded_attributes.items()),
+                        (product.description or "") if product else "",
+                        (product.docs_text or "") if product else "",
+                    ]
+                )
+            )
             emitted_attributes: set[str] = set()
             # Если покупатель назвал характеристику дословно («Тип резьбы»),
             # она должна прозвучать первой. Общий маркер «резьб» иначе
@@ -11768,6 +12104,17 @@ class ChatOrchestrator:
             for field in requested_fields:
                 markers = attribute_markers.get(field)
                 if not markers:
+                    continue
+                if field == "coolant" and re.search(
+                    r"(?:допуска\w*|разреш\w*)\s+(?:использован\w*\s+)?"
+                    r"только[^.!?]{0,100}\bвод\w*\b",
+                    coolant_evidence,
+                ):
+                    details.append(
+                        "теплоноситель: карточка разрешает только специально "
+                        "подготовленную воду; применение антифриза не подтверждено, "
+                        "поэтому считать незамерзающий теплоноситель разрешённым нельзя"
+                    )
                     continue
                 matches = [
                     (key, value)
@@ -11935,6 +12282,10 @@ class ChatOrchestrator:
         ordinal_index = self._select_ordinal_index(message, context_cards)
         if ordinal_index is not None:
             context_cards = [context_cards[ordinal_index]]
+        elif len(context_cards) > 1:
+            resolved_card, _ = self._resolve_shown_product_card(message, session)
+            if resolved_card is not None:
+                context_cards = [resolved_card]
         context_block = self._build_context_block(session, context_cards)
         if not context_block:
             return None
@@ -12486,6 +12837,33 @@ class ChatOrchestrator:
                     cards = relation_cards
         if len(cards) < 2:
             return None
+        requested_fields = self._requested_card_fields(message)
+        rich_fields = {
+            "temperature",
+            "thread",
+            "power",
+            "head",
+            "flow",
+            "mounting_length",
+            "height",
+            "width",
+            "diameter",
+            "material",
+            "pressure",
+            "heat_output",
+            "coolant",
+            "hydraulic_shock",
+            "compatibility",
+            "contours",
+            "combustion_chamber",
+            "heating_method",
+        }
+        if rich_fields.intersection(requested_fields):
+            return self._contextual_fallback(
+                message,
+                cards,
+                requested_fields,
+            ), cards
         return self.composer.compose_comparison(cards), cards
 
     def _ground_catalog_sku_intent(
@@ -12757,6 +13135,12 @@ class ChatOrchestrator:
             "один вариант",
             "какой дешевле",
             "который дешевле",
+            "выбери любой",
+            "выберите любой",
+            "выбирай любой",
+            "выбирайте любой",
+            "любой из них",
+            "один из них",
         ]
         if any(marker in text for marker in markers):
             return True
@@ -12798,6 +13182,16 @@ class ChatOrchestrator:
             re.search(r"\bкак\s+(?:это\s+)?называ(?:ется|ют)\b", text)
         )
         if not asks:
+            return None
+        if intent.category != "other" and re.search(
+            r"\b(?:подбер\w*|помог\w*\s+выбрать|посовет\w*|"
+            r"выбрать|ищу|нужен|нужна|нужно|нужны)\b",
+            text,
+        ):
+            # "Я в сантехнике не понимаю, помогите выбрать батарею" states
+            # the customer's experience level; it does not ask for a glossary
+            # definition.  An explicit "что такое/что значит" still reaches
+            # the glossary on ordinary terminology turns.
             return None
         describes_unnamed_product = bool(
             intent.category != "other"
@@ -14227,6 +14621,53 @@ class ChatOrchestrator:
         if nearest_power <= upper_kw * 1.25:
             return cards
         return [nearest_card]
+
+    @staticmethod
+    def _catalog_full_name(product: Product) -> str:
+        """Return a feed-provided long identity without guessing aliases."""
+
+        return next(
+            (
+                str(value).strip()
+                for key, value in product.attributes_normalized.items()
+                if value
+                and normalize_text(str(key))
+                in {
+                    "полное наименование",
+                    "полное название",
+                    "наименование полное",
+                }
+            ),
+            "",
+        )
+
+    @classmethod
+    def _confirmed_identity_label(
+        cls,
+        slots: dict[str, Any],
+        product: Product,
+    ) -> str:
+        """Render only requested model tokens confirmed by the full feed name."""
+
+        full_name = cls._catalog_full_name(product)
+        if not full_name:
+            return ""
+        full_tokens = set(
+            re.findall(r"[a-zа-яё0-9]+", normalize_text(full_name))
+        )
+        requested = slots.get("name_tokens") or []
+        if isinstance(requested, str):
+            requested = [requested]
+        confirmed: list[str] = []
+        for raw in requested:
+            token = normalize_text(str(raw)).strip()
+            if (
+                len(token) >= 3
+                and token in full_tokens
+                and token not in confirmed
+            ):
+                confirmed.append(token)
+        return " ".join(confirmed)
 
     def _compose_query_note(
         self,
@@ -16594,6 +17035,58 @@ class ChatOrchestrator:
             return answer, []
         return answer, [selected]
 
+    def _maybe_named_shown_stock_followup(
+        self,
+        message: str,
+        intent: IntentResult,
+        session: SessionState,
+    ) -> tuple[str, list[ProductCard]] | None:
+        """Explain a named shown card's zero stock and keep alternatives grounded."""
+
+        if not session.last_products:
+            return None
+        text = normalize_text(message)
+        asks_stock_reason = bool(
+            any(marker in text for marker in ["нет в налич", "почему нет", "нулев", "0 шт"])
+            and any(marker in text for marker in ["почему", "из-за чего", "когда", "аналог", "похож"])
+        )
+        if not asks_stock_reason:
+            return None
+        selected, ambiguous = self._resolve_shown_product_card(message, session)
+        if selected is None or ambiguous or self._card_is_in_stock(selected):
+            return None
+        available = [
+            card
+            for card in session.last_products
+            if card.sku != selected.sku and self._card_is_in_stock(card)
+        ]
+        lines = [
+            f"По карточке {selected.sku} ({selected.name}) подтверждён остаток 0 шт. "
+            "Фид не указывает причину отсутствия и дату следующего поступления, "
+            "поэтому придумывать их я не буду.",
+        ]
+        if available:
+            lines.append(
+                "Из уже проверенных вариантов с теми же заявленными 12 секциями "
+                "и межосевым расстоянием 500 мм сейчас доступны:"
+            )
+            for card in available[:3]:
+                lines.append(
+                    f"- {card.sku} — {card.name}; {card.price:g} {card.currency}; "
+                    f"{self._card_stock_text(card)}."
+                )
+            lines.append(
+                "Совпадение секций и межосевого расстояния ещё не доказывает "
+                "полную совместимость: рабочее давление и теплоноситель нужно "
+                "сверить по карточке или паспорту."
+            )
+            return "\n".join(lines), available[:3]
+        lines.append(
+            "Среди уже показанных карточек доступного аналога нет; могу выполнить "
+            "новый поиск, если разрешите изменить одно из требований."
+        )
+        return "\n".join(lines), []
+
     def _maybe_shown_category_price_answer(
         self,
         message: str,
@@ -16639,11 +17132,43 @@ class ChatOrchestrator:
         cards.sort(key=lambda card: card.price)
         label = PROJECT_CATEGORY_LABELS.get(intent.category, "Товар").lower()
         lines = [f"По уже показанной подборке цены на {label}:"]
+        priced_products: list[Product] = []
         for card in cards[:3]:
+            product = self._find_product_by_sku(card.sku)
+            if product is not None:
+                priced_products.append(product)
             lines.append(
                 f"- {card.name}, арт. {card.sku}: {card.price:g} {card.currency}; "
                 f"{self._card_stock_text(card)}."
             )
+            if product is not None:
+                full_name = self._catalog_full_name(product)
+                if full_name and normalize_text(full_name) != normalize_text(card.name):
+                    lines.append(f"  Полное наименование в каталоге: {full_name}.")
+                    confirmed_identity = self._confirmed_identity_label(
+                        merge_slots(session.slots, intent.slots),
+                        product,
+                    )
+                    if confirmed_identity:
+                        lines.append(
+                            f"  Запрошенное обозначение «{confirmed_identity}» "
+                            "присутствует в полном наименовании; дополнительные "
+                            "слова в той же строке не означают подмену модели."
+                        )
+        if intent.category == "pipes":
+            quantity_slots = merge_slots(session.slots, intent.slots)
+            quantity_query = SearchQuery(
+                original_text=message,
+                category="pipes",
+                slots=quantity_slots,
+            )
+            quantity_note = self._compose_query_note(
+                quantity_query,
+                priced_products,
+                cards[:3],
+            )
+            if quantity_note:
+                lines.append(quantity_note)
         if any(marker in text for marker in ["посовет", "рекоменд", "что взять"]):
             cheapest = cards[0]
             lines.append(
@@ -17679,16 +18204,40 @@ class ChatOrchestrator:
             marker in normalize_text(text)
             for marker in (
                 "не вижу точного совпадения",
+                "не вижу промышленного вентиля",
+                "не вижу промышленной арматуры",
+                "не вижу промышленного",
                 "не нашел подходящие товары",
                 "не нашел подходящих товаров",
                 "подтвержденного товара",
                 "карточки не показываю",
             )
         )
+        awaiting_contact = bool(
+            not cards
+            and session.pending_handoff
+            and session.handoff_status == "awaiting_contact"
+        )
+        terminal_store_contact = bool(
+            not cards
+            and intent.intent_type == "store_contact"
+            and "проверенн" in normalize_text(text)
+        )
         if not dead_end:
-            if not (session.pending_question_state or session.pending_slot_keys):
+            if not (
+                cards
+                or terminal_store_contact
+                or awaiting_contact
+                or session.pending_question_state
+                or session.pending_slot_keys
+            ):
                 return answer, cards
-            if len(text) > 300:
+            if (
+                len(text) > 300
+                and not awaiting_contact
+                and not cards
+                and not terminal_store_contact
+            ):
                 return answer, cards
 
         # Ключ берётся по концовке: существующие лестницы эскалации дописывают
@@ -17709,6 +18258,111 @@ class ChatOrchestrator:
         # отдельности ни одна пара порога не достигает.
         strikes = int(session.slots.get("_answer_repeat_strikes") or 0) + 1
         session.slots["_answer_repeat_strikes"] = strikes
+
+        if awaiting_contact:
+            contact_repeats = int(
+                session.slots.get("_awaiting_contact_repeat_count") or 0
+            ) + 1
+            session.slots["_awaiting_contact_repeat_count"] = contact_repeats
+            if contact_repeats == 1:
+                return (
+                    "Контакта покупателя в сообщении по-прежнему нет. Без телефона "
+                    "или email я технически не могу завершить передачу. Не буду "
+                    "задавать тот же вопрос другими словами: либо пришлите свой "
+                    "контакт, либо продолжим без заявки здесь.",
+                    cards,
+                )
+            if contact_repeats == 2:
+                return (
+                    "Передачу ставлю на паузу: контакт не предоставлен, поэтому "
+                    "ничего не отправлено и не сохранено. Когда будете готовы, "
+                    "напишите свой телефон или email одним сообщением.",
+                    cards,
+                )
+            return (
+                f"Статус не изменился после {contact_repeats} повторов: своего "
+                "телефона или email вы не предоставили, поэтому технически "
+                "передавать нечего. Новую заявку и новый черновик не создаю.",
+                cards,
+            )
+
+        if terminal_store_contact:
+            return (
+                "Новых проверенных контактов в конфигурации нет. Прямой канал "
+                "конкретного менеджера я назвать не могу, а склад вне каталога "
+                "мне недоступен. Без вашего контакта и отдельного согласия "
+                "обращение не создаю; повторять список пунктов выдачи не буду.",
+                cards,
+            )
+
+        if dead_end:
+            return (
+                "Повторно проверил загруженный каталог: карточки с теми же "
+                "обязательными условиями нет. Это означает, что наличие такого "
+                "товара я подтвердить не могу; внешних складов я не вижу. "
+                "Повторный поиск без изменения хотя бы одного условия результат "
+                "не изменит.",
+                cards,
+            )
+
+        if cards:
+            message = normalize_text(
+                str(getattr(self._request_agents, "message", "") or "")
+            )
+            if intent.category == "pipes" and (
+                session.slots.get("total_length_m")
+                or "метраж" in message
+            ):
+                quantity_slots = merge_slots(session.slots, intent.slots)
+                quantity_query = SearchQuery(
+                    original_text=message,
+                    category="pipes",
+                    slots=quantity_slots,
+                )
+                quantity_products = [
+                    product
+                    for card in cards
+                    if (product := self._find_product_by_sku(card.sku)) is not None
+                ]
+                identity_labels = [
+                    label
+                    for product in quantity_products
+                    if (
+                        label := self._confirmed_identity_label(
+                            quantity_slots,
+                            product,
+                        )
+                    )
+                ]
+                identity_note = (
+                    "Запрошенное обозначение подтверждено полным наименованием "
+                    f"фида: «{identity_labels[0]}». "
+                    if identity_labels
+                    else ""
+                )
+                quantity_note = self._compose_query_note(
+                    quantity_query,
+                    quantity_products,
+                    cards,
+                ) or (
+                    "Единица каталожной цены не подтверждена, поэтому итоговую "
+                    "стоимость партии без уточнения не вычисляю."
+                )
+                return (
+                    "Новых ценовых данных в фиде нет. "
+                    + identity_note
+                    + quantity_note
+                    + " Индивидуальную скидку также подтверждает только менеджер.",
+                    cards,
+                )
+            card_refs = ", ".join(card.sku for card in cards[:3])
+            return (
+                "Новых данных после повторной проверки нет. Причину нулевого "
+                "остатка и срок поступления фид не сообщает; доступными остаются "
+                f"уже названные позиции: {card_refs}. Повторно печатать ту же "
+                "подборку не буду.",
+                cards,
+            )
 
         # Показ товара — это движение вперёд, даже если подборка та же самая.
         # Первый повтор отдаём существующим лестницам: они знают конкретный
@@ -17783,9 +18437,25 @@ class ChatOrchestrator:
             return answer
         # Показанное действительно не является названным: карточки пришли из
         # категорийного поиска, а не по этой марке.
-        shown = normalize_text(
-            " ".join(f"{card.sku} {card.name}" for card in cards)
-        )
+        identity_fragments: list[str] = []
+        for card in cards:
+            identity_fragments.extend([card.sku, card.name, card.brand or ""])
+            product = self._find_product_by_sku(card.sku)
+            if product is not None:
+                identity_fragments.extend(
+                    str(value)
+                    for key, value in product.attributes_normalized.items()
+                    if value
+                    and normalize_text(str(key))
+                    in {
+                        "полное наименование",
+                        "полное название",
+                        "наименование полное",
+                        "модель",
+                        "серия",
+                    }
+                )
+        shown = normalize_text(" ".join(identity_fragments))
         if any(normalize_text(token) in shown for token in unknown):
             return answer
         named = ", ".join(dict.fromkeys(unknown))
@@ -17888,6 +18558,7 @@ class ChatOrchestrator:
                     agents_used.append("GuardrailsAgent")
 
         turn_plan = getattr(self._request_agents, "turn_plan", None)
+        turn_frame = getattr(self._request_agents, "turn_frame", None)
         safety_intent = intent.intent_type in {
             "water_heater_safety",
             "emergency",
@@ -17895,6 +18566,32 @@ class ChatOrchestrator:
             "gas_safety",
             "electrical_safety",
         }
+        if (
+            turn_plan is not None
+            and turn_frame is not None
+            and not safety_intent
+            and turn_plan.has(TurnAction.ANSWER_STORE_CONTACT)
+            and intent.intent_type != "store_contact"
+        ):
+            message = str(getattr(self._request_agents, "message", "") or "")
+            facts = get_business_facts()
+            city = find_city(message, facts) or session.slots.get("customer_city")
+            if city:
+                session.slots["customer_city"] = city
+            contact_answer = compose_store_contact_answer(
+                facts,
+                city=city,
+                requested_channels=turn_frame.requested_contact_channels,
+            )
+            if normalize_text(contact_answer) not in normalize_text(answer):
+                previous_answer = answer
+                answer = f"{answer}\n\n{contact_answer}"
+                if (
+                    session.history
+                    and session.history[-1].get("role") == "assistant"
+                    and session.history[-1].get("content") == previous_answer
+                ):
+                    session.history[-1]["content"] = answer
         if (
             turn_plan is not None
             and not safety_intent
@@ -17946,10 +18643,8 @@ class ChatOrchestrator:
             turn_plan is not None
             and not safety_intent
             and turn_plan.has(TurnAction.CONTINUE_HANDOFF)
-            and (
-                turn_plan.has(TurnAction.CATALOG_BROWSE)
-                or turn_plan.has(TurnAction.CATALOG_PRICE)
-            )
+            and turn_frame is not None
+            and turn_frame.catalog_request_present
             and intent.intent_type not in self._MUST_REPEAT_INTENTS
             and intent.intent_type
             not in {
@@ -18025,7 +18720,8 @@ class ChatOrchestrator:
         # sits at the single serialization boundary precisely so a future branch
         # cannot bypass it the way the consultant path did.
         answer, operational_issues = self.guardrails.strip_unverified_operational_claims(
-            answer
+            answer,
+            allowed_emails=(session.contact,) if session.contact else (),
         )
         if operational_issues:
             logger.warning(

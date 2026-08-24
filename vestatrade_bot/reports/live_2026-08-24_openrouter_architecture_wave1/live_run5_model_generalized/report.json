@@ -1,0 +1,91 @@
+{
+  "mode": "live",
+  "generated_at": "2026-08-24T12:21:20.790704+00:00",
+  "elapsed_sec": 31.8,
+  "manifest": {
+    "schema_version": 1,
+    "git": {
+      "commit": "352c00cf9a474537f6a1a2c19d56441a054da560",
+      "dirty": true,
+      "status_sha256": "f9d6f0ee904d4fcced99ce5282fccaa56517f694eb5888770aa4c48cbcd84b5e",
+      "runtime_tree_sha256": "7d18fdfcbde581e9789211f22212de25782d838869144bcd09efe965e93b76c9",
+      "reproducible": false
+    },
+    "inputs": {
+      "testset_path": "reports/live_2026-08-24_openrouter_architecture_wave1_testset.json",
+      "testset_sha256": "e6cdf394c4d1128dc3cbed8b9f14b490f26f63d48afe8cf7326a66d71909805f",
+      "scenario_ids": [
+        "ARCH-MODEL-VOLUME-07"
+      ],
+      "catalog_source": "cache",
+      "catalog_products": 14035,
+      "catalog_sha256": "d8ba7325469f729071f92b0c2759e6b2a35b6cceb32c8c9e104c1aaad02b3b75",
+      "business_config_sha256": "e9407dea8d935e0b26ec5a680eb994da034da866580e09d1d05131e0123ada5e",
+      "buyer_prompt_sha256": "b016dd2edf4a1554a6f25949d26d3473e33ff5787c96019f99f6172f7a1e5f29",
+      "harness_sha256": "ee87cae01be26f9e2d5a72b9b21a31ff028402e23d037dafe46bf0be0b3cba6e"
+    },
+    "llm": {
+      "provider": "openrouter",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "strong_model": "qwen/qwen3-vl-8b-instruct",
+      "timeout_seconds": 60.0,
+      "request_timeout_seconds": 180.0,
+      "max_retries": 2,
+      "retry_delay_seconds": 1.0
+    },
+    "run": {
+      "mode": "live",
+      "workers": 1,
+      "max_turns": 8,
+      "limit": null,
+      "only": "ARCH-MODEL-VOLUME-07"
+    },
+    "runtime": {
+      "python": "3.12.2",
+      "implementation": "CPython",
+      "platform": "macOS-15.6-arm64-arm-64bit"
+    }
+  },
+  "dialogues": 1,
+  "dialogues_attempted": 1,
+  "dialogues_valid": 1,
+  "dialogues_invalid": 0,
+  "metric_denominator_dialogues": 1,
+  "execution_outcomes": {
+    "valid": 1
+  },
+  "turns_attempted": 4,
+  "turns": 4,
+  "turns_with_cards": 1,
+  "dialogues_with_cards": 1,
+  "answer_sources": {
+    "deterministic": 4
+  },
+  "outcomes": {
+    "user_gave_up": 1
+  },
+  "latency_sec": {
+    "p50": 2.08,
+    "p95": 13.22,
+    "max": 13.22
+  },
+  "defect_hits": {},
+  "defect_dialogues": {},
+  "runs": [
+    {
+      "id": "ARCH-MODEL-VOLUME-07",
+      "block": "exact product identity and commercial terms",
+      "priority": "P1",
+      "turns": 4,
+      "cards_shown": 1,
+      "outcome": "user_gave_up",
+      "buyer_state": "gave_up",
+      "buyer_note": "Консультант не может дать цену без контакта, несмотря на повторные просьбы. Не отвечает по сути — ходит по кругу.",
+      "execution_status": "valid",
+      "failure_stage": "",
+      "failure_reason": "",
+      "defects": {},
+      "evidence": []
+    }
+  ]
+}

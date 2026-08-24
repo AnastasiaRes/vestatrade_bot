@@ -72,8 +72,10 @@ class TurnFrame:
     selection_mode: SelectionMode = SelectionMode.UNSPECIFIED
     requested_count: int | None = None
     contact_direction: ContactDirection | None = None
+    requested_contact_channels: tuple[str, ...] = ()
     customer_contact_present: bool = False
     product_context_present: bool = False
+    catalog_request_present: bool = False
 
     def has(self, act: TurnAct) -> bool:
         return act in self.acts
@@ -100,12 +102,13 @@ _PRICE_RE = re.compile(
 _PRESENTATION_RE = re.compile(r"\b(?:покаж\w*|дай\w*|назов\w*|привед\w*)\b")
 _OPTION_NOUN_RE = re.compile(r"\b(?:вариант\w*|модел\w*|позици\w*|товар\w*)\b")
 _PRODUCT_NOUN_RE = re.compile(
-    r"\b(?:радиатор|насос|кот[её]л|труб|кран|клапан|фитинг|бойлер|"
+    r"\b(?:радиатор|батаре|насос|кот[её]л|труб|кран|клапан|вентил|арматур|фитинг|бойлер|"
     r"водонагревател|гидроаккумулятор|канализац|термостат|коллектор)\w*\b"
 )
 _DISCOUNT_RE = re.compile(
     r"\b(?:скидк\w*|распродаж\w*|промокод\w*|скиньте)\b|"
-    r"\b(?:дешевле\s+сделай|сделайте\s+дешевле)\b"
+    r"\b(?:дешевле\s+сделай|сделайте\s+дешевле)\b|"
+    r"\b(?:цен\w*|услов\w*)\s+(?:за|для)\s+(?:так\w*\s+)?объ[её]м\w*\b"
 )
 _SKU_HINT_RE = re.compile(
     r"\b(?=[a-zа-я0-9./-]*[a-zа-я])(?=[a-zа-я0-9./-]*\d)"
@@ -118,6 +121,26 @@ _COUNT_RANGE_RE = re.compile(
 _COUNT_SINGLE_RE = re.compile(
     r"\b(\d{1,2})\s+(?:вариант\w*|модел\w*|позици\w*|товар\w*)\b"
 )
+_COUNT_OPTION_WORD_RE = re.compile(
+    r"\b(один|одну|одно|два|две|три|четыре|пять)\s+"
+    r"(?:вариант\w*|модел\w*|позици\w*|товар\w*)\b"
+)
+_COUNT_PRODUCT_RE = re.compile(
+    r"\b(\d{1,2}|один|одну|одно|два|две|три|четыре|пять)\s+"
+    r"(?:[a-zа-яё-]+\s+){0,3}"
+    r"(?:радиатор|батаре|насос|кот[её]л|труб|кран|клапан|вентил|фитинг|бойлер|"
+    r"водонагревател|гидроаккумулятор|коллектор)\w*\b"
+)
+_COUNT_WORDS = {
+    "один": 1,
+    "одну": 1,
+    "одно": 1,
+    "два": 2,
+    "две": 2,
+    "три": 3,
+    "четыре": 4,
+    "пять": 5,
+}
 
 _BROWSE_SIGNALS = (
     "чаще берут",
@@ -146,11 +169,17 @@ _RECOMMEND_SIGNALS = (
     "что лучше взять",
     "что брать",
     "для моей системы",
+    "посовет",
+)
+
+_PRODUCT_SELECTION_RE = re.compile(
+    r"\b(?:нужен|нужна|нужно|нужны|ищу|выбираю|выбрать|подбер\w*|"
+    r"помог\w*\s+выбрать|посовет\w*|покаж\w*|дай\w*|вывед\w*)\b"
 )
 
 _CONTACT_NOUN_RE = re.compile(
     r"\b(?:телефон\w*|номер\w*|email|e-mail|имейл\w*|почт\w*|"
-    r"контакт\w*|кантакт\w*)\b"
+    r"контакт\w*|кантакт\w*|мессенджер\w*|чат\w*|адрес\w*)\b"
 )
 _STORE_CONTACT_IMPERATIVE_RE = re.compile(
     r"\b(?:дай\w*|пришл\w*|отправ\w*|напиш\w*|подскаж\w*)\b"
@@ -162,10 +191,14 @@ _STORE_CONTACT_POSSESSIVE_RE = re.compile(
     r"\b(?:ваш\w*|магазин(?:а|ный)\w*|менеджер(?:а|ский)\w*|"
     r"филиал(?:а|ьный)\w*)\b[^.!?]{0,16}"
     r"\b(?:телефон\w*|номер\w*|email|e-mail|имейл\w*|почт\w*|"
-    r"контакт\w*|кантакт\w*)\b"
+    r"контакт\w*|кантакт\w*|адрес\w*)\b"
     r"|\b(?:телефон\w*|номер\w*|email|e-mail|имейл\w*|почт\w*|"
-    r"контакт\w*|кантакт\w*)\b"
+    r"контакт\w*|кантакт\w*|адрес\w*)\b"
     r"[^.!?]{0,12}\b(?:магазина|менеджера|филиала)\b"
+)
+_STORE_CONTACT_LOCATION_RE = re.compile(
+    r"\b(?:контакт|адрес|куда\s+написать)\w*[^.!?]{0,32}"
+    r"\b(?:в|для)\s+[а-яё-]{3,}\b"
 )
 _STORE_CONTACT_CONNECT_RE = re.compile(
     r"\bкак\s+(?:связаться|свезаться|связатсья)\b"
@@ -179,6 +212,11 @@ _STORE_CONTACT_TARGET_RE = re.compile(
     r"сотруд|сатруд|продав|продов|прадав|администр|адмнистр|"
     r"оператор|опиратор|человек|челавек|вами)\w*\b"
 )
+_STORE_CONTACT_DIRECT_RE = re.compile(
+    r"\b(?:дай\w*|пришл\w*|отправ\w*|напиш\w*|подскаж\w*)\b"
+    r"[^.!?]{0,70}\b(?:телефон\w*|номер\w*|email|e-mail|имейл\w*|"
+    r"почт\w*|контакт\w*|мессенджер\w*|чат\w*)\b"
+)
 _THIRD_PARTY_CONTACT_TARGET_RE = re.compile(
     r"\b(?:производител|поставщик|завод|бренд|дистрибьютор|"
     r"документац|инструкц)\w*\b|\bих\s+(?:email|e-mail|имейл|почт|"
@@ -191,9 +229,14 @@ _CUSTOMER_CONTACT_OWNERSHIP_RE = re.compile(
 )
 _HANDOFF_RE = re.compile(
     r"\b(?:передай|передайте|переключи|переключите|соедини|соедините|позови|позовите)\w*\b"
-    r"[^.!?]{0,50}\b(?:менеджер|оператор|консультант|сотрудник|продавец|человек)\w*\b"
+    r"[^.!?]{0,50}\b(?:менеджер|оператор|консультант|сотрудник|продав|человек)\w*\b"
     r"|\b(?:хочу|нужен|нужна|можно)\b[^.!?]{0,36}"
-    r"\b(?:менеджер|оператор|консультант|сотрудник|продавец|человек)\w*\b"
+    r"\b(?:менеджер|оператор|консультант|сотрудник|продав|человек)\w*\b"
+    r"|\b(?:подготов|оформ|созда|собер|состав)\w*\b[^.!?]{0,70}"
+    r"(?:\b(?:запрос|заявк|обращен|вопрос)\w*\b[^.!?]{0,35}"
+    r"\b(?:менеджер|оператор|консультант|сотрудник|продав|человек)\w*\b"
+    r"|\b(?:менеджер|оператор|консультант|сотрудник|продав|человек)\w*\b"
+    r"[^.!?]{0,35}\b(?:запрос|заявк|обращен|вопрос)\w*\b)"
 )
 
 
@@ -206,6 +249,14 @@ def _requested_count(text: str) -> int | None:
     match = _COUNT_SINGLE_RE.search(text)
     if match:
         return min(5, max(1, int(match.group(1))))
+    match = _COUNT_OPTION_WORD_RE.search(text)
+    if match:
+        return _COUNT_WORDS.get(match.group(1), 1)
+    match = _COUNT_PRODUCT_RE.search(text)
+    if match:
+        raw = match.group(1)
+        value = int(raw) if raw.isdigit() else _COUNT_WORDS.get(raw, 1)
+        return min(5, max(1, value))
     return None
 
 
@@ -213,6 +264,8 @@ def _is_store_contact_request(text: str) -> bool:
     if _THIRD_PARTY_CONTACT_TARGET_RE.search(text):
         return False
     if _STORE_CONTACT_GENERIC_QUESTION_RE.search(text):
+        return True
+    if _STORE_CONTACT_LOCATION_RE.search(text):
         return True
     if _STORE_CONTACT_CONNECT_RE.search(text):
         # "How do I contact the manufacturer?" is a product-support question,
@@ -224,7 +277,45 @@ def _is_store_contact_request(text: str) -> bool:
     return bool(
         _STORE_CONTACT_IMPERATIVE_RE.search(text)
         or _STORE_CONTACT_POSSESSIVE_RE.search(text)
+        or (
+            _STORE_CONTACT_TARGET_RE.search(text)
+            and re.search(r"\b(?:нужен|нужна|нужно|нужны|хочу|ищу)\w*\b", text)
+        )
+        or (
+            _STORE_CONTACT_DIRECT_RE.search(text)
+            and _STORE_CONTACT_TARGET_RE.search(text)
+        )
     )
+
+
+def _requested_store_contact_channels(text: str) -> tuple[str, ...]:
+    channels: list[str] = []
+    if re.search(
+        r"\b(?:контакт|телефон|номер|email|e-mail|почт)\w*\b"
+        r"[^.!?]{0,14}\b(?:менеджер|консультант|сотрудник|продавец)\w*\b|"
+        r"\b(?:менеджер|консультант|сотрудник|продавец)\w*\b"
+        r"[^.!?]{0,14}\b(?:контакт|телефон|номер|email|e-mail|почт)\w*\b",
+        text,
+    ):
+        channels.append("manager")
+    phone_rejected = bool(
+        re.search(
+            r"\b(?:телефон|звон|номер)\w*[^.!?]{0,28}"
+            r"(?:не\s+подход|не\s+нуж|не\s+хочу|не\s+могу)",
+            text,
+        )
+    )
+    if not phone_rejected and re.search(r"\b(?:телефон|номер|позвон)\w*\b", text):
+        channels.append("phone")
+    if re.search(r"\b(?:email|e-mail|имейл|почт)\w*\b", text):
+        channels.append("email")
+    if re.search(r"\b(?:мессенджер|чат)\w*\b", text):
+        channels.append("messenger")
+    if re.search(r"\b(?:адрес|где\s+находит|точк\w*\s+в\s+город)\w*\b", text):
+        channels.append("address")
+    if re.search(r"\b(?:ссылк|сайт)\w*\b", text):
+        channels.append("url")
+    return tuple(channels)
 
 
 def _is_third_party_contact_request(
@@ -296,7 +387,9 @@ def _is_browse_request(text: str, requested_count: int | None) -> bool:
         has_presentation or has_option_noun or has_product_noun
     ):
         return True
-    if requested_count is not None and has_presentation and has_option_noun:
+    if requested_count is not None and has_presentation and (
+        has_option_noun or has_product_noun
+    ):
         return True
     # Preserve the legacy distinction: a short standalone "show options" is a
     # command, while a rich product refinement containing those two words is
@@ -326,32 +419,18 @@ class TurnPlanner:
             text,
             customer_contact_present=customer_contact_present,
         )
-        if third_party_contact_request:
-            return TurnFrame(
-                acts=(TurnAct.REQUEST_THIRD_PARTY_CONTACT,),
-                contact_direction=ContactDirection.THIRD_PARTY,
-                customer_contact_present=False,
-                product_context_present=product_context_present,
-            )
-
         store_contact = _is_store_contact_request(text)
-        if store_contact:
-            # Direction wins over the nearby word "manager": in "send me the
-            # phone and I will pass it to the manager" the user is not asking
-            # the bot to transfer their own contact.
-            return TurnFrame(
-                acts=(TurnAct.REQUEST_STORE_CONTACT,),
-                contact_direction=ContactDirection.STORE_TO_CUSTOMER,
-                customer_contact_present=False,
-                product_context_present=product_context_present,
-            )
 
         commerce_topic = match_commerce_topic(text)
         requested_count = _requested_count(text)
         browse_candidate = _is_browse_request(text, requested_count)
         explicit_catalog_browse = bool(
             _PRESENTATION_RE.search(text)
-            and (_OPTION_NOUN_RE.search(text) or requested_count is not None)
+            and (
+                _OPTION_NOUN_RE.search(text)
+                or _PRODUCT_NOUN_RE.search(text)
+                or requested_count is not None
+            )
         )
         if commerce_topic is not None and not explicit_catalog_browse:
             # "Не надо уточнять город доставки радиатора" is a delivery
@@ -361,6 +440,14 @@ class TurnPlanner:
             browse_candidate = False
         recommends = any(signal in text for signal in _RECOMMEND_SIGNALS)
         has_product_noun = bool(_PRODUCT_NOUN_RE.search(text))
+        catalog_request_present = bool(
+            has_product_noun
+            and (
+                browse_candidate
+                or recommends
+                or _PRODUCT_SELECTION_RE.search(text)
+            )
+        )
         asks_discount = bool(_DISCOUNT_RE.search(text))
         asks_price = bool(
             _PRICE_RE.search(text)
@@ -418,6 +505,10 @@ class TurnPlanner:
             selection_mode = SelectionMode.UNSPECIFIED
 
         acts: list[TurnAct] = []
+        if third_party_contact_request:
+            acts.append(TurnAct.REQUEST_THIRD_PARTY_CONTACT)
+        elif store_contact:
+            acts.append(TurnAct.REQUEST_STORE_CONTACT)
         if selection_mode == SelectionMode.BROWSE and browse_candidate:
             acts.append(TurnAct.BROWSE_OPTIONS)
         if asks_price:
@@ -432,7 +523,14 @@ class TurnPlanner:
             acts.append(TurnAct.REQUEST_HANDOFF)
 
         direction = None
-        if customer_contact_present:
+        if third_party_contact_request:
+            direction = ContactDirection.THIRD_PARTY
+        elif store_contact:
+            # Direction wins over the nearby word "manager": in "send me the
+            # phone and I will pass it to the manager" the user is not asking
+            # the bot to transfer their own contact.
+            direction = ContactDirection.STORE_TO_CUSTOMER
+        elif customer_contact_present:
             direction = (
                 ContactDirection.THIRD_PARTY
                 if third_party_contact
@@ -443,10 +541,14 @@ class TurnPlanner:
             selection_mode=selection_mode,
             requested_count=requested_count,
             contact_direction=direction,
+            requested_contact_channels=(
+                _requested_store_contact_channels(text) if store_contact else ()
+            ),
             customer_contact_present=(
-                owned_customer_contact
+                owned_customer_contact and not store_contact
             ),
             product_context_present=product_context_present,
+            catalog_request_present=catalog_request_present,
         )
 
     def plan(
@@ -455,19 +557,6 @@ class TurnPlanner:
         *,
         pending_handoff: bool = False,
     ) -> TurnPlan:
-        if frame.has(TurnAct.REQUEST_STORE_CONTACT):
-            return TurnPlan(
-                actions=(TurnAction.ANSWER_STORE_CONTACT,),
-                bypass_engineering_preflight=True,
-                ignore_pending_handoff_for_turn=pending_handoff,
-            )
-        if frame.has(TurnAct.REQUEST_THIRD_PARTY_CONTACT):
-            return TurnPlan(
-                actions=(TurnAction.ANSWER_THIRD_PARTY_CONTACT,),
-                bypass_engineering_preflight=True,
-                ignore_pending_handoff_for_turn=pending_handoff,
-            )
-
         actions: list[TurnAction] = []
         if frame.has(TurnAct.BROWSE_OPTIONS):
             actions.append(TurnAction.CATALOG_BROWSE)
@@ -477,13 +566,21 @@ class TurnPlanner:
             actions.append(TurnAction.ANSWER_COMMERCE_POLICY)
         if frame.has(TurnAct.DISCOUNT_POLICY):
             actions.append(TurnAction.ANSWER_DISCOUNT_POLICY)
+        if frame.has(TurnAct.REQUEST_STORE_CONTACT):
+            actions.append(TurnAction.ANSWER_STORE_CONTACT)
+        if frame.has(TurnAct.REQUEST_THIRD_PARTY_CONTACT):
+            actions.append(TurnAction.ANSWER_THIRD_PARTY_CONTACT)
         if frame.has(TurnAct.REQUEST_HANDOFF) or (
             pending_handoff and frame.has(TurnAct.PROVIDE_CUSTOMER_CONTACT)
         ):
             actions.append(TurnAction.CONTINUE_HANDOFF)
 
         catalog_and_policy = bool(
-            (frame.has(TurnAct.BROWSE_OPTIONS) or frame.has(TurnAct.PRICE_LOOKUP))
+            (
+                frame.catalog_request_present
+                or frame.has(TurnAct.BROWSE_OPTIONS)
+                or frame.has(TurnAct.PRICE_LOOKUP)
+            )
             and (
                 frame.has(TurnAct.COMMERCE_POLICY)
                 or frame.has(TurnAct.DISCOUNT_POLICY)
@@ -491,6 +588,17 @@ class TurnPlanner:
         )
         return TurnPlan(
             actions=tuple(actions),
-            bypass_engineering_preflight=frame.selection_mode == SelectionMode.BROWSE,
+            bypass_engineering_preflight=(
+                frame.selection_mode == SelectionMode.BROWSE
+                or frame.has(TurnAct.REQUEST_STORE_CONTACT)
+                or frame.has(TurnAct.REQUEST_THIRD_PARTY_CONTACT)
+            ),
             skip_commerce_short_circuit=catalog_and_policy,
+            ignore_pending_handoff_for_turn=bool(
+                pending_handoff
+                and (
+                    frame.has(TurnAct.REQUEST_STORE_CONTACT)
+                    or frame.has(TurnAct.REQUEST_THIRD_PARTY_CONTACT)
+                )
+            ),
         )

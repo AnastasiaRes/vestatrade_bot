@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "git": {
+    "commit": "352c00cf9a474537f6a1a2c19d56441a054da560",
+    "dirty": true,
+    "status_sha256": "02a42eb13c89149213115319fa8c9164683dd27946fb34113847f3bec62daf15",
+    "runtime_tree_sha256": "9bcde75f9c05f0e352c237cbe50be7edf18498e170cd665233a5e3ea745f4796",
+    "reproducible": false
+  },
+  "inputs": {
+    "testset_path": "reports/live_2026-08-24_openrouter_architecture_wave1_testset.json",
+    "testset_sha256": "b658540017f1931c566b95b4bba34b1a029eef583b953b4ec64ed4ac8bf73a14",
+    "scenario_ids": [
+      "ARCH-COMPOUND-01",
+      "ARCH-STORE-CONTACT-02",
+      "ARCH-CONTACT-ROLES-03",
+      "ARCH-CARD-CONTEXT-04",
+      "ARCH-INDUSTRIAL-05",
+      "ARCH-COMMERCE-06",
+      "ARCH-MODEL-VOLUME-07",
+      "ARCH-RADIATOR-STATE-08"
+    ],
+    "catalog_source": "cache",
+    "catalog_products": 14035,
+    "catalog_sha256": "d8ba7325469f729071f92b0c2759e6b2a35b6cceb32c8c9e104c1aaad02b3b75",
+    "business_config_sha256": "e9407dea8d935e0b26ec5a680eb994da034da866580e09d1d05131e0123ada5e",
+    "buyer_prompt_sha256": "b016dd2edf4a1554a6f25949d26d3473e33ff5787c96019f99f6172f7a1e5f29",
+    "harness_sha256": "3fddad2fa28e060838b6b84aec14cb089708eaa3407176bd8bfe39c98e4f0bfa"
+  },
+  "llm": {
+    "provider": "openrouter",
+    "model": "qwen/qwen3-vl-8b-instruct",
+    "strong_model": "qwen/qwen3-vl-8b-instruct",
+    "timeout_seconds": 60.0,
+    "request_timeout_seconds": 180.0,
+    "max_retries": 2,
+    "retry_delay_seconds": 1.0
+  },
+  "run": {
+    "mode": "live",
+    "workers": 2,
+    "max_turns": 8,
+    "limit": null,
+    "only": null
+  },
+  "runtime": {
+    "python": "3.12.2",
+    "implementation": "CPython",
+    "platform": "macOS-15.6-arm64-arm-64bit"
+  }
+}

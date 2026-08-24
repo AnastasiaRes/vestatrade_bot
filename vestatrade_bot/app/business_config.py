@@ -172,6 +172,17 @@ class BusinessFacts:
             return False
         return any(_digits(phone) == needle for phone in self.phones)
 
+    def knows_email(self, value: str) -> bool:
+        """Whether an email is an explicitly configured company channel."""
+
+        needle = str(value or "").strip().casefold().rstrip(".,;:")
+        if not needle:
+            return False
+        return any(
+            needle == str(email or "").strip().casefold().rstrip(".,;:")
+            for email in self.emails
+        )
+
     def states_duration(self, value: str) -> bool:
         """Есть ли такая формулировка срока среди подтверждённых."""
         needle = re.sub(r"\s+", " ", value).strip().casefold()
