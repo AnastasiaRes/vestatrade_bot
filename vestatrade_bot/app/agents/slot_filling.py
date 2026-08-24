@@ -93,7 +93,12 @@ class SlotFillingAgent:
         if category == "radiator_fittings":
             return self._radiator(slots)
         if category == "radiators":
-            return self._radiators(slots)
+            return self._radiators(
+                slots,
+                require_compatibility_context=(
+                    session.pending_selection_mode == "recommend"
+                ),
+            )
         return SlotFillingResult(slots=slots)
 
     def _filters(self, slots: dict) -> SlotFillingResult:
@@ -1777,7 +1782,12 @@ class SlotFillingAgent:
             )
         return SlotFillingResult(slots=slots)
 
-    def _radiators(self, slots: dict) -> SlotFillingResult:
+    def _radiators(
+        self,
+        slots: dict,
+        *,
+        require_compatibility_context: bool = False,
+    ) -> SlotFillingResult:
         has_type = bool(slots.get("radiator_type"))
         has_size = any(
             slots.get(key)
@@ -1793,6 +1803,33 @@ class SlotFillingAgent:
                 "heat_output_w",
             ]
         )
+        if require_compatibility_context:
+            missing_prompts: list[str] = []
+            expected_slots: list[str] = []
+            if not slots.get("heating_system_type"):
+                missing_prompts.append(
+                    "система отопления центральная или автономная"
+                )
+                expected_slots.append("heating_system_type")
+            if not has_type:
+                missing_prompts.append(
+                    "тип радиатора (панельный, биметаллический или алюминиевый)"
+                )
+                expected_slots.append("radiator_type")
+            if missing_prompts:
+                return SlotFillingResult(
+                    slots=slots,
+                    needs_clarification=True,
+                    question=(
+                        "Для совместимого подбора уточните: "
+                        + "; ".join(missing_prompts)
+                        + ". Для центрального отопления материал нельзя выбирать "
+                        "только по площади: важны рабочее давление, гидроудары и "
+                        "качество теплоносителя."
+                    ),
+                    expected_slots=expected_slots,
+                    blocking=True,
+                )
         if not has_size:
             missing = []
             if not has_type:
@@ -1806,5 +1843,14 @@ class SlotFillingAgent:
                 question=(
                     "Уточните для радиатора: " + "; ".join(missing) + "."
                 ),
+                expected_slots=[
+                    *([] if has_type else ["radiator_type"]),
+                    "radiator_size_mm",
+                    "radiator_height_mm",
+                    "length_mm",
+                    "sections",
+                    "heat_load_w",
+                    "heat_output_w",
+                ],
             )
         return SlotFillingResult(slots=slots)

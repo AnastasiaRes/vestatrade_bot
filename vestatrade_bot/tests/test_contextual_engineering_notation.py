@@ -252,6 +252,15 @@ def test_radiator_height_and_interaxial_distance_are_not_conflated() -> None:
     assert "radiator_height_mm" not in interaxial.slots
 
 
+def test_moscow_area_is_not_parsed_as_radiator_interaxial_distance() -> None:
+    result = IntentRouterAgent().route(
+        "Нужны радиаторы в Москве, квартира 70 кв.м."
+    )
+
+    assert result.slots["area_m2"] == 70.0
+    assert "radiator_size_mm" not in result.slots
+
+
 def test_bare_number_is_bound_only_to_pending_volume_question() -> None:
     router = IntentRouterAgent()
     session = SessionState(session_id="pending-volume")

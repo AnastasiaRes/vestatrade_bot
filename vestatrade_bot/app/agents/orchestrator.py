@@ -53,6 +53,8 @@ from .commerce_topics import (
     TOPICS,
     ask_which_city,
     compose_commerce_answer,
+    compose_discount_supplement,
+    compose_store_contact_answer,
     extract_any_city,
     find_city,
     match_commerce_topic,
@@ -90,6 +92,13 @@ from .slot_answer_resolver import (
 )
 from .slot_filling import SlotFillingAgent
 from .turn_classifier import TurnClassifierAgent
+from .turn_planner import (
+    ContactDirection,
+    SelectionMode,
+    TurnAct,
+    TurnAction,
+    TurnPlanner,
+)
 from .utils import collapse_sku_spaces, merge_slots, normalize_sku as normalize_sku_token, normalize_text
 
 
@@ -554,6 +563,7 @@ class ChatOrchestrator:
         self.engineering_interpreter = EngineeringInterpreterAgent(self.llm_client)
         self.pending_answer_resolver = PendingAnswerResolver(self.llm_client)
         self.turn_classifier = TurnClassifierAgent(self.llm_client)
+        self.turn_planner = TurnPlanner()
         self.slot_filling = SlotFillingAgent()
         self.engineering_requirements = EngineeringRequirementsAgent(
             self.slot_filling
@@ -881,13 +891,21 @@ class ChatOrchestrator:
         # Контакт запоминается в тот момент, когда покупатель его называет, а
         # не тогда, когда о нём просят: в живом прогоне телефон давали ходом
         # раньше просьбы о передаче, и бот запрашивал его повторно.
-        turn_contact = self.handoff.extract_contact(message)
-        if turn_contact and turn_contact != session.contact:
-            session.contact = turn_contact
-            session.contact_turn = len(
-                [item for item in session.history if item.get("role") == "user"]
-            ) + 1
-            session.contact_confirmed = False
+        detected_turn_contact = self.handoff.extract_contact(message)
+        turn_contact = self.handoff.extract_customer_contact(message)
+        turn_frame = self.turn_planner.frame(
+            message,
+            customer_contact_present=bool(detected_turn_contact),
+            customer_contact_owned=bool(turn_contact),
+            product_context_present=bool(session.last_products),
+            pending_selection_mode=session.pending_selection_mode,
+        )
+        turn_plan = self.turn_planner.plan(
+            turn_frame,
+            pending_handoff=bool(session.pending_handoff),
+        )
+        self._request_agents.turn_frame = turn_frame
+        self._request_agents.turn_plan = turn_plan
         session.topic_changed = False
         session.slots.pop("fallback_after_repeat", None)
         self.composer.reset_usage()
@@ -910,6 +928,8 @@ class ChatOrchestrator:
                 docs_excerpt = last_product.docs_text[:700]
         self.composer.set_state(session.category, session.slots, last_summary, docs_excerpt)
         agents_used: list[str] = []
+        if turn_plan.actions:
+            agents_used.append("TurnPlanner")
 
         confirmed_requirement = self._confirmed_requirement_answer(message, session)
         if confirmed_requirement:
@@ -1081,6 +1101,147 @@ class ChatOrchestrator:
                 agents_used,
             )
 
+        # Commit the dialogue goal only after all safety boundaries above have
+        # had a chance to answer.  A hazardous side question may mention a
+        # price or another product, but it must not silently cancel an active
+        # compatibility selection.
+        if turn_frame.selection_mode == SelectionMode.RECOMMEND:
+            session.pending_selection_mode = SelectionMode.RECOMMEND.value
+        elif turn_frame.selection_mode == SelectionMode.BROWSE:
+            session.pending_selection_mode = None
+
+        # A number inside a request for the shop's contacts is not necessarily
+        # the customer's callback number.  Resolve direction before mutating
+        # the PII-bearing session state, and do so only after safety branches:
+        # a safety-only answer must not stage an unseen consent preview.
+        if (
+            turn_contact
+            and turn_frame.contact_direction == ContactDirection.CUSTOMER_TO_STORE
+            and turn_contact != session.contact
+        ):
+            session.contact = turn_contact
+            session.contact_turn = len(
+                [item for item in session.history if item.get("role") == "user"]
+            ) + 1
+            session.contact_confirmed = False
+
+        # Contacts of a manufacturer/supplier are neither verified business
+        # facts nor a callback address supplied by the customer.  Keep that
+        # boundary ahead of the pending handoff controller so a foreign email
+        # can never advance a consent workflow.
+        if turn_plan.has(TurnAction.ANSWER_THIRD_PARTY_CONTACT):
+            answer = (
+                "Проверенного телефона или email производителя в текущем "
+                "каталоге нет. Не буду подменять его контактами магазина. "
+                "Проверьте официальный сайт или документацию производителя; "
+                "если пришлёте точную модель или артикул, помогу сверить "
+                "доступные данные по карточке товара."
+            )
+            contact_intent = IntentResult(
+                intent_type="third_party_contact",
+                category="other",
+                confidence=1.0,
+                raw={"contact_direction": "third_party"},
+            )
+            agents_used.append("GuardrailsAgent")
+            self._append_history(session, message, answer)
+            self.sessions.save(session)
+            return self._response(
+                session_id,
+                answer,
+                [],
+                False,
+                contact_intent,
+                session,
+                agents_used,
+            )
+
+        if (
+            turn_frame.contact_direction == ContactDirection.THIRD_PARTY
+            and detected_turn_contact
+        ):
+            answer = (
+                "Вижу контакт производителя или поставщика, но не считаю его "
+                "вашим контактом и не включаю в заявку менеджеру."
+            )
+            need_handoff = bool(
+                session.pending_handoff
+                or turn_plan.has(TurnAction.CONTINUE_HANDOFF)
+            )
+            if (
+                turn_plan.has(TurnAction.CONTINUE_HANDOFF)
+                and not session.pending_handoff
+            ):
+                answer = (
+                    f"{answer}\n\n"
+                    + self._begin_handoff_request(
+                        message,
+                        session,
+                        agents_used,
+                    )
+                )
+            elif session.pending_handoff:
+                preview_contact = session.pending_handoff.get("contact")
+                if preview_contact:
+                    answer = (
+                        f"{answer} Уже подготовленная заявка не изменилась; "
+                        "для неё жду подтверждение передачи ранее показанного "
+                        "состава."
+                    )
+                else:
+                    answer = (
+                        f"{answer} Для текущей заявки оставьте именно ваш "
+                        "телефон или email; затем покажу итог и попрошу "
+                        "подтвердить передачу."
+                    )
+            contact_intent = IntentResult(
+                intent_type="third_party_contact",
+                category=session.category or "other",
+                confidence=1.0,
+                raw={"contact_direction": "third_party"},
+            )
+            if "GuardrailsAgent" not in agents_used:
+                agents_used.append("GuardrailsAgent")
+            self._append_history(session, message, answer)
+            self.sessions.save(session)
+            return self._response(
+                session_id,
+                answer,
+                [],
+                need_handoff,
+                contact_intent,
+                session,
+                agents_used,
+            )
+
+        # A request for the shop's phone/email is directional.  It must be
+        # answered before a pending callback workflow can reinterpret the same
+        # words as a missing customer contact (live B20).
+        if turn_plan.has(TurnAction.ANSWER_STORE_CONTACT):
+            facts = get_business_facts()
+            city = find_city(message, facts) or session.slots.get("customer_city")
+            if city:
+                session.slots["customer_city"] = city
+            answer = compose_store_contact_answer(facts, city=city)
+            contact_intent = IntentResult(
+                intent_type="store_contact",
+                category="other",
+                confidence=1.0,
+                raw={"contact_direction": "store_to_customer"},
+            )
+            agents_used.extend(["CommerceRouterAgent", "GuardrailsAgent"])
+            self._append_history(session, message, answer)
+            self.sessions.save(session)
+            return self._response(
+                session_id,
+                answer,
+                [],
+                False,
+                contact_intent,
+                session,
+                agents_used,
+            )
+
         # «Покажите варианты» — управляющий ход, а не реплика по товару, и
         # проверяется раньше товарных веток: иначе воронка (слив/сифон, кран,
         # насос) успевает вернуть свой очередной вопрос, и команда, которую
@@ -1173,6 +1334,10 @@ class ChatOrchestrator:
                 category=session.category or "other",
                 confidence=1.0,
             )
+            catalog_turn = bool(
+                turn_plan.has(TurnAction.CATALOG_BROWSE)
+                or turn_plan.has(TurnAction.CATALOG_PRICE)
+            )
             if self._is_handoff_opt_out(message) or self._is_handoff_refusal(message):
                 response = self._handle_handoff_opt_out(
                     message,
@@ -1183,9 +1348,12 @@ class ChatOrchestrator:
                 self.sessions.save(session)
                 return response
             if (
-                self.handoff.extract_contact(message)
+                (turn_frame.customer_contact_present and not catalog_turn)
                 or self._is_handoff_confirmation(message)
-                or self._wants_manager_handoff(message)
+                or (
+                    self._wants_manager_handoff(message)
+                    and not catalog_turn
+                )
             ):
                 response = self._maybe_continue_handoff(
                     message,
@@ -1197,7 +1365,10 @@ class ChatOrchestrator:
                     self.sessions.save(session)
                     return response
 
-        pre_handoff_command = self._wants_manager_handoff(message)
+        pre_handoff_command = self._wants_manager_handoff(message) and not (
+            turn_plan.has(TurnAction.CATALOG_BROWSE)
+            or turn_plan.has(TurnAction.CATALOG_PRICE)
+        )
         if pre_handoff_command or session.slots.get("financial_context"):
             boundary_intent = IntentResult(
                 intent_type="handoff_control",
@@ -1244,18 +1415,11 @@ class ChatOrchestrator:
                 category=session.category or "other",
                 confidence=1.0,
             )
-            summary = self.handoff.build_summary(message, session)
-            session.handoff_opt_out = False
-            session.pending_handoff = self.handoff.summary_to_dict(summary)
-            needs_contact = not bool(summary.contact)
-            session.handoff_status = (
-                "awaiting_contact" if needs_contact else "awaiting_consent"
+            answer = self._begin_handoff_request(
+                message,
+                session,
+                agents_used,
             )
-            answer = self.handoff.compose_consent_request(
-                summary,
-                needs_contact=needs_contact,
-            )
-            agents_used.append("HandoffAgent")
             self._append_history(session, message, answer)
             self.sessions.save(session)
             return self._response(
@@ -1345,26 +1509,100 @@ class ChatOrchestrator:
                 agents_used,
             )
 
-        intent = self.intent_router.route(message, session)
+        routing_message = (
+            self.handoff.redact_contact(message)
+            if detected_turn_contact
+            else message
+        )
+        intent = self.intent_router.route(routing_message, session)
         intent.raw = dict(intent.raw or {})
         intent.raw["requested_fields"] = self._requested_card_fields(message)
+        intent.raw["selection_mode"] = turn_frame.selection_mode.value
+        if (
+            intent.is_topic_change
+            and intent.category != session.category
+            and turn_frame.selection_mode != SelectionMode.RECOMMEND
+        ):
+            session.pending_selection_mode = None
+
+        # Browse is a safe catalogue action, not a promise of engineering
+        # compatibility.  Execute it with the category from the current router
+        # result so stale pending state cannot choose another product family.
+        browse_category = (
+            intent.category
+            if intent.category != "other"
+            else session.pending_category or session.category or "other"
+        )
+        if turn_plan.has(TurnAction.CATALOG_BROWSE) and browse_category != "other":
+            intent.category = browse_category
+            if turn_frame.requested_count is not None:
+                intent.slots["result_limit"] = turn_frame.requested_count
+            options = self._options_by_known_conditions(
+                session,
+                intent,
+                agents_used,
+                message=message,
+            )
+            if options is not None:
+                answer, cards = options
+                self._append_history(session, message, answer)
+                self.sessions.save(session)
+                return self._response(
+                    session_id,
+                    answer,
+                    cards,
+                    False,
+                    intent,
+                    session,
+                    agents_used,
+                )
 
         # Заказы, доставка, оплата, возврат, гарантия, B2B и режим работы — не
         # подбор товара. Проверка стоит здесь, до заземления артикулов: иначе
         # «где мой заказ 148237?» опознаётся как артикул и получает «не нашёл
         # подходящие товары».
-        commerce = self._maybe_commerce_answer(message, session, agents_used)
+        if turn_plan.skip_commerce_short_circuit:
+            # Exact feed identities are grounded later for ordinary turns, but
+            # price+discount needs that fact now to decide whether catalogue
+            # execution can replace the general discount-policy answer.
+            self._ground_catalog_sku_intent(message, intent)
+        compound_query_is_searchable = bool(
+            (intent.raw or {}).get("explicit_category")
+            or (intent.raw or {}).get("catalog_sku_grounded")
+            or any(
+                intent.slots.get(key) not in (None, "", [], {})
+                for key in ("sku", "brand", "name_tokens", "old_model")
+            )
+            or (
+                session.last_products
+                and self._references_shown_products(message, intent)
+            )
+        )
+        commerce = (
+            None
+            if turn_plan.skip_commerce_short_circuit
+            and compound_query_is_searchable
+            else self._maybe_commerce_answer(message, session, agents_used)
+        )
         if commerce is not None:
+            commerce_answer = commerce[1]
+            if (
+                turn_plan.has(TurnAction.ANSWER_DISCOUNT_POLICY)
+                and commerce[0] != "commerce_discount"
+            ):
+                supplement = compose_discount_supplement()
+                if normalize_text(supplement) not in normalize_text(commerce_answer):
+                    commerce_answer = f"{commerce_answer}\n\n{supplement}"
             commerce_intent = IntentResult(
                 intent_type=commerce[0],
                 category="other",
                 confidence=1.0,
             )
-            self._append_history(session, message, commerce[1])
+            self._append_history(session, message, commerce_answer)
             self.sessions.save(session)
             return self._response(
                 session_id,
-                commerce[1],
+                commerce_answer,
                 [],
                 False,
                 commerce_intent,
@@ -1797,7 +2035,18 @@ class ChatOrchestrator:
                 agents_used,
             )
 
-        pending_handoff = self._maybe_continue_handoff(message, intent, session, agents_used)
+        pending_handoff = None
+        if not (
+            turn_plan.ignore_pending_handoff_for_turn
+            or turn_plan.has(TurnAction.CATALOG_BROWSE)
+            or turn_plan.has(TurnAction.CATALOG_PRICE)
+        ):
+            pending_handoff = self._maybe_continue_handoff(
+                message,
+                intent,
+                session,
+                agents_used,
+            )
         if pending_handoff is not None:
             self.sessions.save(session)
             return pending_handoff
@@ -1832,7 +2081,11 @@ class ChatOrchestrator:
                 agents_used,
             )
 
-        meta_answer = self._maybe_meta_question(message)
+        meta_answer = (
+            None
+            if turn_plan.skip_commerce_short_circuit
+            else self._maybe_meta_question(message)
+        )
         if meta_answer:
             agents_used.append("ResponseComposerAgent")
             self._append_history(session, message, meta_answer)
@@ -2725,7 +2978,15 @@ class ChatOrchestrator:
         # вопрос назад. Спрашиваем модель, ЧЕМ является ход, и перехватываем
         # только просьбы объяснить. Без LLM классификатор возвращает unknown,
         # и весь существующий пайплайн работает как раньше.
-        price_range = self._maybe_price_range_answer(message, intent, session, agents_used)
+        price_range = (
+            None
+            if (
+                turn_plan.has(TurnAction.ANSWER_DISCOUNT_POLICY)
+                or turn_frame.selection_mode == SelectionMode.RECOMMEND
+                or session.pending_selection_mode == SelectionMode.RECOMMEND.value
+            )
+            else self._maybe_price_range_answer(message, intent, session, agents_used)
+        )
         if price_range is not None:
             self._append_history(session, message, price_range)
             self.sessions.save(session)
@@ -2747,7 +3008,10 @@ class ChatOrchestrator:
                 agents_used,
             )
 
-        if self._should_preflight_engineering_requirements(message, intent, session):
+        if (
+            not turn_plan.bypass_engineering_preflight
+            and self._should_preflight_engineering_requirements(message, intent, session)
+        ):
             requirements_result = self.engineering_requirements.assess(
                 message,
                 intent,
@@ -2832,7 +3096,15 @@ class ChatOrchestrator:
         # насос?») ведёт ConsultantAgent: LLM рассуждает по предметной области и
         # опирается на реальные товары из фида. Если LLM недоступна (нет ключа/бюджета),
         # метод возвращает None и мы продолжаем детерминированным пайплайном.
-        consult_response = self._maybe_consult(session_id, message, intent, session, agents_used)
+        consult_response = None
+        if not turn_plan.has(TurnAction.CATALOG_PRICE):
+            consult_response = self._maybe_consult(
+                session_id,
+                message,
+                intent,
+                session,
+                agents_used,
+            )
         if consult_response is not None:
             self.sessions.save(session)
             return consult_response
@@ -3011,6 +3283,7 @@ class ChatOrchestrator:
             and slot_result.question
             and not direct_products
             and not hard_refinement_on_shown
+            and not turn_plan.bypass_engineering_preflight
         ):
             pending_category = (
                 intent.category if intent.category != "other" else session.category
@@ -8853,6 +9126,8 @@ class ChatOrchestrator:
         message: str,
         session: SessionState,
         agents_used: list[str],
+        *,
+        allow_during_handoff: bool = False,
     ) -> tuple[str, str] | None:
         """Ответить по коммерческой теме и не запускать подбор товара.
 
@@ -8888,7 +9163,7 @@ class ChatOrchestrator:
                 )
         # Уже идущая передача менеджеру обрабатывается своим сценарием: там
         # собирают контакт и согласие, перебивать её нельзя.
-        if session.pending_handoff:
+        if session.pending_handoff and not allow_during_handoff:
             return None
 
         order_id = order_number(message)
@@ -9200,6 +9475,43 @@ class ChatOrchestrator:
             fuzzy_threshold=75,
         )
 
+    def _begin_handoff_request(
+        self,
+        message: str,
+        session: SessionState,
+        agents_used: list[str],
+        *,
+        products: list[ProductCard] | None = None,
+    ) -> str:
+        """Create one consent preview without recording or sending a request."""
+
+        existing_missing: list[str] = []
+        if session.pending_handoff:
+            try:
+                existing_missing = list(
+                    HandoffSummary(**session.pending_handoff).missing
+                )
+            except (TypeError, ValueError):
+                existing_missing = []
+        summary = self.handoff.build_summary(
+            message,
+            session,
+            missing=existing_missing,
+            products=products,
+        )
+        session.handoff_opt_out = False
+        session.pending_handoff = self.handoff.summary_to_dict(summary)
+        needs_contact = not bool(summary.contact)
+        session.handoff_status = (
+            "awaiting_contact" if needs_contact else "awaiting_consent"
+        )
+        if "HandoffAgent" not in agents_used:
+            agents_used.append("HandoffAgent")
+        return self.handoff.compose_consent_request(
+            summary,
+            needs_contact=needs_contact,
+        )
+
     @staticmethod
     def _is_handoff_opt_out(message: str) -> bool:
         text = normalize_text(message)
@@ -9323,7 +9635,16 @@ class ChatOrchestrator:
         if not session.pending_handoff:
             return None
         status = session.handoff_status
-        message_contact = self.handoff.extract_contact(message)
+        turn_frame = getattr(self._request_agents, "turn_frame", None)
+        message_contact = (
+            self.handoff.extract_customer_contact(message)
+            if (
+                turn_frame is None
+                or turn_frame.contact_direction
+                == ContactDirection.CUSTOMER_TO_STORE
+            )
+            else None
+        )
         confirmation = self._is_handoff_confirmation(message)
         handoff_command = self._wants_manager_handoff(message)
         # Ход подхватывает висящую заявку только тогда, когда покупатель сам
@@ -9359,15 +9680,20 @@ class ChatOrchestrator:
             )
 
         if contact:
+            contact_was_previewed = bool(
+                status == "awaiting_consent" and summary.contact == contact
+            )
             already_previewed = (
-                status == "awaiting_consent"
-                and summary.contact == contact
+                contact_was_previewed
                 and not message_contact
             )
             summary.contact = contact
             session.pending_handoff = self.handoff.summary_to_dict(summary)
             session.handoff_status = "awaiting_consent"
-            if not confirmation:
+            # Consent can approve only the exact preview the customer has
+            # already seen.  A contact first introduced in this same turn must
+            # be previewed even when the message also says "подтверждаю".
+            if not confirmation or not contact_was_previewed:
                 if already_previewed:
                     # Перерисовывать тот же список данных бессмысленно:
                     # покупатель его уже прочитал и ждёт действия. Живой прогон
@@ -12182,6 +12508,8 @@ class ChatOrchestrator:
             intent.category = categories.pop() if len(categories) == 1 else "other"
             intent.slots.pop("sku", None)
             intent.confidence = 1.0
+            intent.raw = dict(intent.raw or {})
+            intent.raw["catalog_sku_grounded"] = True
             return
 
         exact_identity_only = bool(
@@ -12216,6 +12544,8 @@ class ChatOrchestrator:
             intent.intent_type = "exact_sku"
         intent.category = self.search_agent.canonical_category(product)
         intent.confidence = 1.0
+        intent.raw = dict(intent.raw or {})
+        intent.raw["catalog_sku_grounded"] = True
 
     @staticmethod
     def _looks_like_comparison_request(text: str) -> bool:
@@ -13691,6 +14021,9 @@ class ChatOrchestrator:
     def _card_limit(self, query: SearchQuery) -> int:
         if query.slots.get("choose_one") or query.slots.get("allow_basic_option"):
             return 1
+        requested = query.slots.get("result_limit")
+        if isinstance(requested, (int, float)) and not isinstance(requested, bool):
+            return max(1, min(5, int(requested)))
         return 3
 
     def _boiler_power_result_signature(self, query: SearchQuery) -> str | None:
@@ -15457,18 +15790,37 @@ class ChatOrchestrator:
         deferred_now += [
             key for key in session.pending_slot_keys if key not in deferred_now
         ]
+
+        query = self._build_query(message, intent, session)
+        products = self._safe_search(query)
+        if not products:
+            return None
+        ranked = self.ranking_agent.rank(products, query)
+        requested_limit = query.slots.get("result_limit")
+        card_limit = self._card_limit(query) if requested_limit is not None else 5
+        cards = self.card_agent.build_cards(
+            ranked,
+            query,
+            limit=card_limit,
+        )
+        guard = self.guardrails.validate_cards(cards, ranked, query)
+        if not guard.ok or not cards:
+            return None
+
+        # Only a successful alternative action supersedes the pending question.
+        # If search/grounding fails, keep the old state so the legacy pipeline
+        # can still explain what is missing.
         self._defer_refused_slots(session, deferred_now)
         session.clear_pending_question_state()
         session.recent_clarifications = []
-
-        query = self._build_query(message, intent, session)
-        products = self.search_agent.search(query)
-        for agent_name in ("FeedSearchAgent", "ProductCardAgent"):
+        for agent_name in (
+            "FeedSearchAgent",
+            "RankingAgent",
+            "ProductCardAgent",
+            "GuardrailsAgent",
+        ):
             if agent_name not in agents_used:
                 agents_used.append(agent_name)
-        cards = self.card_agent.build_cards(products, query, limit=5)
-        if not cards:
-            return None
 
         unknown, plural = self._describe_deferred_slots(deferred_now)
         if unknown:
@@ -17417,6 +17769,15 @@ class ChatOrchestrator:
         message = str(getattr(self._request_agents, "message", "") or "")
         if not message:
             return answer
+        message = self.handoff.redact_contact(message)
+        message = message.replace("[email удалён из описания]", " ")
+        message = message.replace("[телефон удалён из описания]", " ")
+        message = re.sub(
+            r"\b(?:email|e-mail|имейл\w*|почт\w*|телефон\w*|номер\w*|контакт\w*)\b",
+            " ",
+            message,
+            flags=re.IGNORECASE,
+        )
         unknown = self.search_agent.unknown_identity_tokens(message)
         if not unknown:
             return answer
@@ -17526,6 +17887,116 @@ class ChatOrchestrator:
                 if "GuardrailsAgent" not in agents_used:
                     agents_used.append("GuardrailsAgent")
 
+        turn_plan = getattr(self._request_agents, "turn_plan", None)
+        safety_intent = intent.intent_type in {
+            "water_heater_safety",
+            "emergency",
+            "gas_work_safety",
+            "gas_safety",
+            "electrical_safety",
+        }
+        if (
+            turn_plan is not None
+            and not safety_intent
+            and turn_plan.has(TurnAction.ANSWER_COMMERCE_POLICY)
+            and not intent.intent_type.startswith("commerce_")
+            and intent.intent_type not in self._MUST_REPEAT_INTENTS
+        ):
+            message = str(getattr(self._request_agents, "message", "") or "")
+            commerce = self._maybe_commerce_answer(
+                message,
+                session,
+                agents_used,
+                allow_during_handoff=True,
+            )
+            if commerce is not None and commerce[0] != "commerce_discount":
+                commerce_answer = commerce[1]
+                if normalize_text(commerce_answer) not in normalize_text(answer):
+                    previous_answer = answer
+                    answer = f"{answer}\n\n{commerce_answer}"
+                    if (
+                        session.history
+                        and session.history[-1].get("role") == "assistant"
+                        and session.history[-1].get("content") == previous_answer
+                    ):
+                        session.history[-1]["content"] = answer
+        if (
+            turn_plan is not None
+            and not safety_intent
+            and turn_plan.has(TurnAction.ANSWER_DISCOUNT_POLICY)
+            and (
+                cards
+                or turn_plan.has(TurnAction.ANSWER_COMMERCE_POLICY)
+                or turn_plan.has(TurnAction.CONTINUE_HANDOFF)
+            )
+            and intent.intent_type not in self._MUST_REPEAT_INTENTS
+        ):
+            supplement = compose_discount_supplement()
+            if normalize_text(supplement) not in normalize_text(answer):
+                previous_answer = answer
+                answer = f"{answer}\n\n{supplement}"
+                if (
+                    session.history
+                    and session.history[-1].get("role") == "assistant"
+                    and session.history[-1].get("content") == previous_answer
+                ):
+                    session.history[-1]["content"] = answer
+
+        compound_handoff = bool(
+            turn_plan is not None
+            and not safety_intent
+            and turn_plan.has(TurnAction.CONTINUE_HANDOFF)
+            and (
+                turn_plan.has(TurnAction.CATALOG_BROWSE)
+                or turn_plan.has(TurnAction.CATALOG_PRICE)
+            )
+            and intent.intent_type not in self._MUST_REPEAT_INTENTS
+            and intent.intent_type
+            not in {
+                "out_of_scope",
+                "assistant_boundary",
+                "handoff_control",
+                "handoff_request",
+            }
+            and not session.slots.get("financial_context")
+        )
+        if compound_handoff:
+            previous_answer = answer
+            if session.handoff_status in {"awaiting_contact", "awaiting_consent"}:
+                # The catalogue action changed the substance of the request.
+                # Rebuild the unsent preview with the cards from this turn so
+                # the customer never confirms an obsolete summary.
+                message = str(getattr(self._request_agents, "message", "") or "")
+                handoff_answer = self._begin_handoff_request(
+                    message,
+                    session,
+                    agents_used,
+                    products=cards,
+                )
+            elif session.pending_handoff:
+                handoff_answer = (
+                    "Предыдущее обращение уже обработано. Для новой передачи "
+                    "сначала завершите текущий диалог подтверждения или начните "
+                    "новый запрос."
+                )
+            else:
+                message = str(getattr(self._request_agents, "message", "") or "")
+                handoff_answer = self._begin_handoff_request(
+                    message,
+                    session,
+                    agents_used,
+                    products=cards,
+                )
+            if normalize_text(handoff_answer) not in normalize_text(answer):
+                answer = f"{answer}\n\n{handoff_answer}"
+            need_handoff = True
+            if (
+                session.history
+                and session.history[-1].get("role") == "assistant"
+                and session.history[-1].get("content") == previous_answer
+            ):
+                session.history[-1]["content"] = answer
+
         history_source_answer = answer
         if (
             cards
@@ -17580,6 +18051,8 @@ class ChatOrchestrator:
             intent,
             agents_used,
         )
+        if cards:
+            session.pending_selection_mode = None
         self._remember_product_selection(session, cards, intent, agents_used)
         # Some response paths save before calling this final guard/serialization
         # layer.  Persist after branch memory and stock filtering so stores that
@@ -17645,6 +18118,8 @@ class ChatOrchestrator:
             ]
             if reason
         ]
+        turn_frame = getattr(self._request_agents, "turn_frame", None)
+        turn_plan = getattr(self._request_agents, "turn_plan", None)
         return ChatResponse(
             session_id=session_id,
             answer=answer,
@@ -17700,6 +18175,26 @@ class ChatOrchestrator:
                     "product_reference_restored"
                 ),
                 "agents_used": agents_used,
+                "turn_acts": (
+                    [act.value for act in turn_frame.acts]
+                    if turn_frame is not None
+                    else []
+                ),
+                "turn_actions": (
+                    [action.value for action in turn_plan.actions]
+                    if turn_plan is not None
+                    else []
+                ),
+                "selection_mode": (
+                    turn_frame.selection_mode.value
+                    if turn_frame is not None
+                    else None
+                ),
+                "contact_direction": (
+                    turn_frame.contact_direction.value
+                    if turn_frame is not None and turn_frame.contact_direction is not None
+                    else None
+                ),
                 "llm_used": transport_succeeded,
                 "llm_requested": intent_requested
                 or engineering_requested

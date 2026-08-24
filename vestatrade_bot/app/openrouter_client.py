@@ -12,6 +12,7 @@ import httpx
 
 from app.budget import BudgetManager
 from app.config import Settings, get_settings
+from app.pii import redact_pii_for_model
 
 
 logger = logging.getLogger(__name__)
@@ -276,6 +277,7 @@ class OpenRouterClient:
             return self._fallback(f"ollama request skipped: circuit is open{detail}")
 
         model_name = model or self.settings.llm_model
+        messages = self.sanitize_messages(messages)
         payload = {
             "model": model_name,
             "messages": messages,
@@ -459,6 +461,20 @@ class OpenRouterClient:
             self._close_half_open_circuit(endpoint, circuit_permit)
         release_reservation()
         return self._fallback(f"{self.settings.llm_provider} request failed: {last_error}")
+
+    @staticmethod
+    def sanitize_messages(
+        messages: list[dict[str, str]],
+    ) -> list[dict[str, str]]:
+        """Return a detached prompt with contact PII removed from every role."""
+
+        return [
+            {
+                **message,
+                "content": redact_pii_for_model(str(message.get("content") or "")),
+            }
+            for message in messages
+        ]
 
     def complete_json(
         self,

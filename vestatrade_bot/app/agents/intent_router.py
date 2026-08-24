@@ -483,6 +483,7 @@ class IntentRouterAgent:
             return result
 
         result = self._rule_based(message, session)
+        rule_provenance = dict(result.raw or {})
         llm_requested = False
         if result.confidence < 0.55:
             llm_requested = True
@@ -491,6 +492,9 @@ class IntentRouterAgent:
             result = llm_result
         self._normalize_result(result, message, session)
         result.raw = dict(result.raw or {})
+        for key in ("explicit_sku_marker", "explicit_category"):
+            if key in rule_provenance:
+                result.raw.setdefault(key, rule_provenance[key])
         result.raw["llm_requested"] = llm_requested
         result.raw["llm_transport_succeeded"] = bool(result.llm_used)
         # Store a detached value: the orchestrator enriches ``intent.slots``
@@ -576,6 +580,7 @@ class IntentRouterAgent:
             slots["reference_brand"] = slots.pop("brand")
 
         category, category_score = self._detect_category(text)
+        explicit_category = category if category != "other" else None
         if (
             category == "boilers"
             and self._has_non_negated_match(
@@ -798,7 +803,10 @@ class IntentRouterAgent:
             flags=flags,
             is_topic_change=self._is_topic_change(category, message, session),
             llm_used=False,
-            raw={"explicit_sku_marker": bool(explicit_sku)},
+            raw={
+                "explicit_sku_marker": bool(explicit_sku),
+                "explicit_category": explicit_category,
+            },
         )
 
     def _detect_category(self, text: str) -> tuple[str, float]:
@@ -3107,6 +3115,23 @@ class IntentRouterAgent:
                 slots["secondary_diameter_mm"] = int(branch_pair.group(2))
 
         if category == "radiators":
+            bare_system_answer = text.strip(" .,!?:;")
+            if re.fullmatch(
+                r"(?:центральн|централизованн)\w*", bare_system_answer
+            ) or re.search(
+                r"\b(?:центральн|централизованн)\w*\s+отоплен\w*\b|"
+                r"\bотоплен\w*\s+(?:центральн|централизованн)\w*\b",
+                text,
+            ):
+                slots["heating_system_type"] = "центральное"
+            elif re.fullmatch(
+                r"(?:автономн|индивидуальн)\w*", bare_system_answer
+            ) or re.search(
+                r"\b(?:автономн|индивидуальн)\w*\s+отоплен\w*\b|"
+                r"\bотоплен\w*\s+(?:автономн|индивидуальн)\w*\b",
+                text,
+            ):
+                slots["heating_system_type"] = "автономное"
             if "биметалл" in text:
                 slots["radiator_type"] = "биметаллический"
             elif "алюмин" in text:
@@ -3119,7 +3144,7 @@ class IntentRouterAgent:
             if sections_match:
                 slots["sections"] = int(sections_match.group(1))
             center_match = re.search(
-                r"(?:межосев\w*|м\s*[/.-]?\s*о)\D{0,12}"
+                r"(?:межосев\w*|\bм(?:\s*[/.-]\s*|\s+)о\b)\D{0,12}"
                 r"(\d{2,4})(?:\s*мм)?",
                 text,
             )

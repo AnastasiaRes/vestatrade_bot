@@ -290,6 +290,10 @@ class SessionState(BaseModel):
     # New source of truth for engineering questions.  The legacy fields above
     # stay available because many specialised catalogue flows still read them.
     pending_question_state: PendingQuestionState | None = None
+    # Selection intent survives clarification turns.  A compatibility
+    # recommendation must keep asking for safety/fit inputs, while an explicit
+    # browse opt-out may intentionally clear it and show catalogue examples.
+    pending_selection_mode: str | None = None
     pending_complectation_parts: list[str] = Field(default_factory=list)
     question_repeats: int = 0
     # Подписи недавно заданных уточняющих вопросов. Держатся отдельно от

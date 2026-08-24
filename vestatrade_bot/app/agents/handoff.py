@@ -16,8 +16,19 @@ from .utils import normalize_text
 
 logger = logging.getLogger(__name__)
 
-_EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}")
-_PHONE_RE = re.compile(r"(?:\+?\d[\s().-]*){10,}")
+_EMAIL_RE = re.compile(
+    r"[\w.+-]+@(?:[\w-]+\.)+(?:[^\W\d_]{2,}|xn--[\w-]{2,})(?![\w-])",
+    re.IGNORECASE,
+)
+_PHONE_RE = re.compile(r"(?:\+?\d[\s()./-]*){10,}")
+_LABELED_LOCAL_PHONE_RE = re.compile(
+    r"(?P<label>\b(?:"
+    r"(?:мой|моя|мои)\s+(?:(?:рабоч|личн|контактн)\w*\s+)?"
+    r"(?:телефон|номер)\w*|для\s+связи|связаться\s+со\s+мной"
+    r")\s*[:№#=-]?\s*)"
+    r"(?P<number>\+?\d(?:[\s()./-]*\d){6,})",
+    re.IGNORECASE,
+)
 
 # Реквизиты — не контакт. Живой прогон: «ООО „Стройпоток“, ИНН 7714123456»
 # попало в заявку как телефон покупателя (``контакт: ***3456``). Любая длинная
@@ -25,7 +36,23 @@ _PHONE_RE = re.compile(r"(?:\+?\d[\s().-]*){10,}")
 _IDENTIFIER_CONTEXT_RE = re.compile(
     r"(?:инн|огрн(?:ип)?|кпп|окпо|бик|р\s*/?\s*с|к\s*/?\s*с|"
     r"расчетн\w*\s+счет\w*|расчётн\w*\s+счёт\w*|счет\w*\s+№|"
-    r"номер\s+заказа|заказ\w*\s*№?)\s*[:№#-]?\s*$",
+    r"номер\s+заказа|заказ\w*\s*№?|артикул\w*|sku|ску|"
+    r"код\w*\s+(?:товар|позици)\w*)\s*[:№#-]?\s*"
+    r"(?:\d[\d\s()./-]*\s*(?:(?:,|и|или)\s*)?)*$",
+    re.IGNORECASE,
+)
+_CUSTOMER_CONTACT_CONTEXT_RE = re.compile(
+    r"(?:\b(?:мой|моя|мои)\s+(?:(?:рабоч|личн|контактн)\w*\s+)?"
+    r"(?:email|e-mail|имейл|почт|телефон|номер|контакт)\w*"
+    r"|\b(?:для\s+связи|связаться\s+со\s+мной)\b)[^.!?]{0,24}$",
+    re.IGNORECASE,
+)
+_THIRD_PARTY_CONTACT_CONTEXT_RE = re.compile(
+    r"(?:\b(?:email|e-mail|имейл|почт|телефон|номер|контакт)\w*\s+"
+    r"(?:производител|поставщик|завод|бренд|дистрибьютор)\w*"
+    r"|\b(?:производител|поставщик|завод|бренд|дистрибьютор)\w*"
+    r"[^.!?]{0,20}(?:email|e-mail|имейл|почт|телефон|номер|контакт)\w*)"
+    r"[^.!?]{0,16}$",
     re.IGNORECASE,
 )
 
@@ -42,6 +69,7 @@ _HANDOFF_SLOT_ALLOWLIST = {
     "excluded_builtin_parts",
     "excluded_features",
     "head_m",
+    "heating_system_type",
     "max_price",
     "min_price",
     "mounting_length_mm",
@@ -74,6 +102,7 @@ _SLOT_LABELS = {
     "excluded_builtin_parts": "без встроенных компонентов",
     "excluded_features": "без функций",
     "head_m": "напор",
+    "heating_system_type": "тип системы отопления",
     "max_price": "бюджет до",
     "min_price": "цена от",
     "mounting_length_mm": "монтажная длина",
@@ -141,13 +170,11 @@ class HandoffAgent:
         requirements = self._extract_key_requirements(" ".join(unique_messages))
         if requirements:
             known_slots["key_requirements"] = "; ".join(requirements)
-        # Контакт берётся из текущей реплики, а если его там нет — из того, что
-        # покупатель уже называл в этом разговоре. Прежнее ограничение «только
-        # текущая реплика» защищало от переноса чужого адреса из другой темы,
-        # но отсекало и обычный случай: телефон называют в ответ на вопрос про
-        # заказ, а «передай менеджеру» пишут ходом позже. Защита сохранена
-        # иначе — подхваченный контакт показывается маской и требует согласия.
-        contact = self.extract_contact(user_message) or (session.contact or None)
+        # ``SessionState.contact`` is the only approved customer-contact
+        # source.  The request planner resolves direction before storing it;
+        # extracting here again would turn a manufacturer's email or a shop
+        # phone into the customer's callback address.
+        contact = session.contact or None
         return HandoffSummary(
             wanted=wanted,
             known_slots=known_slots,
@@ -274,6 +301,9 @@ class HandoffAgent:
         email = _EMAIL_RE.search(text)
         if email:
             return email.group(0)
+        labeled_phone = _LABELED_LOCAL_PHONE_RE.search(text)
+        if labeled_phone:
+            return labeled_phone.group("number")
         for phone in _PHONE_RE.finditer(text):
             # Слева от числа стоит «ИНН», «ОГРН», «номер заказа»? Это реквизит,
             # а не способ связи, и в заявку он как контакт попасть не должен.
@@ -281,6 +311,39 @@ class HandoffAgent:
             if _IDENTIFIER_CONTEXT_RE.search(prefix.rstrip()):
                 continue
             return phone.group(0).strip()
+        return None
+
+    def extract_customer_contact(self, text: str) -> str | None:
+        """Prefer an explicitly owned contact and exclude labelled third parties."""
+
+        candidates: list[tuple[int, str]] = [
+            (match.start(), match.group(0)) for match in _EMAIL_RE.finditer(text)
+        ]
+        candidates.extend(
+            (match.start("number"), match.group("number"))
+            for match in _LABELED_LOCAL_PHONE_RE.finditer(text)
+        )
+        for match in _PHONE_RE.finditer(text):
+            prefix = text[max(0, match.start() - 40) : match.start()]
+            if _IDENTIFIER_CONTEXT_RE.search(prefix.rstrip()):
+                continue
+            candidates.append((match.start(), match.group(0).strip()))
+        candidates = sorted(set(candidates), key=lambda item: item[0])
+        if not candidates:
+            return None
+
+        for start, contact in candidates:
+            prefix = text[max(0, start - 80) : start]
+            if (
+                _CUSTOMER_CONTACT_CONTEXT_RE.search(prefix.rstrip())
+                and not _THIRD_PARTY_CONTACT_CONTEXT_RE.search(prefix.rstrip())
+            ):
+                return contact
+
+        for start, contact in candidates:
+            prefix = text[max(0, start - 80) : start]
+            if not _THIRD_PARTY_CONTACT_CONTEXT_RE.search(prefix.rstrip()):
+                return contact
         return None
 
     @staticmethod
@@ -292,6 +355,12 @@ class HandoffAgent:
         в сводку как «[телефон удалён из описания]», и заявка теряла смысл.
         """
         text = _EMAIL_RE.sub("[email удалён из описания]", text)
+        text = _LABELED_LOCAL_PHONE_RE.sub(
+            lambda match: (
+                f"{match.group('label')}[телефон удалён из описания]"
+            ),
+            text,
+        )
 
         def _mask_phone(match: re.Match[str]) -> str:
             prefix = text[max(0, match.start() - 40) : match.start()]
@@ -322,18 +391,30 @@ class HandoffAgent:
     @staticmethod
     def _is_handoff_control_message(text: str) -> bool:
         normalized = normalize_text(text)
-        return any(
-            marker in normalized
-            for marker in [
-                "передай менеджер",
-                "передать менеджер",
-                "позови менеджер",
-                "соедини с менеджер",
-                "подтверждаю передач",
-                "не передава",
-                "не сохраня",
-            ]
+        patterns = (
+            r"\b(?:передай|передать|передайте|позови|позовите|"
+            r"переключи|переключите|соедини|соедините)\w*\s+(?:с\s+)?"
+            r"(?:менеджер|оператор|консультант|сотрудник|продавец|человек)\w*\b",
+            r"\bможно\s+(?:менеджер|оператор|консультант|сотрудник|"
+            r"продавец|человек)\w*\b",
+            r"\bподтверждаю\s+передач\w*\b",
+            r"\bне\s+(?:передава|сохраня)\w*\b",
         )
+        if not any(re.search(pattern, normalized) for pattern in patterns):
+            return False
+        remainder = normalized
+        for pattern in patterns:
+            remainder = re.sub(pattern, " ", remainder)
+        remainder = re.sub(
+            r"\b(?:ну|давай|пожалуйста|прошу|тогда|и|а)\b",
+            " ",
+            remainder,
+        )
+        # A compound command carries business content after the transfer verb
+        # ("show three radiators and pass this to a manager").  Only a nearly
+        # empty remainder is pure workflow control and may be omitted from the
+        # manager summary.
+        return len(normalize_text(remainder).split()) <= 2
 
     def _is_contact_only(self, text: str) -> bool:
         contact = self.extract_contact(text)

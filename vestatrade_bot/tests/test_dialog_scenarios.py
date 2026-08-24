@@ -1765,7 +1765,9 @@ def test_manager_handoff_is_recorded_and_confirmed(sample_products, tmp_path) ->
     assert response.handoff_ticket_id in log_text
 
 
-def test_manager_contact_question_does_not_create_handoff(sample_products, tmp_path) -> None:
+def test_manager_contact_question_returns_store_contact_without_handoff(
+    sample_products, tmp_path
+) -> None:
     settings = get_settings().model_copy(
         update={"handoff_log_path": tmp_path / "handoff.jsonl"}
     )
@@ -1775,12 +1777,15 @@ def test_manager_contact_question_does_not_create_handoff(sample_products, tmp_p
 
     assert response.need_handoff is False
     assert response.products == []
-    assert "оставьте телефон" in response.answer.lower()
-    assert "email" in response.answer.lower()
+    assert "назовите ваш" in response.answer.lower()
+    assert "телефон" in response.answer.lower()
+    assert "оставьте телефон" not in response.answer.lower()
     assert not (tmp_path / "handoff.jsonl").exists()
 
 
-def test_human_contact_synonyms_do_not_create_handoff(sample_products, tmp_path) -> None:
+def test_human_contact_synonyms_return_store_contact_without_handoff(
+    sample_products, tmp_path
+) -> None:
     settings = get_settings().model_copy(
         update={"handoff_log_path": tmp_path / "handoff.jsonl"}
     )
@@ -1800,13 +1805,16 @@ def test_human_contact_synonyms_do_not_create_handoff(sample_products, tmp_path)
 
         assert response.need_handoff is False
         assert response.products == []
-        assert "оставьте телефон" in response.answer.lower()
-        assert "email" in response.answer.lower()
+        assert "назовите ваш" in response.answer.lower()
+        assert "телефон" in response.answer.lower()
+        assert "оставьте телефон" not in response.answer.lower()
 
     assert not (tmp_path / "handoff.jsonl").exists()
 
 
-def test_human_contact_typos_do_not_create_handoff(sample_products, tmp_path) -> None:
+def test_human_contact_typos_return_store_contact_without_handoff(
+    sample_products, tmp_path
+) -> None:
     settings = get_settings().model_copy(
         update={"handoff_log_path": tmp_path / "handoff.jsonl"}
     )
@@ -1827,8 +1835,9 @@ def test_human_contact_typos_do_not_create_handoff(sample_products, tmp_path) ->
 
         assert response.need_handoff is False
         assert response.products == []
-        assert "оставьте телефон" in response.answer.lower()
-        assert "email" in response.answer.lower()
+        assert "назовите ваш" in response.answer.lower()
+        assert "телефон" in response.answer.lower()
+        assert "оставьте телефон" not in response.answer.lower()
 
     assert not (tmp_path / "handoff.jsonl").exists()
 

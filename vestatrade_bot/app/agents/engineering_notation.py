@@ -598,7 +598,7 @@ def _extract_radiator_notation(text: str, slots: dict[str, Any]) -> None:
         slots["radiator_type"] = "стальной"
 
     center = re.search(
-        r"(?:межосев\w*|м\s*[/.-]?\s*о)\D{0,12}"
+        r"(?:межосев\w*|\bм(?:\s*[/.-]\s*|\s+)о\b)\D{0,12}"
         r"(\d{2,4})(?:\s*мм)?",
         text,
     )

@@ -129,6 +129,110 @@ def _complete(client: OpenRouterClient):
     return client.complete(agent="test", messages=[{"role": "user", "content": "hi"}])
 
 
+def test_model_transport_redacts_contacts_but_preserves_numeric_articles(
+    monkeypatch,
+) -> None:
+    factory = _ClientFactory([_response()])
+    monkeypatch.setattr(client_module.httpx, "Client", factory)
+    client = _openrouter_client()
+
+    result = client.complete(
+        agent="test",
+        messages=[
+            {
+                "role": "user",
+                "content": (
+                    "Мой email buyer@example.com, телефон +7 999 111-22-33. "
+                    "Артикул 1234567890."
+                ),
+            }
+        ],
+    )
+
+    assert result.llm_used is True
+    sent = factory.payloads[0]["messages"][0]["content"]
+    assert "buyer@example.com" not in sent
+    assert "+7 999 111-22-33" not in sent
+    assert "[email redacted]" in sent
+    assert "[phone redacted]" in sent
+    assert "1234567890" in sent
+
+
+@pytest.mark.parametrize(
+    "email",
+    [
+        "иван@пример.рф",
+        "buyer@xn--e1afmkfd.xn--p1ai",
+    ],
+)
+def test_model_transport_redacts_idn_email_as_one_value(
+    monkeypatch,
+    email: str,
+) -> None:
+    factory = _ClientFactory([_response()])
+    monkeypatch.setattr(client_module.httpx, "Client", factory)
+    client = _openrouter_client()
+
+    result = client.complete(
+        agent="test",
+        messages=[{"role": "user", "content": f"Мой email {email}."}],
+    )
+
+    assert result.llm_used is True
+    sent = factory.payloads[0]["messages"][0]["content"]
+    assert email not in sent
+    assert "[email redacted]" in sent
+    assert "--p1ai" not in sent
+
+
+@pytest.mark.parametrize(
+    "phone",
+    [
+        "Мой телефон 123-45-67",
+        "Мой телефон +7 999/123-45-67",
+    ],
+)
+def test_model_transport_redacts_explicit_local_phone(
+    monkeypatch,
+    phone: str,
+) -> None:
+    factory = _ClientFactory([_response()])
+    monkeypatch.setattr(client_module.httpx, "Client", factory)
+    client = _openrouter_client()
+
+    result = client.complete(
+        agent="test",
+        messages=[{"role": "user", "content": phone}],
+    )
+
+    assert result.llm_used is True
+    sent = factory.payloads[0]["messages"][0]["content"]
+    assert "123-45-67" not in sent
+    assert "[phone redacted]" in sent
+
+
+def test_model_transport_preserves_a_list_of_numeric_articles(monkeypatch) -> None:
+    factory = _ClientFactory([_response()])
+    monkeypatch.setattr(client_module.httpx, "Client", factory)
+    client = _openrouter_client()
+
+    result = client.complete(
+        agent="test",
+        messages=[
+            {
+                "role": "user",
+                "content": "Артикулы 1234567890 и 0987654321.",
+            }
+        ],
+    )
+
+    assert result.llm_used is True
+    sent = factory.payloads[0]["messages"][0]["content"]
+    assert "1234567890" in sent
+    assert "0987654321" in sent
+    assert "[phone redacted]" not in sent
+
+
 @pytest.fixture(autouse=True)
 def _reset_shared_circuits():
     with OpenRouterClient._circuit_lock:

@@ -427,6 +427,22 @@ def compose_commerce_answer(
     return " ".join(parts)
 
 
+def compose_discount_supplement() -> str:
+    """Return the discount facet of a compound catalogue-price answer.
+
+    This deliberately contains neither a percentage nor an invented threshold.
+    The catalogue executor remains responsible for the base price; this helper
+    only states who can approve individual commercial terms.
+    """
+
+    topic = next(item for item in TOPICS if item.key == "discount")
+    return (
+        f"{topic.note} Если нужна индивидуальная цена, напишите "
+        "«передай менеджеру» — контакт и согласие будут запрошены отдельно "
+        "перед передачей."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Факты о компании: город, точка выдачи, правила доставки
 #
@@ -476,6 +492,49 @@ def ask_which_city(facts: BusinessFacts) -> str:
         "Пункты выдачи есть в нескольких городах — назовите ваш, и я дам адрес, "
         f"телефон и режим работы именно этой точки. Сейчас это {listed}."
     )
+
+
+def compose_store_contact_answer(
+    facts: BusinessFacts,
+    *,
+    city: str | None = None,
+    with_volatile_caveat: bool = True,
+) -> str:
+    """Compose store-to-customer contacts from verified business facts only.
+
+    It is intentionally separate from the handoff workflow: asking for the
+    shop's phone is not the same action as providing a customer's phone for a
+    callback.  Branch contacts are city-specific; global contacts are included
+    only when they are explicitly present in the business configuration.
+    """
+
+    if city:
+        branches = facts.branches_in(city)
+        if branches:
+            answer = f"Контакты наших точек в городе {city}:\n{describe_branches(branches)}"
+            if facts.emails:
+                answer += "\nОбщая почта: " + ", ".join(facts.emails) + "."
+            if with_volatile_caveat:
+                caveat = facts.volatile_caveat()
+                if caveat:
+                    answer += "\n" + caveat
+            return answer
+        if facts.branches:
+            return f"В городе {city} подтверждённой точки не найдено. {ask_which_city(facts)}"
+
+    if facts.branches:
+        return ask_which_city(facts)
+
+    channels: list[str] = []
+    if facts.phones:
+        channels.append("тел. " + ", ".join(facts.phones))
+    if facts.emails:
+        channels.append("email: " + ", ".join(facts.emails))
+    if channels:
+        return "Проверенные контакты магазина: " + "; ".join(channels) + "."
+    if facts.site_url:
+        return f"Проверенные контакты смотрите на {facts.site_url}."
+    return "В конфигурации сейчас нет проверенного телефона или email магазина."
 
 
 def compose_location_answer(

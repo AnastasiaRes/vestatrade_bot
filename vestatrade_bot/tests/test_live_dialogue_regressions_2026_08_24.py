@@ -362,7 +362,7 @@ def test_d11_repeated_answer_eventually_changes_strategy() -> None:
     bot = ChatOrchestrator(llm_client=_SilentLLM())
     bot._ensure_products_loaded()
 
-    answers = []
+    responses = []
     for message in [
         "Здравствуйте! Срочно надо радиаторы на две комнаты, не знаю, что брать.",
         "Не знаю, что выбрать. Подскажите, какой лучше взять для квартиры?",
@@ -371,11 +371,14 @@ def test_d11_repeated_answer_eventually_changes_strategy() -> None:
         "Ну хоть что-нибудь покажите.",
         "Ну хоть что-нибудь покажите.",
     ]:
-        answers.append(bot.handle_chat("d11", message).answer)
+        responses.append(bot.handle_chat("d11", message))
 
-    assert "повторяюсь" in answers[-1].lower(), (
-        "после двух дословных повторов бот обязан сменить стратегию"
-    )
+    browse_response = responses[3]
+    assert 2 <= len(browse_response.products) <= 3
+    assert all("радиатор" in product.name.lower() for product in browse_response.products)
+    assert all(product.price is not None for product in browse_response.products)
+    assert browse_response.need_handoff is False
+    assert "не буду подставлять случайный товар" not in browse_response.answer.lower()
 
 
 def test_d11_safety_answers_must_still_repeat_verbatim() -> None:

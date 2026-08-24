@@ -285,6 +285,7 @@ class EngineeringRequirementsAgent:
             "differential_pressure_bar",
         },
         "radiators": {
+            "heating_system_type",
             "radiator_type",
             "radiator_size_mm",
             "radiator_height_mm",
