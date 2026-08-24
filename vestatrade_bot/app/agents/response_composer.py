@@ -683,7 +683,7 @@ class ResponseComposerAgent:
             return True
         onsite = any(
             marker in text
-            for marker in ["ко мне", "у меня", "на объект", "на дом", "по адресу"]
+            for marker in ["ко мне", "на объект", "на дом", "по адресу"]
         )
         installation = any(marker in text for marker in ["монтаж", "смонтир", "установ", "подключ"])
         if onsite and installation:
@@ -756,7 +756,16 @@ class ResponseComposerAgent:
                 "трубы, насосы, котлы, краны, канализацию и радиаторную арматуру. "
                 "Напишите, что нужно подобрать — уточню параметры и пришлю карточки."
             )
-        if any(marker in normalized for marker in ["выех", "приех", "приед", "монтаж", "установ"]):
+        asks_for_field_service = bool(
+            any(marker in normalized for marker in ["выех", "приех", "приед"])
+            or re.search(
+                r"\b(?:можете|можешь|нужен|нужна|нужно|заказать|"
+                r"есть\s+ли|сделать|выполнить)\b[^.?!]{0,35}"
+                r"\b(?:монтажь?|установку?|установить)\b",
+                normalized,
+            )
+        )
+        if asks_for_field_service:
             return (
                 "Я AI-консультант и не могу приехать или выполнить монтаж. Могу помочь "
                 "подобрать оборудование по каталогу, а возможность выезда и установки "
@@ -1418,6 +1427,16 @@ class ResponseComposerAgent:
         slots = query.slots
         if query.category != "pumps" or not slots.get("old_model"):
             return None
+
+        text = normalize_text(query.original_text)
+        if any(marker in text for marker in ["что означ", "расшифр", "что за цифр"]):
+            definition = self._pump_marking_definition(text)
+            if definition:
+                return (
+                    definition
+                    + " Ниже показаны варианты из ассортимента; "
+                    "их совместимость и монтажную длину всё равно нужно сверить по карточке."
+                )
 
         details = []
         if slots.get("connection_size"):

@@ -245,6 +245,15 @@ _HANDOFF_RE = re.compile(
     r"администратор|админ|специалист|человек)\w*\b"
     r"[^.!?]{0,35}\b(?:запрос|заявк|обращен|вопрос)\w*\b)"
 )
+_HANDOFF_META_MENTION_RE = re.compile(
+    r"\b(?:нужно|надо|обязательно|следует|достаточно)\s+(?:ли\s+)?"
+    r"(?:написать|писать|сказать|говорить|просить)\w*\b[^.!?]{0,55}"
+    r"\b(?:передай|передать|менеджер)\w*\b"
+)
+_HANDOFF_CONDITIONAL_MENTION_RE = re.compile(
+    r"\bесли\s+(?:я\s+)?(?:на)?пиш\w*\b[^.!?]{0,55}"
+    r"\b(?:передай|передать)\w*\b[^.!?]{0,28}\bменеджер\w*\b"
+)
 
 
 def _requested_count(text: str) -> int | None:
@@ -471,7 +480,14 @@ class TurnPlanner:
                 or product_context_present
             )
         )
-        asks_handoff = bool(_HANDOFF_RE.search(text))
+        # A quoted/metalinguistic question such as «нужно писать “передай
+        # менеджеру”?» asks how the process works; it is not consent to start
+        # the process.  Keep command and mention as separate speech acts.
+        asks_handoff = bool(
+            _HANDOFF_RE.search(text)
+            and not _HANDOFF_META_MENTION_RE.search(text)
+            and not _HANDOFF_CONDITIONAL_MENTION_RE.search(text)
+        )
         contact_owned = (
             bool(
                 customer_contact_present

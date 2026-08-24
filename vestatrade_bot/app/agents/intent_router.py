@@ -3661,6 +3661,13 @@ class IntentRouterAgent:
             return False
         if not any(char.isdigit() for char in candidate):
             return False
+        if re.search(r"[a-z]", candidate, re.IGNORECASE) and re.search(
+            r"[а-яё]", candidate, re.IGNORECASE
+        ):
+            # Mixed Latin/Cyrillic candidates are usually a sentence boundary
+            # accidentally glued to the article (``3636151.Он``), not a
+            # real feed identity.
+            return False
         # An isolated engineering fraction is a size even if a user happens
         # to put it after a catalogue-related word.  Дюймовым размером считаем
         # только настоящую дюймовую дробь (1/2, 3/4, 5/8): в фиде есть

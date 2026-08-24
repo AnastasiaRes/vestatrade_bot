@@ -513,6 +513,7 @@ class FeedSearchAgent:
         self._sku_mention_patterns: list[
             tuple[Product, re.Pattern[str], int]
         ] = []
+        self._sku_products_by_prefix: dict[str, list[Product]] = {}
         self.set_products(products or [])
 
     def set_products(self, products: list[Product]) -> None:
@@ -525,23 +526,60 @@ class FeedSearchAgent:
         self._brand_word_key_cache = None
         self._catalog_word_key_cache = None
         self._sku_mention_patterns = self._build_sku_mention_patterns(products)
+        self._sku_products_by_prefix = {}
+        for product in products:
+            groups = re.findall(r"[a-zа-я]+|\d+", normalize_text(product.sku))
+            if len(groups) >= 3 and groups[0].isalpha():
+                self._sku_products_by_prefix.setdefault(groups[0], []).append(product)
 
     @staticmethod
     def _build_sku_mention_patterns(
         products: list[Product],
     ) -> list[tuple[Product, re.Pattern[str], int]]:
+        spoken_cyrillic = {
+            "a": "а", "b": "б", "c": "с", "d": "д", "e": "е",
+            "f": "ф", "g": "г", "h": "х", "i": "и", "j": "й",
+            "k": "к", "l": "л", "m": "м", "n": "н", "o": "о",
+            "p": "п", "r": "р", "s": "с", "t": "т", "u": "у",
+            "v": "в", "x": "х", "y": "ы", "z": "з",
+        }
+
+        def group_pattern(group: str) -> str:
+            if not group.isalpha() or not re.fullmatch(r"[a-z]+", group):
+                return re.escape(group)
+            return "".join(
+                (
+                    f"[{re.escape(char + spoken_cyrillic[char])}]"
+                    if char in spoken_cyrillic
+                    else re.escape(char)
+                )
+                for char in group
+            )
+
         patterns: list[tuple[Product, re.Pattern[str], int]] = []
         for product in products:
             sku = normalize_text(product.sku)
             compact = re.sub(r"[^a-zа-я0-9]", "", sku)
-            if not compact or (compact.isdigit() and len(compact) < 5):
+            has_separator = bool(re.search(r"[./+\-\s]", sku))
+            if not compact or (
+                compact.isdigit()
+                and len(compact) < 5
+                and not has_separator
+            ):
                 continue
-            tokens = re.findall(r"[a-zа-я]+|\d+|[./+\-]", sku)
-            if not tokens:
+            # A customer usually reads an article from a label one group at a
+            # time: ``VRS 256 13 0`` and ``VT 217 N 04`` are the same grounded
+            # identities as ``VRS.256.13.0`` and ``VT.217.N.04``.  Requiring
+            # the exact punctuation made those natural readings invisible.
+            # Catalogue membership and token boundaries remain the safety
+            # boundary; only separators between the SKU's own groups are
+            # flexible.
+            groups = re.findall(r"[a-zа-я]+|\d+", sku)
+            if not groups:
                 continue
             pattern = re.compile(
                 r"(?<![a-zа-я0-9])"
-                + r"\s*".join(re.escape(token) for token in tokens)
+                + r"[\s./+\-]*".join(group_pattern(group) for group in groups)
                 + r"(?![a-zа-я0-9])"
             )
             patterns.append(
@@ -570,6 +608,9 @@ class FeedSearchAgent:
                     "код товара",
                     "сравни",
                     "сравнение",
+                    "сопостав",
+                    "отлича",
+                    "разница",
                     "проигнор",
                     "не сравнил",
                     "не сравнила",
@@ -587,7 +628,7 @@ class FeedSearchAgent:
             # as articles only in explicit article/comparison context. Longer
             # numeric identifiers (such as 2202211) remain usable in natural
             # cross-product questions.
-            if numeric_length == 5 and not explicit_numeric_context:
+            if 0 < numeric_length <= 5 and not explicit_numeric_context:
                 continue
             match = pattern.search(text)
             if match and numeric_length:
@@ -611,6 +652,69 @@ class FeedSearchAgent:
                         product,
                     )
                 )
+
+        # In a comparison people commonly say the vendor prefix once:
+        # ``VT 217 N 04 и 218 N 04``.  Resolve the second identity only among
+        # catalogue siblings that share the already grounded prefix.  This is
+        # still identity matching, not fuzzy retrieval: the whole remaining
+        # SKU must be present in the turn with token boundaries.
+        if explicit_numeric_context and matches:
+            spoken_cyrillic = {
+                "a": "а", "b": "б", "c": "с", "d": "д", "e": "е",
+                "f": "ф", "g": "г", "h": "х", "i": "и", "j": "й",
+                "k": "к", "l": "л", "m": "м", "n": "н", "o": "о",
+                "p": "п", "r": "р", "s": "с", "t": "т", "u": "у",
+                "v": "в", "x": "х", "y": "ы", "z": "з",
+            }
+
+            def shorthand_group(group: str) -> str:
+                if group.isalpha() and re.fullmatch(r"[a-z]+", group):
+                    return "".join(
+                        (
+                            f"[{re.escape(char + spoken_cyrillic[char])}]"
+                            if char in spoken_cyrillic
+                            else re.escape(char)
+                        )
+                        for char in group
+                    )
+                return re.escape(group)
+
+            prefixes = {
+                groups[0]
+                for _, _, _, product in matches
+                if len(groups := re.findall(
+                    r"[a-zа-я]+|\d+", normalize_text(product.sku)
+                )) >= 3
+                and groups[0].isalpha()
+            }
+            already_matched = {
+                normalize_sku(product.sku) for _, _, _, product in matches
+            }
+            for prefix in prefixes:
+                for product in self._sku_products_by_prefix.get(prefix, []):
+                    if normalize_sku(product.sku) in already_matched:
+                        continue
+                    groups = re.findall(
+                        r"[a-zа-я]+|\d+", normalize_text(product.sku)
+                    )
+                    remainder = re.compile(
+                        r"(?<![a-zа-я0-9])"
+                        + r"[\s./+\-]*".join(
+                            shorthand_group(group) for group in groups[1:]
+                        )
+                        + r"(?![a-zа-я0-9])"
+                    )
+                    match = remainder.search(text)
+                    if match:
+                        matches.append(
+                            (
+                                match.start(),
+                                match.end(),
+                                -(match.end() - match.start()),
+                                product,
+                            )
+                        )
+                        already_matched.add(normalize_sku(product.sku))
 
         # Preserve mention order.  If catalogue aliases overlap at the same
         # position, prefer the longer identity and never emit the same SKU twice.

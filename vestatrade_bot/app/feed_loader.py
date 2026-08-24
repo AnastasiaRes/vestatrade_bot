@@ -33,9 +33,43 @@ def _strip_namespace(tag: str) -> str:
 def _clean_text(value: str | None) -> str | None:
     if value is None:
         return None
-    cleaned = html.unescape(value).strip()
+    cleaned = value
+    # Some feed rows are escaped twice (``&amp;amp;quot;`` in XML becomes
+    # ``&amp;quot;`` after XML parsing).  Decode until stable so catalogue
+    # names do not leak HTML entities to the dialogue.
+    for _ in range(3):
+        decoded = html.unescape(cleaned)
+        if decoded == cleaned:
+            break
+        cleaned = decoded
+    cleaned = cleaned.strip()
     cleaned = re.sub(r"\s+", " ", cleaned)
     return cleaned or None
+
+
+def _clean_description(value: str | None) -> str | None:
+    cleaned = _clean_text(value)
+    if not cleaned:
+        return cleaned
+    # Supplier prose sometimes concatenates sentences as ``.Новая``.
+    # This must never run on identities: an SKU such as ``VTp.700.FB20.20``
+    # legitimately contains a dot before an uppercase Latin segment.
+    return re.sub(r"(?<=[.!?])(?=[A-ZА-ЯЁ])", " ", cleaned)
+
+
+def _clean_product_name(value: str | None) -> str | None:
+    """Remove a trailing feed pack marker from a product display name.
+
+    Ostendorf rows encode box quantity as a quoted suffix: ``50*2000\"10``
+    and ``50\"20``.  It is neither a third product dimension nor an inch
+    size.  The raw value remains available in ``raw``; the customer-facing
+    identity should contain only the actual product dimensions.
+    """
+
+    cleaned = _clean_text(value)
+    if not cleaned:
+        return cleaned
+    return re.sub(r'(?<=\d)"\d{1,3}$', "", cleaned).strip() or None
 
 
 def _to_float(value: str | None) -> float | None:
@@ -281,7 +315,10 @@ class FeedLoader:
             if field_sku is not None
             else elem.attrib.get("id")
         )
-        name = _first(fields, "name", "title", "model") or params.get("полное наименование")
+        name = _clean_product_name(
+            _first(fields, "name", "title", "model")
+            or params.get("полное наименование")
+        )
         if not sku or not name:
             logger.warning("Skipping product with missing sku/name: %s", raw)
             return None
@@ -309,7 +346,9 @@ class FeedLoader:
             stock_status=stock_status,
             stock_qty=quantity,
             attributes_normalized=params,
-            description=_first(fields, "description", "short_description"),
+            description=_clean_description(
+                _first(fields, "description", "short_description")
+            ),
             updated_at=catalog_date or "",
             raw=raw,
         )

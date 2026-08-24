@@ -326,6 +326,7 @@ def continues_problem_frame(code: str, message: str) -> bool:
             "выкачать",
             "рассчит",
             "кубометр",
+            "куб",
             "м3/ч",
             "м³/ч",
             "класс гряз",
@@ -333,6 +334,15 @@ def continues_problem_frame(code: str, message: str) -> bool:
             "q-h",
             "q–h",
             "крив",
+            # Once the observable conditions have been collected, a short
+            # catalogue action is still part of this frame.  The product noun
+            # is commonly omitted in natural dialogue: «покажи, что
+            # подойдёт» must not reset a drainage session to ``other``.
+            "покаж",
+            "подой",
+            "подбер",
+            "вариант",
+            "из каталог",
         ),
         "undersink_shutoff_leak": (
             "кран",

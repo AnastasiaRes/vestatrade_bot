@@ -151,7 +151,16 @@ def normalize_sku(text: str | None) -> str:
 
 def collapse_sku_spaces(text: str) -> str:
     """Collapse whitespace around dots/dashes so `vrs . 256 . 18 . 0` reads as `vrs.256.18.0`."""
-    return re.sub(r"\s*([.\-])\s*", r"\1", text)
+    # Work only between ASCII SKU characters.  Applying the old expression to
+    # a whole sentence changed ``артикул 3636151. Он есть?`` into
+    # ``3636151.Он`` and the pronoun became part of the requested article.
+    # Catalogue-aware matching handles spoken Cyrillic article groups without
+    # needing to destroy ordinary sentence boundaries here.
+    return re.sub(
+        r"(?<=[A-Za-z0-9])\s*([.\-])\s*(?=[A-Za-z0-9])",
+        r"\1",
+        text,
+    )
 
 
 def contains_any(text: str, needles: list[str]) -> bool:
