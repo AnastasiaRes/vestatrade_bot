@@ -81,6 +81,7 @@ class EngineeringRequirementsAgent:
 
     CATEGORY_KEYS: dict[str, set[str]] = {
         "pipes": {
+            "deferred_slot_keys",
             "pipe_purpose",
             "pipe_service",
             "water_temperature",
@@ -176,6 +177,7 @@ class EngineeringRequirementsAgent:
             "floors",
         },
         "boilers": {
+            "deferred_slot_keys",
             "boiler_type",
             "boiler_water_heater_pair",
             "boiler_water_heater_relation",
@@ -226,6 +228,7 @@ class EngineeringRequirementsAgent:
             "thread_gender",
         },
         "valves": {
+            "deferred_slot_keys",
             "application",
             "water_temperature",
             "valve_kind",
@@ -253,6 +256,7 @@ class EngineeringRequirementsAgent:
             "differential_pressure_bar",
         },
         "sewer": {
+            "deferred_slot_keys",
             "sewer_scope",
             "element_type",
             "diameter_mm",
@@ -267,6 +271,7 @@ class EngineeringRequirementsAgent:
             "wall_thickness_mm",
         },
         "radiator_fittings": {
+            "deferred_slot_keys",
             "connection_form",
             "diameter_mm",
             "size_inch",
@@ -278,6 +283,8 @@ class EngineeringRequirementsAgent:
             "thread_standard",
             "thread_gender",
             "metric_thread",
+            "valve_model",
+            "valve_brand",
             "flow_coefficient_kind",
             "flow_coefficient",
             "valve_ways",
@@ -285,7 +292,9 @@ class EngineeringRequirementsAgent:
             "differential_pressure_bar",
         },
         "radiators": {
+            "deferred_slot_keys",
             "heating_system_type",
+            "operating_pressure_bar",
             "radiator_type",
             "radiator_size_mm",
             "radiator_height_mm",
@@ -301,6 +310,7 @@ class EngineeringRequirementsAgent:
             "radiator_connection",
         },
         "fittings": {
+            "deferred_slot_keys",
             "fitting_system",
             "element_type",
             "diameter_mm",
@@ -308,6 +318,8 @@ class EngineeringRequirementsAgent:
             "size_inch",
             "thread_type",
             "product_kind",
+            "combined_metal",
+            "fitting_end_form",
             "body_form",
             "angle_deg",
             "pipe_material",
@@ -557,6 +569,15 @@ class EngineeringRequirementsAgent:
             for key, value in slots.items()
             if key in allowed and self._present(value)
         }
+        deferred_now = {
+            str(key) for key in slots.get("deferred_slot_keys") or []
+        }
+        for key in deferred_now:
+            if not self._present(slots.get(key)):
+                # Explicitly unknown values invalidate older interpreted
+                # constraints in goal memory; merge-only storage must not
+                # resurrect them on the next turn.
+                previous.pop(key, None)
         goal_slots = merge_slots(previous, incoming)
 
         scope_values: dict[str, Any] = {}

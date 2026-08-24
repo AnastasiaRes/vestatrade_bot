@@ -588,13 +588,13 @@ def _extract_heating_and_water_notation(
 
 
 def _extract_radiator_notation(text: str, slots: dict[str, Any]) -> None:
-    if "биметалл" in text:
+    if re.search(r"\bбиметалл\w*\b", text):
         slots["radiator_type"] = "биметаллический"
-    elif "алюмин" in text:
+    elif re.search(r"\bалюмин\w*\b", text):
         slots["radiator_type"] = "алюминиевый"
-    elif "панельн" in text:
+    elif re.search(r"\bпанельн\w*\b", text):
         slots["radiator_type"] = "панельный"
-    elif "стальн" in text:
+    elif re.search(r"\bстальн\w*\b", text):
         slots["radiator_type"] = "стальной"
 
     center = re.search(

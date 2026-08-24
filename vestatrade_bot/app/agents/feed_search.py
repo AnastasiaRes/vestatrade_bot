@@ -3955,6 +3955,30 @@ class FeedSearchAgent:
         name = normalize_text(product.name)
         return "комбинирован" in name or "латун" in name
 
+    def _fitting_end_form_matches(self, product: Product, requested: object) -> bool:
+        """Match the physical port topology of a polymer fitting."""
+
+        expected = normalize_text(str(requested or ""))
+        if expected not in {"socket socket", "две муфты", "двухраструбный"}:
+            return False
+        if self._combined_metal_matches(product):
+            return False
+        evidence = self._structured_text(product)
+        # ``вн/нар`` on an all-polymer PPR elbow describes a socket on one
+        # side and a pipe-sized spigot on the other. It does not accept a pipe
+        # at both ends like an ordinary double-socket elbow.
+        if re.search(
+            r"\b(?:вн\s*[/.-]\s*нар|внутренн\w*\s*[/.-]\s*наружн\w*)\b",
+            evidence,
+        ):
+            return False
+        if re.search(
+            r"\b(?:вн\.?\s*р\.?|нар\.?\s*р\.?|резьб\w*)\b",
+            evidence,
+        ):
+            return False
+        return True
+
     def _trade_element_matches(self, product: Product, requested: object) -> bool:
         """Семейство товара, названное монтажным словом, — жёсткое условие.
 
@@ -3978,8 +4002,14 @@ class FeedSearchAgent:
             product, slots["trade_element"]
         ):
             return False
-        if slots.get("combined_metal") and not self._combined_metal_matches(product):
-            return False
+        if "combined_metal" in slots:
+            requested_combined = slots.get("combined_metal")
+            wants_combined = (
+                normalize_text(str(requested_combined))
+                not in {"", "0", "false", "no", "нет", "ложь", "none"}
+            )
+            if self._combined_metal_matches(product) != wants_combined:
+                return False
         if slots.get("material_spec") and not self._material_spec_matches(
             product, slots["material_spec"]
         ):
@@ -3992,6 +4022,11 @@ class FeedSearchAgent:
             return False
         if slots.get("fitting_system") and not self._fitting_system_matches(
             product, slots["fitting_system"]
+        ):
+            return False
+        if slots.get("fitting_end_form") and not self._fitting_end_form_matches(
+            product,
+            slots["fitting_end_form"],
         ):
             return False
         if slots.get("angle_deg") is not None and not self._angle_matches(
@@ -4582,6 +4617,8 @@ class FeedSearchAgent:
             "thread_type",
             "thread_gender",
             "fitting_system",
+            "combined_metal",
+            "fitting_end_form",
             "angle_deg",
             "handle_type",
             "full_bore",

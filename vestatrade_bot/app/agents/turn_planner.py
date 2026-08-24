@@ -158,6 +158,13 @@ _BROWSE_SIGNALS = (
     "не хочу уточнять",
     "не буду уточнять",
 )
+_KNOWN_FACTS_BROWSE_RE = re.compile(
+    r"\b(?:подбер\w*|покаж\w*|дай\w*|вывед\w*)\b[^.!?]{0,48}"
+    r"\b(?:по\s+(?:тому|тем|всему)\s*,?\s*что\s+(?:уже\s+)?"
+    r"(?:известн\w*|знаю|сказал\w*|назвал\w*)|"
+    r"из\s+(?:того|всего)\s*,?\s*что\s+(?:я\s+)?(?:знаю|сказал\w*|назвал\w*)|"
+    r"по\s+(?:известн\w*|названн\w*|имеющ\w*)\s+(?:данн\w*|услови\w*|параметр\w*))\b"
+)
 _RECOMMEND_SIGNALS = (
     "подбери",
     "подберите",
@@ -253,6 +260,13 @@ _HANDOFF_META_MENTION_RE = re.compile(
 _HANDOFF_CONDITIONAL_MENTION_RE = re.compile(
     r"\bесли\s+(?:я\s+)?(?:на)?пиш\w*\b[^.!?]{0,55}"
     r"\b(?:передай|передать)\w*\b[^.!?]{0,28}\bменеджер\w*\b"
+)
+_SPECIALIST_VS_SELF_RE = re.compile(
+    r"\b(?:можно|нужно|надо)\s+ли\b[^.!?]{0,70}"
+    r"\b(?:провер|измер|подключ|установ|смонтир|снять|разобра|свер)\w*"
+    r"[^.!?]{0,70}\b(?:сам\w*|самостоятельн\w*|специалист\w*)\b"
+    r"|\bсам\w*\b[^.!?]{0,35}\b(?:или|либо)\b[^.!?]{0,25}"
+    r"\bспециалист\w*\b"
 )
 
 
@@ -407,6 +421,8 @@ def _is_browse_request(text: str, requested_count: int | None) -> bool:
         has_option_noun or has_product_noun
     ):
         return True
+    if _KNOWN_FACTS_BROWSE_RE.search(text):
+        return True
     # Preserve the legacy distinction: a short standalone "show options" is a
     # command, while a rich product refinement containing those two words is
     # not silently reduced to a generic category browse.
@@ -454,8 +470,15 @@ class TurnPlanner:
             # topic yields to browse only when the user explicitly asks to
             # show catalogue options in the same turn.
             browse_candidate = False
-        recommends = any(signal in text for signal in _RECOMMEND_SIGNALS)
         has_product_noun = bool(_PRODUCT_NOUN_RE.search(text))
+        recommends = bool(
+            any(signal in text for signal in _RECOMMEND_SIGNALS)
+            or (
+                has_product_noun
+                and _PRODUCT_SELECTION_RE.search(text)
+                and not browse_candidate
+            )
+        )
         catalog_request_present = bool(
             has_product_noun
             and (
@@ -480,6 +503,26 @@ class TurnPlanner:
                 or product_context_present
             )
         )
+        explicit_recommendation = bool(
+            any(signal in text for signal in _RECOMMEND_SIGNALS)
+            or re.search(
+                r"\b(?:альтернатив\w*|аналог\w*|замен\w*|совместим\w*|"
+                r"подойд\w*|лучше\s+взять|что\s+брать|выбрать)\b",
+                text,
+            )
+        )
+        # «Нужно 200 метров <точно названного товара> — сколько стоит?» —
+        # это расчёт цены, а не просьба заново подбирать совместимый товар.
+        # Слово «нужно» само по себе описывает количество покупки и не должно
+        # запускать инженерный опрос. Явный подбор/аналог сохраняет приоритет.
+        pending_mode_value = str(
+            getattr(pending_selection_mode, "value", pending_selection_mode) or ""
+        )
+        direct_price_lookup = bool(
+            asks_price
+            and not explicit_recommendation
+            and pending_mode_value != SelectionMode.RECOMMEND.value
+        )
         # A quoted/metalinguistic question such as «нужно писать “передай
         # менеджеру”?» asks how the process works; it is not consent to start
         # the process.  Keep command and mention as separate speech acts.
@@ -487,6 +530,7 @@ class TurnPlanner:
             _HANDOFF_RE.search(text)
             and not _HANDOFF_META_MENTION_RE.search(text)
             and not _HANDOFF_CONDITIONAL_MENTION_RE.search(text)
+            and not _SPECIALIST_VS_SELF_RE.search(text)
         )
         contact_owned = (
             bool(
@@ -506,22 +550,23 @@ class TurnPlanner:
             and (contact_owned or not _THIRD_PARTY_CONTACT_TARGET_RE.search(text))
         )
 
-        explicit_browse_override = any(signal in text for signal in _BROWSE_SIGNALS)
-        if recommends and not explicit_browse_override:
+        explicit_browse_override = bool(
+            any(signal in text for signal in _BROWSE_SIGNALS)
+            or _KNOWN_FACTS_BROWSE_RE.search(text)
+        )
+        if direct_price_lookup:
+            selection_mode = SelectionMode.BROWSE
+        elif recommends and not explicit_browse_override:
             selection_mode = SelectionMode.RECOMMEND
         elif browse_candidate:
             selection_mode = SelectionMode.BROWSE
         elif asks_price:
-            pending_mode = str(
-                getattr(pending_selection_mode, "value", pending_selection_mode)
-                or ""
-            )
             # A plain catalogue price lookup can bypass compatibility questions.
             # A budget supplied while compatibility selection is active is an
             # additive constraint and must keep that goal alive.
             selection_mode = (
                 SelectionMode.RECOMMEND
-                if pending_mode == SelectionMode.RECOMMEND.value
+                if pending_mode_value == SelectionMode.RECOMMEND.value
                 else SelectionMode.BROWSE
             )
         else:

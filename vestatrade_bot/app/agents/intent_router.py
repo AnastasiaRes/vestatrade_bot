@@ -15,6 +15,7 @@ from .engineering_notation import (
     extract_engineering_notation,
 )
 from .numeric_semantics import (
+    extract_spoken_area_m2,
     _TIME_OF_DAY_RE,
     extract_piece_length_mm,
     extract_temperature_c,
@@ -505,6 +506,87 @@ class IntentRouterAgent:
             llm_result = self._sanity_check_llm_intent(llm_result, result, message)
             result = llm_result
         self._normalize_result(result, message, session)
+        if session is not None:
+            active_head_goal = bool(
+                (session.category == "radiator_fittings"
+                 or session.pending_category == "radiator_fittings")
+                and (
+                    session.slots.get("product_kind") == "thermostatic_head"
+                    or session.slots.get("thermostatic_head") is True
+                )
+            )
+            interface_followup = bool(
+                any(
+                    marker in normalized_message
+                    for marker in (
+                        "резьб",
+                        "термоголов",
+                        "головк",
+                        "клапан",
+                        "посадочн",
+                        "маркиров",
+                    )
+                )
+            )
+            explicit_radiator_selection = bool(
+                re.search(
+                    r"\b(?:подбер\w*|нужен\w*|ищу|купить|покаж\w*)\b"
+                    r"[^.!?]{0,35}\bрадиатор\w*\b",
+                    normalized_message,
+                )
+            )
+            if active_head_goal and interface_followup and not explicit_radiator_selection:
+                result.category = "radiator_fittings"
+                result.intent_type = "attribute_request"
+                result.is_topic_change = False
+            active_category = session.pending_category or session.category
+            fitting_refinement = bool(
+                active_category == "fittings"
+                and any(
+                    marker in normalized_message
+                    for marker in (
+                        "поворот",
+                        "угол",
+                        "градус",
+                        "резьб",
+                        "пайк",
+                        "нагрев",
+                        "маркиров",
+                        "оба конца",
+                        "подойдет",
+                        "подойдёт",
+                    )
+                )
+            )
+            sewer_measurement = bool(
+                active_category == "sewer"
+                and (
+                    re.search(
+                        r"\b(?:наружн|внутренн)\w*\s+диаметр\w*\b",
+                        normalized_message,
+                    )
+                    or re.search(
+                        r"\b(?:dn|дн)\s*\d{2,3}\b",
+                        normalized_message,
+                    )
+                )
+            )
+            if fitting_refinement or sewer_measurement:
+                result.category = str(active_category)
+                result.intent_type = "attribute_request"
+                result.is_topic_change = False
+                self._extract_slots(
+                    normalized_message,
+                    result.category,
+                    result.slots,
+                    raw_message=message,
+                )
+                result.raw = dict(result.raw or {})
+                result.raw["explicit_current_slot_keys"] = sorted(
+                    key
+                    for key in result.slots
+                    if not str(key).startswith("_")
+                )
         result.raw = dict(result.raw or {})
         for key in ("explicit_sku_marker", "explicit_category"):
             if key in rule_provenance:
@@ -1165,6 +1247,23 @@ class IntentRouterAgent:
         )
         if complex_heating_project:
             return "boilers", 0.96
+        missing_radiator_head = bool(
+            re.search(
+                r"(?:\bбез\s+(?:термо)?головк\w*\b|"
+                r"\b(?:термо)?головк\w*[^.!?]{0,24}\b(?:нет|отсутств\w*)\b)",
+                text,
+            )
+            and re.search(r"\b(?:клапан|вентил|корпус)\w*\b", text)
+            and any(
+                marker in text
+                for marker in ("регулир", "постав", "установ", "нуж", "хочу", "подоб")
+            )
+        )
+        if missing_radiator_head:
+            # Customers often name only the existing valve and the absent
+            # "head", without repeating the word "radiator".  The item to
+            # retrieve is the missing thermostatic head, not a generic valve.
+            return "radiator_fittings", 0.98
         if (
             any(marker in text for marker in ["радиатор", "батаре"])
             and re.search(r"\b(?:клапан|кран)\w*\b", text)
@@ -1653,6 +1752,7 @@ class IntentRouterAgent:
             token
             for token in re.findall(r"\b[a-z][a-z0-9]{2,}\b", text)
             if token not in stop
+            and not re.fullmatch(r"m\d{1,3}", token)
             and token
             not in {
                 normalize_text(brand)
@@ -1732,6 +1832,39 @@ class IntentRouterAgent:
             marker in text for marker in ["ppr", "ппр", "полипропилен"]
         ):
             slots["fitting_system"] = "ppr"
+        elif category == "fittings" and (
+            re.search(
+                r"\b(?:под\s+пайк\w*|пая\w*|паяльник\w*|утюг\w*|"
+                r"свари\w*(?:\s+\w+){0,2}\s+нагрев\w*|"
+                r"соедин\w*(?:\s+\w+){0,2}\s+нагрев\w*)\b",
+                text,
+            )
+            and any(marker in text for marker in ["труб", "пластик", "бел", "сер"])
+        ):
+            # The customer describes the joining method instead of knowing
+            # the PPR abbreviation.  That observation is stronger than a
+            # guess based on colour alone.
+            slots["fitting_system"] = "ppr"
+        elif category == "fittings" and (
+            "канализац" in text
+            or "раструб" in text
+            or (
+                any(marker in text for marker in ["оранж", "рыж"])
+                and "труб" in text
+            )
+        ):
+            slots["fitting_system"] = "канализация"
+
+        if category == "fittings" and (
+            re.search(r"\b(?:две|два)\s+(?:\w+\s+){0,2}труб\w*\b", text)
+            or re.search(
+                r"\b(?:с\s+)?обеих\s+сторон\b[^.!?]{0,28}\bтруб\w*\b",
+                text,
+            )
+        ):
+            # Port topology is part of compatibility: a street elbow or a
+            # threaded transition is not a double-socket elbow for two pipes.
+            slots["fitting_end_form"] = "socket_socket"
 
         if category == "boilers" and self._is_builtin_selection_constraint(
             text,
@@ -2046,13 +2179,37 @@ class IntentRouterAgent:
             slots["warm_floor_automation_needed"] = not automation_rejected
 
         if category == "sewer":
+            outside_measurement = bool(
+                re.search(
+                    r"\b(?:наружн\w*\s+(?:размер|диаметр|замер)\w*|"
+                    r"наружк\w*[^.!?]{0,16}\d{2,3})\b",
+                    text,
+                )
+            )
             if "внутрен" in text:
                 slots["sewer_scope"] = "внутренняя"
-            elif "наруж" in text:
+            elif re.search(r"\bнаруж\w*", text) and not outside_measurement:
                 slots["sewer_scope"] = "наружная"
             elif "сер" in text and any(marker in text for marker in ["пластик", "канализац"]):
                 slots["sewer_scope"] = "внутренняя"
             elif any(marker in text for marker in ["рыж", "оранж"]):
+                slots["sewer_scope"] = "наружная"
+            elif any(
+                marker in text
+                for marker in [
+                    "под раковин",
+                    "под мойк",
+                    "в квартир",
+                    "в ванной",
+                    "в сануз",
+                    "внутри дом",
+                ]
+            ):
+                slots["sewer_scope"] = "внутренняя"
+            elif any(
+                marker in text
+                for marker in ["в земле", "на участке", "во дворе", "на улице"]
+            ):
                 slots["sewer_scope"] = "наружная"
 
         if category in {"pipes", "sewer"} and "канализац" in text:
@@ -2330,16 +2487,30 @@ class IntentRouterAgent:
                 and re.search(r"\b\d{2,3}\s*мм\b", text)
             ):
                 slots["element_type"] = "труба"
+            elif any(marker in text for marker in ["прямой участок", "прямой кусок"]):
+                slots["element_type"] = "труба"
 
-        if "углов" in text:
+        if category in {"valves", "radiator_fittings"} and "углов" in text:
             slots["body_form"] = "угловой"
             slots["connection_form"] = "угловое"
-        elif "прям" in text:
+        elif category in {"valves", "radiator_fittings"} and "прям" in text:
             slots["body_form"] = "прямой"
             slots["connection_form"] = "прямое"
         if "американк" in text or "полусгон" in text:
             slots["union"] = True
-        if "термоголов" in text:
+        missing_thermostatic_head = bool(
+            category == "radiator_fittings"
+            and re.search(
+                r"(?:\bбез\s+(?:термо)?головк\w*\b|"
+                r"\b(?:термо)?головк\w*[^.!?]{0,24}\b(?:нет|отсутств\w*)\b)",
+                text,
+            )
+            and any(
+                marker in text
+                for marker in ["регулир", "постав", "установ", "нуж", "хочу", "подоб"]
+            )
+        )
+        if "термоголов" in text or missing_thermostatic_head:
             slots["thermostatic_head"] = True
         elif "перекры" in text or "закрывать" in text or "отсек" in text:
             slots["thermostatic_head"] = False
@@ -2350,10 +2521,18 @@ class IntentRouterAgent:
             slots["thermostatic_head"] = True
             slots["radiator_action"] = "регулировать температуру"
 
+        if (
+            category == "radiator_fittings"
+            and slots.get("thermostatic_head") is True
+            and any(marker in text for marker in ["клапан", "корпус", "маркиров"])
+        ):
+            if re.search(r"\b(?:valtec|валтек)\b", text):
+                slots["valve_brand"] = "VALTEC"
+
         # Product kind is a hard identity boundary.  A thermostatic head,
         # thermostatic radiator valve and complete radiator are related but
         # not interchangeable catalogue items.
-        if re.search(r"\bтермог[оа]лов\w*\b", text):
+        if re.search(r"\bтермог[оа]лов\w*\b", text) or missing_thermostatic_head:
             slots["product_kind"] = "thermostatic_head"
         elif category == "radiator_fittings" and (
             re.search(r"\bтермостатическ\w*\s+клапан\w*\b", text)
@@ -2390,7 +2569,8 @@ class IntentRouterAgent:
 
         if category in {"fittings", "sewer", "valves", "radiator_fittings"}:
             explicit_angle = re.search(
-                r"(?<!\d)(15|22|30|45|60|67|87|88|90)\s*(?:°|градус\w*)",
+                r"(?<!\d)(15|22|30|45|60|67|87|88|90)\s*"
+                r"(?:°|[-–—]?\s*градус\w*)",
                 text,
             )
             if explicit_angle:
@@ -2414,6 +2594,7 @@ class IntentRouterAgent:
             r"\D{0,12}(?:дом|коттедж|общ\w*\s+площад)",
             text,
         )
+        spoken_area_m2 = extract_spoken_area_m2(text)
         if warm_floor_area_match and not rejects_warm_floor:
             raw_area = warm_floor_area_match.group(1) or warm_floor_area_match.group(2)
             slots["warm_floor_area_m2"] = float(raw_area)
@@ -2430,6 +2611,11 @@ class IntentRouterAgent:
                 slots["warm_floor_area_m2"] = float(area_match.group(1))
             else:
                 slots["area_m2"] = float(area_match.group(1))
+        elif spoken_area_m2 is not None:
+            if mentions_warm_floor and not rejects_warm_floor and category == "pipes":
+                slots["warm_floor_area_m2"] = spoken_area_m2
+            else:
+                slots["area_m2"] = spoken_area_m2
         elif category == "boilers":
             area_meters_match = re.search(r"(\d{2,4})\s*(?:м\b|метр)", text)
             if area_meters_match:
@@ -3138,6 +3324,21 @@ class IntentRouterAgent:
         # заглушки превращался в поиск полимерно-латунного фитинга.
         if re.search(r"комбинирован\w*", text):
             slots["combined_metal"] = True
+        elif category == "fittings" and (
+            re.search(
+                r"\bбез\s+(?:переход\w*\s+на\s+)?резьб\w*\b",
+                text,
+            )
+            or re.search(
+                r"\b(?:оба|два)\s+конц\w*[^.!?]{0,24}"
+                r"(?:под\s+пайк\w*|под\s+сварк\w*|нагрев\w*)",
+                text,
+            )
+        ):
+            # A plain polymer fitting and a combined metal-thread transition
+            # are different interfaces.  Negation is a hard identity fact,
+            # not a weak preference that ranking may ignore.
+            slots["combined_metal"] = False
 
         # Покупатели копируют строки спецификации с сайта: «Тип резьбы:
         # Внутренняя», «Межосевое расстояние, мм: 346». Раньше такие
@@ -3247,7 +3448,7 @@ class IntentRouterAgent:
                 slots["radiator_type"] = "алюминиевый"
             elif "панельн" in text:
                 slots["radiator_type"] = "панельный"
-            elif "стальн" in text:
+            elif re.search(r"\bстальн\w*\b", text):
                 slots["radiator_type"] = "стальной"
             sections_match = re.search(r"(\d{1,2})\s*секц", text)
             if sections_match:
@@ -3974,7 +4175,7 @@ class IntentRouterAgent:
             session
             and session.category == "sewer"
             and result.category == "other"
-            and ("внутрен" in text or "наруж" in text)
+            and ("внутрен" in text or re.search(r"\bнаруж\w*", text))
         ):
             result.category = "sewer"
             if result.intent_type == "unknown":
@@ -3989,13 +4190,13 @@ class IntentRouterAgent:
                     marker in text
                     for marker in [
                         "внутрен",
-                        "наруж",
                         "отвод",
                         "тройник",
                         "муфта",
                         "канализац",
                     ]
                 )
+                or bool(re.search(r"\bнаруж\w*", text))
                 or (
                     session.slots.get("sewer_scope")
                     and session.slots.get("element_type") == "труба"

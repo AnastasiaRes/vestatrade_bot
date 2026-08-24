@@ -63,6 +63,12 @@ class SlotSpec:
     # rule layer sets alongside the number.
     companions: tuple[tuple[str, Any], ...] = ()
     examples: tuple[str, ...] = ()
+    # Stable word stems a customer may use to name this parameter in a
+    # refusal.  They complement the human-facing label: Russian case endings
+    # make a literal six-character prefix too brittle (``резьба`` vs
+    # ``резьбу``), while keeping the vocabulary on the typed slot prevents a
+    # dialogue controller from accumulating category-specific phrase hacks.
+    mention_stems: tuple[str, ...] = ()
 
     @property
     def target_key(self) -> str:
@@ -79,6 +85,8 @@ class SlotSpec:
         elif self.kind == "enum":
             allowed = ", ".join(str(value) for value, _ in self.choices)
             parts.append(f" (одно из: {allowed})")
+        elif self.kind == "text":
+            parts.append(" (текст дословно из реплики клиента)")
         if self.examples:
             parts.append(f"; примеры ответов: {'; '.join(self.examples)}")
         return "".join(parts)
@@ -311,6 +319,142 @@ SLOT_SPECS: dict[str, SlotSpec] = {
             maximum=5000,
             examples=("100 м2", "сто квадратов"),
         ),
+        _spec(
+            key="boiler_type",
+            label="источник энергии котла: газовый или электрический",
+            kind="enum",
+            choices=(
+                ("газовый", ("газ", "газов")),
+                ("электрический", ("электр", "электрическ")),
+            ),
+        ),
+        _spec(
+            key="contours",
+            label="нужен котёл только для отопления или также для горячей воды",
+            kind="enum",
+            choices=(
+                ("одноконтурный", ("только отоплен", "без горяч", "одноконтур")),
+                ("двухконтурный", ("горячая вод", "гвс", "двухконтур")),
+            ),
+        ),
+        _spec(
+            key="needs_hot_water",
+            label="должен ли котёл готовить горячую воду",
+            kind="enum",
+            choices=(
+                (True, ("нужна горяч", "горячая вод", "гвс", "да")),
+                (False, ("не нужна горяч", "только отоплен", "без гвс", "нет")),
+            ),
+        ),
+        _spec(
+            key="fitting_system",
+            label="система соединения фитинга: PPR или канализация",
+            mention_stems=("систем", "тип труб"),
+            kind="enum",
+            choices=(
+                ("ppr", ("ppr", "ппр", "полипроп", "под пайк", "нагрев")),
+                ("канализация", ("канализац", "раструб", "серые", "оранжев")),
+            ),
+        ),
+        _spec(
+            key="element_type",
+            label="тип детали: труба, муфта, угольник, отвод, тройник или переходник",
+            kind="enum",
+            choices=(
+                ("труба", ("труб", "прямой участок", "прямой кусок")),
+                ("муфта", ("муфт", "соединить прямо")),
+                ("угольник", ("угольник", "уголок", "повернуть")),
+                ("отвод", ("отвод", "поворот")),
+                ("тройник", ("тройник", "ответвлен")),
+                ("переходник", ("переход", "другой диаметр")),
+            ),
+        ),
+        _spec(
+            key="sewer_scope",
+            label="канализация внутри помещения или наружная в земле/на улице",
+            kind="enum",
+            choices=(
+                ("внутренняя", ("внутр", "в помещ", "под раков", "серая", "серые")),
+                ("наружная", ("наруж", "в земле", "на улице", "оранж", "рыж")),
+            ),
+        ),
+        _spec(
+            key="length_mm",
+            label="длина одного отрезка или заменяемого участка",
+            unit="миллиметрах",
+            minimum=10,
+            maximum=100000,
+            integer=True,
+            examples=("2000 мм", "2 метра"),
+        ),
+        _spec(
+            key="size_inch",
+            label="дюймовый размер присоединения или резьбы",
+            mention_stems=("размер", "дюйм", "резьб"),
+            kind="enum",
+            choices=(
+                ("1/2", ("1/2", "полдюйм")),
+                ("3/4", ("3/4", "три четверт")),
+                ("1", ("1 дюйм", "дюймов")),
+            ),
+        ),
+        _spec(
+            key="thread_type",
+            label="расположение внутренней и наружной резьбы на двух портах",
+            kind="enum",
+            choices=(
+                ("ff", ("вр-вр", "внутренняя с обеих", "две внутрен")),
+                ("fm", ("вр-нр", "внутренняя наружная", "мама папа")),
+                ("mm", ("нр-нр", "наружная с обеих", "две наруж")),
+            ),
+        ),
+        _spec(
+            key="metric_thread",
+            label="метрическая резьба соединения термоголовки",
+            kind="text",
+            mention_stems=("резьб",),
+            examples=("M30x1,5",),
+        ),
+        _spec(
+            key="valve_model",
+            label="марка или модель существующего термостатического клапана",
+            kind="text",
+            mention_stems=("модел", "маркиров"),
+        ),
+        _spec(
+            key="valve_brand",
+            label="марка существующего термостатического клапана",
+            kind="text",
+            mention_stems=("марк", "бренд"),
+        ),
+        _spec(
+            key="connection_form",
+            label="подключение детали прямое или угловое",
+            kind="enum",
+            choices=(
+                ("прямое", ("прям", "по одной линии")),
+                ("угловое", ("углов", "с поворотом", "под углом")),
+            ),
+        ),
+        _spec(
+            key="heating_system_type",
+            label="отопление центральное от общей котельной или автономное от своего котла",
+            kind="enum",
+            choices=(
+                ("центральное", ("централь", "общая котельн", "тэц")),
+                ("автономное", ("автоном", "свой котел", "свой котёл")),
+            ),
+        ),
+        _spec(
+            key="radiator_type",
+            label="тип радиатора: панельный, биметаллический или алюминиевый",
+            kind="enum",
+            choices=(
+                ("панельный", ("панельн", "стальной")),
+                ("биметаллический", ("биметалл",)),
+                ("алюминиевый", ("алюмин",)),
+            ),
+        ),
         # Параметры труб: их спрашивают тремя пунктами в одном вопросе, поэтому
         # раньше резолвер для этой ветки не имел кандидатов вообще и молча
         # выходил с «no candidate slots».
@@ -364,6 +508,7 @@ SLOT_SPECS: dict[str, SlotSpec] = {
             maximum=2500,
             integer=True,
             examples=("20 мм", "диаметр 25", "не знаю диаметр"),
+            mention_stems=("диаметр", "размер"),
         ),
         _spec(
             key="volume_l",
@@ -410,7 +555,35 @@ CATEGORY_SLOTS: dict[str, tuple[str, ...]] = {
         "operating_pressure_bar",
         "diameter_mm",
     ),
-    "boilers": ("area_m2", "voltage_v"),
+    "fittings": ("fitting_system", "element_type", "diameter_mm", "size_inch"),
+    "sewer": ("sewer_scope", "element_type", "diameter_mm", "length_mm"),
+    "valves": (
+        "size_inch",
+        "diameter_mm",
+        "thread_type",
+        "operating_temperature_c",
+        "operating_pressure_bar",
+    ),
+    "radiator_fittings": (
+        "metric_thread",
+        "valve_model",
+        "valve_brand",
+        "connection_form",
+        "size_inch",
+    ),
+    "radiators": (
+        "heating_system_type",
+        "radiator_type",
+        "area_m2",
+        "operating_pressure_bar",
+    ),
+    "boilers": (
+        "boiler_type",
+        "area_m2",
+        "contours",
+        "needs_hot_water",
+        "voltage_v",
+    ),
     "water_heaters": ("volume_l", "voltage_v"),
 }
 
@@ -449,6 +622,7 @@ _REFUSAL_RE = re.compile(
     r"\bне\s+знаю\b|\bне\s+помню\b|"
     r"\bне\s+в\s+курсе\b|\bбез\s+понятия\b|"
     r"\bне\s+могу\s+(?:сказать|назвать|измерить|посмотреть)\b|"
+    r"\bнеизвестн\w*\b|"
     r"\b(?:нет|неизвестн\w*)\s+данных\b|"
     r"\bне\s+(?:мерил|считал)\w*\b|"
     r"\bне\s+видн\w*\b|\bне\s+читается\b|\bстерл\w*\b"
@@ -470,6 +644,15 @@ def bind_local_refusals(
     text = normalize_text(message)
     if not _REFUSAL_RE.search(text):
         return []
+    # A comma can delimit either another fact or another member of the same
+    # refusal list.  Preserve the latter (``не знаю ни систему, ни размер``),
+    # while an ordinary comma still scopes mixed replies such as ``расход не
+    # знаю, напор 6 м`` to the parameter immediately next to the refusal.
+    text = re.sub(
+        r",\s*(?=(?:и|или|ни|как|какой|какая|какое|какие)\b)",
+        " ",
+        text,
+    )
     clauses = re.split(r"[,;.!?]+|\b(?:а|но|зато)\b", text)
     refused: list[str] = []
     for clause in clauses:
@@ -843,6 +1026,11 @@ class PendingAnswerResolver:
                 for word in haystack.split()
                 if len(word) >= 5
             }
+            stems.update(
+                normalize_text(stem).strip()
+                for stem in spec.mention_stems
+                if normalize_text(stem).strip()
+            )
             if stems:
                 patterns[key] = re.compile(
                     "|".join(
@@ -903,6 +1091,16 @@ class PendingAnswerResolver:
             return None
         if spec.kind == "enum":
             return self._validate_enum(spec, raw, message)
+        if spec.kind == "text":
+            candidate = str(raw).strip()
+            if not candidate:
+                return None
+            candidate_text = normalize_text(candidate)
+            if candidate_text and candidate_text in normalize_text(message):
+                return candidate
+            if evidence and normalize_text(evidence) in normalize_text(message):
+                return evidence
+            return None
         return self._validate_number(
             spec,
             raw,

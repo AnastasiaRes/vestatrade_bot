@@ -34,6 +34,71 @@ _MONEY_UNIT = r"(?:руб\w*|р\b|тыс(?:яч\w*)?|т\s*\.?\s*р\.?|к\b)"
 _METRE_UNIT = r"(?:м\b|метр(?:а|ов)?)"
 _AREA_UNIT = r"(?:м\s*(?:2|²)|кв\.?\s*м|квадрат\w*(?:\s+метр\w*)?)"
 
+_RUSSIAN_CARDINALS = {
+    "ноль": 0,
+    "один": 1,
+    "одна": 1,
+    "одно": 1,
+    "два": 2,
+    "две": 2,
+    "три": 3,
+    "четыре": 4,
+    "пять": 5,
+    "шесть": 6,
+    "семь": 7,
+    "восемь": 8,
+    "девять": 9,
+    "десять": 10,
+    "одиннадцать": 11,
+    "двенадцать": 12,
+    "тринадцать": 13,
+    "четырнадцать": 14,
+    "пятнадцать": 15,
+    "шестнадцать": 16,
+    "семнадцать": 17,
+    "восемнадцать": 18,
+    "девятнадцать": 19,
+    "двадцать": 20,
+    "тридцать": 30,
+    "сорок": 40,
+    "пятьдесят": 50,
+    "шестьдесят": 60,
+    "семьдесят": 70,
+    "восемьдесят": 80,
+    "девяносто": 90,
+    "сто": 100,
+    "двести": 200,
+    "триста": 300,
+    "четыреста": 400,
+    "пятьсот": 500,
+}
+_RUSSIAN_CARDINAL_PATTERN = "|".join(
+    sorted(_RUSSIAN_CARDINALS, key=len, reverse=True)
+)
+
+
+def extract_spoken_area_m2(text: str) -> float | None:
+    """Read an area stated with Russian number words.
+
+    Voice-like buyer turns commonly contain ``шестнадцать квадратов`` while
+    catalogue filters expect a numeric ``area_m2``.  The unit remains
+    mandatory, so a model name or an unrelated spoken number cannot silently
+    become an area.
+    """
+
+    normalized = normalize_text(text)
+    match = re.search(
+        rf"\b(?P<number>(?:{_RUSSIAN_CARDINAL_PATTERN})"
+        rf"(?:\s+(?:{_RUSSIAN_CARDINAL_PATTERN}))?)\s*"
+        rf"(?:м\s*(?:2|²)|кв\.?\s*м|квадрат\w*(?:\s+метр\w*)?)\b",
+        normalized,
+    )
+    if not match:
+        return None
+    words = match.group("number").split()
+    value = sum(_RUSSIAN_CARDINALS[word] for word in words)
+    return float(value) if 1 <= value <= 5000 else None
+
 
 def _as_float(value: str) -> float:
     return float(value.replace(" ", "").replace(",", "."))

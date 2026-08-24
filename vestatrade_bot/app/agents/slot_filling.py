@@ -13,6 +13,7 @@ from .selection_contracts import (
     THREADED_BALL_VALVE_CONTRACT,
     VALVE_BASE_CONTRACT,
     missing_requirements,
+    observable_selection_guidance,
 )
 from .slot_answer_resolver import bind_local_refusals
 from .trade_vocabulary import is_system_agnostic_element
@@ -20,6 +21,297 @@ from .utils import mentions_water_application, merge_slots, normalize_text
 
 
 class SlotFillingAgent:
+    _UNKNOWN_PARAMETER_PATTERNS: dict[str, dict[str, re.Pattern[str]]] = {
+        "fittings": {
+            "fitting_system": re.compile(r"\b(?:систем|материал\w*\s+труб)\w*"),
+            "element_type": re.compile(r"\b(?:фитинг|детал|элемент)\w*"),
+            "diameter_mm": re.compile(r"\b(?:диаметр|размер|маркиров|надпис)\w*"),
+            "size_inch": re.compile(r"\b(?:дюйм|размер|резьб)\w*"),
+        },
+        "sewer": {
+            "sewer_scope": re.compile(r"\b(?:внутрен|наружн|место\s+проклад)\w*"),
+            "element_type": re.compile(r"\b(?:труб|отвод|тройник|муфт|детал)\w*"),
+            "diameter_mm": re.compile(r"\b(?:dn|дн|диаметр|размер|маркиров|надпис)\w*"),
+            "length_mm": re.compile(r"\b(?:длин|отрез|участ)\w*"),
+        },
+        "radiator_fittings": {
+            "metric_thread": re.compile(r"\b(?:резьб|присоедин)\w*"),
+            "valve_model": re.compile(r"\b(?:модел|маркиров)\w*"),
+            "valve_brand": re.compile(r"\b(?:марк|бренд|производител)\w*"),
+            "connection_form": re.compile(r"\b(?:подключен|прям|углов)\w*"),
+            "size_inch": re.compile(r"\b(?:размер|дюйм)\w*"),
+        },
+        "radiators": {
+            "heating_system_type": re.compile(r"\b(?:систем|отоплен)\w*"),
+            "radiator_type": re.compile(r"\b(?:тип|материал)\w*"),
+            "area_m2": re.compile(r"\b(?:площад|квадрат)\w*"),
+            "operating_pressure_bar": re.compile(r"\b(?:давлен|опрессов)\w*"),
+        },
+        "boilers": {
+            "boiler_type": re.compile(r"\b(?:тип|газ|электр)\w*"),
+            "area_m2": re.compile(r"\b(?:площад|квадрат)\w*"),
+            "contours": re.compile(r"\b(?:контур|гвс|горяч\w*\s+вод)\w*"),
+            "needs_hot_water": re.compile(r"\b(?:гвс|горяч\w*\s+вод)\w*"),
+        },
+    }
+    _REMAINING_UNKNOWN_SLOTS: dict[str, tuple[str, ...]] = {
+        "fittings": ("fitting_system", "element_type", "diameter_mm", "size_inch"),
+        "sewer": ("sewer_scope", "element_type", "diameter_mm", "length_mm"),
+        "radiator_fittings": (
+            "metric_thread",
+            "valve_model",
+            "valve_brand",
+            "connection_form",
+            "size_inch",
+        ),
+        "radiators": (
+            "heating_system_type",
+            "radiator_type",
+            "area_m2",
+            "operating_pressure_bar",
+        ),
+        "boilers": ("boiler_type", "area_m2", "contours", "needs_hot_water"),
+    }
+
+    @staticmethod
+    def _observable_unknown_result(
+        category: str,
+        slots: dict,
+        missing_slots: list[str],
+    ) -> SlotFillingResult | None:
+        """Replace an unknown technical value with an observable route.
+
+        The refusal remains category-local in ``deferred_slot_keys``.  Search
+        may later continue on the other known facts, while this step gives the
+        customer a practical way to resolve the same compatibility constraint.
+        """
+
+        guidance = observable_selection_guidance(
+            category,
+            missing_slots,
+            slots.get("deferred_slot_keys") or [],
+        )
+        if guidance is None:
+            return None
+        question, expected_slots = guidance
+        return SlotFillingResult(
+            slots=slots,
+            needs_clarification=True,
+            question=question,
+            expected_slots=expected_slots,
+            blocking=True,
+        )
+
+    @classmethod
+    def _remember_selection_refusals(
+        cls,
+        category: str,
+        text: str,
+        slots: dict,
+    ) -> None:
+        """Persist explicit unknowns even when they occur in the first turn.
+
+        Pending-question binding handles replies to the bot.  This companion
+        path handles the equally common opening ``резьбу и модель не знаю``.
+        Both write the same typed ``deferred_slot_keys`` state, so later
+        observation, preliminary search and caveats do not depend on wording.
+        """
+
+        patterns = cls._UNKNOWN_PARAMETER_PATTERNS.get(category)
+        if not patterns:
+            return
+        refused = bind_local_refusals(text, patterns)
+        remaining_unknown = bool(
+            re.search(
+                r"\b(?:остальн\w*|проч\w*\s+параметр\w*|"
+                r"паспортн\w*\s+данн\w*)[^.?!]{0,28}"
+                r"(?:не\s+знаю|неизвестн\w*|нет|не\s+чита\w*)\b",
+                text,
+            )
+        )
+        if remaining_unknown:
+            refused.extend(
+                key
+                for key in cls._REMAINING_UNKNOWN_SLOTS.get(category, ())
+                if slots.get(key) in (None, "", [], {})
+            )
+        if not refused:
+            return
+        deferred = {str(key) for key in slots.get("deferred_slot_keys") or []}
+        deferred.update(refused)
+        slots["deferred_slot_keys"] = sorted(deferred)
+
+    @staticmethod
+    def _normalize_observable_selection_slots(
+        category: str,
+        text: str,
+        slots: dict,
+        previous_slots: dict | None = None,
+    ) -> None:
+        """Make direct physical observations authoritative at the final gate.
+
+        The semantic interpreter may help with colloquial wording, but it may
+        not turn ``наружный диаметр`` into outdoor sewer or overlook a joining
+        method that deterministically identifies PPR.  Rechecking those facts
+        here keeps the contract stable even when an LLM interpretation was
+        accepted earlier in the turn.
+        """
+
+        if category == "fittings" and "нагрев" in text and any(
+            marker in text for marker in ("труб", "пластик", "бел")
+        ):
+            slots["fitting_system"] = "ppr"
+        if category == "fittings" and any(
+            marker in text
+            for marker in ("поворот", "повернуть", "под углом", "90-градус")
+        ):
+            slots["element_type"] = "угольник"
+            slots["product_kind"] = "elbow"
+        if category == "fittings":
+            explicit_angle = re.search(
+                r"(?<!\d)(15|22|30|45|60|67|87|88|90)\s*"
+                r"(?:°|[-–—]?\s*градус\w*)",
+                text,
+            )
+            if explicit_angle:
+                slots["angle_deg"] = int(explicit_angle.group(1))
+            if re.search(
+                r"\bбез\s+(?:переход\w*\s+на\s+)?резьб\w*\b",
+                text,
+            ):
+                slots["combined_metal"] = False
+            if (
+                re.search(r"\b(?:две|два)\s+(?:\w+\s+){0,2}труб\w*\b", text)
+                or re.search(
+                    r"\b(?:с\s+)?обеих\s+сторон\b[^.!?]{0,28}\bтруб\w*\b",
+                    text,
+                )
+            ):
+                slots["fitting_end_form"] = "socket_socket"
+
+        if category == "sewer":
+            previous_slots = previous_slots or {}
+            explicit_external_location = any(
+                marker in text
+                for marker in (
+                    "в земле",
+                    "на улице",
+                    "во дворе",
+                    "на участке",
+                    "наружная канализация",
+                    "наружной канализации",
+                )
+            )
+            explicit_internal_observation = bool(
+                any(
+                    marker in text
+                    for marker in (
+                        "внутри квартир",
+                        "в квартире",
+                        "под мойк",
+                        "под раковин",
+                        "в ванной",
+                        "в сануз",
+                    )
+                )
+                or (
+                    "сер" in text
+                    and any(marker in text for marker in ("труб", "канализац"))
+                )
+            )
+            outside_measurement = bool(
+                re.search(
+                    r"\b(?:наружн\w*\s+(?:размер|диаметр|замер)\w*|"
+                    r"наружк\w*[^.!?]{0,16}\d{2,3})\b",
+                    text,
+                )
+            )
+            if explicit_external_location:
+                slots["sewer_scope"] = "наружная"
+            elif explicit_internal_observation or (
+                outside_measurement
+                and previous_slots.get("sewer_scope") == "внутренняя"
+            ):
+                slots["sewer_scope"] = "внутренняя"
+
+        if category == "boilers":
+            rejects_hot_water = bool(
+                re.search(r"\bбез\s+(?:горяч\w*\s+вод\w*|гвс)\b", text)
+                or re.search(r"\bтолько\s+(?:для\s+)?отоплен\w*", text)
+            )
+            mentions_hot_water = bool(
+                "гвс" in text or ("горяч" in text and "вод" in text)
+            )
+            if rejects_hot_water:
+                slots["needs_hot_water"] = False
+                slots["contours"] = "одноконтурный"
+            elif mentions_hot_water:
+                slots["needs_hot_water"] = True
+                slots["contours"] = "двухконтурный"
+
+        if category == "radiator_fittings" and (
+            slots.get("product_kind") == "thermostatic_head"
+            or slots.get("thermostatic_head") is True
+        ):
+            if re.search(r"\b(?:valtec|валтек)\b", text) and any(
+                marker in text for marker in ("клапан", "корпус", "маркиров", "надпис")
+            ):
+                slots["valve_brand"] = "VALTEC"
+            uncertain_metric_thread = bool(
+                re.search(
+                    r"\b(?:не\s+знаю|не\s+уверен\w*|может|вроде|кажется)\b"
+                    r"[^.!?]{0,45}\b[mм]\s*\d{1,3}",
+                    text,
+                )
+                or re.search(
+                    r"\b[mм]\s*\d{1,3}[^.!?]{0,20}\b(?:или|либо)\b"
+                    r"[^.!?]{0,20}\b[mм]?\s*\d{1,3}",
+                    text,
+                )
+            )
+            if uncertain_metric_thread:
+                # An either/or observation is not a filter.  Clear every
+                # connection-shaped field an interpreter could derive from
+                # ``standard thread, maybe M20 or M30``; retaining even one of
+                # them can turn an honest unknown into a hard no-match.
+                for key in (
+                    "metric_thread",
+                    "size_inch",
+                    "connection_size",
+                    "thread_type",
+                    "connection_form",
+                    "body_form",
+                    "diameter_mm",
+                    "name_tokens",
+                ):
+                    slots.pop(key, None)
+                slots["thermostatic_head"] = True
+                slots["product_kind"] = "thermostatic_head"
+                deferred = {str(key) for key in slots.get("deferred_slot_keys") or []}
+                deferred.add("metric_thread")
+                slots["deferred_slot_keys"] = sorted(deferred)
+
+    @staticmethod
+    def _prune_resolved_selection_refusals(slots: dict) -> None:
+        deferred = {str(key) for key in slots.get("deferred_slot_keys") or []}
+        if not deferred:
+            return
+        deferred = {
+            key
+            for key in deferred
+            if slots.get(key) in (None, "", [], {})
+        }
+        if any(slots.get(key) not in (None, "", [], {}) for key in (
+            "diameter_mm",
+            "size_inch",
+            "connection_size",
+        )):
+            deferred.difference_update({"diameter_mm", "size_inch", "connection_size"})
+        if deferred:
+            slots["deferred_slot_keys"] = sorted(deferred)
+        else:
+            slots.pop("deferred_slot_keys", None)
+
     def fill(
         self,
         message: str,
@@ -49,6 +341,15 @@ class SlotFillingAgent:
 
         if category == "pipes" and slots.get("pipe_purpose") == "канализация":
             category = "sewer"
+
+        self._normalize_observable_selection_slots(
+            category,
+            text,
+            slots,
+            previous_slots=previous_slots,
+        )
+        self._remember_selection_refusals(category, text, slots)
+        self._prune_resolved_selection_refusals(slots)
 
         if category == "pumps":
             self._infer_plain_circulation_parameters(text, slots)
@@ -433,7 +734,7 @@ class SlotFillingAgent:
         return SlotFillingResult(slots=slots)
 
     def _fittings(self, slots: dict) -> SlotFillingResult:
-        missing = []
+        missing: list[str] = []
         if (
             not slots.get("fitting_system")
             and not is_system_agnostic_element(slots.get("element_type"))
@@ -442,33 +743,69 @@ class SlotFillingAgent:
             # только мешает.
             and not slots.get("combined_metal")
         ):
-            missing.append("система: PPR или канализация")
+            missing.append("fitting_system")
         if not slots.get("element_type"):
-            missing.append("тип: муфта, угольник, тройник или переходник")
+            missing.append("element_type")
         if not slots.get("diameter_mm") and not slots.get("size_inch"):
-            missing.append("размер в мм или дюймах")
+            missing.extend(["diameter_mm", "size_inch"])
         if missing:
+            assisted = self._observable_unknown_result("fittings", slots, missing)
+            if assisted is not None:
+                return assisted
+            labels = {
+                "fitting_system": "система: PPR или канализация",
+                "element_type": "тип: муфта, угольник, тройник или переходник",
+                "diameter_mm": "размер в мм или дюймах",
+                "size_inch": "размер в мм или дюймах",
+            }
+            visible_keys: list[str] = []
+            for key in missing:
+                if labels[key] not in [labels[item] for item in visible_keys]:
+                    visible_keys.append(key)
+                if len(visible_keys) >= 2:
+                    break
             return SlotFillingResult(
                 slots=slots,
                 needs_clarification=True,
-                question="Уточните " + " и ".join(missing[:2]) + ".",
+                question="Уточните " + " и ".join(labels[key] for key in visible_keys) + ".",
+                expected_slots=list(dict.fromkeys(missing)),
+                blocking=True,
             )
         return SlotFillingResult(slots=slots)
 
     def _sewer(self, slots: dict, text: str) -> SlotFillingResult:
         slots.setdefault("pipe_purpose", "канализация")
-        missing = []
+        missing: list[str] = []
         if not slots.get("sewer_scope"):
-            missing.append("внутренняя или наружная канализация")
+            missing.append("sewer_scope")
         if not slots.get("element_type"):
-            missing.append("что нужно: труба, отвод, тройник или муфта")
+            missing.append("element_type")
         if not slots.get("diameter_mm"):
-            missing.append("диаметр")
+            missing.append("diameter_mm")
         if slots.get("element_type") == "труба" and not slots.get("length_mm"):
-            missing.append("длина")
+            missing.append("length_mm")
         if missing:
-            question = self._build_question(missing[:2], slots=slots, text=text)
-            return SlotFillingResult(slots=slots, needs_clarification=True, question=question)
+            assisted = self._observable_unknown_result("sewer", slots, missing)
+            if assisted is not None:
+                return assisted
+            labels = {
+                "sewer_scope": "внутренняя или наружная канализация",
+                "element_type": "что нужно: труба, отвод, тройник или муфта",
+                "diameter_mm": "диаметр",
+                "length_mm": "длина",
+            }
+            question = self._build_question(
+                [labels[key] for key in missing[:2]],
+                slots=slots,
+                text=text,
+            )
+            return SlotFillingResult(
+                slots=slots,
+                needs_clarification=True,
+                question=question,
+                expected_slots=list(dict.fromkeys(missing)),
+                blocking=True,
+            )
         return SlotFillingResult(slots=slots)
 
     def _infer_sewer_followup_slots(
@@ -914,8 +1251,9 @@ class SlotFillingAgent:
                             needs_clarification=True,
                             question=(
                                 "Без расчётного расхода и напора не буду предлагать "
-                                "случайный насос. Можно прислать маркировку старого насоса "
-                                "для замены либо расчёт системы/фото шильдика; монтажную "
+                                "случайный насос. Перепишите маркировку старого насоса "
+                                "для замены либо данные из расчёта системы и с шильдика; "
+                                "к сожалению, этот чат пока не принимает фотографии. Монтажную "
                                 "длину измеряют между плоскостями подключений."
                             ),
                         )
@@ -1381,6 +1719,8 @@ class SlotFillingAgent:
                     "Вы имеете в виду два отдельных прибора — котёл для отопления "
                     "и отдельный водонагреватель — или котёл со встроенным бойлером?"
                 ),
+                expected_slots=["boiler_water_heater_relation"],
+                blocking=True,
             )
         pair_prefix = ""
         if pair_relation == "отдельные приборы":
@@ -1392,6 +1732,11 @@ class SlotFillingAgent:
             pair_prefix = "Понял, нужен котёл со встроенным бойлером. "
             slots["boiler_requirement"] = "с бойлером"
         if not slots.get("boiler_type"):
+            assisted = self._observable_unknown_result(
+                "boilers", slots, ["boiler_type"]
+            )
+            if assisted is not None:
+                return assisted
             area = slots.get("area_m2")
             prefix = (
                 f"Понял, подбираем котёл примерно на {float(area):g} м². "
@@ -1406,8 +1751,15 @@ class SlotFillingAgent:
                     if prefix
                     else "Котёл нужен газовый или электрический и на какую площадь?"
                 ),
+                expected_slots=["boiler_type", "area_m2"],
+                blocking=True,
             )
         if not slots.get("area_m2") and not slots.get("power_kw"):
+            assisted = self._observable_unknown_result(
+                "boilers", slots, ["area_m2", "power_kw"]
+            )
+            if assisted is not None:
+                return assisted
             prefix = pair_prefix
             if slots.get("contours") == "двухконтурный":
                 prefix = "Понял, нужен двухконтурный котёл — с горячей водой. "
@@ -1417,14 +1769,32 @@ class SlotFillingAgent:
                 slots=slots,
                 needs_clarification=True,
                 question=prefix + "На какую площадь подбираете котёл?",
+                expected_slots=["area_m2", "power_kw"],
+                blocking=True,
             )
         if slots.get("boiler_type") == "газовый" and not slots.get("contours"):
+            assisted = self._observable_unknown_result(
+                "boilers", slots, ["contours", "needs_hot_water"]
+            )
+            if assisted is not None:
+                return assisted
+            chimney_note = (
+                "Старый кирпичный дымоход обязательно учитывают, но заранее "
+                "считать его совместимым или обязательной заменой на коаксиальный "
+                "нельзя: это зависит от камеры сгорания и требований паспорта "
+                "выбранного котла, а состояние и тягу проверяет специалист. "
+                if slots.get("needs_chimney")
+                else ""
+            )
             return SlotFillingResult(
                 slots=slots,
                 needs_clarification=True,
                 question=(
-                    "Котёл нужен только для отопления или ещё для горячей воды?"
+                    chimney_note
+                    + "Котёл нужен только для отопления или ещё для горячей воды?"
                 ),
+                expected_slots=["contours", "needs_hot_water"],
+                blocking=True,
             )
         if (
             slots.get("boiler_type") == "электрический"
@@ -1435,6 +1805,8 @@ class SlotFillingAgent:
                 slots=slots,
                 needs_clarification=True,
                 question="Какое питание доступно для котла: 220 или 380 В?",
+                expected_slots=["voltage_v"],
+                blocking=True,
             )
         return SlotFillingResult(slots=slots)
 
@@ -1648,7 +2020,8 @@ class SlotFillingAgent:
                     "подводкой бачка. Полдюйма может относиться только к одной стороне: "
                     "уточните, какая резьба выходит из стены (наружная или внутренняя) "
                     "и какой размер гайки подводки — 1/2 или 3/8. Лучше сверить "
-                    "маркировку шланга или прислать фото соединений."
+                    "маркировку шланга и описать соединения словами. К сожалению, "
+                    "этот чат пока не принимает фотографии."
                 ),
             )
 
@@ -1678,19 +2051,25 @@ class SlotFillingAgent:
         missing = missing_requirements(contract_slots, *contracts)
         if missing:
             visible_missing = missing[:2]
+            missing_slots = list(
+                dict.fromkeys(
+                    slot
+                    for requirement in visible_missing
+                    for slot in requirement.any_of
+                )
+            )
+            assisted = self._observable_unknown_result(
+                "valves", slots, missing_slots
+            )
+            if assisted is not None:
+                return assisted
             return SlotFillingResult(
                 slots=slots,
                 needs_clarification=True,
                 question="Уточните " + " и ".join(
                     requirement.prompt for requirement in visible_missing
                 ) + ".",
-                expected_slots=list(
-                    dict.fromkeys(
-                        slot
-                        for requirement in visible_missing
-                        for slot in requirement.any_of
-                    )
-                ),
+                expected_slots=missing_slots,
                 blocking=True,
             )
         hot_or_heating = bool(
@@ -1702,6 +2081,16 @@ class SlotFillingAgent:
             not slots.get("operating_temperature_c")
             or not slots.get("operating_pressure_bar")
         ):
+            missing_regime = [
+                key
+                for key in ("operating_temperature_c", "operating_pressure_bar")
+                if not slots.get(key)
+            ]
+            assisted = self._observable_unknown_result(
+                "valves", slots, missing_regime
+            )
+            if assisted is not None:
+                return assisted
             return SlotFillingResult(
                 slots=slots,
                 needs_clarification=True,
@@ -1710,6 +2099,8 @@ class SlotFillingAgent:
                     "рабочую температуру и давление — размер резьбы сам по себе "
                     "не подтверждает применимость."
                 ),
+                expected_slots=missing_regime,
+                blocking=True,
             )
         return SlotFillingResult(slots=slots)
 
@@ -1722,11 +2113,17 @@ class SlotFillingAgent:
             missing = missing_requirements(slots, THERMOSTATIC_HEAD_CONTRACT)
             if not missing:
                 return SlotFillingResult(slots=slots)
+            missing_slots = list(missing[0].any_of)
+            assisted = self._observable_unknown_result(
+                "radiator_fittings", slots, missing_slots
+            )
+            if assisted is not None:
+                return assisted
             return SlotFillingResult(
                 slots=slots,
                 needs_clarification=True,
                 question="Уточните " + missing[0].prompt + ".",
-                expected_slots=list(missing[0].any_of),
+                expected_slots=missing_slots,
                 blocking=True,
             )
 
@@ -1761,6 +2158,18 @@ class SlotFillingAgent:
             )
         if missing:
             visible_missing = missing[:3]
+            missing_slots = list(
+                dict.fromkeys(
+                    slot
+                    for requirement in visible_missing
+                    for slot in requirement.any_of
+                )
+            )
+            assisted = self._observable_unknown_result(
+                "radiator_fittings", slots, missing_slots
+            )
+            if assisted is not None:
+                return assisted
             return SlotFillingResult(
                 slots=slots,
                 needs_clarification=True,
@@ -1771,13 +2180,7 @@ class SlotFillingAgent:
                     )
                     + "."
                 ),
-                expected_slots=list(
-                    dict.fromkeys(
-                        slot
-                        for requirement in visible_missing
-                        for slot in requirement.any_of
-                    )
-                ),
+                expected_slots=missing_slots,
                 blocking=True,
             )
         return SlotFillingResult(slots=slots)
@@ -1811,12 +2214,12 @@ class SlotFillingAgent:
                     "система отопления центральная или автономная"
                 )
                 expected_slots.append("heating_system_type")
-            if not has_type:
-                missing_prompts.append(
-                    "тип радиатора (панельный, биметаллический или алюминиевый)"
-                )
-                expected_slots.append("radiator_type")
             if missing_prompts:
+                assisted = self._observable_unknown_result(
+                    "radiators", slots, expected_slots
+                )
+                if assisted is not None:
+                    return assisted
                 return SlotFillingResult(
                     slots=slots,
                     needs_clarification=True,
@@ -1830,6 +2233,28 @@ class SlotFillingAgent:
                     expected_slots=expected_slots,
                     blocking=True,
                 )
+            if (
+                normalize_text(str(slots.get("heating_system_type") or ""))
+                == "центральное"
+                and not slots.get("operating_pressure_bar")
+                and "operating_pressure_bar"
+                not in set(slots.get("deferred_slot_keys") or [])
+            ):
+                return SlotFillingResult(
+                    slots=slots,
+                    needs_clarification=True,
+                    question=(
+                        "Для центрального отопления подскажите рабочее или "
+                        "опрессовочное давление из данных управляющей организации. "
+                        "Если его сейчас нет, так и напишите: тогда покажу только "
+                        "предварительные варианты без обещания совместимости. "
+                        "Тип радиатора (панельный, биметаллический или алюминиевый) "
+                        "можно назвать как предпочтение, но если вы его не знаете, "
+                        "угадывать материал вместо вас не буду."
+                    ),
+                    expected_slots=["operating_pressure_bar"],
+                    blocking=True,
+                )
         if not has_size:
             missing = []
             if not has_type:
@@ -1837,20 +2262,27 @@ class SlotFillingAgent:
             missing.append(
                 "размер/межосевое расстояние, количество секций или требуемую теплоотдачу"
             )
+            size_slots = [
+                *([] if has_type else ["radiator_type"]),
+                "area_m2",
+                "radiator_size_mm",
+                "radiator_height_mm",
+                "length_mm",
+                "sections",
+                "heat_load_w",
+                "heat_output_w",
+            ]
+            assisted = self._observable_unknown_result(
+                "radiators", slots, size_slots
+            )
+            if assisted is not None:
+                return assisted
             return SlotFillingResult(
                 slots=slots,
                 needs_clarification=True,
                 question=(
                     "Уточните для радиатора: " + "; ".join(missing) + "."
                 ),
-                expected_slots=[
-                    *([] if has_type else ["radiator_type"]),
-                    "radiator_size_mm",
-                    "radiator_height_mm",
-                    "length_mm",
-                    "sections",
-                    "heat_load_w",
-                    "heat_output_w",
-                ],
+                expected_slots=size_slots,
             )
         return SlotFillingResult(slots=slots)
