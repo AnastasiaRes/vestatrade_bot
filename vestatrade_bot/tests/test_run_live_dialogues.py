@@ -38,9 +38,11 @@ class _BuyerClient:
         self.last_fallback_reason = fallback_reason
         self.last_json_output_accepted = json_accepted
         self.calls = 0
+        self.last_call: dict[str, Any] = {}
 
-    def complete_json(self, **_kwargs: Any) -> tuple[Any, bool]:
+    def complete_json(self, **kwargs: Any) -> tuple[Any, bool]:
         self.calls += 1
+        self.last_call = kwargs
         return self.parsed, self.ok
 
 
@@ -113,6 +115,68 @@ def test_empty_continue_message_is_protocol_error() -> None:
 
     assert result.error_kind == "buyer_protocol_error"
     assert "пустая" in result.error_detail
+
+
+def test_exploratory_buyer_does_not_see_target_answer_or_verdict_hints() -> None:
+    client = _BuyerClient({"state": "satisfied", "message": "", "why": "понятно"})
+    scenario = _scenario(
+        buyer_mode="exploratory",
+        buyer_context="Знает только, что на втором этаже слабый напор",
+        goal="СЕКРЕТНАЯ ЦЕЛЬ: подобрать насос модели X",
+        pass_criteria="СЕКРЕТНЫЙ КРИТЕРИЙ: показать три карточки",
+        red_flags="СЕКРЕТНЫЙ ФЛАГ: не спрашивать давление",
+    )
+
+    result = harness._buyer_turn(client, scenario, [])
+
+    assert result.state == "satisfied"
+    messages = client.last_call["messages"]
+    prompt = "\n".join(message["content"] for message in messages)
+    assert "на втором этаже слабый напор" in prompt
+    assert "СЕКРЕТНАЯ ЦЕЛЬ" not in prompt
+    assert "СЕКРЕТНЫЙ КРИТЕРИЙ" not in prompt
+    assert "СЕКРЕТНЫЙ ФЛАГ" not in prompt
+    assert "нет заранее выбранного" in messages[0]["content"]
+
+
+def test_exploratory_future_action_is_a_satisfied_outcome() -> None:
+    client = _BuyerClient(
+        {
+            "state": "continue",
+            "message": "Хорошо, найду лабораторию и сдам пробу по их инструкции. Спасибо.",
+            "why": "понятен следующий шаг",
+        }
+    )
+
+    result = harness._buyer_turn(
+        client,
+        _scenario(buyer_mode="exploratory", buyer_context="Плохой вкус воды"),
+        [
+            {"role": "user", "content": "Что делать с водой?"},
+            {"role": "assistant", "content": "Возьмите тару и инструкцию лаборатории."},
+        ],
+    )
+
+    assert result.state == "satisfied"
+    assert result.message == ""
+
+
+def test_exploratory_question_is_not_auto_satisfied() -> None:
+    client = _BuyerClient(
+        {
+            "state": "continue",
+            "message": "Проверю давление, но где взять манометр?",
+            "why": "нужна ещё помощь",
+        }
+    )
+
+    result = harness._buyer_turn(
+        client,
+        _scenario(buyer_mode="exploratory", buyer_context="Слабый напор"),
+        [],
+    )
+
+    assert result.state == "continue"
 
 
 def test_live_first_turn_is_fixed_and_does_not_call_buyer_model() -> None:

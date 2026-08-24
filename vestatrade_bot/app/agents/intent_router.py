@@ -25,6 +25,11 @@ from .numeric_semantics import (
     numeric_span_has_incompatible_unit,
 )
 from .product_constraints import normalize_thread_gender, normalize_thread_pair
+from .problem_framing import (
+    frame_customer_problem,
+    resume_problem_frame,
+    warm_floor_type_is_uncertain,
+)
 from .trade_vocabulary import match_trade_term
 from .utils import (
     collapse_sku_spaces,
@@ -596,7 +601,24 @@ class IntentRouterAgent:
         ):
             slots["reference_brand"] = slots.pop("brand")
 
+        problem_frame = frame_customer_problem(text)
+        active_problem = str(
+            (session.slots.get("_problem_frame") if session else None) or ""
+        )
+        resumed_problem = (
+            resume_problem_frame(active_problem, text) if active_problem else None
+        )
+        if resumed_problem is not None:
+            # Context outranks a fresh symptom guess.  "Мутная вода" inside a
+            # basement-drainage flow describes the pumped medium; it does not
+            # silently start a drinking-water filter goal.
+            problem_frame = resumed_problem
         category, category_score = self._detect_category(text)
+        if problem_frame is not None and problem_frame.confidence >= category_score:
+            category = problem_frame.category
+            category_score = problem_frame.confidence
+            slots.update(problem_frame.slots)
+            flags["problem_statement"] = True
         explicit_category = category if category != "other" else None
         if (
             category == "boilers"
@@ -814,6 +836,9 @@ class IntentRouterAgent:
         elif flags["cheap"] or slots.get("max_price") is not None:
             intent_type = "cheap_request"
             confidence = max(confidence, 0.75)
+        elif problem_frame is not None:
+            intent_type = "broad_category"
+            confidence = max(confidence, problem_frame.confidence)
         elif flags.get("symptom"):
             intent_type = "broad_category"
             confidence = max(confidence, 0.75)
@@ -844,6 +869,7 @@ class IntentRouterAgent:
             raw={
                 "explicit_sku_marker": bool(explicit_sku),
                 "explicit_category": explicit_category,
+                "problem_frame": problem_frame.code if problem_frame else None,
             },
         )
 
@@ -1958,9 +1984,14 @@ class IntentRouterAgent:
             slots["has_warm_floor"] = True
             if category == "pipes":
                 slots["project_scope"] = "warm_floor"
-            if "водян" in text or "от котл" in text:
+            uncertain_floor_type = warm_floor_type_is_uncertain(text)
+            if ("водян" in text or "от котл" in text) and not uncertain_floor_type:
                 slots["warm_floor_type"] = "водяной"
-            elif "электр" in text and "кот" not in text:
+            elif (
+                "электр" in text
+                and "кот" not in text
+                and not uncertain_floor_type
+            ):
                 slots["warm_floor_type"] = "электрический"
             if "от котл" in text:
                 slots["warm_floor_heat_source"] = "котёл"

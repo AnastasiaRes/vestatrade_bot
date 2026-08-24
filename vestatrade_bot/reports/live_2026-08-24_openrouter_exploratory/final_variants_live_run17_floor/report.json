@@ -1,0 +1,91 @@
+{
+  "mode": "live",
+  "generated_at": "2026-08-24T14:44:09.792129+00:00",
+  "elapsed_sec": 23.8,
+  "manifest": {
+    "schema_version": 1,
+    "git": {
+      "commit": "dc76a47fa0886cb9a9fd45a8676cb0ee2af292dc",
+      "dirty": true,
+      "status_sha256": "b6c548d6c05313a3735ee5ffc75df5e8d3f766614a049dbcef5cea1af395b339",
+      "runtime_tree_sha256": "4a127bc0cc9a5b7e9070bbac4ce2ca27751c2b79f66fdc7e0f07ec9def7fdc79",
+      "reproducible": false
+    },
+    "inputs": {
+      "testset_path": "data/live_dialogue_exploratory_paraphrases_testset.json",
+      "testset_sha256": "dfa33b31e3edca96f6eacf26aae1c1b2189592e50afd98e881eeffe4c8a9a1ff",
+      "scenario_ids": [
+        "VAR-FLOOR-06"
+      ],
+      "catalog_source": "cache",
+      "catalog_products": 14035,
+      "catalog_sha256": "d8ba7325469f729071f92b0c2759e6b2a35b6cceb32c8c9e104c1aaad02b3b75",
+      "business_config_sha256": "e9407dea8d935e0b26ec5a680eb994da034da866580e09d1d05131e0123ada5e",
+      "buyer_prompt_sha256": "b016dd2edf4a1554a6f25949d26d3473e33ff5787c96019f99f6172f7a1e5f29",
+      "harness_sha256": "a84bc8fd4a37ce3eacbe907561c94aca60f650013f3ae9a45eb57dbc3712bb0d"
+    },
+    "llm": {
+      "provider": "openrouter",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "strong_model": "qwen/qwen3-vl-8b-instruct",
+      "timeout_seconds": 60.0,
+      "request_timeout_seconds": 180.0,
+      "max_retries": 2,
+      "retry_delay_seconds": 1.0
+    },
+    "run": {
+      "mode": "live",
+      "workers": 1,
+      "max_turns": 8,
+      "limit": null,
+      "only": "VAR-FLOOR-06"
+    },
+    "runtime": {
+      "python": "3.12.2",
+      "implementation": "CPython",
+      "platform": "macOS-15.6-arm64-arm-64bit"
+    }
+  },
+  "dialogues": 1,
+  "dialogues_attempted": 1,
+  "dialogues_valid": 1,
+  "dialogues_invalid": 0,
+  "metric_denominator_dialogues": 1,
+  "execution_outcomes": {
+    "valid": 1
+  },
+  "turns_attempted": 6,
+  "turns": 6,
+  "turns_with_cards": 0,
+  "dialogues_with_cards": 0,
+  "answer_sources": {
+    "deterministic": 6
+  },
+  "outcomes": {
+    "satisfied": 1
+  },
+  "latency_sec": {
+    "p50": 1.73,
+    "p95": 6.46,
+    "max": 6.46
+  },
+  "defect_hits": {},
+  "defect_dialogues": {},
+  "runs": [
+    {
+      "id": "VAR-FLOOR-06",
+      "block": "Ранний проект без выбранной технологии",
+      "priority": "P1",
+      "turns": 6,
+      "cards_shown": 0,
+      "outcome": "satisfied",
+      "buyer_state": "satisfied",
+      "buyer_note": "Получил чёткий и безопасный следующий шаг — написать в ТСЖ письменный запрос. Это соответствует его рекомендациям, и дальше можно действовать без риска.",
+      "execution_status": "valid",
+      "failure_stage": "",
+      "failure_reason": "",
+      "defects": {},
+      "evidence": []
+    }
+  ]
+}

@@ -76,6 +76,11 @@ from .handoff import HandoffAgent
 from .intent_router import IntentRouterAgent
 from .numeric_semantics import numeric_slot_has_compatible_context
 from .product_constraints import normalize_thread_pair
+from .problem_framing import (
+    continues_problem_frame,
+    frame_customer_problem,
+    warm_floor_type_is_uncertain,
+)
 from .product_card import ProductCardAgent
 from .project_specification import (
     SpecNode,
@@ -268,6 +273,85 @@ ONE_VS_TWO_CONTOUR_CONSULT = (
     "не нужна или есть отдельный бойлер — хватит одноконтурного.\n"
     "Нужна горячая вода от котла? И какая площадь? Подберу варианты."
 )
+
+WATER_HEATER_TYPES_CONSULT = (
+    "Накопительный водонагреватель заранее греет запас воды в баке: ему обычно "
+    "не нужна очень большая электрическая мощность, но запас заканчивается и бак "
+    "занимает место. Проточный греет воду во время разбора и не ограничен объёмом "
+    "бака, зато требует достаточной выделенной мощности и проводки; один прибор не "
+    "всегда комфортно обслуживает несколько точек одновременно. Бойлер косвенного "
+    "нагрева — бак, который получает тепло от котла, поэтому имеет смысл только вместе "
+    "с подходящим источником тепла. Чтобы выбрать направление без угадывания литража, "
+    "назовите число пользователей, сколько душей/кранов могут работать одновременно "
+    "и какая электрическая мощность доступна."
+)
+
+PROBLEM_FRAME_OPENERS: dict[str, tuple[str, str | None]] = {
+    "weak_pressure": (
+        "Сначала отделим общую нехватку давления от засора одной точки. Вода приходит "
+        "из центрального водопровода, колодца или скважины? На верхнем этаже слабо во "
+        "всех кранах или только в этом душе, и меняется ли струя, когда внизу открывают "
+        "воду? Если плохо только в одном месте, сначала проверяют аэратор/лейку и "
+        "полностью ли открыт местный кран; насос до этой проверки выбирать рано.",
+        "pumps",
+    ),
+    "boiler_failure": (
+        "Если старый котёл перестал работать, сначала не пытайтесь вскрывать или "
+        "перезапускать газовую часть: ошибку и возможность ремонта должен проверить "
+        "сервисный специалист. Для подбора замены не нужна готовая модель — начнём с "
+        "трёх бытовых фактов: чем отапливался дом (газ/электричество), примерная "
+        "площадь и должна ли новая система готовить горячую воду?",
+        "boilers",
+    ),
+    "hot_water_shortage": (
+        "Сначала выясним причину нехватки, а не будем угадывать объём бака. Откуда "
+        "сейчас берётся горячая вода: центральная сеть, существующий накопительный "
+        "водонагреватель, газовая колонка или котёл? Сколько человек пользуются водой "
+        "и могут ли душ и кран работать одновременно?",
+        "water_heaters",
+    ),
+    "water_quality": (
+        "По налёту и вкусу нельзя надёжно определить состав воды и сразу выбрать "
+        "картридж: налёт часто связан с солями жёсткости, а неприятный вкус может иметь "
+        "другую причину. Уточните источник воды — центральный водопровод, скважина или "
+        "колодец — и нужна питьевая вода в одной точке или очистка всей квартиры/дома. "
+        "Для системы на весь объект желательно сначала сделать анализ воды.",
+        "filters",
+    ),
+    "sewer_odor": (
+        "Покупать трубу по одному запаху рано. После нескольких дней без воды чаще "
+        "сначала проверяют гидрозатворы: налейте воду во все редко используемые сливы "
+        "и трапы, затем проверьте, исчез ли запах и из какого именно прибора он идёт. "
+        "Если запах быстро возвращается, слышно бульканье или видны негерметичные "
+        "соединения, нужны проверка сифона/вентиляции стояка и сантехник; случайный "
+        "фитинг этого не исправит.",
+        None,
+    ),
+    "floor_comfort": (
+        "Сначала выбирают не трубу, а тип решения. В частном доме можно рассматривать "
+        "водяной пол от рассчитанного источника тепла; в квартире подключение водяного "
+        "пола к общедомовому отоплению может быть запрещено и требует проверки проекта "
+        "и правил дома. Электрический мат или кабель — отдельная система. Это квартира "
+        "или частный дом, какая площадь и отопление центральное или автономное?",
+        "pipes",
+    ),
+    "standing_water": (
+        "Для такой задачи обычно рассматривают дренажный насос, но модель выбирают по "
+        "наблюдаемым условиям. Вода чистая, мутная с песком/мелким мусором или со "
+        "стоками? Каков вертикальный подъём до места сброса и примерно сколько метров "
+        "шланга будет по горизонтали?",
+        "pumps",
+    ),
+    "undersink_shutoff_leak": (
+        "По описанию это похоже на запорный кран холодной воды под мойкой. До покупки "
+        "нужно сверить размер и оба соединения: ищите маркировку 1/2 или 3/4 на корпусе, "
+        "сфотографируйте оба конца и место подключения; если маркировки нет, размер "
+        "надёжнее определить по старой детали или у мастера, не разбирая узел под "
+        "давлением. Пришлите маркировку или опишите, с обеих сторон гайки/резьба либо "
+        "с одной стороны гибкая подводка.",
+        "valves",
+    ),
+}
 
 PIPE_TYPES_CONSULT = (
     "Полипропиленовые трубы бывают обычными и армированными стекловолокном (PP-FIBER) "
@@ -663,6 +747,1191 @@ class ChatOrchestrator:
         with self._session_locks_guard:
             return self._session_locks.setdefault(session_id, RLock())
 
+    def _maybe_problem_frame_response(
+        self,
+        session_id: str,
+        message: str,
+        intent: IntentResult,
+        session: SessionState,
+        agents_used: list[str],
+    ) -> ChatResponse | None:
+        """Start from an everyday problem before asking for a product code."""
+
+        text = normalize_text(message)
+        active = str(session.slots.get("_problem_frame") or "")
+        code = str((intent.raw or {}).get("problem_frame") or "")
+
+        # A problem frame owns discovery, not the entire future catalogue
+        # conversation.  Once the customer positively chooses a technology,
+        # retire the diagnostic frame so later stock/price questions reach the
+        # cards instead of being mistaken for another request about analysis.
+        if active == "water_quality" and re.search(
+            r"\b(?:посмотр\w*|покаж\w*|выбира\w*|беру|нужн\w*|хочу)\b"
+            r"[^.?!]{0,70}\b(?:систем\w*\s+)?(?:обратн\w*\s+осмос\w*|"
+            r"фильтр\w*|умягчител\w*)\b",
+            text,
+        ):
+            session.slots.pop("_problem_frame", None)
+            session.slots.pop("_problem_frame_stage", None)
+            active = ""
+            if code == "water_quality":
+                code = ""
+        if not code and active and continues_problem_frame(active, message):
+            code = active
+        if not code:
+            return None
+
+        acknowledges_action = bool(
+            "?" not in message
+            and re.search(
+                r"\b(?:начну|проверю|попробую|сделаю|уточню|узнаю|"
+                r"напишу|спрошу|обращусь|позвоню|схожу|подумаю|рассмотрю|"
+                r"надо\s+проверить|нужно\s+проверить|так\s+и\s+сделаю)\b",
+                text,
+            )
+        )
+
+        if active == code == "weak_pressure":
+            if any(marker in text for marker in ["центральн", "водопровод"]):
+                answer = (
+                    "Раз на верхнем этаже слабо во всех точках, а местные сетки и краны "
+                    "проверены, следующий шаг — замерить давление манометром на вводе и "
+                    "по возможности на верхнем этаже при закрытых кранах и при открытом "
+                    "разборе. Такой замер может сделать сантехник; одновременно запросите "
+                    "у управляющей/водоснабжающей организации норматив и фактическое "
+                    "давление на вводе. Повысительный насос рассматривают только если "
+                    "вводное давление подтверждено и его установка допустима: иначе он "
+                    "может маскировать проблему стояка или нарушать работу сети."
+                )
+            else:
+                answer = (
+                    "Для колодца или скважины сначала проверяют не новый насос, а штатную "
+                    "индикацию давления, фильтр, настройки реле и меняется ли давление при "
+                    "разборе. Запишите показания манометра при закрытых кранах и во время "
+                    "душа; если манометра нет, это безопасно измерит специалист. По этим "
+                    "двум значениям и данным существующего насоса станет понятно, нужна "
+                    "настройка, устранение засора или замена оборудования."
+                )
+            session.pending_question = None
+            session.pending_category = None
+            session.pending_slot_keys = []
+            session.clear_pending_question_state()
+            agents_used.extend(["ProblemFramingAgent", "GuardrailsAgent"])
+            self._append_history(session, message, answer)
+            return self._response(
+                session_id, answer, [], False, intent, session, agents_used
+            )
+
+        if active == code == "boiler_failure" and any(
+            marker in text
+            for marker in ["почему", "провер", "молчит", "не запуска", "слома", "ремонт"]
+        ):
+            answer = (
+                "До покупки замены старый котёл разумно проверить, но без вскрытия газовой "
+                "части. Безопасно запишите: есть ли питание и что показывает штатный дисплей/"
+                "код ошибки; есть ли запрос от термостата; какое давление видно на штатном "
+                "манометре и что по этому коду/давлению говорит паспорт именно вашей модели. "
+                "Не снимайте крышку, не перемыкайте датчики и не пытайтесь поджигать горелку. "
+                "Если пахнет газом — не включайте электроприборы, перекройте газ только если "
+                "это безопасно, выйдите и звоните 104/112. Если запаха нет, передайте модель, "
+                "фото индикации и эти наблюдения авторизованному сервису: он определит, "
+                "ремонтировать котёл или уже подбирать замену."
+            )
+            session.pending_question = None
+            session.pending_category = None
+            session.pending_slot_keys = []
+            session.clear_pending_question_state()
+            agents_used.extend(["ProblemFramingAgent", "GuardrailsAgent"])
+            self._append_history(session, message, answer)
+            return self._response(
+                session_id, answer, [], False, intent, session, agents_used
+            )
+
+        if active == code == "hot_water_shortage":
+            explicitly_chose_type = bool(
+                re.search(
+                    r"\b(?:беру|выбираю|нужен|нужна|хочу)\b[^.?!]{0,24}"
+                    r"\b(?:накопительн\w*|проточн\w*|косвенн\w*)\b",
+                    text,
+                )
+            )
+            if explicitly_chose_type:
+                session.slots.pop("_problem_frame", None)
+                session.slots.pop("_problem_frame_stage", None)
+                return None
+            stage = int(session.slots.get("_problem_frame_stage") or 1) + 1
+            session.slots["_problem_frame_stage"] = stage
+            existing_tank = any(
+                marker in text
+                for marker in ["бойлер", "бак", "накопительн", "стоит в подвал"]
+            )
+            asks_where_to_find = bool(
+                any(
+                    marker in text
+                    for marker in ["где", "посмотр", "шильдик", "табличк", "не знаю", "не чита"]
+                )
+                and any(marker in text for marker in ["литр", "объём", "объем", "мощност", "модель"])
+            )
+            asks_flow_check = any(
+                marker in text
+                for marker in ["поток", "перекры", "слабо теч", "напор", "клапан"]
+            )
+            has_tank_measurements = bool(
+                re.search(r"\b\d+(?:[,.]\d+)?\s*л(?:итр\w*)?\b", text)
+                and re.search(r"\b\d+(?:[,.]\d+)?\s*квт\b", text)
+            )
+            if asks_flow_check:
+                answer = (
+                    "Проверять нужно в контексте ГВС, а не дренажа. Сравните напор холодной "
+                    "и горячей воды на одном и том же кране и повторите на второй точке. "
+                    "Снаружи можно лишь убедиться, что доступные штатные запорные краны на "
+                    "входе/выходе полностью открыты по инструкции; фильтр, обратный клапан, "
+                    "смесительный клапан и внутреннюю обвязку пусть проверяет сервисный "
+                    "специалист после безопасного отключения. Ничего не разбирайте под "
+                    "давлением и не трогайте газовую/электрическую часть. Сообщите сервису, "
+                    "на всех ли кранах слабее именно горячая вода и падает ли только "
+                    "температура или также расход."
+                )
+            elif has_tank_measurements:
+                answer = (
+                    "Данные 200 л, 3 кВт и 60 °C уже полезны. Полный бак такого объёма не "
+                    "может заново нагреться за столь короткий наблюдаемый промежуток, поэтому "
+                    "скорее требует проверки того, что именно меняется: температура или "
+                    "сам расход, на одной точке или на всех, только при одновременном разборе "
+                    "или после исчерпания запаса. Запишите эти четыре наблюдения. Сервису "
+                    "также нужно проверить датчик/нагрев, смесительный клапан и подключение; "
+                    "по одному литражу покупать новый бак пока рано."
+                )
+            elif asks_where_to_find:
+                answer = (
+                    "Объём, мощность и модель ищите на заводской табличке снаружи корпуса "
+                    "или в паспорте — часто она сбоку, сзади либо возле нижней части и "
+                    "подводок. Электрическую крышку снимать не нужно. Сфотографируйте весь "
+                    "прибор, табличку и схему подключённых труб. Для электрического бака "
+                    "важны объём в литрах и мощность в кВт; у бойлера косвенного нагрева "
+                    "электрической мощности может не быть — тогда нужны модель, объём и "
+                    "данные котла. Номинал автомата в щитке не заменяет мощность прибора."
+                )
+            elif stage == 2 and existing_tank:
+                answer = (
+                    "Раз горячая вода уже идёт из существующего бака, сначала не выбирайте "
+                    "новый тип прибора. Нужно понять, заканчивается запас или бак перестал "
+                    "нормально нагреваться: найдите на наружной табличке модель, объём в "
+                    "литрах и, если он электрический, мощность в кВт; запишите установленную "
+                    "температуру и примерное время восстановления после душа. Корпус и "
+                    "электрическую часть не вскрывайте. По этим данным можно отличить "
+                    "недостаточный объём/долгий нагрев от неисправности или смешивания воды."
+                )
+            elif stage == 2 and "центральн" in text:
+                answer = (
+                    "Если нестабильна именно центральная горячая вода, сначала стоит "
+                    "проверить, одинаково ли это на всех кранах, и зафиксировать время/"
+                    "температуру для управляющей организации: водонагреватель не устраняет "
+                    "причину в общедомовой системе, а работает как отдельный резерв. Для "
+                    "двух человек и одновременного душа с краном резерв подбирают после "
+                    "проверки доступной электрической мощности и места установки. "
+                    + WATER_HEATER_TYPES_CONSULT
+                )
+            else:
+                answer = (
+                    WATER_HEATER_TYPES_CONSULT
+                    if stage == 2
+                    else "Для следующего шага не нужно угадывать новый литраж: сначала "
+                    "пришлите модель и фото заводской таблички существующего прибора. "
+                    "Если табличка не читается, сервисный специалист определит тип и "
+                    "проверит нагрев без вскрытия пользователем."
+                )
+            session.pending_question = None
+            session.pending_category = None
+            session.pending_slot_keys = []
+            session.clear_pending_question_state()
+            agents_used.append("ProblemFramingAgent")
+            self._append_history(session, message, answer)
+            return self._response(
+                session_id, answer, [], False, intent, session, agents_used
+            )
+
+        if active == code == "sewer_odor":
+            stage = int(session.slots.get("_problem_frame_stage") or 1) + 1
+            session.slots["_problem_frame_stage"] = stage
+            if acknowledges_action:
+                answer = (
+                    "Да, это правильный безопасный порядок. Важное уточнение: если запах "
+                    "исчезнет именно после долива воды, наиболее вероятно пересыхание "
+                    "гидрозатвора, а не автоматически неисправность вентиляции. Если он "
+                    "быстро вернётся, появится бульканье или долив не поможет, передайте "
+                    "сантехнику результат проверки — тогда он проверит соединения и "
+                    "вентиляцию стояка. Покупать деталь заранее не нужно."
+                )
+                session.slots.pop("_problem_frame", None)
+                session.slots.pop("_problem_frame_stage", None)
+            else:
+                answer = (
+                    "Проверьте источники по одному. Сначала проветрите ванную, долейте "
+                    "воду в слив ванны, душевой трап и раковину. Затем по очереди временно "
+                    "накрывайте отверстие каждого слива влажной плёнкой или мокрой тканью "
+                    "и отмечайте, при каком закрытом сливе запах пропадает; ничего не "
+                    "заливайте лаком или герметиком. В унитазе гидрозатвор — это видимая "
+                    "вода в чаше. Если локализовать источник не получается, запах быстро "
+                    "возвращается или есть бульканье, сантехнику нужно проверить сифонные "
+                    "соединения и вентиляцию стояка. Покупка унитаза или трубы без этой "
+                    "проверки проблему не решит."
+                )
+            session.last_products = []
+            session.pending_question = None
+            session.pending_category = None
+            session.pending_slot_keys = []
+            session.clear_pending_question_state()
+            agents_used.extend(["ProblemFramingAgent", "GuardrailsAgent"])
+            self._append_history(session, message, answer)
+            return self._response(
+                session_id, answer, [], False, intent, session, agents_used
+            )
+
+        if active == code == "floor_comfort":
+            known_area_m2 = self._latest_household_area_m2(message, session)
+            mentions_electric = any(
+                marker in text for marker in ["электр", "мат", "кабель"]
+            )
+            if mentions_electric:
+                session.slots["_problem_frame_solution"] = "electric"
+            electric_context = bool(
+                mentions_electric
+                or session.slots.get("_problem_frame_solution") == "electric"
+            )
+            asks_to_contact_building_authority = bool(
+                not acknowledges_action
+                and any(marker in text for marker in ["управляющ", "ук", "тсж"])
+                and any(
+                    marker in text
+                    for marker in ["напис", "спрос", "уточн", "обрат", "позвон"]
+                )
+            )
+            asks_existing_building_docs = bool(
+                any(
+                    marker in text
+                    for marker in [
+                        "техпаспорт",
+                        "техническ паспорт",
+                        "план дома",
+                        "планах дома",
+                        "схем дома",
+                    ]
+                )
+                and any(
+                    marker in text
+                    for marker in ["посмотр", "указан", "есть ли", "где", "информац"]
+                )
+            )
+            asks_permission_process = bool(
+                not acknowledges_action
+                and any(
+                    marker in text
+                    for marker in [
+                        "разреш",
+                        "согласов",
+                        "документ",
+                        "служб",
+                        "управляющ",
+                        "тсж",
+                        "проектиров",
+                    ]
+                )
+                and any(
+                    marker in text
+                    for marker in [
+                        "как провер",
+                        "как узнать",
+                        "как уточн",
+                        "какие",
+                        "какой",
+                        "через",
+                        "запрос",
+                        "обращ",
+                        "без обращ",
+                    ]
+                )
+            )
+            if asks_to_contact_building_authority:
+                answer = (
+                    "Да, это правильный первый шаг и врезаться в стояк для него не нужно. "
+                    "Направьте в управляющую организацию письменный запрос: допустим ли "
+                    "водяной тёплый пол в вашей квартире при существующей схеме центрального "
+                    "отопления, какие исходные данные и проект требуются, кто вправе выполнить "
+                    "расчёт и согласование. Приложите план квартиры и описание предполагаемой "
+                    "зоны, но не покупайте трубы и не начинайте монтаж до письменного ответа. "
+                    "Если подключение к общедомовой системе не допускается, отдельно считайте "
+                    "электрический вариант по свободной площади, покрытию и доступной мощности."
+                )
+                session.pending_question = None
+                session.pending_category = None
+                session.pending_slot_keys = []
+                session.clear_pending_question_state()
+                agents_used.extend(["ProblemFramingAgent", "GuardrailsAgent"])
+                self._append_history(session, message, answer)
+                return self._response(
+                    session_id, answer, [], False, intent, session, agents_used
+                )
+            if asks_existing_building_docs:
+                document_explanations = int(
+                    session.slots.get("_floor_building_docs_explanations") or 0
+                )
+                if document_explanations:
+                    answer = (
+                        "В техпаспорте квартиры или поэтажном плане можно найти геометрию и "
+                        "иногда расположение инженерных элементов, но обычно это не документ "
+                        "с ответом «водяной пол разрешён». Нужна актуальная схема отопления "
+                        "дома и письменное решение управляющей организации о допустимости "
+                        "изменения, технических условиях и проекте. Поэтому планы можно "
+                        "приложить к запросу, но использовать их вместо согласования нельзя."
+                    )
+                else:
+                    answer = (
+                        "Посмотреть можно, но техпаспорт квартиры или план дома сам по себе "
+                        "обычно не является разрешением на изменение отопления. В нём может "
+                        "быть планировка и часть сведений об инженерной системе; актуальная "
+                        "схема стояков, допустимые изменения и требования к проекту находятся "
+                        "в технической документации дома у управляющей организации/ТСЖ. "
+                        "Попросите их письменно проверить вашу идею по этой документации и "
+                        "назвать необходимые технические условия. Отсутствие запрета на "
+                        "доступном плане не означает разрешение на врезку."
+                    )
+                session.slots["_floor_building_docs_explanations"] = (
+                    document_explanations + 1
+                )
+                session.pending_question = None
+                session.pending_category = None
+                session.pending_slot_keys = []
+                session.clear_pending_question_state()
+                agents_used.extend(["ProblemFramingAgent", "GuardrailsAgent"])
+                self._append_history(session, message, answer)
+                return self._response(
+                    session_id, answer, [], False, intent, session, agents_used
+                )
+            if asks_permission_process:
+                permission_explanations = int(
+                    session.slots.get("_floor_permission_explanations") or 0
+                )
+                if permission_explanations:
+                    answer = (
+                        "В письменном запросе в управляющую организацию укажите адрес, "
+                        "помещение и предполагаемую зону водяного пола. Попросите письменно "
+                        "сообщить: допускается ли такая схема при действующем центральном "
+                        "отоплении; какие технические условия, исходные данные дома, проект и "
+                        "согласования нужны; кто вправе выполнить расчёт. Не обязательно "
+                        "заранее угадывать название внутреннего документа — управляющая "
+                        "организация должна назвать применимый для вашего дома порядок. "
+                        "Ответ по телефону не заменяет письменного разрешения; до него не "
+                        "покупайте комплект и не врезайтесь в стояк."
+                    )
+                else:
+                    answer = (
+                        "Сначала обратитесь в управляющую организацию или ТСЖ: у них есть "
+                        "схема общедомового отопления и данные о допустимых изменениях. "
+                        "Спросите письменно, разрешён ли водяной тёплый пол именно в вашей "
+                        "квартире, какие технические условия и проект требуются и кто может "
+                        "выполнить расчёт. Самому искать один универсальный «разрешающий "
+                        "документ» не нужно — порядок зависит от схемы дома и местных правил. "
+                        "Если схема принципиально допустима, проектировщик считает её по "
+                        "исходным данным дома; если нет, домашний замер или пробная врезка это "
+                        "не изменят."
+                    )
+                session.slots["_floor_permission_explanations"] = (
+                    permission_explanations + 1
+                )
+                session.pending_question = None
+                session.pending_category = None
+                session.pending_slot_keys = []
+                session.clear_pending_question_state()
+                agents_used.extend(["ProblemFramingAgent", "GuardrailsAgent"])
+                self._append_history(session, message, answer)
+                return self._response(
+                    session_id, answer, [], False, intent, session, agents_used
+                )
+            acknowledges_permission_path = bool(
+                acknowledges_action
+                and any(
+                    marker in text
+                    for marker in [
+                        "управляющ",
+                        "тсж",
+                        "письмен",
+                        "документ",
+                        "разреш",
+                        "согласов",
+                    ]
+                )
+            )
+            if acknowledges_permission_path:
+                answer = (
+                    "Да, это достаточный и безопасный следующий шаг. Дождитесь письменного "
+                    "ответа о допустимости схемы, перечне исходных данных/документов и том, "
+                    "кто вправе сделать расчёт. До ответа ничего не врезайте и не покупайте "
+                    "комплект водяного пола. Если схема запрещена, тогда отдельно переходите "
+                    "к электрическому варианту с замером свободных зон и проверкой мощности."
+                )
+                session.slots.pop("_problem_frame", None)
+                session.slots.pop("_problem_frame_stage", None)
+                session.pending_question = None
+                session.pending_category = None
+                session.pending_slot_keys = []
+                session.clear_pending_question_state()
+                agents_used.extend(["ProblemFramingAgent", "GuardrailsAgent"])
+                self._append_history(session, message, answer)
+                return self._response(
+                    session_id, answer, [], False, intent, session, agents_used
+                )
+            if acknowledges_action and (
+                electric_context
+                or any(marker in text for marker in ["электрик", "мощност"])
+            ):
+                answer = (
+                    "Да, это достаточный следующий шаг. Электрику передайте площадь "
+                    "обогреваемой зоны, тип и допустимую температуру покрытия; попросите "
+                    "проверить выделенную мощность, линию, автомат/УЗО, заземление и место "
+                    "датчика с терморегулятором. После этого комплект выбирают по паспорту "
+                    "покрытия и расчётной мощности. Водяные трубы и насос к такому решению "
+                    "не относятся."
+                )
+                session.slots.pop("_problem_frame", None)
+                session.slots.pop("_problem_frame_stage", None)
+                session.pending_question = None
+                session.pending_category = None
+                session.pending_slot_keys = []
+                session.clear_pending_question_state()
+                agents_used.extend(["ProblemFramingAgent", "GuardrailsAgent"])
+                self._append_history(session, message, answer)
+                return self._response(
+                    session_id, answer, [], False, intent, session, agents_used
+                )
+            asks_hydronic_hydraulics = bool(
+                "гидравл" in text
+                or (
+                    any(marker in text for marker in ["как провер", "как измер", "подключ"])
+                    and any(
+                        marker in text
+                        for marker in ["водян", "стояк", "общедом", "центральн", "отоплен"]
+                    )
+                )
+            )
+            if asks_hydronic_hydraulics:
+                if session.slots.get("_floor_hydraulics_explained"):
+                    answer = (
+                        "Короткий ответ: нет, безопасного домашнего теста нет. Само пробное "
+                        "подключение уже меняет расход в стояке и может затронуть соседей. "
+                        "Проверкой считается не эксперимент, а письменное согласование схемы "
+                        "и расчёт проектировщика по данным дома. До такого согласования к "
+                        "общедомовому отоплению не подключайтесь; если нужен независимый от "
+                        "стояка вариант, проверяйте электрический пол по мощности и покрытию."
+                    )
+                else:
+                    answer = (
+                        "Нет, простого безопасного способа проверить это пробным подключением "
+                        "нет: домашним замером нельзя подтвердить влияние на весь стояк. "
+                        "Новый контур меняет расход и сопротивление всего стояка, а "
+                        "данные о допустимой нагрузке и схеме есть у управляющей организации. "
+                        "Нужны письменное разрешение и проектный расчёт по существующей схеме, "
+                        "температурному графику, располагаемому перепаду давления и параметрам "
+                        "предлагаемого контура/теплообменника. Манометр в квартире сам по себе "
+                        "этого не докажет. Не врезайтесь для эксперимента: сначала передайте "
+                        "эти вопросы управляющей организации или проектировщику; практичная "
+                        "альтернатива без вмешательства в стояк — электрический пол после "
+                        "проверки выделенной мощности и покрытия."
+                    )
+                session.slots["_floor_hydraulics_explained"] = True
+                session.pending_question = None
+                session.pending_category = None
+                session.pending_slot_keys = []
+                session.clear_pending_question_state()
+                agents_used.extend(["ProblemFramingAgent", "GuardrailsAgent"])
+                self._append_history(session, message, answer)
+                return self._response(
+                    session_id, answer, [], False, intent, session, agents_used
+                )
+            # Once the customer positively commits to a hydronic floor and
+            # names its heat source, leave problem discovery and continue the
+            # ordinary engineered-project funnel.  Questions such as «а
+            # водяной вообще можно?» stay in the safe discovery branch.
+            chose_hydronic = bool(
+                "водян" in text
+                and not warm_floor_type_is_uncertain(message)
+                and (
+                    re.search(r"\bводян\w*\b[^.?!]{0,24}\bот\s+кот", text)
+                    or re.search(
+                        r"\b(?:выбира\w*|дела\w*|будет|нужен|хочу)\b"
+                        r"[^.?!]{0,30}\bводян\w*",
+                        text,
+                    )
+                )
+            )
+            if chose_hydronic:
+                session.slots.pop("_problem_frame", None)
+                session.slots.pop("_problem_frame_stage", None)
+                session.slots.pop("_problem_frame_solution", None)
+                return None
+            stage = int(session.slots.get("_problem_frame_stage") or 1) + 1
+            session.slots["_problem_frame_stage"] = stage
+            session.last_products = []
+            session.slots.pop("project_cart", None)
+            chose_electric = bool(
+                any(marker in text for marker in ["электр", "мат", "кабель"])
+                and not warm_floor_type_is_uncertain(message)
+            )
+            if chose_electric:
+                session.slots["warm_floor_type"] = "электрический"
+            else:
+                session.slots.pop("warm_floor_type", None)
+            if electric_context:
+                asks_simple_electric_choice = bool(
+                    any(marker in text for marker in ["мат", "кабель"])
+                    and any(
+                        marker in text
+                        for marker in [
+                            "конкретн",
+                            "простыми словами",
+                            "не глядя в техническ",
+                            "как узнать",
+                            "как понять",
+                            "как посмотреть",
+                        ]
+                    )
+                )
+                asks_electric_start_order = bool(
+                    any(
+                        marker in text
+                        for marker in [
+                            "как начать",
+                            "с чего начать",
+                            "сначала измер",
+                            "сперва измер",
+                            "сразу искать",
+                        ]
+                    )
+                )
+                asks_universal_electric_kit = bool(
+                    any(
+                        marker in text
+                        for marker in [
+                            "универсальн",
+                            "не измер",
+                            "нужно ли измер",
+                            "надо ли измер",
+                            "кабель или мат подойд",
+                            "мат подойд",
+                        ]
+                    )
+                )
+                asks_electric_design = any(
+                    marker in text
+                    for marker in ["как", "рассчит", "компонент", "уклад", "подойд", "мощност"]
+                )
+                if asks_simple_electric_choice:
+                    simple_explanations = int(
+                        session.slots.get("_floor_simple_choice_explanations") or 0
+                    )
+                    if simple_explanations:
+                        answer = (
+                            "Совсем без данных на упаковке выбирать нельзя, но инженерные "
+                            "расчёты от вас не требуются. Для комнаты нужны четыре совпадения: "
+                            "площадь комплекта не больше измеренной свободной зоны; он разрешён "
+                            "под ваше покрытие; его общую мощность допускает проверенная "
+                            "электриком линия; терморегулятор работает с датчиком пола. Мат "
+                            "удобнее для ровной свободной зоны, отдельный кабель — для сложной "
+                            "формы, но его шаг и слой укладки задаёт проект/паспорт."
+                        )
+                    else:
+                        answer = (
+                            "Простыми словами: полностью игнорировать характеристики нельзя, "
+                            "но достаточно сверить несколько понятных строк на коробке или в "
+                            "паспорте. Площадь комплекта должна помещаться в измеренную свободную "
+                            "зону комнаты — лишний нагревательный кабель нельзя отрезать. Должно "
+                            "быть прямо разрешено ваше покрытие и его температура. Общую мощность "
+                            "комплекта электрик сверяет с линией, автоматом и УЗО. Нужны "
+                            "совместимые терморегулятор и датчик пола. Мат обычно удобнее для "
+                            "простой прямоугольной зоны и тонкого монтажного слоя; отдельный "
+                            "кабель гибче для сложной формы, но его шаг и слой укладки должен "
+                            "задавать проект или паспорт."
+                        )
+                    session.slots["_floor_simple_choice_explanations"] = (
+                        simple_explanations + 1
+                    )
+                elif asks_electric_start_order:
+                    order_explanations = int(
+                        session.slots.get("_floor_order_explanations") or 0
+                    )
+                    if order_explanations:
+                        answer = (
+                            "Порядок именно такой: сначала план и замер свободной площади "
+                            "отдельно в спальне и кухне, рядом — тип покрытия и его предел "
+                            "температуры; только потом поиск комплектов под каждую полученную "
+                            "площадь. Искать мат заранее бессмысленно: кабель нельзя укоротить, "
+                            "а лишнюю секцию нельзя спрятать под мебель или наложить на себя."
+                        )
+                    else:
+                        answer = (
+                            "Сначала измерьте свободные обогреваемые зоны по каждой комнате, "
+                            "а не ищите комплект на всю квартиру. На плане исключите "
+                            "стационарную мебель и технику, сложите площади оставшихся зон и "
+                            "запишите покрытие. После этого ищите отдельный комплект под "
+                            "фактическую площадь спальни и кухни, сверяя паспортную площадь, "
+                            "удельную/общую мощность, совместимость покрытия, терморегулятор и "
+                            "датчик пола. Такой порядок нужен потому, что нагревательный кабель "
+                            "нельзя укорачивать или укладывать с пересечением."
+                        )
+                    session.slots["_floor_order_explanations"] = order_explanations + 1
+                elif asks_universal_electric_kit:
+                    universal_explanations = int(
+                        session.slots.get("_floor_universal_explanations") or 0
+                    )
+                    if universal_explanations:
+                        answer = (
+                            "Да, свободные зоны измерять нужно; универсального мата на всю "
+                            "квартиру нет. Для каждой комнаты сложите площади участков без "
+                            "стационарной мебели и техники, отдельно запишите покрытие. Затем "
+                            "выбирайте комплект, чья фактическая площадь укладки не больше "
+                            "этой зоны, и не режьте нагревательный кабель для подгонки. "
+                            "Терморегулятор с датчиком пола ограничивает температуру, а "
+                            "электрик проверяет суммарную мощность, линию, автомат и УЗО."
+                        )
+                    else:
+                        apartment_area = (
+                            f"{known_area_m2:g} м²"
+                            if known_area_m2 is not None
+                            else "всей квартиры"
+                        )
+                        answer = (
+                            "Универсального мата или кабеля для квартиры нет, и брать "
+                            f"комплект по общей площади {apartment_area} нельзя. Свободные зоны измеряют "
+                            "обязательно: исключают стационарную мебель и технику, считают "
+                            "каждую прямоугольную зону и складывают площади по комнатам. "
+                            "Комплект сверяют с этой площадью, типом покрытия и разрешённой "
+                            "температурой; нагревательный кабель нельзя укорачивать или "
+                            "накладывать сам на себя. Отдельно электрик проверяет общую "
+                            "мощность, линию, автомат/УЗО и заземление."
+                        )
+                    session.slots["_floor_universal_explanations"] = (
+                        universal_explanations + 1
+                    )
+                elif asks_electric_design:
+                    area_phrase = (
+                        f"Указанные {known_area_m2:g} м² — общая площадь квартиры, а не "
+                        if known_area_m2 is not None
+                        else "Общая площадь квартиры — не "
+                    )
+                    answer = (
+                        f"{area_phrase}готовый размер мата. Для электрического пола считают "
+                        "свободную обогреваемую площадь без стационарной мебели и техники. "
+                        "От перегрева защищают совместимый терморегулятор, датчик пола и "
+                        "ограничение температуры по паспорту покрытия — сама цифра Вт/м² "
+                        "этого не гарантирует. Сначала фиксируют тип покрытия и допустимую "
+                        "для него температуру; затем по "
+                        "проекту и паспорту производителя выбирают удельную мощность Вт/м². "
+                        "Общая мощность = обогреваемая площадь × удельная мощность — по ней "
+                        "электрик проверяет выделенный лимит, отдельную линию, автомат, УЗО и "
+                        "заземление. Нужны сам мат/кабель, совместимый терморегулятор, датчик "
+                        "пола в защитной трубке и предусмотренные производителем монтажные "
+                        "материалы. Кабель нельзя укорачивать, пересекать или укладывать под "
+                        "неподходящую мебель; схему и подключение выполняют по паспорту "
+                        "конкретного комплекта. В текущем каталоге подтверждённых матов нет, "
+                        "поэтому водяные трубы и насосы вместо них не подставляю. Чтобы "
+                        "перейти к размеру комплекта, назовите покрытие и площадь свободных "
+                        "зон по плану комнат; если плана нет, измерьте эти прямоугольные зоны "
+                        "по отдельности и сложите их площади."
+                    )
+                else:
+                    answer = (
+                        "Электрический мат не подключается к водяному отоплению, но это "
+                        "не просто «уложить и включить»: нужно проверить выделенную мощность, "
+                        "защитный автомат/УЗО, заземление, допустимость под выбранное покрытие, "
+                        "датчик пола и терморегулятор. В текущем каталожном контуре я не "
+                        "вижу подтверждённых нагревательных матов по артикулам, поэтому не буду "
+                        "подставлять насос и трубы водяного пола. Мощность и схему должен "
+                        "проверить электрик; после этого ищут комплект под площадь и тип покрытия."
+                    )
+            else:
+                answer = (
+                    "К существующему общедомовому отоплению водяной пол самовольно "
+                    "подключать нельзя: это может нарушить гидравлику дома и правила "
+                    "эксплуатации. Сначала получите письменное подтверждение допустимой "
+                    "схемы у управляющей организации/проектировщика. Если отдельный "
+                    "водяной контур не разрешён, практическая альтернатива — электрический "
+                    "мат или кабель с проверкой мощности, покрытия и электробезопасности."
+                )
+            session.pending_question = None
+            session.pending_category = None
+            session.pending_slot_keys = []
+            session.clear_pending_question_state()
+            agents_used.extend(["ProblemFramingAgent", "GuardrailsAgent"])
+            self._append_history(session, message, answer)
+            return self._response(
+                session_id, answer, [], False, intent, session, agents_used
+            )
+
+        # A second colloquial request about scale must not bypass the source /
+        # analysis gate and retrieve a random mesh element from the catalogue.
+        if active == code == "water_quality":
+            session.slots["_problem_frame_stage"] = int(
+                session.slots.get("_problem_frame_stage") or 1
+            ) + 1
+            asks_protocol = any(
+                marker in text for marker in ["протокол", "водоканал", "водоком", "водоснабж"]
+            )
+            asks_lab_search = bool(
+                ("лаборатор" in text or "анализ" in text)
+                and (
+                    any(
+                        marker in text
+                        for marker in [
+                            "как найти",
+                            "где искать",
+                            "как искать",
+                            "где найти",
+                            "где можно",
+                            "реально",
+                            "в городе",
+                            "обратиться",
+                            "как обращ",
+                            "куда обращ",
+                            "куда и как",
+                            "сделаю анализ",
+                            "сделать анализ",
+                            "как к ней",
+                        ]
+                    )
+                    or re.search(r"\bгде(?:\s+\w+){0,4}\s+найт\w*\b", text)
+                )
+            )
+            if asks_protocol and asks_lab_search:
+                if session.slots.get("_water_protocol_lab_explained"):
+                    answer = (
+                        "Коротко по двум адресатам. Магазин протокол водопроводной воды не "
+                        "выдаёт: запрос направляют поставщику воды по контактам из квитанции; "
+                        "управляющая компания может назвать поставщика и помочь оформить "
+                        "письменный запрос для вашего адреса. Пробу принимают отдельно — в "
+                        "региональном центре гигиены и эпидемиологии либо испытательной "
+                        "лаборатории, у которой в области аккредитации есть питьевая вода. "
+                        "Если не хотите искать онлайн, позвоните в территориальное управление "
+                        "Роспотребнадзора или его центр гигиены и попросите контакт ближайшего "
+                        "пункта приёма проб для частных лиц. До визита обязательно уточните "
+                        "тару, срок доставки, набор показателей и цену."
+                    )
+                else:
+                    answer = (
+                        "Это два разных пути. Протокол для вашего адреса запрашивают не в "
+                        "магазине, а у водоснабжающей организации: её телефон и порядок "
+                        "обращений есть в квитанции, а управляющая компания может назвать "
+                        "поставщика и помочь с письменным запросом. Просите документ с датой, "
+                        "местом отбора, результатами и нормативами. Собственную пробу сдавайте "
+                        "в региональный центр гигиены и эпидемиологии или испытательную "
+                        "лабораторию, в области аккредитации которой указана питьевая вода. "
+                        "Без интернета можно позвонить в территориальное управление "
+                        "Роспотребнадзора/центр гигиены и попросить контакт ближайшего пункта, "
+                        "который принимает пробы от частных лиц. Сначала позвоните туда: они "
+                        "дадут свою тару, правила отбора, срок доставки, набор показателей и "
+                        "актуальную цену; магазин эту цену подтвердить не может."
+                    )
+                session.slots["_water_protocol_lab_explained"] = True
+            elif asks_protocol:
+                answer = (
+                    "Запросите у вашей водоснабжающей организации последний протокол "
+                    "контроля качества для адреса или зоны водоснабжения: обычно это делают "
+                    "через официальный сайт/личный кабинет, письменное обращение или контакты "
+                    "из квитанции; в многоквартирном доме помочь с запросом может управляющая "
+                    "организация. Просите документ с датой и местом отбора, перечнем показателей, "
+                    "результатами и нормативами — это может быть PDF, скан или таблица. Такой "
+                    "протокол описывает воду в сети и не всегда отражает состояние труб до "
+                    "вашего кухонного крана. Для собственной питьевой точки лаборатории скажите "
+                    "про налёт и металлический привкус и попросите питьевой набор как минимум "
+                    "с жёсткостью, железом, марганцем, pH, минерализацией и органолептикой."
+                )
+            elif any(marker in text for marker in ["проб", "тара", "отбор", "как сдать"]):
+                answer = (
+                    "Сначала выберите аккредитованную лабораторию и возьмите именно её "
+                    "инструкцию и тару: для разных показателей отличаются объём, подготовка "
+                    "крана, допустимое время доставки и консервация пробы. Поэтому не "
+                    "переливайте воду в случайную бутылку и не следуйте универсальному "
+                    "совету из интернета. Сообщите лаборатории, что это центральная вода "
+                    "для питья из кухонного крана; она выдаст контейнер, перечень показателей "
+                    "и порядок отбора. До результата безопасно не обещать конкретный картридж."
+                )
+            elif asks_lab_search:
+                lab_explanations = int(
+                    session.slots.get("_water_lab_search_explanations") or 0
+                )
+                if lab_explanations:
+                    answer = (
+                        "Практический офлайн-путь: позвоните в территориальное управление "
+                        "Роспотребнадзора или региональный центр гигиены и эпидемиологии и "
+                        "попросите ближайший пункт, который принимает питьевую воду от "
+                        "частных лиц. При звонке в сам пункт уточните область аккредитации, "
+                        "тару, правила отбора, срок доставки, нужные показатели и цену. "
+                        "Приезжать со случайной бутылкой заранее не нужно."
+                    )
+                else:
+                    answer = (
+                        "Ищите не просто по рекламе: откройте публичный реестр аккредитованных "
+                        "лиц Росаккредитации и отфильтруйте испытательные лаборатории вашего "
+                        "региона. В области аккредитации должно быть исследование питьевой воды "
+                        "по нужным показателям; одного слова «анализы» на сайте недостаточно. "
+                        "Если нужен офлайн-путь, позвоните в территориальное управление "
+                        "Роспотребнадзора или региональный центр гигиены и эпидемиологии и "
+                        "попросите ближайший пункт приёма проб для частных лиц. Перед поездкой "
+                        "позвоните выбранной лаборатории и спросите: принимают ли пробы от "
+                        "частных лиц, выдают ли свою тару, какие "
+                        "показатели включить для налёта и металлического привкуса, как отбирать, "
+                        "за сколько доставить пробу и сколько это стоит. Адрес без вашего города "
+                        "и проверки я не выдумываю."
+                    )
+                session.slots["_water_lab_search_explanations"] = lab_explanations + 1
+            elif any(marker in text for marker in ["где", "ссылк", "заказать анализ", "магазин"]):
+                answer = (
+                    "В подтверждённых данных магазина нет услуги лабораторного анализа "
+                    "воды, поэтому не буду выдумывать ссылку или обещать приём пробы. "
+                    "Для центрального водопровода сначала можно запросить актуальный "
+                    "протокол у водоснабжающей организации; свою пробу сдавайте в "
+                    "аккредитованную лабораторию, соблюдая её инструкцию по таре и отбору. "
+                    "Для выбора питьевой системы попросите минимум показатели жёсткости, "
+                    "железа, марганца, pH, минерализации и органолептики."
+                )
+            else:
+                answer = (
+                    "Для налёта и неприятного вкуса нет одного универсального "
+                    "картриджа. Для одной питьевой точки логичнее выбирать целую "
+                    "совместимую систему, а не неизвестный сменный картридж. Угольный "
+                    "элемент может улучшить запах/вкус, но не убирает соли жёсткости; "
+                    "для выраженной накипи обычно сравнивают систему обратного осмоса "
+                    "или решение с умягчением по анализу воды. Сетчатый фильтр задерживает "
+                    "только механические частицы. Если хотите посмотреть каталог без "
+                    "подмены, выберите направление: «полная система обратного осмоса» "
+                    "или «сначала анализ воды»."
+                )
+            session.pending_question = None
+            session.pending_category = None
+            session.pending_slot_keys = []
+            session.clear_pending_question_state()
+            agents_used.extend(["ProblemFramingAgent", "GuardrailsAgent"])
+            self._append_history(session, message, answer)
+            return self._response(
+                session_id,
+                answer,
+                [],
+                False,
+                intent,
+                session,
+                agents_used,
+            )
+
+        if active == code == "undersink_shutoff_leak":
+            stated_sizes = {
+                raw.replace(" ", "")
+                for raw in re.findall(
+                    r"(?<!\d)(?:1\s*/\s*2|3\s*/\s*4|½|¾)(?!\d)",
+                    text,
+                )
+            }
+            confirmed_single_size = bool(
+                len(stated_sizes) == 1
+                and "?" not in message
+                and "или" not in text
+                and not any(
+                    marker in text
+                    for marker in ["где", "искать", "смотр", "не виж", "как понять"]
+                )
+            )
+            if confirmed_single_size:
+                session.slots.pop("_problem_frame", None)
+                session.slots.pop("_problem_frame_stage", None)
+                return None
+            asks_for_photo_or_measurement = any(
+                marker in text
+                for marker in ["сфотограф", "снимать", "снимок", "фото", "измер"]
+            )
+            if (
+                any(marker in text for marker in ["где", "маркиров", "цифр", "не виж"])
+                and not asks_for_photo_or_measurement
+            ):
+                answer = (
+                    "Ищите цифры не на красной ручке, а на металлическом корпусе: рядом "
+                    "с одним из резьбовых концов или на плоской грани под ключ. Очистите "
+                    "корпус и осмотрите его со всех сторон — маркировка может быть отлита "
+                    "мелко. Если её нет или она не читается, не назначайте 1/2 или 3/4 по "
+                    "линейке: наружный диаметр резьбы не равен дюймовому названию. После "
+                    "перекрытия воды мастер может снять старую деталь как образец; до этого "
+                    "сфотографируйте оба присоединения и общий узел."
+                )
+                session.pending_question = None
+                session.pending_category = None
+                session.pending_slot_keys = []
+                session.clear_pending_question_state()
+                agents_used.extend(["ProblemFramingAgent", "GuardrailsAgent"])
+                self._append_history(session, message, answer)
+                return self._response(
+                    session_id, answer, [], False, intent, session, agents_used
+                )
+            if asks_for_photo_or_measurement:
+                answer = (
+                    "Сначала не трогайте мокрый узел руками и не разбирайте его под "
+                    "давлением. Если воду можно безопасно перекрыть штатным вводным краном, "
+                    "перекройте её и вытрите место; если течь усиливается или ввод не "
+                    "перекрывается, вызывайте сантехника. Для идентификации сделайте три "
+                    "снимка с фонариком: общий вид труб под мойкой, крупно металлический "
+                    "корпус с красной ручкой, затем оба его присоединения так, чтобы было "
+                    "видно, куда уходит труба и гибкая подводка. Рядом можно приложить "
+                    "линейку только снаружи, не вращая гайки; по наружному диаметру нельзя "
+                    "самостоятельно назначать резьбу 1/2 или 3/4. Полезнее снять маркировку "
+                    "на корпусе и форму обоих соединений. Эти фото уже можно передать "
+                    "мастеру или менеджеру для проверки типа детали."
+                )
+                session.pending_question = None
+                session.pending_category = None
+                session.pending_slot_keys = []
+                session.clear_pending_question_state()
+                agents_used.extend(["ProblemFramingAgent", "GuardrailsAgent"])
+                self._append_history(session, message, answer)
+                return self._response(
+                    session_id, answer, [], False, intent, session, agents_used
+                )
+
+        if active == code == "standing_water":
+            stage = int(session.slots.get("_problem_frame_stage") or 1) + 1
+            session.slots["_problem_frame_stage"] = stage
+            drainage_estimate = self._drainage_flow_from_observations(text)
+            asks_model_or_advice = bool(
+                any(
+                    marker in text
+                    for marker in [
+                        "подбрать",
+                        "подберите",
+                        "какую модель",
+                        "какой насос",
+                        "какая мощност",
+                        "какую мощност",
+                        "какой класс",
+                        "куда обратиться",
+                    ]
+                )
+            )
+            asks_qh = bool(any(marker in text for marker in ["q-h", "q–h", "крив"]))
+            asks_hose = bool(
+                any(
+                    marker in text
+                    for marker in [
+                        "диаметр шланг",
+                        "какой шланг",
+                        "шланг подойд",
+                        "шланга подойд",
+                        "любой шланг",
+                        "взять любой",
+                    ]
+                )
+            )
+            if drainage_estimate is not None:
+                volume_m3, flow_m3_h = drainage_estimate
+                answer = (
+                    f"По вашим размерам объём воды около {volume_m3:g} м³: длина × "
+                    f"ширина × средняя глубина. Чтобы убрать его за указанное время, "
+                    f"минимальная средняя подача в рабочей точке — {flow_m3_h:g} м³/ч. "
+                    "Это не мощность двигателя в ваттах: модель выбирают по Q–H-кривой, "
+                    "чтобы она давала не меньше этой подачи при вашем вертикальном подъёме "
+                    "и потерях в шланге. Одновременно в паспорте должно быть прямо указано, "
+                    "что насос дренажный для грязной воды и какой размер частиц он пропускает. "
+                    "Диаметр шланга тоже нужно сверить с выходом насоса; зауженный длинный "
+                    "шланг уменьшает реальную подачу."
+                )
+                session.slots["estimated_water_volume_m3"] = volume_m3
+                session.slots["required_flow_m3_h"] = flow_m3_h
+            elif asks_model_or_advice:
+                flow = session.slots.get("required_flow_m3_h")
+                flow_text = f"не менее {float(flow):g} м³/ч в рабочей точке" if flow else "требуемая подача"
+                answer = (
+                    "Для предметной проверки модели передайте специалисту одну спецификацию: "
+                    f"дренажный насос для грязной воды; {flow_text}; фактический вертикальный "
+                    "подъём и длина трассы; песок/мелкий мусор; желаемый диаметр шланга. "
+                    "Просите подтвердить по паспорту две вещи одновременно: подачу на Q–H-кривой "
+                    "в вашей рабочей точке и допустимый размер частиц. Максимальный напор или "
+                    "мощность в ваттах по отдельности этого не доказывают. В данных магазина "
+                    "нет подтверждённой услуги монтажа; могу подготовить эти данные для "
+                    "менеджера магазина, если вы явно попросите передачу."
+                )
+            elif asks_hose and not asks_qh:
+                hose_explanations = int(
+                    session.slots.get("_drainage_hose_explanations") or 0
+                )
+                if hose_explanations >= 2:
+                    answer = (
+                        "Ответ остаётся таким: потери шланга учитывать обязательно, а "
+                        "диаметр начинают выбирать от выходного штуцера и разрешённых "
+                        "размеров в паспорте насоса — не от трубы или канала в конце трассы. "
+                        "Конечное подключение тоже должно пропустить этот расход без сужения. "
+                        "Для ваших 2 м подъёма и 5 м трассы нужна Q–H-кривая конкретной "
+                        "модели; без неё честно назвать точный диаметр и фактическую подачу "
+                        "нельзя."
+                    )
+                elif hose_explanations == 1:
+                    answer = (
+                        "Да, потери из-за длины, диаметра и перегибов шланга нужно учитывать. "
+                        "Ориентир — выход насоса и разрешённые паспортом диаметры, а не "
+                        "приёмная труба в канале. Если конечная труба уже, нужен рассчитанный "
+                        "переход и проверка, что он не сорвёт требуемую подачу. Сначала "
+                        "сверьте рабочую точку по Q–H-кривой модели, затем берите совместимый "
+                        "шланг."
+                    )
+                else:
+                    answer = (
+                        "Да, потери подачи в шланге учитывать обязательно; любой шланг не "
+                        "подойдёт. Диаметр начинают выбирать по выходному штуцеру насоса и "
+                        "разрешённым в его паспорте размерам. Точка сброса задаёт способ "
+                        "подключения, но не должна заставлять заужать всю трассу: зауженный, "
+                        "длинный или перегнутый шланг снижает реальную подачу. Поэтому сначала "
+                        "выбирают модель по Q–H-кривой и допустимым частицам, затем проверяют "
+                        "совместимый шланг и переход в конце."
+                    )
+                session.slots["_drainage_hose_explanations"] = hose_explanations + 1
+            elif asks_qh:
+                answer = (
+                    "Q–H-кривая — паспортный график насоса: по горизонтали идёт подача Q, "
+                    "по вертикали напор H. Чем больше сопротивление и требуемый напор, тем "
+                    "меньше реальная подача; на графике находят вашу рабочую точку и проверяют, "
+                    "что она лежит на допустимой кривой модели. Шланг выбирают по внутреннему "
+                    "диаметру и переходнику, разрешённым производителем насоса. Самовольно "
+                    "назначать 25 мм только из-за песка нельзя: слишком узкий шланг увеличит "
+                    "потери. Для грязной воды он должен быть не уже допустимого выходного "
+                    "тракта, устойчив к перегибу и совместим со штатным штуцером; точный "
+                    "размер берут из паспорта выбранной модели."
+                )
+            elif any(marker in text for marker in ["купить", "монтаж", "какой насос", "подойд"]):
+                answer = (
+                    "По описанию нужен именно погружной дренажный насос для грязной воды, "
+                    "не скважинный и не циркуляционный. Вертикаль измеряют как перепад "
+                    "от уровня насоса до точки сброса; длину шланга считают по его реальной "
+                    "трассе и добавляют как потери, а не как равный подъём. Для "
+                    "точной карточки нужно сверить в паспорте допустимые частицы и подачу "
+                    "на рабочей точке; объём воды можно оценить по длине × ширине × средней "
+                    "глубине. В данных магазина нет подтверждённой услуги монтажа, поэтому "
+                    "её не обещаю; эти наблюдения можно передать специалисту по насосам."
+                )
+            else:
+                answer = (
+                    "Вы измерили в нужном направлении: вертикальный подъём — разница высот "
+                    "от уровня насоса до места выхода шланга, горизонталь — длина шланга по "
+                    "его трассе. Для мути, песка и мелкого мусора нужен класс «дренажный для "
+                    "грязной воды»; точный допустимый размер частиц берут из паспорта модели, "
+                    "а не требуют от вас заранее. Для выбора производительности осталось "
+                    "оценить объём воды: длина × ширина подтопленной зоны × средняя глубина, "
+                    "и за какое время её желательно убрать."
+                )
+            session.pending_question = None
+            session.pending_category = None
+            session.pending_slot_keys = []
+            session.clear_pending_question_state()
+            agents_used.extend(["ProblemFramingAgent", "GuardrailsAgent"])
+            self._append_history(session, message, answer)
+            return self._response(
+                session_id, answer, [], False, intent, session, agents_used
+            )
+
+        if active == code:
+            return None
+        configured = PROBLEM_FRAME_OPENERS.get(code)
+        if configured is None:
+            return None
+        answer, pending_category = configured
+        frame = frame_customer_problem(message)
+        session.slots["_problem_frame"] = code
+        session.slots["_problem_frame_stage"] = 1
+        session.slots["problem_kind"] = code
+        if frame is not None:
+            session.slots.update(frame.slots)
+            session.category = frame.category
+        session.last_products = []
+        session.pending_question = answer if pending_category else None
+        session.pending_intent_type = "broad_category" if pending_category else None
+        session.pending_category = pending_category
+        session.pending_slot_keys = []
+        session.pending_question_state = None
+        agents_used.append("ProblemFramingAgent")
+        self._append_history(session, message, answer)
+        return self._response(
+            session_id,
+            answer,
+            [],
+            False,
+            intent,
+            session,
+            agents_used,
+        )
+
+    @staticmethod
+    def _drainage_flow_from_observations(text: str) -> tuple[float, float] | None:
+        """Compute volume/average flow from household dimensions, if complete."""
+
+        dimensions = re.search(
+            r"(?<!\d)(\d+(?:[,.]\d+)?)\s*(?:м(?:етр\w*)?\s*)?"
+            r"(?:x|х|×|на)\s*(\d+(?:[,.]\d+)?)\s*(?:м|метр)",
+            text,
+        )
+        depth = re.search(
+            r"\bглубин\w*\b[^\d]{0,12}(\d+(?:[,.]\d+)?)\s*(см|м|метр\w*)",
+            text,
+        )
+        duration = re.search(
+            r"\bза\s+(?:(\d+(?:[,.]\d+)?)\s*)?(час\w*|ч\b|минут\w*|мин\b)",
+            text,
+        )
+        if not (dimensions and depth and duration):
+            return None
+
+        def number(raw: str) -> float:
+            return float(raw.replace(",", "."))
+
+        length_m = number(dimensions.group(1))
+        width_m = number(dimensions.group(2))
+        depth_m = number(depth.group(1))
+        if depth.group(2).startswith("см"):
+            depth_m /= 100.0
+        # In ordinary speech ``за час`` means one hour; requiring the customer
+        # to restate it as ``за 1 час`` caused a deterministic loop.
+        hours = number(duration.group(1) or "1")
+        if duration.group(2).startswith("мин"):
+            hours /= 60.0
+        if min(length_m, width_m, depth_m, hours) <= 0:
+            return None
+        volume_m3 = round(length_m * width_m * depth_m, 3)
+        return volume_m3, round(volume_m3 / hours, 3)
+
+    @staticmethod
+    def _latest_household_area_m2(
+        message: str,
+        session: SessionState,
+    ) -> float | None:
+        """Return a recent user-stated room/home area without inventing one."""
+
+        candidates = [message]
+        candidates.extend(
+            str(item.get("content") or "")
+            for item in reversed(session.history[-10:])
+            if item.get("role") == "user"
+        )
+        pattern = re.compile(
+            r"(?<!\d)(\d+(?:[,.]\d+)?)\s*"
+            r"(?:м\s*[²2]|кв\.?\s*м\.?|квадрат\w*)\b",
+            re.IGNORECASE,
+        )
+        for candidate in candidates:
+            match = pattern.search(candidate)
+            if not match:
+                continue
+            value = float(match.group(1).replace(",", "."))
+            if 0 < value <= 10000:
+                session.slots["_household_area_m2"] = value
+                return value
+        stored = session.slots.get("_household_area_m2")
+        try:
+            value = float(stored)
+        except (TypeError, ValueError):
+            return None
+        return value if 0 < value <= 10000 else None
+
     def _overlay_engineering_interpretation(
         self,
         message: str,
@@ -699,15 +1968,28 @@ class ChatOrchestrator:
         baseline_slots = dict(intent.slots)
         baseline_category = intent.category
         baseline_confidence = intent.confidence
+        explicit_rule_category, explicit_rule_score = self.intent_router._detect_category(
+            normalize_text(message)
+        )
+        pending_state = session.pending_question_state
+        pending_category = str(
+            (pending_state.category if pending_state else None)
+            or session.pending_category
+            or ""
+        )
+        protects_pending_branch = bool(
+            pending_category
+            and interpretation.category
+            and interpretation.category != pending_category
+            and (explicit_rule_category == "other" or explicit_rule_score < 0.55)
+            and not self._is_new_product_request(normalize_text(message))
+        )
         if interpretation.intent_type and baseline_confidence < 0.55:
             intent.intent_type = interpretation.intent_type
         if interpretation.category and (
             baseline_category == "other" or baseline_confidence < 0.55
-        ):
+        ) and not protects_pending_branch:
             intent.category = interpretation.category
-        explicit_rule_category, explicit_rule_score = self.intent_router._detect_category(
-            normalize_text(message)
-        )
         if (
             interpretation.dialog_act == "return"
             and interpretation.target_category in session.product_branches
@@ -735,7 +2017,27 @@ class ChatOrchestrator:
             # the cards actually shown in this session.
             intent.category = session.category or intent.category
             intent.is_topic_change = False
-        intent.slots = merge_slots(interpretation.slots, baseline_slots)
+        llm_slots = dict(interpretation.slots)
+        # Goal identity is persistent dialogue state. The model may fill a
+        # missing measurement, but without current evidence it cannot turn a
+        # drainage task into a borehole task (or one appliance kind into
+        # another) merely because a follow-up contains a word such as depth.
+        protected_goal_keys = {
+            "pumps": ("pump_use", "pump_type", "water_source"),
+            "boilers": ("boiler_type", "contours"),
+            "water_heaters": ("heater_type", "energy_source"),
+        }.get(session.category or pending_category, ())
+        rejected_goal_overrides: list[str] = []
+        for key in protected_goal_keys:
+            if (
+                key in llm_slots
+                and key not in baseline_slots
+            ):
+                llm_slots.pop(key, None)
+                rejected_goal_overrides.append(key)
+        if rejected_goal_overrides:
+            intent.raw["rejected_llm_goal_overrides"] = rejected_goal_overrides
+        intent.slots = merge_slots(llm_slots, baseline_slots)
         if (
             interpretation.project_scope == "warm_floor"
             and not intent.slots.get("project_scope")
@@ -756,7 +2058,10 @@ class ChatOrchestrator:
     ) -> None:
         # Start with semantic facts suggested by the model, then overlay the
         # deterministic facts extracted from the current message.
-        slots = merge_slots(interpretation.slots, intent.slots)
+        interpreted_slots = dict(interpretation.slots)
+        for key in (intent.raw or {}).get("rejected_llm_goal_overrides") or []:
+            interpreted_slots.pop(str(key), None)
+        slots = merge_slots(interpreted_slots, intent.slots)
         # ``project_scope`` reaches the slots only after the precedence checks
         # in ``_apply_engineering_interpretation_to_intent``.  Do not revive a
         # rejected/stale LLM scope here.
@@ -1249,6 +2554,67 @@ class ChatOrchestrator:
                 agents_used,
             )
 
+        # Explicit workflow commands outrank domain funnels.  In particular,
+        # a generic undersink clarification must never swallow the command
+        # ``передай менеджеру`` after the customer accepts that escape path.
+        # Safety and contact-direction boundaries above deliberately retain
+        # higher precedence.
+        early_handoff_command = bool(
+            turn_plan.has(TurnAction.CONTINUE_HANDOFF)
+            and not turn_frame.catalog_request_present
+        )
+        if session.pending_handoff:
+            early_handoff_intent = IntentResult(
+                intent_type="handoff_control",
+                category=session.category or "other",
+                confidence=1.0,
+            )
+            if self._is_handoff_opt_out(message) or self._is_handoff_refusal(message):
+                response = self._handle_handoff_opt_out(
+                    message,
+                    early_handoff_intent,
+                    session,
+                    agents_used,
+                )
+                self.sessions.save(session)
+                return response
+            if (
+                early_handoff_command
+                or turn_frame.customer_contact_present
+                or self._is_handoff_confirmation(message)
+            ):
+                response = self._maybe_continue_handoff(
+                    message,
+                    early_handoff_intent,
+                    session,
+                    agents_used,
+                )
+                if response is not None:
+                    self.sessions.save(session)
+                    return response
+        elif early_handoff_command:
+            early_handoff_intent = IntentResult(
+                intent_type="handoff_request",
+                category=session.category or "other",
+                confidence=1.0,
+            )
+            answer = self._begin_handoff_request(
+                message,
+                session,
+                agents_used,
+            )
+            self._append_history(session, message, answer)
+            self.sessions.save(session)
+            return self._response(
+                session_id,
+                answer,
+                [],
+                True,
+                early_handoff_intent,
+                session,
+                agents_used,
+            )
+
         # «Покажите варианты» — управляющий ход, а не реплика по товару, и
         # проверяется раньше товарных веток: иначе воронка (слив/сифон, кран,
         # насос) успевает вернуть свой очередной вопрос, и команда, которую
@@ -1545,6 +2911,53 @@ class ChatOrchestrator:
         intent.raw = dict(intent.raw or {})
         intent.raw["requested_fields"] = self._requested_card_fields(message)
         intent.raw["selection_mode"] = turn_frame.selection_mode.value
+        problem_response = self._maybe_problem_frame_response(
+            session_id,
+            message,
+            intent,
+            session,
+            agents_used,
+        )
+        if problem_response is not None:
+            self.sessions.save(session)
+            return problem_response
+        # A question about the zero-stock label is a fact about the card that
+        # is already visible, not a new request to filter the catalogue by
+        # availability.  Handle it before the stock-selection branches can
+        # reinterpret «нет в наличии» as «покажи только то, что есть».
+        stock_status_answer = self._maybe_stock_status_explanation(message, session)
+        if stock_status_answer is not None:
+            intent.flags["in_stock"] = False
+            intent.slots.pop("in_stock", None)
+            intent.raw["product_control"] = "card_fact"
+            agents_used.extend(["ProductMemoryAgent", "GuardrailsAgent"])
+            self._append_history(session, message, stock_status_answer)
+            self.sessions.save(session)
+            return self._response(
+                session_id,
+                stock_status_answer,
+                list(session.last_products),
+                False,
+                intent,
+                session,
+                agents_used,
+            )
+        filter_comparison = self._maybe_filter_system_card_comparison(message, session)
+        if filter_comparison is not None:
+            comparison_answer, comparison_cards = filter_comparison
+            intent.raw["product_control"] = "grounded_filter_comparison"
+            agents_used.extend(["ProductMemoryAgent", "GuardrailsAgent"])
+            self._append_history(session, message, comparison_answer)
+            self.sessions.save(session)
+            return self._response(
+                session_id,
+                comparison_answer,
+                comparison_cards,
+                False,
+                intent,
+                session,
+                agents_used,
+            )
         if (
             turn_frame.selection_mode == SelectionMode.RECOMMEND
             and intent.intent_type == "stock_request"
@@ -2551,6 +3964,25 @@ class ChatOrchestrator:
             response = self._handle_complectation(message, session, intent, agents_used)
             self.sessions.save(session)
             return response
+
+        dhw_architecture = self._maybe_boiler_dhw_architecture_answer(
+            message,
+            intent,
+            session,
+        )
+        if dhw_architecture:
+            agents_used.extend(["ResponseComposerAgent", "GuardrailsAgent"])
+            self._append_history(session, message, dhw_architecture)
+            self.sessions.save(session)
+            return self._response(
+                session_id,
+                dhw_architecture,
+                session.last_products,
+                False,
+                intent,
+                session,
+                agents_used,
+            )
 
         hot_water_answer = self._maybe_one_contour_hot_water_answer(message, intent, session)
         if hot_water_answer:
@@ -6861,11 +8293,19 @@ class ChatOrchestrator:
             if "радиатор" in text:
                 session.slots["system_type"] = "радиаторы"
             session.slots.pop("warm_floor_type", None)
-        elif "водян" in text and mentions_floor:
+        elif (
+            "водян" in text
+            and mentions_floor
+            and not warm_floor_type_is_uncertain(message)
+        ):
             session.slots["warm_floor_type"] = "водяной"
         elif "от котл" in text and session.slots.get("project_scope") == "warm_floor":
             session.slots["warm_floor_type"] = "водяной"
-        elif "электр" in text and mentions_floor:
+        elif (
+            "электр" in text
+            and mentions_floor
+            and not warm_floor_type_is_uncertain(message)
+        ):
             session.slots["warm_floor_type"] = "электрический"
         elif text.strip(" .,!?:;") in {"водяной", "водяной от котла", "электрический"}:
             if session.slots.get("project_scope") == "warm_floor":
@@ -9096,6 +10536,36 @@ class ChatOrchestrator:
             "но точную комплектацию поставки всё равно лучше сверить по паспорту или у менеджера."
         )
 
+    @staticmethod
+    def _maybe_boiler_dhw_architecture_answer(
+        message: str,
+        intent: IntentResult,
+        session: SessionState,
+    ) -> str | None:
+        """Compare one-circuit+tank with a two-circuit boiler as systems."""
+
+        text = normalize_text(message)
+        boiler_context = intent.category == "boilers" or session.category == "boilers"
+        compares_architecture = bool(
+            boiler_context
+            and "одноконтур" in text
+            and "бойлер" in text
+            and "двухконтур" in text
+            and any(marker in text for marker in ["сложн", "проще", "лучше", "чем", "или"])
+        )
+        if not compares_architecture:
+            return None
+        return (
+            "Одноконтурный котёл с отдельным бойлером действительно сложнее по монтажу: "
+            "нужны место для бака, его обвязка, управление нагревом и больше оборудования. "
+            "Зато есть запас горячей воды и обычно стабильнее одновременная работа нескольких "
+            "точек; при необходимости возможна рециркуляция. Двухконтурный котёл компактнее "
+            "и проще как единый прибор, но готовит воду проточно: комфорт зависит от мощности, "
+            "расхода и числа одновременно открытых кранов, запаса в баке нет. Поэтому выбор "
+            "делают по числу пользователей и одновременных точек, месту под бак и желаемому "
+            "комфорту ГВС, а не считают одноконтурные карточки прямой заменой двухконтурным."
+        )
+
     def _maybe_one_contour_hot_water_answer(
         self,
         message: str,
@@ -9214,6 +10684,43 @@ class ChatOrchestrator:
                     "и какая электрическая мощность выделена на дом — это определит практичный вариант."
                 )
             return GAS_VS_ELECTRIC_CONSULT
+
+        in_water_heater_context = bool(
+            intent.category == "water_heaters"
+            or session.category == "water_heaters"
+            or any(
+                marker in text
+                for marker in [
+                    "водонагрев",
+                    "накопительн",
+                    "проточн",
+                    "косвенн",
+                ]
+            )
+            or any(
+                marker in pending
+                for marker in ["накопительн", "проточн", "косвенн"]
+            )
+        )
+        asks_heater_type_choice = bool(
+            any(
+                marker in text
+                for marker in [
+                    "накопительн",
+                    "проточн",
+                    "косвенн",
+                    "тип водонагрев",
+                ]
+            )
+            and (
+                asks_for_choice
+                or comparative
+                or any(marker in text for marker in ["что такое", "объясни", "разниц"])
+            )
+        )
+        if in_water_heater_context and asks_heater_type_choice:
+            session.category = "water_heaters"
+            return WATER_HEATER_TYPES_CONSULT
 
         # Типы полипропиленовых труб (обычная vs армированная; для горячей vs холодной).
         in_pipe_context = (
@@ -12470,6 +13977,21 @@ class ChatOrchestrator:
             # from semantic similarity to the words «покажи аналоги».
             current_slots.setdefault(key, value)
             session.slots.setdefault(key, value)
+        if (session.category or intent.category) == "boilers":
+            reference_contours = {
+                contours
+                for card in reference_cards
+                if (
+                    (product := self._find_product_by_sku(card.sku)) is not None
+                    and (contours := self._boiler_contours_from_product(product))
+                )
+            }
+            if len(reference_contours) == 1:
+                current_slots.setdefault("contours", reference_contours.pop())
+            if current_slots.get("contours"):
+                # One-/two-circuit identity changes the DHW architecture and
+                # therefore cannot be a silent analogue relaxation.
+                current_slots["allow_alternatives"] = False
         for key in identity_slots - current_turn_slot_keys:
             # The previous exact SKU identifies the reference product; it must
             # not remain a hard filter on an analogue/cheaper search. Its
@@ -13160,6 +14682,163 @@ class ChatOrchestrator:
                 text,
             )
         )
+
+    @staticmethod
+    def _maybe_stock_status_explanation(
+        message: str,
+        session: SessionState,
+    ) -> str | None:
+        """Explain the feed's stock label without inventing fulfilment facts."""
+
+        if not session.last_products:
+            return None
+        text = normalize_text(message)
+        asks_about_status = bool(
+            any(
+                marker in text
+                for marker in [
+                    "что значит",
+                    "что означает",
+                    "можно купить",
+                    "можно заказать",
+                    "когда появ",
+                    "будет в налич",
+                    "актуальн",
+                ]
+            )
+            and any(marker in text for marker in ["нет в налич", "остат", "заказ", "купить"])
+        )
+        if not asks_about_status:
+            return None
+        unavailable = [
+            card
+            for card in session.last_products
+            if (card.stock_qty is not None and card.stock_qty <= 0)
+            or "нет в налич" in normalize_text(card.stock_status)
+        ]
+        if not unavailable:
+            return None
+        return (
+            "«Нет в наличии» означает, что в текущих данных магазина для показанной "
+            "позиции нет подтверждённого положительного остатка — сейчас я не могу "
+            "обещать её покупку или самовывоз. Карточка остаётся справочной: цена и "
+            "характеристики могут быть опубликованы, даже когда остаток равен нулю. "
+            "Срок следующего поступления и возможность заказа в этих данных не указаны; "
+            "их нужно отдельно подтвердить у менеджера магазина."
+        )
+
+    def _maybe_filter_system_card_comparison(
+        self,
+        message: str,
+        session: SessionState,
+    ) -> tuple[str, list[ProductCard]] | None:
+        """Answer RO feature/price questions only from the shown feed cards."""
+
+        cards = list(session.last_products or [])
+        if len(cards) < 2 or session.category != "filters":
+            return None
+        text = normalize_text(message)
+        asks_mineralizer = "минерализ" in text
+        asks_price_reason = bool(
+            "почему" in text
+            and any(marker in text for marker in ["дороже", "цен", "стоит"])
+        )
+        if not (asks_mineralizer or asks_price_reason):
+            return None
+
+        mineralizer_cards = [
+            card for card in cards if "минерализ" in normalize_text(card.name)
+        ]
+        pump_cards: list[ProductCard] = []
+        for card in cards:
+            product = self._find_product_by_sku(card.sku)
+            evidence = normalize_text(
+                " ".join(
+                    [
+                        card.name,
+                        (product.description or "") if product else "",
+                        (product.docs_text or "") if product else "",
+                    ]
+                )
+            )
+            if any(
+                marker in evidence
+                for marker in [
+                    "устройство повышения давления",
+                    "с помпой",
+                    "повысит уровень давления",
+                ]
+            ):
+                pump_cards.append(card)
+
+        lines: list[str] = []
+        if asks_mineralizer:
+            if mineralizer_cards:
+                listed = ", ".join(
+                    f"{card.name} (арт. {card.sku})" for card in mineralizer_cards
+                )
+                lines.append(
+                    "Минерализатор — дополнительная ступень после обратноосмотической "
+                    "мембраны, предназначенная для добавления части минеральных солей в "
+                    "очищенную воду. В показанном наборе он прямо заявлен в названии: "
+                    f"{listed}. Точный состав добавляемых солей и ресурс этой ступени в "
+                    "карточке не указаны, поэтому лечебный эффект или конкретную "
+                    "минерализацию не обещаю."
+                )
+            else:
+                lines.append(
+                    "В названиях и характеристиках показанных карточек минерализатор не "
+                    "подтверждён; приписывать его этим комплектам нельзя."
+                )
+
+        if asks_price_reason:
+            model_m = next(
+                (
+                    card
+                    for card in cards
+                    if re.search(r"\bаллегро\s+м\b", normalize_text(card.name))
+                    and not re.search(r"\bаллегро\s+пм\b", normalize_text(card.name))
+                ),
+                None,
+            )
+            model_p = next(
+                (
+                    card
+                    for card in cards
+                    if re.search(r"\bаллегро\s+п\b", normalize_text(card.name))
+                ),
+                None,
+            )
+            if model_m is not None and model_p is not None:
+                difference = model_p.price - model_m.price
+                percent = difference / model_m.price * 100 if model_m.price else 0
+                lines.append(
+                    f"По текущим карточкам «П» стоит {model_p.price:g} {model_p.currency}, "
+                    f"а «М» — {model_m.price:g} {model_m.currency}: разница "
+                    f"{difference:g} {model_p.currency}, около {percent:.0f}%, а не втрое."
+                )
+                if any(card.sku == model_p.sku for card in pump_cards):
+                    lines.append(
+                        "Подтверждённое отличие «П»: в описании указано входящее в комплект "
+                        "устройство повышения давления; карточка также указывает работу при "
+                        "входном давлении не менее 2 атм и повышение до 3–6 атм. Это объясняет "
+                        "часть разницы комплектации, но фид не даёт калькуляции цены, поэтому "
+                        "утверждать, что вся наценка вызвана только помпой, нельзя."
+                    )
+                else:
+                    lines.append(
+                        "Карточки не дают подтверждённого разложения цены по компонентам, "
+                        "поэтому причину всей разницы выдумывать нельзя."
+                    )
+            else:
+                lines.append(
+                    "Не могу однозначно сопоставить названные версии с показанными карточками; "
+                    "для расчёта разницы нужны их артикулы."
+                )
+
+        if not lines:
+            return None
+        return " ".join(lines), cards
 
     def _maybe_term_explanation(
         self,
@@ -14116,6 +15795,11 @@ class ChatOrchestrator:
         session: SessionState,
     ) -> str | None:
         text = normalize_text(message)
+        if session.slots.get("_problem_frame") == "undersink_shutoff_leak":
+            # A typed, active problem frame has higher precedence than this
+            # generic location menu.  Otherwise ``под мойкой темно`` erases a
+            # valve-leak diagnosis and asks the customer whether it is a siphon.
+            return None
         if (
             re.search(r"\b(?:водонагрев\w*|бойлер\w*)\b", text)
             or re.search(r"\bгазов\w*\s+колонк\w*\b", text)
@@ -14315,11 +15999,31 @@ class ChatOrchestrator:
                 "струйкой",
             ]
         )
+        # ``течёт`` also describes normal service flow.  In an active weak-
+        # pressure or hot-water conversation it must not become a flood merely
+        # because the sentence mentions a tap.  Explicit rupture/flood evidence
+        # below still wins and can always open the emergency branch.
+        active_problem = str(session.slots.get("_problem_frame") or "")
+        explicit_escape = bool(
+            re.search(
+                r"\b(?:из\s+труб\w*|на\s+пол\w*|по\s+пол\w*|под\s+мойк\w*|"
+                r"под\s+раковин\w*)\b[^.?!]{0,30}\b(?:теч\w*|ль[её]т\w*)\b",
+                text,
+            )
+            or any(marker in text for marker in ["луж", "мокрый пол", "мокрый потолок"])
+        )
+        contextual_service_flow = bool(
+            active_problem in {"weak_pressure", "hot_water_shortage"}
+            and not explicit_escape
+            and not any(marker in text for marker in flood_markers)
+            and not any(marker in text for marker in rupture_markers)
+        )
         looks_like_leak = any(marker in text for marker in flood_markers) or (
             any(marker in text for marker in rupture_markers)
             and any(marker in text for marker in water_fixture_markers)
         ) or (
             not weak_flow
+            and not contextual_service_flow
             and any(marker in text for marker in ["течет", "течёт", "льется", "льётся"])
             and any(marker in text for marker in water_fixture_markers)
         )
@@ -14977,7 +16681,7 @@ class ChatOrchestrator:
             or "от котл" in text
             or ("кот" in text and "газ" in text)
             or electric_floor_choice
-        ):
+        ) and not warm_floor_type_is_uncertain(message):
             intent.category = "pipes"
             intent.intent_type = "attribute_request"
             intent.is_topic_change = False
@@ -16432,12 +18136,44 @@ class ChatOrchestrator:
     )
     _ASKS_DIFFERENCE_RE = re.compile(r"\b(?:отлич\w*|разниц\w*|разн\w*)\b")
     _ASKS_HOW_TO_TELL_RE = re.compile(
-        r"\b(?:как|чем)\b[^.?!]{0,24}\b(?:определ\w*|узна\w*|пон\w*|различ\w*|измер\w*|посмотр\w*)"
+        r"\b(?:как|чем|где)\b[^.?!]{0,48}\b(?:определ\w*|узна\w*|пон\w*|"
+        r"различ\w*|измер\w*|посмотр\w*|найт\w*|взят\w*|спрос\w*)"
     )
 
     # Как определить величину на месте. Отвечает на «как узнать?», когда
     # покупатель не знает параметр, а не не знает слова.
     _MEASUREMENT_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
+        (
+            ("динамическ", "уровень воды в скважине"),
+            "Динамический уровень — расстояние от верхнего края скважины до "
+            "зеркала воды во время устойчивой работы насоса. Его обычно указывают "
+            "в паспорте скважины или акте прокачки; если данных нет, измерение "
+            "безопаснее поручить специалисту при работающем насосе. Общая глубина "
+            "скважины и статический уровень этот параметр не заменяют.",
+        ),
+        (
+            ("объём в литрах", "объем в литрах", "литров"),
+            "При выборе нового водонагревателя готовый литраж знать не нужно. "
+            "Назовите число пользователей, сколько душей/кранов могут работать "
+            "одновременно и доступную электрическую мощность. По этим данным сначала "
+            "выбирают накопительный или проточный принцип и только затем диапазон объёма.",
+        ),
+        (
+            ("1/2, 3/4", "1/2 или 3/4", "размер крана"),
+            "Размер крана обычно выбит или отлит на металлическом корпусе рядом с "
+            "одним из резьбовых концов либо на плоской грани под ключ, а не на ручке. "
+            "Очистите и осмотрите корпус со всех сторон. Если старая деталь уже снята, "
+            "сфотографируйте оба конца рядом с линейкой и лучше возьмите её как образец "
+            "в магазин: наружный диаметр резьбы не равен её дюймовому названию, поэтому "
+            "по одной линейке 1/2 и 3/4 надёжно не назначают.",
+        ),
+        (
+            ("размер частиц", "частиц в воде", "допустимые частицы"),
+            "Размер частиц заранее измерять не обязательно. Опишите то, что видно "
+            "в воде: только муть или песок, мелкие камешки, листья либо волокнистый "
+            "мусор. Это определяет класс дренажного насоса; точный допустимый размер "
+            "частиц затем проверяют в паспорте конкретной модели.",
+        ),
         (
             ("резьб", "вр-вр", "вр-нр", "нр-нр", "вр/вр", "вр/нр", "нр/нр"),
             "Определить просто по виду. Внутренняя резьба (ВР) нарезана внутри "
@@ -16492,7 +18228,7 @@ class ChatOrchestrator:
         ):
             return None
         text = normalize_text(message)
-        if not text or len(text.split()) > 9:
+        if not text or len(text.split()) > 32:
             return None
         # У реплики не должно быть своего термина: тогда её разбирает обычный
         # путь справочника, и подменять его контекстом вопроса не нужно.
@@ -16521,8 +18257,17 @@ class ChatOrchestrator:
             return None
 
         agents_used.append("ResponseComposerAgent")
-        # Вопрос остаётся открытым, но повторяется одной строкой, а не анкетой.
-        parts.append(f"Возвращаюсь к подбору: {pending}")
+        # Long opening prompts contain context and several questions. Replaying
+        # that whole paragraph after every explanation creates a new loop, so
+        # resume with one compact action instead.
+        if len(pending) > 180:
+            parts.append(
+                "Если найдёте значение или маркировку, пришлите её одним сообщением; "
+                "если данных нет, зафиксируем параметр как неизвестный и выберем "
+                "безопасный следующий шаг."
+            )
+        else:
+            parts.append(f"Возвращаюсь к подбору: {pending}")
         return self._guard_composed_answer(" ".join(parts), "generic", agents_used)
 
     def _maybe_glossary_answer(

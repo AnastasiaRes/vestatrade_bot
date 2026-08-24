@@ -1,0 +1,107 @@
+{
+  "mode": "live",
+  "generated_at": "2026-08-24T14:27:58.356915+00:00",
+  "elapsed_sec": 14.3,
+  "manifest": {
+    "schema_version": 1,
+    "git": {
+      "commit": "dc76a47fa0886cb9a9fd45a8676cb0ee2af292dc",
+      "dirty": true,
+      "status_sha256": "b6c548d6c05313a3735ee5ffc75df5e8d3f766614a049dbcef5cea1af395b339",
+      "runtime_tree_sha256": "01248f453fa89f4b021435b8a28ead454dc21ab690091c3fb552af4c0ab3760e",
+      "reproducible": false
+    },
+    "inputs": {
+      "testset_path": "data/live_dialogue_exploratory_paraphrases_testset.json",
+      "testset_sha256": "dfa33b31e3edca96f6eacf26aae1c1b2189592e50afd98e881eeffe4c8a9a1ff",
+      "scenario_ids": [
+        "VAR-QUALITY-04",
+        "VAR-SHUTOFF-07"
+      ],
+      "catalog_source": "cache",
+      "catalog_products": 14035,
+      "catalog_sha256": "d8ba7325469f729071f92b0c2759e6b2a35b6cceb32c8c9e104c1aaad02b3b75",
+      "business_config_sha256": "e9407dea8d935e0b26ec5a680eb994da034da866580e09d1d05131e0123ada5e",
+      "buyer_prompt_sha256": "b016dd2edf4a1554a6f25949d26d3473e33ff5787c96019f99f6172f7a1e5f29",
+      "harness_sha256": "a84bc8fd4a37ce3eacbe907561c94aca60f650013f3ae9a45eb57dbc3712bb0d"
+    },
+    "llm": {
+      "provider": "openrouter",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "strong_model": "qwen/qwen3-vl-8b-instruct",
+      "timeout_seconds": 60.0,
+      "request_timeout_seconds": 180.0,
+      "max_retries": 2,
+      "retry_delay_seconds": 1.0
+    },
+    "run": {
+      "mode": "live",
+      "workers": 2,
+      "max_turns": 8,
+      "limit": null,
+      "only": "VAR-QUALITY-04,VAR-SHUTOFF-07"
+    },
+    "runtime": {
+      "python": "3.12.2",
+      "implementation": "CPython",
+      "platform": "macOS-15.6-arm64-arm-64bit"
+    }
+  },
+  "dialogues": 2,
+  "dialogues_attempted": 2,
+  "dialogues_valid": 2,
+  "dialogues_invalid": 0,
+  "metric_denominator_dialogues": 2,
+  "execution_outcomes": {
+    "valid": 2
+  },
+  "turns_attempted": 4,
+  "turns": 4,
+  "turns_with_cards": 0,
+  "dialogues_with_cards": 0,
+  "answer_sources": {
+    "deterministic": 4
+  },
+  "outcomes": {
+    "satisfied": 2
+  },
+  "latency_sec": {
+    "p50": 7.53,
+    "p95": 7.54,
+    "max": 7.54
+  },
+  "defect_hits": {},
+  "defect_dialogues": {},
+  "runs": [
+    {
+      "id": "VAR-QUALITY-04",
+      "block": "Бытовая проблема без названия товара",
+      "priority": "P1",
+      "turns": 2,
+      "cards_shown": 0,
+      "outcome": "satisfied",
+      "buyer_state": "satisfied",
+      "buyer_note": "Получил конкретный и безопасный следующий шаг — обращение в Роспотребнадзор для поиска ближайшего пункта приёма проб.",
+      "execution_status": "valid",
+      "failure_stage": "",
+      "failure_reason": "",
+      "defects": {},
+      "evidence": []
+    },
+    {
+      "id": "VAR-SHUTOFF-07",
+      "block": "Неизвестное название детали",
+      "priority": "P1",
+      "turns": 2,
+      "cards_shown": 0,
+      "outcome": "satisfied",
+      "buyer_state": "satisfied",
+      "buyer_note": "Получил понятный и безопасный способ действий без разборки под давлением.",
+      "execution_status": "valid",
+      "failure_stage": "",
+      "failure_reason": "",
+      "defects": {},
+      "evidence": []
+    }
+  ]
+}
