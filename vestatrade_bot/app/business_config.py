@@ -46,6 +46,30 @@ def _digits(value: str) -> str:
 
 
 @dataclass(frozen=True)
+class Branch:
+    """Одна точка выдачи: адрес, телефоны и режим работы.
+
+    Точек больше десяти и они в разных городах, поэтому «наш телефон» и «наши
+    часы работы» без города — бессмысленный ответ. Бот сначала спрашивает
+    город, потом называет конкретную точку.
+    """
+
+    region: str
+    city: str
+    address: str
+    phones: tuple[str, ...] = ()
+    hours: str | None = None
+
+    def describe(self) -> str:
+        parts = [self.address]
+        if self.phones:
+            parts.append("тел. " + ", ".join(self.phones))
+        if self.hours:
+            parts.append(self.hours)
+        return " — ".join(parts)
+
+
+@dataclass(frozen=True)
 class BusinessFacts:
     """Операционные факты, которые разрешено называть покупателю."""
 
@@ -56,6 +80,72 @@ class BusinessFacts:
     lead_times: dict[str, str] = field(default_factory=dict)
     delivery: str | None = None
     pickup_points: tuple[str, ...] = ()
+    branches: tuple[Branch, ...] = ()
+    # Правила доставки по регионам: ключ — ``region`` филиала.
+    delivery_by_region: dict[str, str] = field(default_factory=dict)
+    payment: str | None = None
+    returns: str | None = None
+    warranty: str | None = None
+    # Адрес сайта и дата сверки фактов. Конфиг — снимок: часы работы, тарифы
+    # и состав точек меняются, и называть их без указания источника значит
+    # обещать актуальность, которой у файла нет.
+    site_url: str | None = None
+    facts_verified_on: str | None = None
+    # Разделы, которые владелец ещё не вычитал. Бот их называет, но здесь
+    # видно, что это черновик, а не подтверждённая политика компании.
+    drafted_sections: tuple[str, ...] = ()
+
+    def cities(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(branch.city for branch in self.branches))
+
+    def branches_in(self, city: str) -> tuple[Branch, ...]:
+        needle = str(city or "").strip().casefold()
+        if not needle:
+            return ()
+        return tuple(
+            branch
+            for branch in self.branches
+            if needle in branch.city.casefold() or needle in branch.address.casefold()
+        )
+
+    def volatile_caveat(self) -> str | None:
+        """Оговорка к фактам, которые устаревают: часы, адреса, тарифы.
+
+        Без неё бот выдаёт снимок конфигурации за текущее состояние компании.
+        Ссылка на сайт даёт покупателю проверяемый источник, а не просьбу
+        поверить на слово.
+        """
+        if not self.site_url:
+            return None
+        site = self.site_url.replace("https://", "").replace("http://", "").rstrip("/")
+        return (
+            "Адреса, режим работы и тарифы могли измениться — "
+            f"актуальные смотрите на {site} или уточните у менеджера."
+        )
+
+    def draft_caveat(self, section: str) -> str | None:
+        """Оговорка к разделу, который владелец ещё не подтвердил.
+
+        Условия оплаты, возврата и гарантии покупатель воспринимает как
+        обязательство магазина. Пока раздел числится черновиком, бот обязан
+        сказать, что итог подтверждает менеджер, а не подавать его как
+        окончательную политику. Как только раздел уходит из
+        ``drafted_sections``, оговорка исчезает сама.
+        """
+        if section not in self.drafted_sections:
+            return None
+        # Текст политики уже говорит, что итог подтверждает менеджер. Дублировать
+        # это здесь — лишняя фраза; полезное, чего в нём нет, — проверяемый
+        # источник полных условий.
+        site = (self.site_url or "").replace("https://", "").replace("http://", "").rstrip("/")
+        if not site:
+            return None
+        return f"Полные условия — на {site}."
+
+    def delivery_for(self, region: str | None) -> str | None:
+        if region and region in self.delivery_by_region:
+            return self.delivery_by_region[region]
+        return self.delivery
 
     @property
     def is_empty(self) -> bool:
@@ -68,6 +158,11 @@ class BusinessFacts:
                 self.lead_times,
                 self.delivery,
                 self.pickup_points,
+                self.branches,
+                self.delivery_by_region,
+                self.payment,
+                self.returns,
+                self.warranty,
             ]
         )
 
@@ -112,16 +207,48 @@ def load_business_facts(path: Path | None = None) -> BusinessFacts:
     if not isinstance(raw, dict):
         return BusinessFacts()
     lead_times = raw.get("lead_times")
+    branches = tuple(
+        Branch(
+            region=str(item.get("region") or "").strip(),
+            city=str(item.get("city") or "").strip(),
+            address=str(item.get("address") or "").strip(),
+            phones=_as_tuple(item.get("phones")),
+            hours=_as_text(item.get("hours")),
+        )
+        for item in (raw.get("branches") or [])
+        if isinstance(item, dict) and str(item.get("address") or "").strip()
+    )
+    delivery_raw = raw.get("delivery")
+    delivery_by_region: dict[str, str] = {}
+    delivery_text: str | None = None
+    if isinstance(delivery_raw, dict):
+        delivery_by_region = {str(k): str(v) for k, v in delivery_raw.items()}
+    else:
+        delivery_text = _as_text(delivery_raw)
+    # Телефоны и адреса филиалов — те же проверяемые факты: guard'у нужен
+    # плоский список, чтобы не вырезать из ответа настоящий номер точки.
+    branch_phones = tuple(
+        dict.fromkeys(phone for branch in branches for phone in branch.phones)
+    )
     return BusinessFacts(
-        phones=_as_tuple(raw.get("phones")),
+        phones=_as_tuple(raw.get("phones")) + branch_phones,
         emails=_as_tuple(raw.get("emails")),
         business_hours=_as_text(raw.get("business_hours")),
         response_time=_as_text(raw.get("response_time")),
         lead_times={
             str(k): str(v) for k, v in lead_times.items()
         } if isinstance(lead_times, dict) else {},
-        delivery=_as_text(raw.get("delivery")),
-        pickup_points=_as_tuple(raw.get("pickup_points")),
+        delivery=delivery_text,
+        pickup_points=_as_tuple(raw.get("pickup_points"))
+        or tuple(branch.address for branch in branches),
+        branches=branches,
+        delivery_by_region=delivery_by_region,
+        payment=_as_text(raw.get("payment")),
+        returns=_as_text(raw.get("returns")),
+        warranty=_as_text(raw.get("warranty")),
+        drafted_sections=_as_tuple(raw.get("drafted_sections")),
+        site_url=_as_text(raw.get("site_url")),
+        facts_verified_on=_as_text(raw.get("facts_verified_on")),
     )
 
 

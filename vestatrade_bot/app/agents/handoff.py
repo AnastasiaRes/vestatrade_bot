@@ -19,6 +19,16 @@ logger = logging.getLogger(__name__)
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}")
 _PHONE_RE = re.compile(r"(?:\+?\d[\s().-]*){10,}")
 
+# Реквизиты — не контакт. Живой прогон: «ООО „Стройпоток“, ИНН 7714123456»
+# попало в заявку как телефон покупателя (``контакт: ***3456``). Любая длинная
+# последовательность цифр рядом с этими словами телефоном не считается.
+_IDENTIFIER_CONTEXT_RE = re.compile(
+    r"(?:инн|огрн(?:ип)?|кпп|окпо|бик|р\s*/?\s*с|к\s*/?\s*с|"
+    r"расчетн\w*\s+счет\w*|расчётн\w*\s+счёт\w*|счет\w*\s+№|"
+    r"номер\s+заказа|заказ\w*\s*№?)\s*[:№#-]?\s*$",
+    re.IGNORECASE,
+)
+
 _HANDOFF_SLOT_ALLOWLIST = {
     "area_m2",
     "boiler_model",
@@ -131,10 +141,13 @@ class HandoffAgent:
         requirements = self._extract_key_requirements(" ".join(unique_messages))
         if requirements:
             known_slots["key_requirements"] = "; ".join(requirements)
-        # A contact belongs to this handoff only when supplied in the current
-        # request or explicitly added during the pending flow. Do not reuse an
-        # address found in an unrelated earlier topic.
-        contact = self.extract_contact(user_message)
+        # Контакт берётся из текущей реплики, а если его там нет — из того, что
+        # покупатель уже называл в этом разговоре. Прежнее ограничение «только
+        # текущая реплика» защищало от переноса чужого адреса из другой темы,
+        # но отсекало и обычный случай: телефон называют в ответ на вопрос про
+        # заказ, а «передай менеджеру» пишут ходом позже. Защита сохранена
+        # иначе — подхваченный контакт показывается маской и требует согласия.
+        contact = self.extract_contact(user_message) or (session.contact or None)
         return HandoffSummary(
             wanted=wanted,
             known_slots=known_slots,
@@ -261,15 +274,36 @@ class HandoffAgent:
         email = _EMAIL_RE.search(text)
         if email:
             return email.group(0)
-        phone = _PHONE_RE.search(text)
-        if phone:
+        for phone in _PHONE_RE.finditer(text):
+            # Слева от числа стоит «ИНН», «ОГРН», «номер заказа»? Это реквизит,
+            # а не способ связи, и в заявку он как контакт попасть не должен.
+            prefix = text[max(0, phone.start() - 40) : phone.start()]
+            if _IDENTIFIER_CONTEXT_RE.search(prefix.rstrip()):
+                continue
             return phone.group(0).strip()
         return None
 
     @staticmethod
     def redact_contact(text: str) -> str:
+        """Вырезать из описания способы связи, но не реквизиты запроса.
+
+        ИНН, ОГРН и номер заказа — содержание просьбы, а не контакт: без них
+        менеджер не поймёт, кому выставлять счёт. В живом прогоне ИНН уезжал
+        в сводку как «[телефон удалён из описания]», и заявка теряла смысл.
+        """
         text = _EMAIL_RE.sub("[email удалён из описания]", text)
-        return _PHONE_RE.sub("[телефон удалён из описания]", text)
+
+        def _mask_phone(match: re.Match[str]) -> str:
+            prefix = text[max(0, match.start() - 40) : match.start()]
+            if _IDENTIFIER_CONTEXT_RE.search(prefix.rstrip()):
+                return match.group(0)
+            # Шаблон номера захватывает и разделители после последней цифры.
+            # Возвращаем их на место, иначе соседние слова слипаются:
+            # «ИНН [телефон удалён из описания]Коллекторы Valtec».
+            trailing = match.group(0)[len(match.group(0).rstrip(" ().-")) :]
+            return "[телефон удалён из описания]" + trailing
+
+        return _PHONE_RE.sub(_mask_phone, text)
 
     @staticmethod
     def mask_contact(contact: str | None) -> str:
@@ -310,6 +344,22 @@ class HandoffAgent:
 
     def _extract_key_requirements(self, text: str) -> list[str]:
         normalized = text.lower().replace("ё", "е")
+        # Отрицание переворачивало требование и уезжало в CRM: «ГВС не нужна»
+        # превращалось в «горячая вода/ГВС» среди параметров заявки, и менеджер
+        # получал ровно противоположное тому, что сказал покупатель.
+        negated: set[str] = set()
+        for pattern, label in [
+            (r"\bбез\s+(?:горяч\w*\s+вод\w*|гвс)\b", "горячая вода/ГВС"),
+            (
+                r"\b(?:горяч\w*\s+вод\w*|гвс)\b[^.!?]{0,18}не\s+(?:нужн\w*|будет|требуется)",
+                "горячая вода/ГВС",
+            ),
+            (r"\bтолько\s+(?:для\s+)?отоплен\w*", "горячая вода/ГВС"),
+            (r"\bбез\s+бойлер\w*\b", "с бойлером"),
+            (r"\b(?:тепл|тепл)\w*\s+пол\w*[^.!?]{0,18}не\s+(?:нужн\w*|будет)", "тёплый пол"),
+        ]:
+            if re.search(pattern, normalized):
+                negated.add(label)
         requirements: list[str] = []
         patterns = [
             (r"\bс\s+(?:встроенн\w*\s+)?бойлер\w*\b", "с бойлером"),
@@ -322,6 +372,8 @@ class HandoffAgent:
             (r"\bгоряч\w*\s+вод\w*\b|\bгвс\b", "горячая вода/ГВС"),
         ]
         for pattern, label in patterns:
+            if label in negated:
+                continue
             if re.search(pattern, normalized) and label not in requirements:
                 requirements.append(label)
         return requirements

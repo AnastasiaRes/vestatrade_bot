@@ -461,6 +461,47 @@ def _value_has_area_context(text: str, value: float) -> bool:
     return False
 
 
+# Бытовые роли чисел: этаж, время суток, реквизит, номер квартиры. Ни одна из
+# них не является техническим параметром, и валидатор обязан знать их наравне
+# с единицами измерения. Живой прогон: «нужно до 18:00» стало бюджетом
+# 1800 ₽ (C03), «на 22 этаже» — диаметром 22 мм (B13).
+_DOMESTIC_ROLE_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("этаж", r"\b{value}\s*(?:-?[йяе]\s*)?этаж\w*"),
+    ("этаж", r"\bна\s+{value}\s*(?:-?[йыя]\s*)?\s*этаж\w*"),
+    ("квартира", r"\b(?:кв\.?|квартир\w*|офис\w*|подъезд\w*)\s*№?\s*{value}\b"),
+    ("реквизит", r"\b(?:инн|огрн(?:ип)?|кпп|окпо|бик|счет\w*|счёт\w*)\s*№?\s*{value}\b"),
+    ("номер заказа", r"\b(?:заказ\w*|накладн\w*)\s*№?\s*{value}\b"),
+    ("дом", r"\b(?:дом|д\.)\s*{value}\b"),
+)
+# Время суток: «до 18:00», «к 12 часам», «в 9 утра».
+_TIME_OF_DAY_RE = re.compile(
+    r"\b\d{1,2}\s*[:.]\s*\d{2}\b"
+    r"|\b\d{1,2}\s*(?:час\w*|утра|вечера|дня|ночи)\b",
+    re.IGNORECASE,
+)
+
+
+def number_has_domestic_role(text: str, value: float) -> str | None:
+    """Занято ли это число бытовой ролью — этажом, временем, реквизитом.
+
+    Возвращает название роли или ``None``. Проверка идёт по конкретному
+    значению, а не по всей реплике: «доставка до 18:00, бюджет 20 000» — здесь
+    18 занято временем, а 20 000 остаётся ценой.
+    """
+
+    haystack = str(text or "")
+    if not haystack:
+        return None
+    # ``%g`` переводит большие целые в научную нотацию («7.71412e+09»), и
+    # десятизначный ИНН переставал совпадать сам с собой.
+    rendered = str(int(value)) if float(value).is_integer() else f"{value:g}"
+    escaped = re.escape(rendered)
+    for role, pattern in _DOMESTIC_ROLE_PATTERNS:
+        if re.search(pattern.format(value=escaped), haystack, re.IGNORECASE):
+            return role
+    return None
+
+
 def numeric_slot_has_compatible_context(
     key: str,
     value: float,
@@ -481,6 +522,12 @@ def numeric_slot_has_compatible_context(
 
     pending = set(pending_slot_keys)
     candidates = [part for part in (evidence, message) if part]
+
+    # Число, занятое бытовой ролью, техническим параметром быть не может — что
+    # бы ни говорили единицы рядом. Проверка стоит до разбора по слотам, чтобы
+    # её не обходили запасные, более снисходительные ветки извлечения.
+    if any(number_has_domestic_role(part, value) for part in candidates):
+        return False
 
     if key == "operating_temperature_c":
         if any(_value_has_temperature_context(part, value) for part in candidates):

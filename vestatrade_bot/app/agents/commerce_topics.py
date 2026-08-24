@@ -25,6 +25,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from app.business_config import Branch, BusinessFacts
+
 from .utils import normalize_text
 
 
@@ -101,6 +103,12 @@ TOPICS: tuple[CommerceTopic, ...] = (
             "ваш адрес",
             "адрес склада",
             "пункт выдач",
+            # Живой прогон 24.08: самые естественные формулировки не
+            # распознавались вовсе, и вопрос про магазин уходил в общий ответ.
+            "ваш магазин",
+            "где магазин",
+            "где ваш",
+            "где находит",
         ),
         needs=("список позиций, которые хотите забрать",),
         note="Адреса и режим работы точек выдачи подтверждает менеджер.",
@@ -120,6 +128,9 @@ TOPICS: tuple[CommerceTopic, ...] = (
             "в воскресенье",
             "по выходным",
             "работаете ли",
+            "когда работает",
+            "когда вы работает",
+            "во сколько работает",
         ),
         note="График работы я не называю по памяти — его подтвердит менеджер.",
     ),
@@ -335,13 +346,38 @@ def compose_commerce_answer(
     order_id: str | None = None,
     already_known: tuple[str, ...] = (),
     repeat: int = 0,
+    facts: BusinessFacts | None = None,
+    city: str | None = None,
+    requested_city: str | None = None,
+    with_volatile_caveat: bool = True,
 ) -> str:
     """Собрать честный ответ: что это, что нужно, что дальше.
 
-    Никаких сроков, телефонов и обещаний — только то, что зависит от нас.
+    Сроки, телефоны и адреса берутся только из ``business_config``: выдуманный
+    факт здесь опаснее отсутствия ответа. Но и молчать, когда факт подтверждён,
+    нельзя — в живом прогоне бот отвечал «график подтвердит менеджер» просто
+    потому, что конфига не существовало, и покупатель уходил ни с чем.
     ``repeat`` двигает разговор вперёд: повторять полный список требований на
     каждую реплику по одной теме бессмысленно, покупатель его уже прочитал.
     """
+
+    # Адрес, режим работы и тарифы можно назвать столько раз, сколько о них
+    # спросили: «а в субботу до скольки?» — уточняющий вопрос, а не повтор, и
+    # отвечать на него лестницей эскалации бессмысленно. Списки требований
+    # (оплата, спецификация, гарантия) остаются под лестницей: их повторение —
+    # то самое буксование, от которого мы уходим.
+    factual = topic.key in {"pickup", "business_hours", "delivery"}
+    if facts is not None and not facts.is_empty and (factual or repeat == 0):
+        grounded = _grounded_answer(
+            topic,
+            facts,
+            city=city,
+            requested_city=requested_city,
+            with_volatile_caveat=with_volatile_caveat,
+        )
+        if grounded:
+            prefix = f"Вижу номер заказа {order_id}. " if order_id else ""
+            return prefix + grounded
 
     if repeat >= 1 and not topic.escalates:
         # Отказ не двигается: повторять его — правильное поведение.
@@ -389,3 +425,189 @@ def compose_commerce_answer(
         "прямо сейчас."
     )
     return " ".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Факты о компании: город, точка выдачи, правила доставки
+#
+# Пунктов выдачи шестнадцать в трёх регионах, поэтому «наш адрес» и «наши часы
+# работы» без города — бессмысленный ответ. Живой прогон показал обратную
+# крайность: бот вообще ничего не называл, потому что конфига не существовало,
+# и покупатель после шести ходов так и не узнавал, до скольки работает склад.
+# ---------------------------------------------------------------------------
+
+
+def find_city(message: str, facts: BusinessFacts) -> str | None:
+    """Найти в реплике город, в котором у компании есть точка выдачи."""
+
+    text = normalize_text(message)
+    if not text:
+        return None
+    # Разговорные названия — покупатель редко пишет «Санкт-Петербург» целиком.
+    aliases = {
+        "Санкт-Петербург": ("санкт-петербург", "санкт петербург", "спб", "питер", "петербург"),
+        "Москва": ("москва", "москве", "мск"),
+    }
+    for city, markers in aliases.items():
+        if any(marker in text for marker in markers):
+            if facts.branches_in(city):
+                return city
+            # Москвы как города среди точек нет — есть область.
+            if city == "Москва":
+                return "Московская область"
+    for city in facts.cities():
+        stem = normalize_text(city)[:-1] or normalize_text(city)
+        if stem and stem in text:
+            return city
+    return None
+
+
+def describe_branches(branches: tuple[Branch, ...], *, limit: int = 4) -> str:
+    lines = [f"- {branch.describe()}" for branch in branches[:limit]]
+    if len(branches) > limit:
+        lines.append(f"…и ещё {len(branches) - limit} — назову, если нужно.")
+    return "\n".join(lines)
+
+
+def ask_which_city(facts: BusinessFacts) -> str:
+    cities = facts.cities()
+    listed = ", ".join(cities)
+    return (
+        "Пункты выдачи есть в нескольких городах — назовите ваш, и я дам адрес, "
+        f"телефон и режим работы именно этой точки. Сейчас это {listed}."
+    )
+
+
+def compose_location_answer(
+    topic_key: str,
+    facts: BusinessFacts,
+    *,
+    city: str | None,
+) -> str | None:
+    """Ответ по адресу, режиму работы или доставке — из подтверждённых фактов."""
+
+    if facts.is_empty or not facts.branches:
+        return None
+    if not city:
+        return ask_which_city(facts)
+    branches = facts.branches_in(city)
+    if not branches:
+        return (
+            f"В городе {city} точки выдачи у нас нет. "
+            + ask_which_city(facts)
+        )
+
+    if topic_key in {"pickup", "business_hours"}:
+        head = (
+            f"Забрать можно здесь ({city}):"
+            if topic_key == "pickup"
+            else f"Режим работы наших точек в городе {city}:"
+        )
+        tail = (
+            "Наличие конкретной позиции на точке подтвердит менеджер — "
+            "остаток в каталоге общий по компании."
+        )
+        return f"{head}\n{describe_branches(branches)}\n{tail}"
+
+    if topic_key == "delivery":
+        rules = facts.delivery_for(branches[0].region)
+        if not rules:
+            return None
+        return f"Доставка для города {city}. {rules}"
+    return None
+
+
+def _grounded_answer(
+    topic: CommerceTopic,
+    facts: BusinessFacts,
+    *,
+    city: str | None,
+    requested_city: str | None = None,
+    with_volatile_caveat: bool = True,
+) -> str | None:
+    """Ответ по теме, если он целиком собран из подтверждённых фактов.
+
+    Факты берутся из конфигурации, а конфигурация — снимок на дату. Часы
+    работы, состав точек и тарифы меняются, поэтому ответ несёт ссылку на
+    источник, где они актуальны. Оговорка ставится один раз за разговор:
+    повторять её в каждом ответе значит вернуть то самое буксование.
+    """
+
+    if topic.key == "delivery" and requested_city and not facts.branches_in(requested_city):
+        # Доставка едет к покупателю, а не в наш пункт выдачи: город без
+        # филиала — не повод спрашивать «а какой у вас город?». В живом
+        # прогоне так умер A10 («доставка в Краснодар»).
+        return (
+            f"В городе {requested_city} собственной доставки у нас нет — туда "
+            "отправляем транспортными компаниями по их тарифам и срокам; "
+            "перевозку оплачивает получатель. Точную стоимость и сроки "
+            "посчитает менеджер: напишите «передай менеджеру», и я подготовлю "
+            "обращение с составом заказа и городом."
+        )
+    if topic.key == "delivery" and not city:
+        # Спрашивать «в каком из наших городов вы находитесь» в ответ на
+        # «когда доставите?» бессмысленно: доставка едет к покупателю.
+        return (
+            "Скажите город доставки — назову условия и тарифы по нему. "
+            "Стоимость и срок для конкретного заказа подтверждает менеджер. "
+            "Если речь об уже оформленном заказе, добавьте его номер."
+        )
+    if topic.key in {"pickup", "business_hours", "delivery"}:
+        answer = compose_location_answer(topic.key, facts, city=city)
+        if answer and with_volatile_caveat and city:
+            caveat = facts.volatile_caveat()
+            if caveat:
+                answer = f"{answer}\n{caveat}"
+        return answer
+
+    policies = {
+        "payment": facts.payment,
+        "return_refund": facts.returns,
+        "warranty": facts.warranty,
+    }
+    policy = policies.get(topic.key)
+    if policy:
+        section = {"return_refund": "returns"}.get(topic.key, topic.key)
+        draft = facts.draft_caveat(section)
+        tail = (
+            " Если нужно оформить — напишите «передай менеджеру», я подготовлю "
+            "обращение с тем, что уже известно."
+        )
+        return policy + (f" {draft}" if draft else "") + tail
+
+    if topic.key == "order_status" and facts.response_time:
+        return (
+            f"{topic.note} Это проверит менеджер — обычно ответ "
+            f"{facts.response_time}. Чтобы он разобрался быстро, нужно: "
+            f"{'; '.join(topic.needs)}. Напишите это здесь — передам вместе с "
+            "историей разговора."
+        )
+    if topic.key == "b2b_quote":
+        lead = facts.lead_times.get("просчёт спецификации")
+        if lead:
+            return (
+                f"{topic.note} Просчёт занимает {lead}. Нужно: "
+                f"{'; '.join(topic.needs)}."
+            )
+    return None
+
+
+_CITY_MENTION_RE = re.compile(
+    r"\b(?:в|во|из|до|по)\s+г(?:ород|\.)?\s*([А-ЯЁ][а-яё-]{2,})"
+    r"|\bдоставк\w*\s+в\s+([А-ЯЁ][а-яё-]{2,})"
+    r"|\bя\s+из\s+([А-ЯЁ][а-яё-]{2,})"
+)
+
+
+def extract_any_city(message: str) -> str | None:
+    """Город, названный покупателем, даже если пункта выдачи там нет.
+
+    Нужен отдельно от :func:`find_city`: на «доставка в Краснодар» бот обязан
+    ответить про транспортные компании, а не спрашивать, в каком городе
+    покупатель хочет забрать товар самовывозом.
+    """
+    match = _CITY_MENTION_RE.search(str(message or ""))
+    if not match:
+        return None
+    name = next((group for group in match.groups() if group), None)
+    return name.strip() if name else None

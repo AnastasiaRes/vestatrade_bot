@@ -47,8 +47,14 @@ from app.models import (
 from app.openrouter_client import OpenRouterClient
 from app.session_store import SessionStore, build_session_store
 
+from app.business_config import get_business_facts
+
 from .commerce_topics import (
+    TOPICS,
+    ask_which_city,
     compose_commerce_answer,
+    extract_any_city,
+    find_city,
     match_commerce_topic,
     order_number,
 )
@@ -865,7 +871,23 @@ class ChatOrchestrator:
         # Threading a parameter through every ``_response`` call site would be
         # far more invasive than reusing the request-scoped store.
         self._request_agents.message = message
+        # Открываем запись текста модели за этот ход: по ней метка источника
+        # ответа выводится из факта, а не из флагов агентов.  Заглушки в тестах
+        # не обязаны поддерживать протокол записи.
+        begin_recording = getattr(self.llm_client, "begin_turn_recording", None)
+        if callable(begin_recording):
+            begin_recording()
         session = self.sessions.get(session_id)
+        # Контакт запоминается в тот момент, когда покупатель его называет, а
+        # не тогда, когда о нём просят: в живом прогоне телефон давали ходом
+        # раньше просьбы о передаче, и бот запрашивал его повторно.
+        turn_contact = self.handoff.extract_contact(message)
+        if turn_contact and turn_contact != session.contact:
+            session.contact = turn_contact
+            session.contact_turn = len(
+                [item for item in session.history if item.get("role") == "user"]
+            ) + 1
+            session.contact_confirmed = False
         session.topic_changed = False
         session.slots.pop("fallback_after_repeat", None)
         self.composer.reset_usage()
@@ -1058,6 +1080,21 @@ class ChatOrchestrator:
                 session,
                 agents_used,
             )
+
+        # «Покажите варианты» — управляющий ход, а не реплика по товару, и
+        # проверяется раньше товарных веток: иначе воронка (слив/сифон, кран,
+        # насос) успевает вернуть свой очередной вопрос, и команда, которую
+        # предложил сам бот, остаётся без ответа. Безопасность и аварийные
+        # ветки выше намеренно имеют приоритет над ней.
+        options_response = self._maybe_show_options_command(
+            session_id,
+            message,
+            session,
+            agents_used,
+        )
+        if options_response is not None:
+            self.sessions.save(session)
+            return options_response
 
         heating_diagnostic = self._maybe_heating_circulation_diagnostic_answer(message)
         if heating_diagnostic:
@@ -5839,6 +5876,26 @@ class ChatOrchestrator:
             if fallback_cards:
                 answer = self._plain_catalog_answer(fallback_cards)
                 cards = fallback_cards
+            else:
+                # Подменить нечем — и это не повод показать текст модели.
+                # Раньше ветка просто не выполнялась, и признанный
+                # недостоверным ответ уходил покупателю как есть: так
+                # появились «VALTEC VW-015-M за 2 890 ₽» и неустойка
+                # «0,1% в день». Чем меньше нашлось товаров, тем выше был
+                # шанс получить выдумку.
+                answer = (
+                    "По этому запросу подтверждённых позиций в каталоге не "
+                    "нашёл. Придумывать артикул или цену не буду. Могу "
+                    "ослабить одно из условий и поискать заново или передать "
+                    "задачу менеджеру — напишите, как удобнее."
+                )
+                cards = []
+                self.consultant.last_llm_output_accepted = False
+                self.consultant.last_llm_rejection_reason = (
+                    "ungrounded_answer_without_catalog_fallback"
+                )
+                if "GuardrailsAgent" not in agents_used:
+                    agents_used.append("GuardrailsAgent")
 
         # Apply the same deterministic constraints to LLM-selected cards as to
         # ordinary catalogue search. If any card is removed, also replace the
@@ -8806,8 +8863,29 @@ class ChatOrchestrator:
         """
 
         topic = match_commerce_topic(message)
+        facts = get_business_facts()
+        named_city = find_city(message, facts)
         if topic is None:
-            return None
+            # «Я в Санкт-Петербурге» само по себе коммерческой темой не
+            # выглядит, но если это ответ на наш же вопрос «какой у вас
+            # город?» — разговор обязан продолжиться с той же темы, а не
+            # уехать в общий подбор.
+            awaiting = str(session.slots.get("awaiting_city_for") or "")
+            if not awaiting:
+                return None
+            topic = next((item for item in TOPICS if item.key == awaiting), None)
+            if topic is None:
+                return None
+            if not named_city:
+                # Покупатель дожимает, не назвав город. Живой прогон (A09):
+                # такая реплика не попадала ни в одну тему и уходила в
+                # small talk — бот терял нить собственного вопроса.
+                agents_used.append("CommerceRouterAgent")
+                return f"commerce_{topic.key}", (
+                    "Мне нужен только город — без него не скажу, какая точка "
+                    "к вам ближе и до скольки она работает. "
+                    + ask_which_city(facts)
+                )
         # Уже идущая передача менеджеру обрабатывается своим сценарием: там
         # собирают контакт и согласие, перебивать её нельзя.
         if session.pending_handoff:
@@ -8825,18 +8903,47 @@ class ChatOrchestrator:
         # Повтор той же темы без новых фактов не должен повторять весь список
         # требований: покупатель его уже прочитал, и разговор буксует.
         repeat = 0
-        if session.slots.get("commerce_topic") == topic.key and not order_id and not known:
+        if (
+            session.slots.get("commerce_topic") == topic.key
+            and not order_id
+            and not known
+            # Названный город — такой же новый факт, как номер заказа: именно
+            # его бот и просил ходом раньше, и ответ на свой же вопрос
+            # повтором считать нельзя.
+            and not named_city
+        ):
             repeat = int(session.slots.get("commerce_topic_repeat") or 0) + 1
         session.slots["commerce_topic"] = topic.key
         session.slots["commerce_topic_repeat"] = repeat
 
         agents_used.append("CommerceRouterAgent")
+        # Город запоминается на сессию: пунктов выдачи шестнадцать, и
+        # переспрашивать его на каждый вопрос про адрес и часы — тот же круг,
+        # от которого мы уходим.
+        city = named_city or session.slots.get("customer_city")
+        if city:
+            session.slots["customer_city"] = city
+        # Оговорка про актуальность — один раз за разговор: в каждом ответе
+        # она превратилась бы в тот самый повтор, от которого мы уходим.
+        caveat_shown = bool(session.slots.get("volatile_caveat_shown"))
         answer = compose_commerce_answer(
             topic,
             order_id=order_id,
             already_known=tuple(known),
             repeat=repeat,
+            facts=facts,
+            city=city,
+            requested_city=extract_any_city(message),
+            with_volatile_caveat=not caveat_shown,
         )
+        volatile = facts.volatile_caveat()
+        if volatile and volatile in answer:
+            session.slots["volatile_caveat_shown"] = True
+        # Если спросили город — запоминаем, к какой теме вернуться с ответом.
+        if city or "назовите ваш" not in answer:
+            session.slots.pop("awaiting_city_for", None)
+        else:
+            session.slots["awaiting_city_for"] = topic.key
         return f"commerce_{topic.key}", answer
 
     def _maybe_meta_question(self, message: str) -> str | None:
@@ -9187,6 +9294,10 @@ class ChatOrchestrator:
         session.pending_handoff = None
         session.handoff_ticket_id = None
         session.handoff_fingerprint = None
+        # Покупатель отказался от передачи — запомненный контакт больше не наш.
+        session.contact = None
+        session.contact_turn = None
+        session.contact_confirmed = False
         answer = (
             "Понял: менеджеру ничего не передаю и заявку не создаю. "
             "Продолжим подбор здесь."
@@ -9212,11 +9323,15 @@ class ChatOrchestrator:
         if not session.pending_handoff:
             return None
         status = session.handoff_status
-        contact = self.handoff.extract_contact(message)
+        message_contact = self.handoff.extract_contact(message)
         confirmation = self._is_handoff_confirmation(message)
         handoff_command = self._wants_manager_handoff(message)
-        if not (contact or confirmation or handoff_command):
+        # Ход подхватывает висящую заявку только тогда, когда покупатель сам
+        # о ней заговорил, — иначе обычная реплика попадала бы в поток передачи.
+        if not (message_contact or confirmation or handoff_command):
             return None
+        # А вот сам контакт может быть назван и раньше в этом же разговоре.
+        contact = message_contact or session.contact
 
         try:
             summary = HandoffSummary(**session.pending_handoff)
@@ -9244,14 +9359,32 @@ class ChatOrchestrator:
             )
 
         if contact:
+            already_previewed = (
+                status == "awaiting_consent"
+                and summary.contact == contact
+                and not message_contact
+            )
             summary.contact = contact
             session.pending_handoff = self.handoff.summary_to_dict(summary)
             session.handoff_status = "awaiting_consent"
             if not confirmation:
-                answer = self.handoff.compose_consent_request(
-                    summary,
-                    needs_contact=False,
-                )
+                if already_previewed:
+                    # Перерисовывать тот же список данных бессмысленно:
+                    # покупатель его уже прочитал и ждёт действия. Живой прогон
+                    # (A06, D14) показал этот круг сразу, как только контакт
+                    # перестал теряться: ход 3 стал верным, а ход 4 повторял
+                    # ход 3 дословно.
+                    answer = (
+                        "Данные для передачи я уже показал, жду одного слова: "
+                        "напишите «подтверждаю передачу» — и я оформлю обращение "
+                        f"на контакт {self.handoff.mask_contact(contact)}. "
+                        "Если передавать не нужно, напишите «не передавай»."
+                    )
+                else:
+                    answer = self.handoff.compose_consent_request(
+                        summary,
+                        needs_contact=False,
+                    )
                 if "HandoffAgent" not in agents_used:
                     agents_used.append("HandoffAgent")
                 self._append_history(session, message, answer)
@@ -11049,6 +11182,71 @@ class ChatOrchestrator:
         text = normalize_text(message)
         return any(marker in text for marker in self.NEAREST_REQUEST_MARKERS)
 
+    # Назначение почти всегда называется через противопоставление:
+    # «показываете для кухни, А мне нужен для радиатора», «не для кухни, а для
+    # радиатора». То, что стоит после противопоставления, — требование; то,
+    # что до него, — отвергнуто.
+    _PURPOSE_CONTRAST_RE = re.compile(
+        r"\b(?:а\s+(?:мне\s+)?(?:нужен|нужна|нужно|надо|хочу|ищу)?|но|не)\s+"
+        r"(?:для|под|на)\s+",
+    )
+    _PURPOSE_RE = re.compile(r"\b(?:для|под|на)\s+([а-яё]{4,})")
+    # Синонимы назначения: покупатель говорит «батарея», в названии — «радиатор».
+    _PURPOSE_SYNONYMS = {
+        "батаре": ("радиатор", "батаре"),
+        "радиат": ("радиатор", "батаре"),
+        "кухни": ("кухн", "мойк"),
+        "кухня": ("кухн", "мойк"),
+        "ванной": ("ванн", "душ"),
+        "раковины": ("раковин", "умывальник"),
+    }
+
+    @classmethod
+    def _purpose_variants(cls, word: str) -> tuple[str, ...]:
+        for key, variants in cls._PURPOSE_SYNONYMS.items():
+            if word.startswith(key[:5]):
+                return variants
+        return (word[:6],)
+
+    def _filter_by_stated_purpose(
+        self,
+        cards: list[ProductCard],
+        message: str,
+    ) -> list[ProductCard]:
+        """Убрать позиции, назначение которых покупатель прямо отверг.
+
+        Возвращает пустой список, если после фильтра ничего не осталось: это
+        честнее, чем показать тот же набор ещё раз. Повторить отвергнутый
+        список — худший из возможных исходов, покупатель уже сказал «нет».
+        """
+        if not cards:
+            return cards
+        text = normalize_text(message)
+        contrast = self._PURPOSE_CONTRAST_RE.search(text)
+        if contrast:
+            head, tail = text[: contrast.start()], text[contrast.start():]
+        else:
+            head, tail = "", text
+        excluded: set[str] = set()
+        for match in self._PURPOSE_RE.finditer(head):
+            excluded.update(self._purpose_variants(match.group(1)))
+        required: set[str] = set()
+        for match in self._PURPOSE_RE.finditer(tail):
+            required.update(self._purpose_variants(match.group(1)))
+        required -= excluded
+        if not excluded and not required:
+            return cards
+
+        kept: list[ProductCard] = []
+        for card in cards:
+            name = normalize_text(card.name)
+            if any(marker in name for marker in excluded):
+                continue
+            if required and not any(marker in name for marker in required):
+                continue
+            kept.append(card)
+        return kept
+
     def _compose_out_of_scope_family(
         self,
         family: UnsupportedFamily,
@@ -11069,6 +11267,12 @@ class ChatOrchestrator:
             query = SearchQuery(original_text=message, category="other", slots={})
             cards = self.card_agent.build_cards(found, query, limit=3)
             agents_used.append("ProductCardAgent")
+        # Поиск по названию не проверяет назначение, поэтому уточнение
+        # покупателя — единственный фильтр, который у нас есть. Живой прогон:
+        # на «смеситель для батареи» бот показывал смесители для кухни и
+        # повторял тот же список ещё три хода, хотя покупательница прямо
+        # написала «не для кухни, а для радиатора» (D09).
+        cards = self._filter_by_stated_purpose(cards, message)
 
         # Начинаем с товара, а не с оговорки: покупателю важно, что позиция
         # есть. Ограничение звучит после — как предупреждение о том, что
@@ -12404,13 +12608,23 @@ class ChatOrchestrator:
     # Words that make a turn about gas as a medium rather than about a product
     # that merely happens to burn it.  Used both to trigger the gas-work guard
     # and to keep the electrical guard away from gas questions.
-    _GAS_MEDIUM_MARKERS = (
-        "газ",
-        "магистрал",
-        "газопровод",
-        "газовик",
-        "горгаз",
-        "голубое топливо",
+    # Границы слова обязательны. Маркеры сравнивались подстрокой, и «магазин»
+    # совпадал с «газ», а «Самара» — с «сам»: любой вопрос про магазин рядом со
+    # словом «инструкция» получал отказ по газоопасным работам. Дефект был и в
+    # сборке 23.08; всплыл, когда бот начал спрашивать город и покупатели
+    # стали писать «Самара».
+    # Перечислять окончания вручную — заведомо неполно («газовую» я пропустил).
+    # Граница слова спереди отсекает «магазин»; «газета» и «газон» исключены
+    # явно: полив газона — это насос, а не газоопасные работы.
+    _GAS_MEDIUM_RE = re.compile(
+        r"\bгаз(?!ет|он)\w*"
+        r"|\bмагистрал\w*|\bгоргаз\b|\bголубое\s+топливо\b"
+    )
+    _GAS_SELF_SERVICE_RE = re.compile(
+        r"\bсам(?:а|и|ому|ой)?\b|\bсамостоятельн\w*|\bсвоими\s+руками\b"
+        r"|\bбез\s+газовик\w*|\bне\s+вызыва\w*|\bне\s+вызвать\b"
+        r"|\bпошагов\w*|\bинструкци\w*|\bпоследовательност\w*"
+        r"|\bкак\s+правильно\b"
     )
     _GAS_WORK_MARKERS = (
         "врез",
@@ -12431,7 +12645,16 @@ class ChatOrchestrator:
         "запуст",
         "опресс",
     )
-    _GAS_SELF_SERVICE_MARKERS = (
+    # Признаки запроса товара, а не порядка работ. Маркеры действия выше
+    # намеренно широки («подключ», «резьб», «монтаж»), поэтому «нужен узел для
+    # подключения котла» попадало под отказ вместе с «как врезаться в газ».
+    _GAS_PRODUCT_REQUEST_RE = re.compile(
+        r"\b(?:где\s+(?:най|куп|взя|его|её|ее)|найти|найду|куп(?:ить|лю)|"
+        r"подобрат|подбер\w*|нужен|нужна|нужно|нужны|есть\s+ли|"
+        r"покаж\w*|скин\w*|пришл\w*|перечен\w*|комплект\w*|список|"
+        r"сколько\s+стоит|цен[аыу]|в\s+наличии|артикул)\b"
+    )
+    _GAS_SELF_SERVICE_MARKERS_LEGACY = (
         "сам",
         "самостоятельн",
         "своими руками",
@@ -12447,7 +12670,7 @@ class ChatOrchestrator:
     def _mentions_gas_medium(self, text: str) -> bool:
         # «газовый котёл» as a product name is not by itself a gas-work turn;
         # the caller pairs this with an action or a self-service marker.
-        return any(marker in text for marker in self._GAS_MEDIUM_MARKERS)
+        return bool(self._GAS_MEDIUM_RE.search(text))
 
     def _maybe_gas_work_answer(
         self,
@@ -12481,15 +12704,19 @@ class ChatOrchestrator:
 
         mentions_gas = self._mentions_gas_medium(text)
         names_action = any(marker in text for marker in self._GAS_WORK_MARKERS)
-        self_service = any(
-            marker in text for marker in self._GAS_SELF_SERVICE_MARKERS
-        )
+        self_service = bool(self._GAS_SELF_SERVICE_RE.search(text))
 
-        if mentions_gas and (names_action or self_service):
-            triggered = True
-        elif active and (names_action or self_service or mentions_gas):
-            # «Ну хотя бы какой шланг и герметик взять» is a continuation of the
-            # same request even when it no longer repeats the word «магистраль».
+        # «Где найти узел на котёл» — запрос товара, а не инструкции по врезке.
+        # Отказ касается порядка работ и материалов для них; подобрать сам узел
+        # бот в этом же тексте обещает и обязан это делать. В живом прогоне
+        # отказ съедал именно товарную половину разговора (A25, D21).
+        asks_for_products = bool(self._GAS_PRODUCT_REQUEST_RE.search(text))
+
+        if self_service:
+            # «Сам подключу», «пошагово», «без газовиков» — это всегда просьба
+            # об инструкции, чем бы она ни была обставлена.
+            triggered = mentions_gas or active
+        elif (mentions_gas or active) and names_action and not asks_for_products:
             triggered = True
         else:
             triggered = False
@@ -12497,8 +12724,12 @@ class ChatOrchestrator:
         if not triggered:
             return None
 
-        session.slots["gas_work_safety_active"] = True
-        session.slots["gas_work_safety_expires_at"] = len(session.history) + 6
+        if not active:
+            # Окно ставится один раз и не продлевается: раньше каждое
+            # срабатывание отодвигало срок, и пока покупатель говорил про
+            # газовый котёл, отказ отвечал на всё подряд бессрочно.
+            session.slots["gas_work_safety_active"] = True
+            session.slots["gas_work_safety_expires_at"] = len(session.history) + 6
 
         return (
             "Инструкцию по подключению к газу я не дам — ни пошагово, ни "
@@ -15137,6 +15368,156 @@ class ChatOrchestrator:
             return False
         return bool(set(answered_slot_keys).intersection(awaited))
 
+    # «Покажите варианты» бот сам предлагает написать, когда упирается в
+    # недостающий параметр. В живом прогоне эта фраза не была командой ни в
+    # одной ветке кода: покупатель писал её дословно и получал тот же текст
+    # снова (B08 ход 3, D01 ходы 8–10).
+    _SHOW_OPTIONS_RE = re.compile(
+        r"\b(?:покаж\w*|показыв\w*|дай(?:те)?|выведи)\b[^.!?]{0,20}"
+        r"\bвариант\w*\b"
+        r"|\bвариант\w*\b[^.!?]{0,12}\b(?:покаж\w*|дай(?:те)?)\b",
+        re.IGNORECASE,
+    )
+
+    def _maybe_show_options_command(
+        self,
+        session_id: str,
+        message: str,
+        session: SessionState,
+        agents_used: list[str],
+    ) -> ChatResponse | None:
+        """Показать, что есть, по уже известным условиям.
+
+        Покупатель, трижды не сумевший назвать параметр, не назовёт его и в
+        четвёртый раз. Здесь недостающие параметры помечаются отложенными, а
+        подбор идёт по остальным условиям — с прямой оговоркой, что именно
+        осталось непроверенным. Это лучше ещё одного вопроса и честнее
+        подстановки случайной позиции.
+        """
+
+        text = normalize_text(message)
+        if not self._SHOW_OPTIONS_RE.search(text):
+            return None
+        # Команда — это вся реплика, а не придаточное внутри содержательного
+        # запроса. «Старый насос Grundfos UPS 25-60, нужна альтернатива, покажи
+        # варианты в наличии» несёт собственные параметры, и подменять его
+        # выдачей по категории нельзя.
+        if len(text.split()) > 6:
+            return None
+        category = session.pending_category or session.category
+        if not category or category == "other":
+            # Нечего показывать: покупатель не назвал даже категорию.
+            return None
+
+        intent = IntentResult(
+            intent_type="broad_category",
+            category=category,
+            confidence=1.0,
+        )
+        options = self._options_by_known_conditions(
+            session, intent, agents_used, message=message
+        )
+        if options is None:
+            answer = (
+                "По уже известным условиям подтверждённых позиций в каталоге "
+                "не нашлось. Могу передать задачу менеджеру с тем, что уже "
+                "известно, — напишите «передай менеджеру»."
+            )
+            self._append_history(session, message, answer)
+            return self._response(
+                session_id, answer, [], True, intent, session, agents_used
+            )
+        answer, cards = options
+        self._append_history(session, message, answer)
+        return self._response(
+            session_id, answer, cards, False, intent, session, agents_used
+        )
+
+    def _options_by_known_conditions(
+        self,
+        session: SessionState,
+        intent: IntentResult,
+        agents_used: list[str],
+        *,
+        message: str,
+    ) -> tuple[str, list[ProductCard]] | None:
+        """Подбор по уже известным условиям с честной оговоркой о непроверенном.
+
+        Общий шаг для команды «покажите варианты» и для третьей ступени выхода
+        из повтора: недостающие параметры откладываются, поиск идёт по
+        остальным, а оговорка прямо называет, что осталось несверенным.
+        """
+
+        category = intent.category
+        if not category or category == "other":
+            return None
+
+        pending = session.pending_question_state
+        deferred_now = list(pending.expected_slots) if pending else []
+        deferred_now += [
+            key for key in session.pending_slot_keys if key not in deferred_now
+        ]
+        self._defer_refused_slots(session, deferred_now)
+        session.clear_pending_question_state()
+        session.recent_clarifications = []
+
+        query = self._build_query(message, intent, session)
+        products = self.search_agent.search(query)
+        for agent_name in ("FeedSearchAgent", "ProductCardAgent"):
+            if agent_name not in agents_used:
+                agents_used.append(agent_name)
+        cards = self.card_agent.build_cards(products, query, limit=5)
+        if not cards:
+            return None
+
+        unknown, plural = self._describe_deferred_slots(deferred_now)
+        if unknown:
+            verb = "не подтверждены" if plural else "не подтверждён"
+            caveat = (
+                f"Показываю по тому, что уже известно. {unknown} {verb} — "
+                "сверьте по карточке или уточните у менеджера перед покупкой."
+            )
+        else:
+            caveat = (
+                "Показываю по тому, что уже известно. Часть параметров "
+                "не подтверждена — сверьте по карточке перед покупкой."
+            )
+        session.last_products = cards
+        session.category = category
+        return caveat + "\n" + self._plain_catalog_answer(cards), cards
+
+    @staticmethod
+    def _describe_deferred_slots(keys: list[str]) -> tuple[str, bool]:
+        """Назвать отложенные параметры человеческими словами.
+
+        Возвращает пару «перечисление, множественное ли число»: без второго
+        значения оговорка получалась несогласованной — «Напор и Расход не
+        подтверждён».
+        """
+        labels = {
+            "area_m2": "Площадь",
+            "boiler_type": "Тип котла",
+            "connection_size": "Присоединение",
+            "contours": "Контурность",
+            "diameter_mm": "Диаметр",
+            "head_m": "Напор",
+            "mounting_length_mm": "Монтажная длина",
+            "operating_pressure_bar": "Рабочее давление",
+            "operating_temperature_c": "Рабочая температура",
+            "pipe_purpose": "Назначение трубы",
+            "power_kw": "Мощность",
+            "pump_type": "Тип насоса",
+            "required_flow_m3_h": "Расход",
+            "size_inch": "Размер резьбы",
+            "water_source": "Источник воды",
+        }
+        named = [labels[key] for key in dict.fromkeys(keys) if key in labels]
+        if not named:
+            return "", False
+        if len(named) == 1:
+            return named[0], False
+        return ", ".join(named[:-1]) + " и " + named[-1], True
+
     @staticmethod
     def _defer_refused_slots(session: SessionState, refused: list[str]) -> None:
         """Помечает отказанные параметры отложенными.
@@ -16893,6 +17274,120 @@ class ChatOrchestrator:
         session.recent_clarifications = (seen + [signature])[-self._CLARIFICATION_MEMORY :]
         return answer
 
+    # Безопасность повторяется намеренно: пока течь не перекрыта и газ не
+    # отключён, покупатель обязан получать ту же инструкцию, сколько бы раз
+    # ни спрашивал. Всё остальное повторять дословно бессмысленно.
+    _MUST_REPEAT_INTENTS = frozenset(
+        {
+            "gas_safety",
+            "gas_work_safety",
+            "electrical_safety",
+            "water_heater_safety",
+            "emergency",
+        }
+    )
+    _ANSWER_MEMORY = 8
+
+    def _break_answer_repeat(
+        self,
+        answer: str,
+        cards: list[ProductCard],
+        intent: IntentResult,
+        session: SessionState,
+        agents_used: list[str],
+    ) -> tuple[str, list[ProductCard]]:
+        """Не отдавать покупателю ответ, который он в этом диалоге уже видел.
+
+        Прежние защиты были привязаны к висящему вопросу и к его дословной
+        формулировке, поэтому круг из двух-трёх чередующихся шаблонов кругом не
+        считался: в живом прогоне так сложились 69 повторов в 56 диалогах.
+        Здесь сравниваются сами ответы, независимо от ветки и длины.
+
+        Лестница короткая и заканчивается действием, а не фразой: повторить
+        вопрос → предложить выход → выполнить выход самостоятельно. Покупатель,
+        трижды не назвавший параметр, не назовёт его и в четвёртый раз.
+        """
+
+        text = answer.strip()
+        if not text or intent.intent_type in self._MUST_REPEAT_INTENTS:
+            return answer, cards
+
+        # Детектор намеренно узкий. Круги живого прогона жили внутри воронки
+        # подбора: бот просит параметр, покупатель его не даёт, и оба ходят по
+        # кругу. Повторить объяснение на повторный вопрос («а в чём разница?»)
+        # или повторно показать сохранённые данные — законная работа, и
+        # отличить её от буксования по одному тексту ответа не получается.
+        # Поэтому условие — идущая воронка и короткий ответ-приглашение, как
+        # и в соседней лестнице эскалации.
+        # Второй класс — повторённый тупиковый результат: «не вижу точного
+        # совпадения», «не нашёл подходящие товары». Сказать это дважды подряд
+        # бессмысленно всегда, вне зависимости от того, идёт воронка или нет:
+        # новой информации покупатель не получает ни в первый, ни во второй раз.
+        dead_end = not cards and any(
+            marker in normalize_text(text)
+            for marker in (
+                "не вижу точного совпадения",
+                "не нашел подходящие товары",
+                "не нашел подходящих товаров",
+                "подтвержденного товара",
+                "карточки не показываю",
+            )
+        )
+        if not dead_end:
+            if not (session.pending_question_state or session.pending_slot_keys):
+                return answer, cards
+            if len(text) > 300:
+                return answer, cards
+
+        # Ключ берётся по концовке: существующие лестницы эскалации дописывают
+        # к одному и тому же вопросу разные вступления («Уточню ещё раз…»,
+        # «Не буду подставлять случайный товар…»), и по началу ответа повтор
+        # не виден. Операторная часть — сам вопрос — стоит в конце.
+        key = normalize_text(text)[-200:]
+        if len(key) < 40:
+            return answer, cards
+        seen = list(session.recent_answer_hashes or [])
+        session.recent_answer_hashes = (seen + [key])[-self._ANSWER_MEMORY :]
+        if key not in seen:
+            return answer, cards
+
+        # Считаем не повторы одной формулировки, а то, сколько раз бот вообще
+        # повторился за диалог: круг складывается из разных пар («вопрос →
+        # вопрос», позже «предложение выхода → предложение выхода»), и по
+        # отдельности ни одна пара порога не достигает.
+        strikes = int(session.slots.get("_answer_repeat_strikes") or 0) + 1
+        session.slots["_answer_repeat_strikes"] = strikes
+
+        # Показ товара — это движение вперёд, даже если подборка та же самая.
+        # Первый повтор отдаём существующим лестницам: они знают конкретный
+        # слот и подсказывают, где посмотреть параметр.
+        if cards or strikes < 2:
+            return answer, cards
+
+        category = session.pending_category or session.category
+        if strikes == 2:
+            exits = (
+                "Вижу, что повторяюсь, — так мы не продвинемся. "
+                "Могу показать, что есть по уже известным условиям: напишите "
+                "«покажите варианты». Или передам задачу менеджеру с тем, что "
+                "уже известно, — напишите «передай менеджеру»."
+            )
+            return exits, cards
+
+        # Третий раз — делаем то, что предлагали, сами.
+        if category and category != "other":
+            options = self._options_by_known_conditions(
+                session, intent, agents_used, message=""
+            )
+            if options is not None:
+                return options
+        return (
+            "Повторяться дальше смысла нет. Предлагаю передать задачу "
+            "менеджеру с тем, что уже известно из нашего разговора — "
+            "напишите «передай менеджеру», и я подготовлю обращение.",
+            cards,
+        )
+
     def _exact_identity_disclaimer(
         self,
         answer: str,
@@ -16939,6 +17434,46 @@ class ChatOrchestrator:
             "подключение, они могут отличаться от запрошенной модели."
         )
         return f"{disclaimer}\n{answer}"
+
+    # Ниже этой длины совпадение с выводом модели ничего не доказывает:
+    # «Здравствуйте.» или «Уточните размер.» встречаются и в шаблонах.
+    _LLM_TEXT_MATCH_CHARS = 60
+
+    def _answer_carries_llm_text(self, answer: str) -> bool:
+        """Есть ли в готовом ответе текст, который в этом ходе вернула модель.
+
+        Спрашивается только тогда, когда ответ не признал ни один агент: флаги
+        «вывод принят» надёжны, когда выставлены, и подменять их сравнением
+        строк не нужно. Дырой была молчаливая ветка «иначе» — именно так шесть
+        ходов живого прогона с выдуманными артикулами выглядели в телеметрии
+        шаблонными. Порог длины отсекает случайные совпадения на коротких
+        репликах вроде «Здравствуйте.».
+        """
+
+        recorded = getattr(self.llm_client, "recorded_completions", None)
+        if not callable(recorded):
+            return False
+        completions = recorded() or []
+        if not completions:
+            return False
+        answer_norm = normalize_text(answer)
+        if len(answer_norm) < self._LLM_TEXT_MATCH_CHARS:
+            return False
+        for completion in completions:
+            completion_norm = normalize_text(completion)
+            if len(completion_norm) < self._LLM_TEXT_MATCH_CHARS:
+                continue
+            if completion_norm in answer_norm or answer_norm in completion_norm:
+                return True
+            # Защитный слой мог вырезать телефон или срок из середины: начало
+            # текста при этом остаётся моделным.
+            prefix = min(len(answer_norm), len(completion_norm))
+            if prefix >= self._LLM_TEXT_MATCH_CHARS and (
+                answer_norm[: self._LLM_TEXT_MATCH_CHARS]
+                == completion_norm[: self._LLM_TEXT_MATCH_CHARS]
+            ):
+                return True
+        return False
 
     def _response(
         self,
@@ -17009,6 +17544,9 @@ class ChatOrchestrator:
 
         answer = self._exact_identity_disclaimer(answer, cards, intent, session)
         answer = self._escalate_repeated_clarification(answer, cards, intent, session)
+        answer, cards = self._break_answer_repeat(
+            answer, cards, intent, session, agents_used
+        )
         answer = self._sanitize_customer_answer(answer)
         # Operational facts — a company phone, a turnaround promise, opening
         # hours, a delivery date — cannot be derived from the feed, so no branch
@@ -17090,6 +17628,12 @@ class ChatOrchestrator:
             final_answer_source = "consultant_llm"
         elif response_accepted and "ResponseComposerAgent" in agents_used:
             final_answer_source = "response_llm"
+        elif self._answer_carries_llm_text(answer):
+            # Флаги агентов надёжны, когда выставлены; дырой была молчаливая
+            # ветка «иначе».  Текст модели, который не признал ни один агент,
+            # попал в ответ мимо проверок достоверности — и обязан быть виден
+            # в телеметрии, а не прятаться среди шаблонных ответов.
+            final_answer_source = "llm_unattributed"
         else:
             final_answer_source = "deterministic"
         rejection_reasons = [

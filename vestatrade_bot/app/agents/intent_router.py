@@ -15,9 +15,11 @@ from .engineering_notation import (
     extract_engineering_notation,
 )
 from .numeric_semantics import (
+    _TIME_OF_DAY_RE,
     extract_piece_length_mm,
     extract_temperature_c,
     extract_total_length_m,
+    number_has_domestic_role,
     numeric_slot_has_compatible_context,
     numeric_span_has_incompatible_context,
     numeric_span_has_incompatible_unit,
@@ -1000,7 +1002,12 @@ class IntentRouterAgent:
 
         # An explicitly requested pipe remains a pipe when the phrase also
         # names its source/route ("ПНД труба от скважины до дома").
-        if re.search(r"\bтруб\w*\b", text) and not re.search(
+        #
+        # Упоминание должно быть положительным. Эта ветка ловила «труб» без
+        # проверки отрицания — в отличие от соседних, — поэтому «Нет, мне нужны
+        # радиаторы. Не трубы и краны» уходило в трубы (B13), а «мне нужен кран,
+        # а не труба» три хода подряд возвращало трубу (B20).
+        if self._has_non_negated_match(text, r"\bтруб\w*\b") and not re.search(
             r"\b(?:насос|помп)\w*\b", text
         ):
             if "канализац" not in text:
@@ -1806,17 +1813,11 @@ class IntentRouterAgent:
             re.search(r"отоплен\w*[^.!?]{0,25}\bи\s+(?:на\s+)?(?:горяч\w*\s+)?вод", text)
             or re.search(r"\bвод\w*[^.!?]{0,25}\bи\s+(?:на\s+)?отоплен", text)
         )
-        if category == "boilers" and "не знаю" in text and "кот" in text:
-            slots["needs_voltage_clarification"] = True
-        elif category == "boilers" and (
-            "гвс" in text or ("горяч" in text and "вод" in text) or wants_heat_and_water
-        ):
-            slots["contours"] = "двухконтурный"
-        elif category == "boilers" and "отоплен" in text:
-            # The customer answers in terms of the need, not boiler jargon:
-            # "только отопление" means a single-circuit boiler.
-            slots["contours"] = "одноконтурный"
-
+        # Отрицание разбирается ДО присвоения контурности. Живой прогон: на
+        # «Только для отопления. ГВС не нужна» бот ставил «двухконтурный» —
+        # слот выводился по вхождению подстроки «гвс», а проверка отрицания
+        # стояла ниже и правила другой слот (C25, B18, D15). Один факт — один
+        # источник истины: контурность выводится из ``needs_hot_water``.
         rejects_hot_water = bool(
             re.search(r"\bбез\s+(?:горяч\w*\s+вод\w*|гвс)\b", text)
             or re.search(
@@ -1824,6 +1825,15 @@ class IntentRouterAgent:
                 r"не\s+(?:нужн\w*|будет|требуется)",
                 text,
             )
+            or re.search(
+                r"\bне\s+(?:нужн\w*|требуется)\b[^.!?]{0,18}"
+                r"(?:горяч\w*\s+вод\w*|гвс)\b",
+                text,
+            )
+            # «Только для отопления», «без водонагревателя» — тот же отказ,
+            # сформулированный через назначение котла.
+            or re.search(r"\bтолько\s+(?:для\s+)?отоплен\w*", text)
+            or re.search(r"\bбез\s+(?:водонагрев\w*|бойлер\w*)\b", text)
         )
         mentions_hot_water = bool(
             "гвс" in text or ("горяч" in text and "вод" in text)
@@ -1832,6 +1842,19 @@ class IntentRouterAgent:
             slots["needs_hot_water"] = False
         elif mentions_hot_water:
             slots["needs_hot_water"] = True
+
+        if category == "boilers" and "не знаю" in text and "кот" in text:
+            slots["needs_voltage_clarification"] = True
+        elif category == "boilers" and rejects_hot_water:
+            slots["contours"] = "одноконтурный"
+        elif category == "boilers" and (
+            mentions_hot_water or wants_heat_and_water
+        ):
+            slots["contours"] = "двухконтурный"
+        elif category == "boilers" and "отоплен" in text:
+            # The customer answers in terms of the need, not boiler jargon:
+            # "только отопление" means a single-circuit boiler.
+            slots["contours"] = "одноконтурный"
 
         mentions_warm_floor = bool(
             ("тепл" in text or "тёпл" in text)
@@ -2959,6 +2982,11 @@ class IntentRouterAgent:
                     expected_families={"diameter", "length_mm"},
                 ):
                     continue
+                # Единиц рядом нет ни у диаметра, ни у этажа, поэтому проверки
+                # размерности здесь мало: «живу на 22 этаже» давало диаметр
+                # 22 мм и уводило весь разговор про радиаторы в трубы (B13).
+                if number_has_domestic_role(text, value):
+                    continue
                 if 10 <= value <= 250:
                     slots["diameter_mm"] = value
                     break
@@ -3399,8 +3427,17 @@ class IntentRouterAgent:
                     expected_families={"money"},
                 ):
                     return None
-                value = float(match.group(1).replace(" ", ""))
-                if value > 0:
+                raw = match.group(1)
+                # «Нужно до 18:00» после нормализации выглядит как «до 18 00» и
+                # превращалось в бюджет 1800 ₽ (C03). Разряды в рублёвой сумме
+                # группируются по три: «20 000» — цена, «18 00» — не число.
+                groups = raw.split()
+                if len(groups) > 1 and any(len(part) != 3 for part in groups[1:]):
+                    return None
+                if _TIME_OF_DAY_RE.search(text):
+                    return None
+                value = float(raw.replace(" ", ""))
+                if value > 0 and not number_has_domestic_role(text, value):
                     return value
         return None
 

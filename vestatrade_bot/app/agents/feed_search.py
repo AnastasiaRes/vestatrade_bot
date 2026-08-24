@@ -23,7 +23,12 @@ from .product_identity import (
     ProductIdentityFacts,
     product_identity_facts,
 )
-from .utils import fold_model_key, normalize_sku, normalize_text
+from .utils import (
+    fold_model_key,
+    normalize_sku,
+    normalize_text,
+    transliterate_model_key,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -1617,6 +1622,55 @@ class FeedSearchAgent:
             self._catalog_word_key_cache = words
         return self._catalog_word_key_cache
 
+    # Слова, которые выглядят как имя, но маркой не являются. Оговорка «такой
+    # позиции не нахожу» задумана для «Сунержа Модус», а срабатывала на
+    # топонимах («Северной Осетии»), валютах («RUB»), собственных сокращениях
+    # бота («ВР-НР») и на кириллическом написании марки из каталога
+    # («Ардерия» при наличии Arderia).
+    # Ключи хранятся в транслитерированном виде — в том же, в каком приходит
+    # проверяемый токен, иначе кириллическая запись мимо набора проходит.
+    _IDENTITY_STOP_KEYS = frozenset(
+        {
+            # валюты и единицы
+            "rub", "usd", "eur", "rub", "kvt", "vt", "bar", "mpa", "atm",
+            "mm", "sm", "litr", "kg", "sht",
+            # инженерные сокращения из собственного словаря бота
+            "gvs", "hvs", "vrnr", "vrvr", "nrnr", "dn", "du",
+            "pn", "sdr", "gost", "snip", "din", "iso", "aisi",
+            "opentherm", "evrokonus", "amerikanka",
+            # служебные слова запроса
+            "artikul", "model", "seriia", "brend", "katalog", "zakaz",
+            "ooo", "zao", "oao", "pao", "inn", "ogrn", "kpp",
+        }
+    )
+    # Место, а не марка: «в Москве», «из Северной Осетии», «город Самара».
+    _PLACE_CONTEXT_RE = re.compile(
+        # Не больше одного слова между предлогом и именем: «из Северной
+        # Осетии» — место, а «в наличии полотенцесушитель Сунержа» — марка,
+        # и жадный шаблон глушил как раз тот случай, ради которого писался.
+        r"\b(?:в|во|из|до|по|на|под)\s+(?:[а-яё-]+\s+){0,1}$"
+        r"|\b(?:город|г\.|область|обл\.|улица|ул\.|шоссе|проспект|"
+        r"деревн\w*|посел\w*|район)\s+(?:[а-яё-]+\s+){0,1}$",
+        re.IGNORECASE,
+    )
+
+    def _matches_catalog_by_sound(self, token: str) -> bool:
+        """Совпадает ли токен с брендом каталога после транслитерации.
+
+        «Ардерия» и «Arderia» — одна марка. Свёртка гомоглифов их не сближает,
+        поэтому сравниваем по звучанию и с допуском в один-два символа:
+        «ия» на конце даёт ``arderiia`` против ``arderia``.
+        """
+        key = transliterate_model_key(token)
+        if len(key) < 4:
+            return False
+        if key in self._brand_word_keys() or key in self._catalog_word_keys():
+            return True
+        for known in self._brand_word_keys():
+            if abs(len(known) - len(key)) <= 2 and fuzz.ratio(key, known) >= 88:
+                return True
+        return False
+
     def unknown_identity_tokens(self, message: str) -> list[str]:
         """Слова-имена из реплики, которых нет в каталоге ни в каком виде.
 
@@ -1649,6 +1703,12 @@ class FeedSearchAgent:
                 continue
             key = fold_model_key(token)
             if len(key) < 3 or key in known or key in brand_words:
+                continue
+            if transliterate_model_key(token) in self._IDENTITY_STOP_KEYS:
+                continue
+            if self._matches_catalog_by_sound(token):
+                continue
+            if self._PLACE_CONTEXT_RE.search(text[: match.start()]):
                 continue
             unknown.append(token)
         return unknown

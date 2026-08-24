@@ -288,7 +288,11 @@ class ConsultantAgent:
         self.last_llm_output_accepted = grounded
         self.last_llm_rejection_reason = "; ".join(violations) if violations else None
         return ConsultResult(
-            answer=answer,
+            # Недостоверный текст не покидает агента. Раньше он возвращался
+            # непустым, и вызывающая ветка показывала его покупателю, если
+            # подменить было нечем. Дыру закрываем в источнике, чтобы её
+            # нельзя было воспроизвести из другого места.
+            answer=answer if grounded else "",
             cards=cards,
             llm_used=True,
             grounded=grounded,

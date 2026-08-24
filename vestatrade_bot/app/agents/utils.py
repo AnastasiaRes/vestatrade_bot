@@ -126,6 +126,25 @@ def fold_model_key(text: str | None) -> str:
     return re.sub(r"[^a-z0-9]", "", folded)
 
 
+# Кириллица → латиница по звучанию. Нужна там, где покупатель пишет марку
+# по-русски: «Ардерия» и «Arderia» — одна и та же марка, а свёртка гомоглифов
+# их не сближает (совпадают только визуально одинаковые буквы).
+_TRANSLIT_TABLE = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ж": "zh",
+    "з": "z", "и": "i", "й": "i", "к": "k", "л": "l", "м": "m", "н": "n",
+    "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u", "ф": "f",
+    "х": "h", "ц": "c", "ч": "ch", "ш": "sh", "щ": "sch", "ъ": "", "ы": "y",
+    "ь": "", "э": "e", "ю": "iu", "я": "ia",
+}
+
+
+def transliterate_model_key(text: str | None) -> str:
+    """Ключ модели с переводом кириллицы в латиницу по звучанию."""
+    folded = normalize_text(text)
+    out = "".join(_TRANSLIT_TABLE.get(ch, ch) for ch in folded)
+    return re.sub(r"[^a-z0-9]", "", out)
+
+
 def normalize_sku(text: str | None) -> str:
     return normalize_text(text).replace(" ", "")
 

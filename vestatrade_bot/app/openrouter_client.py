@@ -24,6 +24,15 @@ class LLMResult:
     fallback_reason: str | None = None
     usage: dict[str, Any] | None = None
     cost_usd: float = 0.0
+    # Почему модель остановилась. ``length`` означает, что ответ обрезан по
+    # лимиту токенов: такой текст проходит все проверки достоверности (в нём
+    # нет выдуманных фактов — в нём вообще нет конца) и уходил покупателю
+    # оборванным на середине слова.
+    finish_reason: str | None = None
+
+    @property
+    def truncated(self) -> bool:
+        return self.finish_reason == "length"
 
 
 @dataclass
@@ -65,6 +74,34 @@ class OpenRouterClient:
     @property
     def last_fallback_reason(self) -> str | None:
         return getattr(self._telemetry, "fallback_reason", None)
+
+    # ------------------------------------------------------------------
+    # Запись сгенерированного моделью текста за один ход диалога.
+    #
+    # Метка источника ответа выводилась из флагов «вывод принят» у агентов,
+    # поэтому текст модели, попавший в ответ мимо этих флагов, автоматически
+    # считался детерминированным. В живом прогоне так было помечено шесть
+    # ходов, где ответ начинался фразой из системного промпта консультанта.
+    # Единственный надёжный признак — совпадение с тем, что модель реально
+    # вернула, поэтому запись стоит здесь, в общей воронке всех вызовов.
+    # ------------------------------------------------------------------
+
+    def begin_turn_recording(self) -> None:
+        self._telemetry.completions = []
+
+    def record_completion(self, content: str | None) -> None:
+        text = (content or "").strip()
+        if not text:
+            return
+        recorded = getattr(self._telemetry, "completions", None)
+        if recorded is None:
+            # Ход не открывали — запись не ведём, чтобы не копить текст между
+            # запросами одного потока.
+            return
+        recorded.append(text)
+
+    def recorded_completions(self) -> list[str]:
+        return list(getattr(self._telemetry, "completions", None) or ())
 
     def _fallback(self, reason: str) -> LLMResult:
         self._telemetry.fallback_reason = reason
@@ -307,11 +344,9 @@ class OpenRouterClient:
                     response.raise_for_status()
                     data = response.json()
                     self._close_half_open_circuit(endpoint, circuit_permit)
-                content = (
-                    data.get("choices", [{}])[0]
-                    .get("message", {})
-                    .get("content")
-                )
+                choice = (data.get("choices") or [{}])[0]
+                content = (choice.get("message") or {}).get("content")
+                finish_reason = choice.get("finish_reason")
                 usage = data.get("usage") or {}
                 try:
                     cost = self.budget.record_call(
@@ -332,11 +367,30 @@ class OpenRouterClient:
                 # arrived after the customer-facing turn deadline.
                 if self._request_budget_exhausted():
                     return self._request_budget_fallback()
+                if finish_reason == "length":
+                    # Обрезанный ответ нельзя показывать покупателю: в живом
+                    # прогоне так уходили «Кон…» и «— труб PPR и армиров».
+                    # Ветка отката соберёт детерминированный текст.
+                    logger.warning(
+                        "LLM output truncated by max_tokens agent=%s model=%s",
+                        agent,
+                        model_name,
+                    )
+                    return LLMResult(
+                        content=None,
+                        llm_used=False,
+                        fallback_reason="llm output truncated by max_tokens",
+                        usage=usage,
+                        cost_usd=cost,
+                        finish_reason=finish_reason,
+                    )
+                self.record_completion(content)
                 return LLMResult(
                     content=content,
                     llm_used=True,
                     usage=usage,
                     cost_usd=cost,
+                    finish_reason=finish_reason,
                 )
             except httpx.HTTPStatusError as exc:
                 last_error = exc

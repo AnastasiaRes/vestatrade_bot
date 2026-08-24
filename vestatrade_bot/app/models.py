@@ -296,11 +296,27 @@ class SessionState(BaseModel):
     # ``pending_question_state``: тот удаляется, когда ожидаемые слоты вопроса
     # определить не удалось, и именно такие вопросы зацикливались.
     recent_clarifications: list[str] = Field(default_factory=list)
+    # Отпечатки последних ответов бота. Прежние защиты от повтора смотрели на
+    # висящий вопрос, поэтому круг из двух-трёх чередующихся шаблонов кругом не
+    # считался, а ответы длиннее 300 символов не проверялись вовсе. Кольцо
+    # держится на уровне сессии и не зависит ни от длины, ни от ветки.
+    recent_answer_hashes: list[str] = Field(default_factory=list)
     handoff_status: str = "none"
     pending_handoff: dict[str, Any] | None = None
     handoff_ticket_id: str | None = None
     handoff_fingerprint: str | None = None
     handoff_opt_out: bool = False
+    # Контакт, названный покупателем в любой момент разговора. Держится
+    # отдельно от ``pending_handoff``: заявка собирается тогда, когда о ней
+    # попросили, а телефон или почту часто называют раньше — в ответ на вопрос
+    # про заказ. Раньше контакт искали только в текущей реплике, и бот просил
+    # его повторно у покупателя, который уже всё написал.
+    contact: str | None = None
+    contact_turn: int | None = None
+    # Подтверждён ли перенос этого контакта в заявку. Подхваченный из прошлого
+    # хода контакт показывается маской и требует согласия — так сохраняется
+    # смысл прежнего ограничения: чужой адрес из другой темы не уедет молча.
+    contact_confirmed: bool = False
 
     @property
     def pending_question_id(self) -> str | None:
