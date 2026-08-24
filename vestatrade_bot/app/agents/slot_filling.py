@@ -22,6 +22,16 @@ from .utils import mentions_water_application, merge_slots, normalize_text
 
 class SlotFillingAgent:
     _UNKNOWN_PARAMETER_PATTERNS: dict[str, dict[str, re.Pattern[str]]] = {
+        "pipes": {
+            "operating_temperature_c": re.compile(
+                r"\b(?:температур|нагрев|режим)\w*"
+            ),
+            "operating_pressure_bar": re.compile(
+                r"\b(?:давлен|опрессов|бар)\w*"
+            ),
+            "diameter_mm": re.compile(r"\b(?:диаметр|размер|маркиров|надпис)\w*"),
+            "pipe_material": re.compile(r"\b(?:материал|тип|систем)\w*"),
+        },
         "fittings": {
             "fitting_system": re.compile(r"\b(?:систем|материал\w*\s+труб)\w*"),
             "element_type": re.compile(r"\b(?:фитинг|детал|элемент)\w*"),
@@ -55,6 +65,12 @@ class SlotFillingAgent:
         },
     }
     _REMAINING_UNKNOWN_SLOTS: dict[str, tuple[str, ...]] = {
+        "pipes": (
+            "operating_temperature_c",
+            "operating_pressure_bar",
+            "diameter_mm",
+            "pipe_material",
+        ),
         "fittings": ("fitting_system", "element_type", "diameter_mm", "size_inch"),
         "sewer": ("sewer_scope", "element_type", "diameter_mm", "length_mm"),
         "radiator_fittings": (
@@ -290,6 +306,10 @@ class SlotFillingAgent:
                 deferred = {str(key) for key in slots.get("deferred_slot_keys") or []}
                 deferred.add("metric_thread")
                 slots["deferred_slot_keys"] = sorted(deferred)
+        if category == "radiator_fittings" and any(
+            marker in text for marker in ("фото", "фотограф", "снимок")
+        ):
+            slots["photo_requested"] = True
 
     @staticmethod
     def _prune_resolved_selection_refusals(slots: dict) -> None:
@@ -1187,7 +1207,10 @@ class SlotFillingAgent:
                 and slots.get("connection_size")
             )
             if slots.get("old_model") or slots.get("pump_replacement"):
-                slots.setdefault("pump_selection_mode", "замена")
+                # Replacement evidence is authoritative even if an earlier
+                # turn provisionally classified a 25/6 marking as a new
+                # selection.
+                slots["pump_selection_mode"] = "замена"
             elif has_explicit_duty:
                 # The customer supplied a concrete pump notation/dimensions.
                 # Treat them as an explicit specification, not as a hydraulic
@@ -1614,6 +1637,12 @@ class SlotFillingAgent:
             "не в курсе",
             "не помню",
             "не могу сказать",
+            "нет данных",
+            "данных нет",
+            "неизвестно",
+            "неизвестны",
+            "неизвестен",
+            "неизвестна",
         ]
         return any(marker in text for marker in markers)
 
@@ -2119,10 +2148,17 @@ class SlotFillingAgent:
             )
             if assisted is not None:
                 return assisted
+            photo_note = (
+                " К сожалению, загрузка фотографий в этом чате пока не "
+                "поддерживается. Перепишите маркировку и опишите посадочное место "
+                "словами — я продолжу подбор по этим данным."
+                if slots.get("photo_requested")
+                else ""
+            )
             return SlotFillingResult(
                 slots=slots,
                 needs_clarification=True,
-                question="Уточните " + missing[0].prompt + ".",
+                question="Уточните " + missing[0].prompt + "." + photo_note,
                 expected_slots=missing_slots,
                 blocking=True,
             )

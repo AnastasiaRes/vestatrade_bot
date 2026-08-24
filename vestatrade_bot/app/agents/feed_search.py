@@ -2116,7 +2116,7 @@ class FeedSearchAgent:
                 products = [
                     product
                     for product in products
-                    if element_type in self._product_text(product)
+                    if self._sewer_element_matches(product, element_type)
                 ]
             return sorted(
                 products,
@@ -3382,6 +3382,51 @@ class FeedSearchAgent:
         )
         return any(marker and marker in evidence for marker in markers)
 
+    def _fitting_element_matches(self, product: Product, requested: object) -> bool:
+        """Match functional fitting names to wording used by the feed.
+
+        A PPR reducer is commonly named ``муфта переходная`` in catalogues,
+        while customers ask for a ``переходник``. Literal substring matching
+        rejects that valid identity even though both diameters agree.
+        """
+
+        expected = normalize_text(str(requested))
+        evidence = normalize_text(
+            " ".join(
+                [
+                    product.name,
+                    self._attribute_text(
+                        product,
+                        ["тип товара", "полное наименование", "вид фитинга"],
+                    ),
+                ]
+            )
+        )
+        if any(marker in expected for marker in ("переход", "редукц")):
+            # A transition tee contains the word ``переходной`` too, but adds
+            # a branch and cannot replace a two-port reducer/coupling.
+            has_transition = any(
+                marker in evidence for marker in ("переход", "редукц")
+            )
+            has_branch = any(
+                marker in evidence
+                for marker in ("тройник", "крестовин", "четверник")
+            )
+            return has_transition and not has_branch
+        aliases = {
+            "угольник": ("угольник", "уголок"),
+            "отвод": ("отвод",),
+            "тройник": ("тройник",),
+            "муфта": ("муфта",),
+            "крестовина": ("крестовина",),
+            "американка": ("американка",),
+        }
+        markers = next(
+            (values for key, values in aliases.items() if key in expected),
+            (expected,),
+        )
+        return any(marker and marker in evidence for marker in markers)
+
     def _coupling_type_matches(self, product: Product, requested: object) -> bool:
         expected = normalize_text(str(requested))
         evidence = normalize_text(
@@ -4589,6 +4634,8 @@ class FeedSearchAgent:
         if element_type:
             if category == "sewer":
                 checks.append(self._sewer_element_matches(product, element_type))
+            elif category == "fittings":
+                checks.append(self._fitting_element_matches(product, element_type))
             else:
                 checks.append(normalize_text(str(element_type)) in text)
 
@@ -4869,9 +4916,17 @@ class FeedSearchAgent:
 
         element_type = slots.get("element_type")
         if element_type:
-            if normalize_text(str(element_type)) in text:
+            if query.category == "fittings" and self._fitting_element_matches(
+                product, element_type
+            ):
                 score += 35
-            elif query.category == "sewer":
+            elif query.category == "sewer" and self._sewer_element_matches(
+                product, element_type
+            ):
+                score += 35
+            elif normalize_text(str(element_type)) in text:
+                score += 35
+            elif query.category in {"sewer", "fittings"}:
                 return 0
 
         sewer_scope = slots.get("sewer_scope")

@@ -2288,6 +2288,7 @@ class IntentRouterAgent:
                 marker in text
                 for marker in [
                     "внутри дом",
+                    "в квартир",
                     "по дому",
                     "по квартир",
                     "разводк вод",
@@ -2321,7 +2322,7 @@ class IntentRouterAgent:
 
         if "батаре" in text:
             slots["application"] = "радиатор"
-        if "дач" in text:
+        if re.search(r"\bдач(?:а|е|и|у|ей|ный|ная|ное|ного|ному|ном)\b", text):
             slots["application"] = "дача"
         if (
             category == "valves"
@@ -2395,6 +2396,21 @@ class IntentRouterAgent:
             "на замен" in text
             or ("стар" in text and "насос" in text)
             or "заменить насос" in text
+            or (
+                "насос" in text
+                and any(
+                    marker in text
+                    for marker in (
+                        "сломал",
+                        "перестал работ",
+                        "вышел из стро",
+                        "сгорел",
+                        "заклинил",
+                        "потек",
+                        "потёк",
+                    )
+                )
+            )
         ):
             slots["pump_replacement"] = True
         if category == "pumps" and (
@@ -2458,14 +2474,18 @@ class IntentRouterAgent:
             if requested_fitting:
                 slots["element_type"] = requested_fitting
             else:
+                # The requested item outranks nouns that merely describe its
+                # connections.  In ``тройник на большую трубу с боковым
+                # отводом`` both ``труба`` and ``отвод`` are context, while
+                # ``тройник`` is the catalogue identity.
                 for marker, element in [
-                    ("труб", "труба"),
-                    ("отвод", "отвод"),
-                    ("угольник", "угольник"),
-                    ("уголок", "угольник"),
-                    ("угол", "угольник"),
                     ("тройник", "тройник"),
                     ("муфт", "муфта"),
+                    ("угольник", "угольник"),
+                    ("уголок", "угольник"),
+                    ("отвод", "отвод"),
+                    ("труб", "труба"),
+                    ("угол", "угольник"),
                 ]:
                     if marker in text and not self._is_negated(text, marker):
                         slots["element_type"] = element
@@ -2502,12 +2522,11 @@ class IntentRouterAgent:
             category == "radiator_fittings"
             and re.search(
                 r"(?:\bбез\s+(?:термо)?головк\w*\b|"
-                r"\b(?:термо)?головк\w*[^.!?]{0,24}\b(?:нет|отсутств\w*)\b)",
+                r"\b(?:термо)?головк\w*[^.!?]{0,28}\b"
+                r"(?:нет|отсутств\w*|пропал\w*|потерян\w*|утерян\w*|снят\w*)\b|"
+                r"\b(?:пропал\w*|потерян\w*|утерян\w*|снят\w*)"
+                r"[^.!?]{0,28}\b(?:термо)?головк\w*)",
                 text,
-            )
-            and any(
-                marker in text
-                for marker in ["регулир", "постав", "установ", "нуж", "хочу", "подоб"]
             )
         )
         if "термоголов" in text or missing_thermostatic_head:
@@ -3218,7 +3237,19 @@ class IntentRouterAgent:
                 if fixtures:
                     slots["connected_fixtures"] = fixtures
 
-            if any(marker in text for marker in ["старый насос", "замена", "на замен"]):
+            if slots.get("pump_replacement") or any(
+                marker in text
+                for marker in [
+                    "старый насос",
+                    "замена",
+                    "на замен",
+                    "сломал",
+                    "перестал работ",
+                    "вышел из стро",
+                    "сгорел",
+                    "заклинил",
+                ]
+            ):
                 slots["pump_selection_mode"] = "замена"
                 slots["pump_selection_mode_explicit"] = True
             elif any(
@@ -3412,11 +3443,31 @@ class IntentRouterAgent:
 
         if category == "sewer" and slots.get("element_type") != "труба":
             branch_pair = re.search(
-                r"(?<!\d)(\d{2,3})\s*(?:[xх×*]|на)\s*(\d{2,3})(?!\d)", text
+                r"(?<!\d)(\d{2,3})\s*(?:[xх×*\-–—]|на)\s*(\d{2,3})(?!\d)",
+                text,
             )
             if branch_pair:
                 slots["diameter_mm"] = int(branch_pair.group(1))
                 slots["secondary_diameter_mm"] = int(branch_pair.group(2))
+            elif slots.get("element_type") == "тройник":
+                stated_mm = [
+                    int(match.group(1))
+                    for match in re.finditer(r"(?<!\d)(\d{2,3})\s*мм\b", text)
+                ]
+                if len(stated_mm) >= 2:
+                    slots["diameter_mm"] = stated_mm[0]
+                    slots["secondary_diameter_mm"] = stated_mm[1]
+            if (
+                slots.get("element_type") in {"отвод", "тройник"}
+                and re.search(
+                    r"\b(?:почти\s+)?под\s+прям\w*\s+угл\w*\b|"
+                    r"\bпрям\w*\s+угол\w*\b",
+                    text,
+                )
+            ):
+                # A right angle is an explicit geometric observation. Feed
+                # search treats its standard 87–90° family as equivalent.
+                slots["angle_deg"] = 90
 
         if category == "radiators":
             bare_system_answer = text.strip(" .,!?:;")

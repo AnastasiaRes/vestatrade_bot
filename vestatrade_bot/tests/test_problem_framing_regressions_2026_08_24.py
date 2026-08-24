@@ -551,7 +551,7 @@ def test_water_quality_explains_how_to_find_accredited_lab(orchestrator) -> None
     assert "принимают ли пробы от частных лиц" in answer
 
 
-def test_undersink_valve_photo_followup_outranks_generic_sink_menu(
+def test_undersink_valve_photo_followup_states_upload_boundary(
     orchestrator,
 ) -> None:
     orchestrator.handle_chat(
@@ -565,7 +565,9 @@ def test_undersink_valve_photo_followup_outranks_generic_sink_menu(
 
     answer = response.answer.lower()
     assert response.debug["category"] == "valves"
-    assert "три снимка" in answer
+    assert "не принимает фотографии" in answer or "не поддерживается" in answer
+    assert "опишите" in answer and "слов" in answer
+    assert "три снимка" not in answer
     assert "не разбирайте его под давлением" in answer
     assert "слив/сифон, подводка или кран" not in answer
 

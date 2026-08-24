@@ -76,6 +76,7 @@ class TurnFrame:
     customer_contact_present: bool = False
     product_context_present: bool = False
     catalog_request_present: bool = False
+    handoff_if_catalog_empty: bool = False
 
     def has(self, act: TurnAct) -> bool:
         return act in self.acts
@@ -181,7 +182,8 @@ _RECOMMEND_SIGNALS = (
 
 _PRODUCT_SELECTION_RE = re.compile(
     r"\b(?:нужен|нужна|нужно|нужны|ищу|выбираю|выбрать|подбер\w*|"
-    r"помог\w*\s+выбрать|посовет\w*|покаж\w*|дай\w*|вывед\w*)\b"
+    r"помог\w*\s+выбрать|посовет\w*|покаж\w*|дай\w*|вывед\w*|"
+    r"найд\w*|поищ\w*)\b"
 )
 
 _CONTACT_NOUN_RE = re.compile(
@@ -590,6 +592,15 @@ class TurnPlanner:
         if asks_handoff:
             acts.append(TurnAct.REQUEST_HANDOFF)
 
+        handoff_if_catalog_empty = bool(
+            asks_handoff
+            and re.search(
+                r"\bесли\b[^.!?]{0,60}\b(?:не\s+получ\w*|не\s+найд\w*|"
+                r"ничего\s+не\s+найд\w*|вариант\w*\s+не\s+будет)\b",
+                text,
+            )
+        )
+
         direction = None
         if third_party_contact_request:
             direction = ContactDirection.THIRD_PARTY
@@ -617,6 +628,7 @@ class TurnPlanner:
             ),
             product_context_present=product_context_present,
             catalog_request_present=catalog_request_present,
+            handoff_if_catalog_empty=handoff_if_catalog_empty,
         )
 
     def plan(
