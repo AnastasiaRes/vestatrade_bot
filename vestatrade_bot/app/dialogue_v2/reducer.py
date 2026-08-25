@@ -6,6 +6,11 @@ import hashlib
 from collections.abc import Iterable
 
 from app.agents.semantic_interpreter import TurnUnderstanding
+from app.answer_v2.contracts import (
+    AnswerPlanningResult,
+    AnswerValidationResult,
+    TaskProgressAssessment,
+)
 from app.catalog_v2.contracts import CandidateStatus, CatalogPlanningResult
 from app.commerce_v2.contracts import (
     CapabilityMode,
@@ -28,6 +33,10 @@ from app.pii import redact_pii_for_model
 from .contracts import (
     Ambiguity,
     AmbiguityRegistered,
+    AnswerPlanCreated,
+    AnswerPlanRejected,
+    AnswerPlanSummary,
+    AnswerPlanValidated,
     CatalogCandidateRejected,
     CatalogNoMatchRecorded,
     CatalogPlanCreated,
@@ -79,9 +88,16 @@ from .contracts import (
     TaskStatus,
     TaskSuspended,
     TaskReadinessAssessed,
+    TaskProgressRecorded,
+    TaskStrategyState,
     TurnIgnoredAsDuplicate,
     TurnMetadata,
     SolutionPlanCreated,
+    ResponseStrategyEscalated,
+    ResponseStrategyKind,
+    ResponseStrategySelected,
+    ShadowDeliveryStatus,
+    ShadowResponseNotDelivered,
 )
 
 
@@ -965,6 +981,8 @@ def reduce_dialogue_state(
         commerce_controls=tuple(commerce_controls[-100:]),
         commerce_outbox=previous.commerce_outbox,
         commerce_planning=previous.commerce_planning,
+        answer_plan_summary=previous.answer_plan_summary,
+        response_strategy_history=previous.response_strategy_history,
         applied_turn_ids=(*previous.applied_turn_ids, turn_metadata.turn_id),
     )
     return ReductionResult(
@@ -1302,3 +1320,175 @@ def record_commerce_execution_result(
     return reduction.model_copy(
         update={"state": state, "events": (*reduction.events, event)}
     )
+
+
+_ACTION_STRATEGIES = {
+    "ask_decision_changing_question": ResponseStrategyKind.ASK_DECISION_FACT,
+    "collect_commerce_fact": ResponseStrategyKind.ASK_DECISION_FACT,
+    "explain_how_to_find_fact": ResponseStrategyKind.EXPLAIN_HOW_TO_FIND_FACT,
+    "explain_term_or_method": ResponseStrategyKind.EXPLAIN_HOW_TO_FIND_FACT,
+    "show_preliminary_options": ResponseStrategyKind.SHOW_PRELIMINARY_OPTIONS,
+    "search_exact": ResponseStrategyKind.CONTINUE_WITH_CONFIRMED_FACTS,
+    "continue_with_confirmed_facts": ResponseStrategyKind.CONTINUE_WITH_CONFIRMED_FACTS,
+    "present_controlled_analog": ResponseStrategyKind.PRESENT_CONTROLLED_ANALOG,
+    "offer_verifiable_external_step": ResponseStrategyKind.OFFER_VERIFIABLE_EXTERNAL_STEP,
+    "start_or_continue_handoff": ResponseStrategyKind.OFFER_VERIFIABLE_EXTERNAL_STEP,
+    "state_capability_boundary": ResponseStrategyKind.STATE_CAPABILITY_BOUNDARY,
+    "state_commerce_capability_boundary": ResponseStrategyKind.STATE_CAPABILITY_BOUNDARY,
+    "close_task": ResponseStrategyKind.CLOSE_TASK,
+}
+
+
+def record_answer_shadow(
+    reduction: ReductionResult,
+    planning: AnswerPlanningResult | None,
+    validation: AnswerValidationResult | None,
+    policy: NextActionPlan,
+    progress_assessments: Iterable[TaskProgressAssessment],
+    turn_metadata: TurnMetadata,
+) -> ReductionResult:
+    """Record bounded Stage 5 summaries; a shadow draft is never delivered."""
+
+    events: list[object] = list(reduction.events)
+    previous_history = {
+        item.task_id: item for item in reduction.state.response_strategy_history
+    }
+    actions = {
+        item.task_id: item
+        for item in (policy.primary, policy.secondary)
+        if item is not None and item.task_id is not None
+    }
+    updated_history = dict(previous_history)
+    assessments = tuple(progress_assessments)
+    for assessment in assessments:
+        previous = previous_history.get(assessment.task_id)
+        action = actions.get(assessment.task_id)
+        strategy = (
+            _ACTION_STRATEGIES.get(action.kind.value)
+            if action is not None
+            else previous.last_strategy if previous is not None else None
+        )
+        attempted = list(previous.attempted_strategies if previous else ())
+        if strategy is not None and strategy not in attempted:
+            attempted.append(strategy)
+            attempted = attempted[-12:]
+        updated_history[assessment.task_id] = TaskStrategyState(
+            task_id=assessment.task_id,
+            consecutive_no_progress=assessment.consecutive_no_progress,
+            attempted_strategies=tuple(attempted),
+            last_strategy=strategy,
+            last_question_fact=(
+                action.fact_name
+                if action is not None and action.fact_name
+                else previous.last_question_fact if previous else None
+            ),
+            last_plan_signature=(
+                planning.answer_plan.semantic_signature
+                if planning is not None
+                and planning.answer_plan is not None
+                and assessment.task_id in planning.answer_plan.task_ids
+                else previous.last_plan_signature if previous else None
+            ),
+            last_catalog_signature=assessment.catalog_signature,
+            last_commerce_signature=assessment.commerce_signature,
+            last_turn=reduction.state.turn_number,
+            delivery_status=(
+                ShadowDeliveryStatus.REJECTED
+                if validation is not None and validation.status == "rejected"
+                else ShadowDeliveryStatus.SHADOW_NOT_DELIVERED
+                if planning is not None and planning.answer_plan is not None
+                else ShadowDeliveryStatus.NOT_PLANNED
+            ),
+        )
+        events.append(
+            TaskProgressRecorded(
+                turn_id=turn_metadata.turn_id,
+                turn_number=reduction.state.turn_number,
+                task_id=assessment.task_id,
+                progress_status=assessment.status.value,
+                consecutive_no_progress=assessment.consecutive_no_progress,
+            )
+        )
+        if strategy is not None:
+            events.append(
+                ResponseStrategySelected(
+                    turn_id=turn_metadata.turn_id,
+                    turn_number=reduction.state.turn_number,
+                    task_id=assessment.task_id,
+                    strategy=strategy,
+                )
+            )
+            if assessment.strategy_change_required and (
+                previous is None or previous.last_strategy != strategy
+            ):
+                events.append(
+                    ResponseStrategyEscalated(
+                        turn_id=turn_metadata.turn_id,
+                        turn_number=reduction.state.turn_number,
+                        task_id=assessment.task_id,
+                        previous_strategy=(previous.last_strategy if previous else None),
+                        strategy=strategy,
+                    )
+                )
+
+    summary = reduction.state.answer_plan_summary
+    if planning is not None and planning.answer_plan is not None:
+        plan = planning.answer_plan
+        validation_status = validation.status if validation else "not_run"
+        delivery = (
+            ShadowDeliveryStatus.REJECTED
+            if validation_status == "rejected"
+            else ShadowDeliveryStatus.SHADOW_NOT_DELIVERED
+        )
+        summary = AnswerPlanSummary(
+            plan_id=plan.plan_id,
+            semantic_signature=plan.semantic_signature,
+            task_ids=plan.task_ids,
+            primary_action=plan.primary_action,
+            question_fact=(plan.question.fact_name if plan.question else None),
+            next_step_kind=plan.next_step.kind.value,
+            validation_status=validation_status,
+            delivery_status=delivery,
+            source_turn=reduction.state.turn_number,
+        )
+        events.append(
+            AnswerPlanCreated(
+                turn_id=turn_metadata.turn_id,
+                turn_number=reduction.state.turn_number,
+                plan_id=plan.plan_id,
+                semantic_signature=plan.semantic_signature,
+            )
+        )
+        if validation is not None and validation.status == "rejected":
+            events.append(
+                AnswerPlanRejected(
+                    turn_id=turn_metadata.turn_id,
+                    turn_number=reduction.state.turn_number,
+                    plan_id=plan.plan_id,
+                    reason_codes=validation.reason_codes,
+                )
+            )
+        elif validation is not None:
+            events.append(
+                AnswerPlanValidated(
+                    turn_id=turn_metadata.turn_id,
+                    turn_number=reduction.state.turn_number,
+                    plan_id=plan.plan_id,
+                    validation_status=validation.status,
+                )
+            )
+        events.append(
+            ShadowResponseNotDelivered(
+                turn_id=turn_metadata.turn_id,
+                turn_number=reduction.state.turn_number,
+                plan_id=plan.plan_id,
+            )
+        )
+
+    state = reduction.state.model_copy(
+        update={
+            "answer_plan_summary": summary,
+            "response_strategy_history": tuple(updated_history.values())[-100:],
+        }
+    )
+    return reduction.model_copy(update={"state": state, "events": tuple(events)})

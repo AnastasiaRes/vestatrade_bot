@@ -82,6 +82,10 @@ class Settings(BaseModel):
     handoff_workflow_v2_shadow_enabled: bool = False
     commerce_outbox_v2_shadow_enabled: bool = False
     commerce_external_execution_enabled: bool = False
+    answer_plan_v2_shadow_enabled: bool = False
+    response_renderer_v2_shadow_enabled: bool = False
+    response_grounding_v2_shadow_enabled: bool = False
+    progress_guard_v2_shadow_enabled: bool = False
 
     @property
     def llm_model(self) -> str:
@@ -237,6 +241,22 @@ def get_settings() -> Settings:
         ),
         commerce_external_execution_enabled=_env_bool(
             "COMMERCE_EXTERNAL_EXECUTION_ENABLED",
+            False,
+        ),
+        answer_plan_v2_shadow_enabled=_env_bool(
+            "ANSWER_PLAN_V2_SHADOW_ENABLED",
+            False,
+        ),
+        response_renderer_v2_shadow_enabled=_env_bool(
+            "RESPONSE_RENDERER_V2_SHADOW_ENABLED",
+            False,
+        ),
+        response_grounding_v2_shadow_enabled=_env_bool(
+            "RESPONSE_GROUNDING_V2_SHADOW_ENABLED",
+            False,
+        ),
+        progress_guard_v2_shadow_enabled=_env_bool(
+            "PROGRESS_GUARD_V2_SHADOW_ENABLED",
             False,
         ),
     )

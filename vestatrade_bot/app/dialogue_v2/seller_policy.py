@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+from app.answer_v2.contracts import StrategyDirective
 from app.catalog_v2.contracts import ReadinessStatus, TaskReadinessAssessment
 from app.commerce_v2.contracts import (
     CapabilityMode,
@@ -18,6 +19,7 @@ from .contracts import (
     NextAction,
     NextActionKind,
     NextActionPlan,
+    ResponseStrategyKind,
     TaskAct,
     TaskStatus,
 )
@@ -47,6 +49,27 @@ class SellerPolicy:
     """Choose an action from typed state only; never inspect message text."""
 
     def decide(
+        self,
+        state: DialogueStateV2,
+        *,
+        semantic_available: bool = True,
+        policy_enabled: bool = True,
+        readiness_assessments: Iterable[TaskReadinessAssessment] = (),
+        commerce_readiness_assessments: Iterable[
+            CommerceReadinessAssessment
+        ] = (),
+        strategy_directives: Iterable[StrategyDirective] = (),
+    ) -> NextActionPlan:
+        plan = self._decide_base(
+            state,
+            semantic_available=semantic_available,
+            policy_enabled=policy_enabled,
+            readiness_assessments=readiness_assessments,
+            commerce_readiness_assessments=commerce_readiness_assessments,
+        )
+        return self._apply_strategy_directive(plan, tuple(strategy_directives))
+
+    def _decide_base(
         self,
         state: DialogueStateV2,
         *,
@@ -252,6 +275,82 @@ class SellerPolicy:
             reason_codes=("accepted_semantics_has_no_actionable_task",),
             required_facts=self._required_facts(state),
             blocking_facts=self._blocking_facts(state),
+        )
+
+    @staticmethod
+    def _apply_strategy_directive(
+        plan: NextActionPlan,
+        directives: tuple[StrategyDirective, ...],
+    ) -> NextActionPlan:
+        """Apply a task-scoped loop decision without inspecting reply text."""
+
+        if not directives:
+            return plan
+        by_task = {item.task_id: item for item in directives}
+        mapping = {
+            ResponseStrategyKind.ASK_DECISION_FACT: (
+                NextActionKind.ASK_DECISION_CHANGING_QUESTION
+            ),
+            ResponseStrategyKind.EXPLAIN_HOW_TO_FIND_FACT: (
+                NextActionKind.EXPLAIN_HOW_TO_FIND_FACT
+            ),
+            ResponseStrategyKind.SHOW_PRELIMINARY_OPTIONS: (
+                NextActionKind.SHOW_PRELIMINARY_OPTIONS
+            ),
+            ResponseStrategyKind.CONTINUE_WITH_CONFIRMED_FACTS: (
+                NextActionKind.CONTINUE_WITH_CONFIRMED_FACTS
+            ),
+            ResponseStrategyKind.PRESENT_CONTROLLED_ANALOG: (
+                NextActionKind.PRESENT_CONTROLLED_ANALOG
+            ),
+            ResponseStrategyKind.OFFER_VERIFIABLE_EXTERNAL_STEP: (
+                NextActionKind.OFFER_VERIFIABLE_EXTERNAL_STEP
+            ),
+            ResponseStrategyKind.STATE_CAPABILITY_BOUNDARY: (
+                NextActionKind.STATE_CAPABILITY_BOUNDARY
+            ),
+            ResponseStrategyKind.CLOSE_TASK: NextActionKind.CLOSE_TASK,
+        }
+
+        def replace(action: NextAction | None) -> tuple[NextAction | None, bool]:
+            if action is None or action.task_id not in by_task:
+                return action, False
+            directive = by_task[action.task_id]
+            # A direct customer question keeps priority.  A selection stored as
+            # secondary may still change strategy independently.
+            if action.kind in {
+                NextActionKind.ANSWER_DIRECT_QUESTION,
+                NextActionKind.ANSWER_VERIFIED_COMMERCE_QUESTION,
+                NextActionKind.REPORT_COMMERCE_EXECUTION_STATUS,
+            }:
+                return action, False
+            return (
+                NextAction(
+                    kind=mapping[directive.strategy],
+                    task_id=action.task_id,
+                    fact_name=directive.fact_name,
+                    reason_code=directive.reason_codes[0],
+                ),
+                True,
+            )
+
+        primary, primary_changed = replace(plan.primary)
+        secondary, secondary_changed = replace(plan.secondary)
+        if not primary_changed and not secondary_changed:
+            return plan
+        return plan.model_copy(
+            update={
+                "primary": primary,
+                "secondary": secondary,
+                "reason_codes": tuple(
+                    dict.fromkeys(
+                        (
+                            *plan.reason_codes,
+                            "progress_guard_strategy_directive_applied",
+                        )
+                    )
+                ),
+            }
         )
 
     def _direct_or_commerce_action(

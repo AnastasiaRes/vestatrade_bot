@@ -213,7 +213,7 @@ class TurnTrace:
         self.semantic_shadow = _scrub_commerce_sensitive(_json_safe(result))
 
     def record_dialogue_v2(self, result: Any) -> None:
-        self.dialogue_v2_shadow = _json_safe(result)
+        self.dialogue_v2_shadow = _scrub_commerce_sensitive(_json_safe(result))
 
     def finish(
         self,
@@ -242,6 +242,20 @@ class TurnTrace:
         )
         v2_plan = (self.dialogue_v2_shadow or {}).get("next_action_plan") or {}
         catalog_v2 = (self.dialogue_v2_shadow or {}).get("catalog_planning")
+        answer_v2 = (self.dialogue_v2_shadow or {}).get("answer_planning")
+        response_rendering_v2 = (self.dialogue_v2_shadow or {}).get(
+            "response_rendering"
+        )
+        grounding_v2 = (self.dialogue_v2_shadow or {}).get(
+            "grounding_validation"
+        )
+        answer_plan_payload = (answer_v2 or {}).get("answer_plan") or {}
+        answer_claims = answer_plan_payload.get("claims") or []
+        legacy_question_facts = (
+            list(state_after.pending_question_state.expected_slots)
+            if state_after.pending_question_state is not None
+            else []
+        )
         v2_primary = (v2_plan.get("primary") or {}).get("kind")
         legacy_primary = selected_next_action.get("primary")
         payload = {
@@ -258,6 +272,10 @@ class TurnTrace:
                     self.settings.commerce_workflows_v2_shadow_enabled
                     or self.settings.handoff_workflow_v2_shadow_enabled
                     or self.settings.commerce_outbox_v2_shadow_enabled
+                    or self.settings.answer_plan_v2_shadow_enabled
+                    or self.settings.response_renderer_v2_shadow_enabled
+                    or self.settings.response_grounding_v2_shadow_enabled
+                    or self.settings.progress_guard_v2_shadow_enabled
                 )
                 else redact_pii_for_model(self.message)
             ),
@@ -320,6 +338,23 @@ class TurnTrace:
             "commerce_workflows_v2_shadow": (
                 (self.dialogue_v2_shadow or {}).get("commerce_planning")
             ),
+            "answer_plan_v2_shadow": answer_v2,
+            "response_renderer_v2_shadow": response_rendering_v2,
+            "response_grounding_v2_shadow": grounding_v2,
+            "task_progress_v2_shadow": (
+                (self.dialogue_v2_shadow or {}).get("progress_assessments")
+            ),
+            "response_strategy_v2_shadow": (
+                (self.dialogue_v2_shadow or {}).get("strategy_directives")
+            ),
+            "stage5_error": (
+                (self.dialogue_v2_shadow or {}).get("stage5_error")
+            ),
+            "stage5_latency_ms": (
+                (self.dialogue_v2_shadow or {}).get("latency_ms")
+                if self.dialogue_v2_shadow is not None
+                else None
+            ),
             "v2_candidate_skus": (
                 (catalog_v2 or {}).get("candidate_skus")
                 if catalog_v2 is not None
@@ -342,6 +377,54 @@ class TurnTrace:
                     "exact_name_match": v2_primary == legacy_primary,
                 }
                 if self.dialogue_v2_shadow is not None
+                else None
+            ),
+            "answer_plan_v2_legacy_divergence": (
+                {
+                    "action": {
+                        "v2": answer_plan_payload.get("primary_action"),
+                        "legacy": legacy_primary,
+                    },
+                    "question_fact": {
+                        "v2": (
+                            (answer_plan_payload.get("question") or {}).get("fact_name")
+                        ),
+                        "legacy": legacy_question_facts,
+                    },
+                    "candidate_sku": {
+                        "v2": [
+                            item.get("sku")
+                            for item in answer_plan_payload.get("products", [])
+                        ],
+                        "legacy": (
+                            [item.sku for item in response.products]
+                            if response is not None
+                            else []
+                        ),
+                    },
+                    "critical_facts": [
+                        {
+                            "kind": item.get("kind"),
+                            "subject_ref": item.get("subject_ref"),
+                            "predicate": item.get("predicate"),
+                            "value": item.get("value"),
+                            "unit": item.get("unit"),
+                        }
+                        for item in answer_claims
+                        if item.get("allowed_in_response")
+                    ],
+                    "commerce_status": [
+                        item.get("value")
+                        for item in answer_claims
+                        if item.get("kind") == "commerce_status"
+                    ],
+                    "capability_claim": [
+                        item.get("predicate")
+                        for item in answer_claims
+                        if item.get("kind") == "capability_fact"
+                    ],
+                }
+                if answer_plan_payload
                 else None
             ),
             "dialogue_v2_shadow": self.dialogue_v2_shadow,
@@ -411,6 +494,10 @@ def build_turn_trace(
         or settings.commerce_workflows_v2_shadow_enabled
         or settings.handoff_workflow_v2_shadow_enabled
         or settings.commerce_outbox_v2_shadow_enabled
+        or settings.answer_plan_v2_shadow_enabled
+        or settings.response_renderer_v2_shadow_enabled
+        or settings.response_grounding_v2_shadow_enabled
+        or settings.progress_guard_v2_shadow_enabled
     ):
         return None
     return TurnTrace(

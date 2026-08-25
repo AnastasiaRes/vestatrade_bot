@@ -150,6 +150,28 @@ class NextActionKind(str, Enum):
     REPORT_COMMERCE_EXECUTION_STATUS = "report_commerce_execution_status"
     STATE_COMMERCE_CAPABILITY_BOUNDARY = "state_commerce_capability_boundary"
     ACKNOWLEDGE_COMMERCE_OPT_OUT = "acknowledge_commerce_opt_out"
+    EXPLAIN_HOW_TO_FIND_FACT = "explain_how_to_find_fact"
+    CONTINUE_WITH_CONFIRMED_FACTS = "continue_with_confirmed_facts"
+    PRESENT_CONTROLLED_ANALOG = "present_controlled_analog"
+    OFFER_VERIFIABLE_EXTERNAL_STEP = "offer_verifiable_external_step"
+    STATE_CAPABILITY_BOUNDARY = "state_capability_boundary"
+
+
+class ResponseStrategyKind(str, Enum):
+    ASK_DECISION_FACT = "ask_decision_fact"
+    EXPLAIN_HOW_TO_FIND_FACT = "explain_how_to_find_fact"
+    SHOW_PRELIMINARY_OPTIONS = "show_preliminary_options"
+    CONTINUE_WITH_CONFIRMED_FACTS = "continue_with_confirmed_facts"
+    PRESENT_CONTROLLED_ANALOG = "present_controlled_analog"
+    OFFER_VERIFIABLE_EXTERNAL_STEP = "offer_verifiable_external_step"
+    STATE_CAPABILITY_BOUNDARY = "state_capability_boundary"
+    CLOSE_TASK = "close_task"
+
+
+class ShadowDeliveryStatus(str, Enum):
+    NOT_PLANNED = "not_planned"
+    SHADOW_NOT_DELIVERED = "shadow_not_delivered"
+    REJECTED = "rejected"
 
 
 class TurnMetadata(FrozenModel):
@@ -259,6 +281,31 @@ class TaskStack(FrozenModel):
     completed_task_ids: tuple[str, ...] = ()
 
 
+class AnswerPlanSummary(FrozenModel):
+    plan_id: str
+    semantic_signature: str
+    task_ids: tuple[str, ...] = ()
+    primary_action: NextActionKind
+    question_fact: str | None = None
+    next_step_kind: str
+    validation_status: str
+    delivery_status: ShadowDeliveryStatus = ShadowDeliveryStatus.SHADOW_NOT_DELIVERED
+    source_turn: int = Field(ge=0)
+
+
+class TaskStrategyState(FrozenModel):
+    task_id: str
+    consecutive_no_progress: int = Field(default=0, ge=0)
+    attempted_strategies: tuple[ResponseStrategyKind, ...] = ()
+    last_strategy: ResponseStrategyKind | None = None
+    last_question_fact: str | None = None
+    last_plan_signature: str | None = None
+    last_catalog_signature: str | None = None
+    last_commerce_signature: str | None = None
+    last_turn: int = Field(default=0, ge=0)
+    delivery_status: ShadowDeliveryStatus = ShadowDeliveryStatus.NOT_PLANNED
+
+
 class DialogueStateV2(FrozenModel):
     schema_version: Literal["2.0"] = DIALOGUE_STATE_SCHEMA_VERSION
     turn_number: int = Field(default=0, ge=0)
@@ -277,6 +324,8 @@ class DialogueStateV2(FrozenModel):
     commerce_controls: tuple[WorkflowControlSignal, ...] = ()
     commerce_outbox: tuple[CommerceOutboxEntry, ...] = ()
     commerce_planning: CommercePlanningResult | None = None
+    answer_plan_summary: AnswerPlanSummary | None = None
+    response_strategy_history: tuple[TaskStrategyState, ...] = ()
     applied_turn_ids: tuple[str, ...] = ()
 
 
@@ -515,6 +564,53 @@ class CommerceDeliveryUnknown(StateEventBase):
     reason_code: str
 
 
+class TaskProgressRecorded(StateEventBase):
+    event_type: Literal["task_progress_recorded"] = "task_progress_recorded"
+    task_id: str
+    progress_status: Literal["progress", "no_progress", "neutral"]
+    consecutive_no_progress: int = Field(ge=0)
+
+
+class ResponseStrategySelected(StateEventBase):
+    event_type: Literal["response_strategy_selected"] = "response_strategy_selected"
+    task_id: str
+    strategy: ResponseStrategyKind
+
+
+class ResponseStrategyEscalated(StateEventBase):
+    event_type: Literal["response_strategy_escalated"] = (
+        "response_strategy_escalated"
+    )
+    task_id: str
+    previous_strategy: ResponseStrategyKind | None = None
+    strategy: ResponseStrategyKind
+
+
+class AnswerPlanCreated(StateEventBase):
+    event_type: Literal["answer_plan_created"] = "answer_plan_created"
+    plan_id: str
+    semantic_signature: str
+
+
+class AnswerPlanValidated(StateEventBase):
+    event_type: Literal["answer_plan_validated"] = "answer_plan_validated"
+    plan_id: str
+    validation_status: str
+
+
+class AnswerPlanRejected(StateEventBase):
+    event_type: Literal["answer_plan_rejected"] = "answer_plan_rejected"
+    plan_id: str
+    reason_codes: tuple[str, ...] = ()
+
+
+class ShadowResponseNotDelivered(StateEventBase):
+    event_type: Literal["shadow_response_not_delivered"] = (
+        "shadow_response_not_delivered"
+    )
+    plan_id: str
+
+
 ReducerEvent: TypeAlias = (
     TaskCreated
     | TaskSuspended
@@ -551,6 +647,13 @@ ReducerEvent: TypeAlias = (
     | CommerceDeliveryConfirmed
     | CommerceDeliveryFailed
     | CommerceDeliveryUnknown
+    | TaskProgressRecorded
+    | ResponseStrategySelected
+    | ResponseStrategyEscalated
+    | AnswerPlanCreated
+    | AnswerPlanValidated
+    | AnswerPlanRejected
+    | ShadowResponseNotDelivered
 )
 
 

@@ -27,6 +27,8 @@ except ImportError:  # pragma: no cover - exercised only without optional depend
     fuzz = _FuzzFallback()
 
 from app.config import PROJECT_ROOT, Settings, get_settings
+from app.answer_v2.renderer import ResponseRendererV2
+from app.answer_v2.sources import build_answer_source_snapshot
 from app.catalog_v2.normalization import build_catalog_snapshot
 from app.commerce_v2.context import build_commerce_context_snapshot
 from app.commerce_v2.registry import build_capability_snapshot
@@ -682,7 +684,12 @@ class ChatOrchestrator:
                 or self.settings.llm_model_strong
             ),
         )
-        self.dialogue_controller_v2 = DialogueControllerV2()
+        self.dialogue_controller_v2 = DialogueControllerV2(
+            response_renderer=ResponseRendererV2(
+                self.llm_client,
+                model=self.settings.llm_model_strong,
+            )
+        )
         self.commerce_capabilities_v2 = (
             build_capability_snapshot(get_business_facts())
             if self._stage4_shadow_enabled()
@@ -690,8 +697,16 @@ class ChatOrchestrator:
         )
         self.catalog_snapshot_v2 = (
             build_catalog_snapshot(products or [])
-            if self._stage3_shadow_enabled()
+            if self._stage3_shadow_enabled() or self._stage5_shadow_enabled()
             else ()
+        )
+        self.answer_source_snapshot_v2 = (
+            build_answer_source_snapshot(
+                products or [],
+                self.catalog_snapshot_v2,
+            )
+            if self._stage5_shadow_enabled()
+            else None
         )
         self.ranking_agent = RankingAgent()
         self.card_agent = ProductCardAgent()
@@ -717,8 +732,13 @@ class ChatOrchestrator:
             products, source = self.feed_loader.load_products(refresh=refresh)
             self.docs_attached = load_docs_for_products(products, self._docs_dirs())
             self.search_agent.set_products(products)
-            if self._stage3_shadow_enabled():
+            if self._stage3_shadow_enabled() or self._stage5_shadow_enabled():
                 self.catalog_snapshot_v2 = build_catalog_snapshot(products)
+            if self._stage5_shadow_enabled():
+                self.answer_source_snapshot_v2 = build_answer_source_snapshot(
+                    products,
+                    self.catalog_snapshot_v2,
+                )
             self.intent_router.set_catalog_brands(
                 [product.brand for product in products if product.brand]
             )
@@ -750,6 +770,14 @@ class ChatOrchestrator:
             self.settings.commerce_workflows_v2_shadow_enabled
             or self.settings.handoff_workflow_v2_shadow_enabled
             or self.settings.commerce_outbox_v2_shadow_enabled
+        )
+
+    def _stage5_shadow_enabled(self) -> bool:
+        return bool(
+            self.settings.answer_plan_v2_shadow_enabled
+            or self.settings.response_renderer_v2_shadow_enabled
+            or self.settings.response_grounding_v2_shadow_enabled
+            or self.settings.progress_guard_v2_shadow_enabled
         )
 
     @property
@@ -793,6 +821,7 @@ class ChatOrchestrator:
                     or self.settings.seller_policy_v2_shadow_enabled
                     or self._stage3_shadow_enabled()
                     or self._stage4_shadow_enabled()
+                    or self._stage5_shadow_enabled()
                 ):
                     trace = build_turn_trace(
                         self.settings,
@@ -823,6 +852,7 @@ class ChatOrchestrator:
                             or self.settings.seller_policy_v2_shadow_enabled
                             or self._stage3_shadow_enabled()
                             or self._stage4_shadow_enabled()
+                            or self._stage5_shadow_enabled()
                         )
                         semantic = None
                         if self.settings.semantic_shadow_enabled or v2_shadow_enabled:
@@ -880,6 +910,21 @@ class ChatOrchestrator:
                                         get_business_facts(),
                                     ),
                                     commerce_capabilities=self.commerce_capabilities_v2,
+                                    answer_plan_enabled=(
+                                        self.settings.answer_plan_v2_shadow_enabled
+                                    ),
+                                    response_renderer_enabled=(
+                                        self.settings.response_renderer_v2_shadow_enabled
+                                    ),
+                                    response_grounding_enabled=(
+                                        self.settings.response_grounding_v2_shadow_enabled
+                                    ),
+                                    progress_guard_enabled=(
+                                        self.settings.progress_guard_v2_shadow_enabled
+                                    ),
+                                    answer_source_snapshot=(
+                                        self.answer_source_snapshot_v2
+                                    ),
                                 )
                                 if (
                                     v2_outcome.status == "applied"
@@ -887,6 +932,7 @@ class ChatOrchestrator:
                                         self.settings.dialogue_state_v2_shadow_enabled
                                         or self._stage3_shadow_enabled()
                                         or self._stage4_shadow_enabled()
+                                        or self._stage5_shadow_enabled()
                                     )
                                 ):
                                     state_with_v2 = self.sessions.snapshot(session_id)

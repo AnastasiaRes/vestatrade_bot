@@ -1,0 +1,143 @@
+{
+  "schema_version": "1.0",
+  "baseline_commit": "5894c96c5b9fe332b92ce43cac76211c9bae4181",
+  "scope": "stage5_read_only_answer_pipeline_audit",
+  "legacy_response_sources": [
+    {
+      "component": "ChatOrchestrator",
+      "file": "app/agents/orchestrator.py",
+      "role": "top-level routing with many early response returns",
+      "safe_as_v2_fact_source": false,
+      "reason": "free-form legacy branches mix policy, facts and rendering"
+    },
+    {
+      "component": "ResponseComposerAgent",
+      "file": "app/agents/response_composer.py",
+      "role": "deterministic and LLM response composition",
+      "safe_as_v2_fact_source": false,
+      "reason": "accepts dialogue history, product cards and prose prompts"
+    },
+    {
+      "component": "ConsultantAgent",
+      "file": "app/agents/consultant.py",
+      "role": "strong-model seller consultation",
+      "safe_as_v2_fact_source": false,
+      "reason": "generated prose is not a source-preserving capability result"
+    },
+    {
+      "component": "commerce topic and handoff composers",
+      "files": [
+        "app/agents/commerce_topics.py",
+        "app/agents/handoff.py"
+      ],
+      "role": "legacy commerce replies and local handoff acknowledgement",
+      "safe_as_v2_fact_source": false,
+      "reason": "Stage 4 workflow/capability state is the typed source of truth"
+    },
+    {
+      "component": "guardrails and emergency responses",
+      "files": [
+        "app/agents/guardrails.py",
+        "app/agents/orchestrator.py"
+      ],
+      "role": "early safety responses",
+      "safe_as_v2_fact_source": false,
+      "reason": "safety remains a separate early legacy layer until Stage 6"
+    }
+  ],
+  "legacy_repeat_mechanisms": [
+    {
+      "component": "SessionState.recent_answer_hashes",
+      "file": "app/models.py",
+      "basis": "answer text hashes",
+      "stage5_policy_authority": false
+    },
+    {
+      "component": "SessionState.question_repeats and recent_clarifications",
+      "file": "app/models.py",
+      "basis": "legacy pending-question counters and text signatures",
+      "stage5_policy_authority": false
+    },
+    {
+      "component": "ResponseComposerAgent repeated reply checks",
+      "file": "app/agents/response_composer.py",
+      "basis": "comparison with previous assistant prose",
+      "stage5_policy_authority": false
+    },
+    {
+      "component": "commerce repeat ladder",
+      "file": "app/agents/commerce_topics.py",
+      "basis": "topic-specific repeat counter",
+      "stage5_policy_authority": false
+    }
+  ],
+  "typed_stage2_to_stage4_sources": [
+    {
+      "artifact": "DialogueStateV2",
+      "authority": "customer tasks, goals, constraints and statuses",
+      "provenance": "reducer events and semantic evidence",
+      "safe_for_answer_plan": true
+    },
+    {
+      "artifact": "NextActionPlan",
+      "authority": "one primary and at most one secondary seller action",
+      "provenance": "SellerPolicy reason codes",
+      "safe_for_answer_plan": true
+    },
+    {
+      "artifact": "TaskReadinessAssessment",
+      "authority": "exact/preliminary/boundary readiness and next decision fact",
+      "provenance": "declarative product contract",
+      "safe_for_answer_plan": true
+    },
+    {
+      "artifact": "CatalogPlanningResult and CandidateAssessment",
+      "authority": "candidate eligibility, hard failures, missing facts and relaxations",
+      "provenance": "normalized catalogue facts",
+      "safe_for_answer_plan": true
+    },
+    {
+      "artifact": "SolutionPlan",
+      "authority": "typed components and unresolved dependencies",
+      "provenance": "Stage 3 multi-task plans",
+      "safe_for_answer_plan": true
+    },
+    {
+      "artifact": "CommercePlanningResult",
+      "authority": "workflow, consent, capability and prepared outbox status",
+      "provenance": "Stage 4 workflow contracts",
+      "safe_for_answer_plan": true
+    },
+    {
+      "artifact": "verified CommerceExecutionResult",
+      "authority": "externally acknowledged delivery only with receipt",
+      "provenance": "gateway receipt reference",
+      "safe_for_answer_plan": true
+    }
+  ],
+  "answer_fact_source_rules": {
+    "product_identity": "CatalogAnswerProduct built from the structured Product and CatalogProductSnapshot",
+    "technical_attribute": "CatalogFact with FactProvenance",
+    "price": "structured Product.price only",
+    "stock": "structured Product.stock_qty or non-unknown Product.stock_status only",
+    "link": "structured http/https Product.url only",
+    "customer_constraint": "active known ConstraintFactV2 only",
+    "technical_calculation": "explicit confirmed VerifiedCapabilityFact only",
+    "commerce_status": "CommerceWorkflowState, with delivered requiring a receipt",
+    "unknown_or_missing": "LimitationPlan without a substituted value"
+  },
+  "legacy_outputs_not_yet_expressible": [
+    "free-form engineering explanations without a typed capability result",
+    "legacy calculations that exist only as prose",
+    "marketing recommendation or best-product claims without a typed recommendation decision",
+    "business policy prose whose Stage 4 snapshot exposes only a fact key",
+    "safety and emergency response prose retained outside V2 until Stage 6"
+  ],
+  "migration_decision": {
+    "mode": "shadow_only",
+    "legacy_reply_as_source": false,
+    "raw_user_message_to_response_llm": false,
+    "full_catalogue_description_to_response_llm": false,
+    "visible_response_switch_deferred_to_stage": 6
+  }
+}
