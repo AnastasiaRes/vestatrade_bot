@@ -40,6 +40,22 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _bounded_rollout_percent(name: str) -> int:
+    """Parse an internal-canary percentage without broadening traffic.
+
+    A malformed or out-of-policy value must disable assignment.  Clamping a
+    value such as ``99`` to ``5`` would silently enable production traffic
+    after an operator error, which violates the Stage 6 fail-closed contract.
+    """
+
+    raw = os.getenv(name, "0").strip()
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return 0
+    return value if 0 <= value <= 5 else 0
+
+
 class Settings(BaseModel):
     feed_url: str
     feed_file_path: Path | None
@@ -86,6 +102,14 @@ class Settings(BaseModel):
     response_renderer_v2_shadow_enabled: bool = False
     response_grounding_v2_shadow_enabled: bool = False
     progress_guard_v2_shadow_enabled: bool = False
+    dialogue_v2_routing_enabled: bool = False
+    dialogue_v2_shadow_compare_enabled: bool = False
+    dialogue_v2_live_delivery_enabled: bool = False
+    dialogue_v2_internal_canary_enabled: bool = False
+    dialogue_v2_internal_canary_percent: int = 0
+    dialogue_v2_migration_registry_path: Path | None = None
+    dialogue_v2_legacy_dry_run_compare_enabled: bool = False
+    dialogue_v2_force_legacy: bool = False
 
     @property
     def llm_model(self) -> str:
@@ -257,6 +281,36 @@ def get_settings() -> Settings:
         ),
         progress_guard_v2_shadow_enabled=_env_bool(
             "PROGRESS_GUARD_V2_SHADOW_ENABLED",
+            False,
+        ),
+        dialogue_v2_routing_enabled=_env_bool(
+            "DIALOGUE_V2_ROUTING_ENABLED",
+            False,
+        ),
+        dialogue_v2_shadow_compare_enabled=_env_bool(
+            "DIALOGUE_V2_SHADOW_COMPARE_ENABLED",
+            False,
+        ),
+        dialogue_v2_live_delivery_enabled=_env_bool(
+            "DIALOGUE_V2_LIVE_DELIVERY_ENABLED",
+            False,
+        ),
+        dialogue_v2_internal_canary_enabled=_env_bool(
+            "DIALOGUE_V2_INTERNAL_CANARY_ENABLED",
+            False,
+        ),
+        dialogue_v2_internal_canary_percent=_bounded_rollout_percent(
+            "DIALOGUE_V2_INTERNAL_CANARY_PERCENT"
+        ),
+        dialogue_v2_migration_registry_path=_resolve_optional_project_path(
+            os.getenv("DIALOGUE_V2_MIGRATION_REGISTRY_PATH")
+        ),
+        dialogue_v2_legacy_dry_run_compare_enabled=_env_bool(
+            "DIALOGUE_V2_LEGACY_DRY_RUN_COMPARE_ENABLED",
+            False,
+        ),
+        dialogue_v2_force_legacy=_env_bool(
+            "DIALOGUE_V2_FORCE_LEGACY",
             False,
         ),
     )

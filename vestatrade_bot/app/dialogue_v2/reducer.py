@@ -1492,3 +1492,90 @@ def record_answer_shadow(
         }
     )
     return reduction.model_copy(update={"state": state, "events": tuple(events)})
+
+
+def record_response_delivery(
+    state: DialogueStateV2,
+    turn_metadata: TurnMetadata,
+    *,
+    plan_id: str,
+    response_digest: str,
+    delivery_id: str,
+    live_epoch_id: str,
+) -> ReductionResult:
+    """Commit a selected V2 response without treating old shadow turns as delivered."""
+
+    from .contracts import (
+        ResponseCommitSucceeded,
+        ResponseDeliveryRecord,
+        ResponseSelectedForDelivery,
+        V2LiveEpochStarted,
+    )
+
+    events: list[object] = []
+    if state.live_epoch_id is None:
+        events.append(
+            V2LiveEpochStarted(
+                turn_id=turn_metadata.turn_id,
+                turn_number=state.turn_number,
+                live_epoch_id=live_epoch_id,
+            )
+        )
+    events.append(
+        ResponseSelectedForDelivery(
+            turn_id=turn_metadata.turn_id,
+            turn_number=state.turn_number,
+            plan_id=plan_id,
+            response_digest=response_digest,
+        )
+    )
+    record = ResponseDeliveryRecord(
+        delivery_id=delivery_id,
+        turn_id=turn_metadata.turn_id,
+        plan_id=plan_id,
+        response_digest=response_digest,
+        live_epoch_id=live_epoch_id,
+        source_turn=state.turn_number,
+    )
+    summary = state.answer_plan_summary
+    if summary is not None and summary.plan_id == plan_id:
+        summary = summary.model_copy(
+            update={"delivery_status": ShadowDeliveryStatus.COMMITTED_TO_SESSION}
+        )
+    delivered = tuple(
+        item.model_copy(
+            update={"delivery_status": ShadowDeliveryStatus.COMMITTED_TO_SESSION}
+        )
+        for item in state.response_strategy_history
+        if item.last_turn == state.turn_number
+    )
+    delivered_by_task = {
+        item.task_id: item for item in state.delivered_response_strategy_history
+    }
+    delivered_by_task.update({item.task_id: item for item in delivered})
+    new_state = state.model_copy(
+        update={
+            "answer_plan_summary": summary,
+            "delivered_response_strategy_history": tuple(
+                delivered_by_task.values()
+            )[-100:],
+            "response_delivery_history": (
+                *state.response_delivery_history,
+                record,
+            )[-100:],
+            "live_epoch_id": state.live_epoch_id or live_epoch_id,
+        }
+    )
+    events.append(
+        ResponseCommitSucceeded(
+            turn_id=turn_metadata.turn_id,
+            turn_number=state.turn_number,
+            delivery_id=delivery_id,
+            plan_id=plan_id,
+        )
+    )
+    return ReductionResult(
+        state=new_state,
+        events=tuple(events),
+        progress=state.progress,
+    )

@@ -172,6 +172,9 @@ class ShadowDeliveryStatus(str, Enum):
     NOT_PLANNED = "not_planned"
     SHADOW_NOT_DELIVERED = "shadow_not_delivered"
     REJECTED = "rejected"
+    SELECTED = "selected"
+    COMMITTED_TO_SESSION = "committed_to_session"
+    LEGACY_FALLBACK = "legacy_fallback"
 
 
 class TurnMetadata(FrozenModel):
@@ -306,6 +309,17 @@ class TaskStrategyState(FrozenModel):
     delivery_status: ShadowDeliveryStatus = ShadowDeliveryStatus.NOT_PLANNED
 
 
+class ResponseDeliveryRecord(FrozenModel):
+    delivery_id: str
+    turn_id: str
+    plan_id: str
+    response_digest: str
+    owner: Literal["v2"] = "v2"
+    status: Literal["committed_to_session"] = "committed_to_session"
+    live_epoch_id: str
+    source_turn: int = Field(ge=0)
+
+
 class DialogueStateV2(FrozenModel):
     schema_version: Literal["2.0"] = DIALOGUE_STATE_SCHEMA_VERSION
     turn_number: int = Field(default=0, ge=0)
@@ -326,6 +340,9 @@ class DialogueStateV2(FrozenModel):
     commerce_planning: CommercePlanningResult | None = None
     answer_plan_summary: AnswerPlanSummary | None = None
     response_strategy_history: tuple[TaskStrategyState, ...] = ()
+    delivered_response_strategy_history: tuple[TaskStrategyState, ...] = ()
+    response_delivery_history: tuple[ResponseDeliveryRecord, ...] = ()
+    live_epoch_id: str | None = None
     applied_turn_ids: tuple[str, ...] = ()
 
 
@@ -611,6 +628,25 @@ class ShadowResponseNotDelivered(StateEventBase):
     plan_id: str
 
 
+class V2LiveEpochStarted(StateEventBase):
+    event_type: Literal["v2_live_epoch_started"] = "v2_live_epoch_started"
+    live_epoch_id: str
+
+
+class ResponseSelectedForDelivery(StateEventBase):
+    event_type: Literal["response_selected_for_delivery"] = (
+        "response_selected_for_delivery"
+    )
+    plan_id: str
+    response_digest: str
+
+
+class ResponseCommitSucceeded(StateEventBase):
+    event_type: Literal["response_commit_succeeded"] = "response_commit_succeeded"
+    delivery_id: str
+    plan_id: str
+
+
 ReducerEvent: TypeAlias = (
     TaskCreated
     | TaskSuspended
@@ -654,6 +690,9 @@ ReducerEvent: TypeAlias = (
     | AnswerPlanValidated
     | AnswerPlanRejected
     | ShadowResponseNotDelivered
+    | V2LiveEpochStarted
+    | ResponseSelectedForDelivery
+    | ResponseCommitSucceeded
 )
 
 

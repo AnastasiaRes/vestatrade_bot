@@ -290,6 +290,7 @@ class CatalogAnswerProduct(FrozenModel):
     stock_status: str | None = None
     stock_qty: int | None = None
     url: str | None = None
+    image_url: str | None = None
     updated_at: str | None = None
     facts: tuple[CatalogFact, ...] = ()
 

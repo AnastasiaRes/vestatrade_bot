@@ -84,6 +84,12 @@ class ChatRequest(BaseModel):
         pattern=r"^[A-Za-z0-9._:-]+$",
     )
     message: str = Field(min_length=1, max_length=8_000)
+    client_turn_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=160,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
 
 
 class ChatProductSummary(BaseModel):
@@ -104,6 +110,15 @@ class ChatResponse(BaseModel):
     handoff_status: str = "none"
     handoff_ticket_id: str | None = None
     debug: dict[str, Any] = Field(default_factory=dict)
+
+
+class IdempotentResponseRecord(BaseModel):
+    """Bounded transport retry record; dialogue V2 never stores response prose."""
+
+    client_turn_id: str
+    response_payload: dict[str, Any]
+    response_digest: str
+    session_revision: int = Field(ge=0)
 
 
 class IntentResult(BaseModel):
@@ -256,6 +271,7 @@ class ProductRelationContext(BaseModel):
 
 class SessionState(BaseModel):
     session_id: str
+    session_revision: int = Field(default=0, ge=0)
     last_intent: str | None = None
     category: str | None = None
     slots: dict[str, Any] = Field(default_factory=dict)
@@ -327,6 +343,14 @@ class SessionState(BaseModel):
     # both in-memory and Redis stores, but legacy routing and slots never read
     # it.  Old sessions omit the field and therefore load as ``None``.
     dialogue_state_v2: DialogueStateV2 | None = None
+    # Stage 6 uses a separate epoch for answers that were actually selected.
+    # Old shadow strategies must never imply that a customer saw a question.
+    live_dialogue_state_v2: DialogueStateV2 | None = None
+    v2_live_epoch_id: str | None = None
+    v2_sticky_assignment_id: str | None = None
+    v2_migration_cell_id: str | None = None
+    v2_last_products: list[ProductCard] = Field(default_factory=list)
+    idempotent_responses: list[IdempotentResponseRecord] = Field(default_factory=list)
 
     @property
     def pending_question_id(self) -> str | None:

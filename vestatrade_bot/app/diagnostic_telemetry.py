@@ -201,6 +201,7 @@ class TurnTrace:
     search_events: list[dict[str, Any]] = field(default_factory=list)
     semantic_shadow: dict[str, Any] | None = None
     dialogue_v2_shadow: dict[str, Any] | None = None
+    cutover_v2: dict[str, Any] | None = None
     _written: bool = False
 
     def record_llm(self, event: dict[str, Any]) -> None:
@@ -214,6 +215,9 @@ class TurnTrace:
 
     def record_dialogue_v2(self, result: Any) -> None:
         self.dialogue_v2_shadow = _scrub_commerce_sensitive(_json_safe(result))
+
+    def record_cutover_v2(self, result: Any) -> None:
+        self.cutover_v2 = _scrub_commerce_sensitive(_json_safe(result))
 
     def finish(
         self,
@@ -276,6 +280,11 @@ class TurnTrace:
                     or self.settings.response_renderer_v2_shadow_enabled
                     or self.settings.response_grounding_v2_shadow_enabled
                     or self.settings.progress_guard_v2_shadow_enabled
+                    or self.settings.dialogue_v2_routing_enabled
+                    or self.settings.dialogue_v2_shadow_compare_enabled
+                    or self.settings.dialogue_v2_live_delivery_enabled
+                    or self.settings.dialogue_v2_internal_canary_enabled
+                    or self.settings.dialogue_v2_force_legacy
                 )
                 else redact_pii_for_model(self.message)
             ),
@@ -355,6 +364,7 @@ class TurnTrace:
                 if self.dialogue_v2_shadow is not None
                 else None
             ),
+            "cutover_v2": self.cutover_v2,
             "v2_candidate_skus": (
                 (catalog_v2 or {}).get("candidate_skus")
                 if catalog_v2 is not None
@@ -445,7 +455,7 @@ class TurnTrace:
             "error": (
                 {
                     "type": type(error).__name__,
-                    "message": redact_pii_for_model(str(error))[:1200],
+                    "message": "turn_failed_before_response",
                 }
                 if error is not None
                 else None
@@ -498,6 +508,11 @@ def build_turn_trace(
         or settings.response_renderer_v2_shadow_enabled
         or settings.response_grounding_v2_shadow_enabled
         or settings.progress_guard_v2_shadow_enabled
+        or settings.dialogue_v2_routing_enabled
+        or settings.dialogue_v2_shadow_compare_enabled
+        or settings.dialogue_v2_live_delivery_enabled
+        or settings.dialogue_v2_internal_canary_enabled
+        or settings.dialogue_v2_force_legacy
     ):
         return None
     return TurnTrace(
@@ -513,7 +528,13 @@ def build_turn_trace(
 def record_llm_event(**event: Any) -> None:
     trace = _ACTIVE_TRACE.get()
     if trace is not None:
-        trace.record_llm(event)
+        try:
+            trace.record_llm(event)
+        except Exception as exc:  # pragma: no cover - injected telemetry failure
+            logger.warning(
+                "Could not record LLM diagnostic error_type=%s",
+                type(exc).__name__,
+            )
 
 
 def record_llm_json_validation(
@@ -545,27 +566,57 @@ def record_search_event(
         query_value: Any = model_to_dict(query)
     else:
         query_value = query
-    trace.record_search(
-        {
-            "operation": operation,
-            "query": query_value,
-            "relaxations": relaxations or [],
-            "result_skus": result_skus,
-            "error": error,
-        }
-    )
+    try:
+        trace.record_search(
+            {
+                "operation": operation,
+                "query": query_value,
+                "relaxations": relaxations or [],
+                "result_skus": result_skus,
+                "error": error,
+            }
+        )
+    except Exception as exc:  # pragma: no cover - injected telemetry failure
+        logger.warning(
+            "Could not record search diagnostic error_type=%s",
+            type(exc).__name__,
+        )
 
 
 def record_semantic_shadow(result: Any) -> None:
     trace = _ACTIVE_TRACE.get()
     if trace is not None:
-        trace.record_semantic(result)
+        try:
+            trace.record_semantic(result)
+        except Exception as exc:  # pragma: no cover - injected telemetry failure
+            logger.warning(
+                "Could not record semantic diagnostic error_type=%s",
+                type(exc).__name__,
+            )
 
 
 def record_dialogue_v2_shadow(result: Any) -> None:
     trace = _ACTIVE_TRACE.get()
     if trace is not None:
-        trace.record_dialogue_v2(result)
+        try:
+            trace.record_dialogue_v2(result)
+        except Exception as exc:  # pragma: no cover - injected telemetry failure
+            logger.warning(
+                "Could not record V2 diagnostic error_type=%s",
+                type(exc).__name__,
+            )
+
+
+def record_cutover_v2(result: Any) -> None:
+    trace = _ACTIVE_TRACE.get()
+    if trace is not None:
+        try:
+            trace.record_cutover_v2(result)
+        except Exception as exc:  # pragma: no cover - injected telemetry failure
+            logger.warning(
+                "Could not record cutover diagnostic error_type=%s",
+                type(exc).__name__,
+            )
 
 
 def finish_turn_trace(
@@ -582,4 +633,7 @@ def finish_turn_trace(
     try:
         trace.finish(response=response, state_after=state_after, error=error)
     except Exception as exc:  # pragma: no cover - last-resort observability guard
-        logger.warning("Could not finalize diagnostic turn trace: %s", exc)
+        logger.warning(
+            "Could not finalize diagnostic turn trace error_type=%s",
+            type(exc).__name__,
+        )

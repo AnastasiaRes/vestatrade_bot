@@ -50,6 +50,7 @@ def build_answer_source_snapshot(
                 stock_status=product.stock_status or None,
                 stock_qty=product.stock_qty,
                 url=product.url or None,
+                image_url=product.image_url or None,
                 updated_at=product.updated_at,
                 facts=identity.facts,
             )

@@ -29,6 +29,7 @@ except ImportError:  # pragma: no cover - exercised only without optional depend
 from app.config import PROJECT_ROOT, Settings, get_settings
 from app.answer_v2.renderer import ResponseRendererV2
 from app.answer_v2.sources import build_answer_source_snapshot
+from app.catalog_v2.contracts import ProductKind
 from app.catalog_v2.normalization import build_catalog_snapshot
 from app.commerce_v2.context import build_commerce_context_snapshot
 from app.commerce_v2.registry import build_capability_snapshot
@@ -36,17 +37,31 @@ from app.diagnostic_telemetry import (
     activate_turn_trace,
     build_turn_trace,
     finish_turn_trace,
+    record_cutover_v2,
     record_dialogue_v2_shadow,
     record_semantic_shadow,
 )
 from app.dialogue_v2.contracts import DialogueStateV2, TurnMetadata
 from app.dialogue_v2.controller import DialogueControllerV2, DialogueV2Outcome
+from app.dialogue_v2.reducer import record_response_delivery
+from app.cutover_v2.assembler import build_v2_turn_candidate
+from app.cutover_v2.contracts import (
+    EarlyControlOutcome,
+    EarlyControlResult,
+    ExecutionMode,
+    ResponseOwner,
+    TurnCommit,
+)
+from app.cutover_v2.parity import assess_response_parity
+from app.cutover_v2.policy import CutoverRuntime, arbitrate_turn, decide_cutover
+from app.cutover_v2.registry import load_registry
 from app.docs_loader import load_docs_for_products
 from app.feed_loader import FeedLoader
 from app.models import (
     ChatProductSummary,
     ChatResponse,
     HandoffSummary,
+    IdempotentResponseRecord,
     IntentResult,
     LastSearchOutcome,
     PendingQuestionState,
@@ -60,6 +75,7 @@ from app.models import (
     SessionState,
 )
 from app.openrouter_client import OpenRouterClient
+from app.pii import redact_pii_for_model
 from app.session_store import SessionStore, build_session_store
 
 from app.business_config import get_business_facts
@@ -690,6 +706,9 @@ class ChatOrchestrator:
                 model=self.settings.llm_model_strong,
             )
         )
+        self.cutover_registry_v2 = load_registry(
+            self.settings.dialogue_v2_migration_registry_path
+        )
         self.commerce_capabilities_v2 = (
             build_capability_snapshot(get_business_facts())
             if self._stage4_shadow_enabled()
@@ -697,7 +716,11 @@ class ChatOrchestrator:
         )
         self.catalog_snapshot_v2 = (
             build_catalog_snapshot(products or [])
-            if self._stage3_shadow_enabled() or self._stage5_shadow_enabled()
+            if (
+                self._stage3_shadow_enabled()
+                or self._stage5_shadow_enabled()
+                or self._stage6_pipeline_enabled()
+            )
             else ()
         )
         self.answer_source_snapshot_v2 = (
@@ -705,7 +728,7 @@ class ChatOrchestrator:
                 products or [],
                 self.catalog_snapshot_v2,
             )
-            if self._stage5_shadow_enabled()
+            if self._stage5_shadow_enabled() or self._stage6_pipeline_enabled()
             else None
         )
         self.ranking_agent = RankingAgent()
@@ -732,9 +755,13 @@ class ChatOrchestrator:
             products, source = self.feed_loader.load_products(refresh=refresh)
             self.docs_attached = load_docs_for_products(products, self._docs_dirs())
             self.search_agent.set_products(products)
-            if self._stage3_shadow_enabled() or self._stage5_shadow_enabled():
+            if (
+                self._stage3_shadow_enabled()
+                or self._stage5_shadow_enabled()
+                or self._stage6_pipeline_enabled()
+            ):
                 self.catalog_snapshot_v2 = build_catalog_snapshot(products)
-            if self._stage5_shadow_enabled():
+            if self._stage5_shadow_enabled() or self._stage6_pipeline_enabled():
                 self.answer_source_snapshot_v2 = build_answer_source_snapshot(
                     products,
                     self.catalog_snapshot_v2,
@@ -780,6 +807,25 @@ class ChatOrchestrator:
             or self.settings.progress_guard_v2_shadow_enabled
         )
 
+    def _stage6_pipeline_enabled(self) -> bool:
+        return bool(
+            self.settings.dialogue_v2_routing_enabled
+            and (
+                self.settings.dialogue_v2_shadow_compare_enabled
+                or self.settings.dialogue_v2_live_delivery_enabled
+                or self.settings.dialogue_v2_internal_canary_enabled
+            )
+        )
+
+    def _stage6_live_attempt_enabled(self) -> bool:
+        return bool(
+            self.settings.dialogue_v2_routing_enabled
+            and self.settings.dialogue_v2_live_delivery_enabled
+            and self.settings.dialogue_v2_internal_canary_enabled
+            and self.settings.dialogue_v2_internal_canary_percent > 0
+            and not self.settings.dialogue_v2_force_legacy
+        )
+
     @property
     def composer(self) -> ResponseComposerAgent:
         agent = getattr(self._request_agents, "composer", None)
@@ -799,7 +845,347 @@ class ChatOrchestrator:
             self._request_agents.consultant = agent
         return agent
 
-    def handle_chat(self, session_id: str, message: str) -> ChatResponse:
+    @staticmethod
+    def _response_digest(response: ChatResponse) -> str:
+        payload = response.model_dump(mode="json", exclude={"debug"})
+        return hashlib.sha256(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+
+    @staticmethod
+    def _idempotent_response(
+        state: SessionState,
+        client_turn_id: str | None,
+    ) -> ChatResponse | None:
+        if not client_turn_id:
+            return None
+        record = next(
+            (
+                item
+                for item in reversed(state.idempotent_responses)
+                if item.client_turn_id == client_turn_id
+            ),
+            None,
+        )
+        if record is None:
+            return None
+        return ChatResponse.model_validate(record.response_payload)
+
+    def _record_idempotent_response(
+        self,
+        state: SessionState,
+        client_turn_id: str | None,
+        response: ChatResponse,
+    ) -> None:
+        if not client_turn_id:
+            return
+        if any(
+            item.client_turn_id == client_turn_id
+            for item in state.idempotent_responses
+        ):
+            return
+        state.idempotent_responses = [
+            *state.idempotent_responses,
+            IdempotentResponseRecord(
+                client_turn_id=client_turn_id,
+                response_payload=response.model_dump(mode="json"),
+                response_digest=self._response_digest(response),
+                session_revision=state.session_revision,
+            ),
+        ][-20:]
+
+    def _stage6_early_control(
+        self,
+        message: str,
+        before_turn: SessionState,
+    ) -> EarlyControlResult:
+        """Reuse verified legacy guards on an isolated snapshot before V2 routing."""
+
+        scratch = before_turn.model_copy(deep=True)
+        checks = (
+            (
+                EarlyControlOutcome.SAFETY_RESPONSE,
+                "water_heater_operational_safety",
+                self._maybe_water_heater_operational_safety_answer,
+            ),
+            (
+                EarlyControlOutcome.EMERGENCY_RESPONSE,
+                "water_emergency",
+                self._maybe_water_emergency_answer,
+            ),
+            (
+                EarlyControlOutcome.SAFETY_RESPONSE,
+                "gas_work_safety",
+                self._maybe_gas_work_answer,
+            ),
+            (
+                EarlyControlOutcome.SAFETY_RESPONSE,
+                "gas_appliance_safety",
+                self._maybe_gas_safety_answer,
+            ),
+            (
+                EarlyControlOutcome.SAFETY_RESPONSE,
+                "electrical_safety",
+                self._maybe_electrical_safety_answer,
+            ),
+        )
+        for outcome, reason, checker in checks:
+            if checker(message, scratch):
+                return EarlyControlResult(
+                    outcome=outcome,
+                    reason_codes=(reason,),
+                )
+        if redact_pii_for_model(message) != message:
+            return EarlyControlResult(
+                outcome=EarlyControlOutcome.PII_CONTROL,
+                reason_codes=("pii_present_route_to_legacy",),
+            )
+        return EarlyControlResult()
+
+    def _run_stage6_v2_candidate(
+        self,
+        previous_state: DialogueStateV2,
+        semantic: Any,
+        turn_id: str,
+        before_turn: SessionState,
+    ) -> DialogueV2Outcome:
+        return self.dialogue_controller_v2.run(
+            previous_state,
+            semantic,
+            TurnMetadata(turn_id=turn_id),
+            policy_enabled=True,
+            product_contracts_enabled=True,
+            catalog_planner_enabled=True,
+            solution_plan_enabled=True,
+            catalog_snapshot=self.catalog_snapshot_v2,
+            commerce_workflows_enabled=False,
+            handoff_workflow_enabled=False,
+            commerce_outbox_enabled=False,
+            commerce_context=build_commerce_context_snapshot(
+                before_turn,
+                get_business_facts(),
+            ),
+            commerce_capabilities=build_capability_snapshot(),
+            answer_plan_enabled=True,
+            response_renderer_enabled=True,
+            response_grounding_enabled=True,
+            progress_guard_enabled=True,
+            answer_source_snapshot=self.answer_source_snapshot_v2,
+        )
+
+    def _stage6_runtime(self, before_turn: SessionState) -> CutoverRuntime:
+        return CutoverRuntime(
+            routing_enabled=self.settings.dialogue_v2_routing_enabled,
+            shadow_compare_enabled=self.settings.dialogue_v2_shadow_compare_enabled,
+            live_delivery_enabled=self.settings.dialogue_v2_live_delivery_enabled,
+            internal_canary_enabled=(
+                self.settings.dialogue_v2_internal_canary_enabled
+            ),
+            internal_canary_percent=(
+                self.settings.dialogue_v2_internal_canary_percent
+            ),
+            force_legacy=self.settings.dialogue_v2_force_legacy,
+            registry_valid=self.cutover_registry_v2.valid,
+            is_existing_session=bool(
+                before_turn.history
+                or before_turn.live_dialogue_state_v2 is not None
+                or before_turn.dialogue_state_v2 is not None
+            ),
+            sticky_cell_id=before_turn.v2_migration_cell_id,
+            sticky_assignment_id=before_turn.v2_sticky_assignment_id,
+        )
+
+    def _public_product_kinds_v2(
+        self,
+        response: ChatResponse,
+    ) -> dict[str, ProductKind]:
+        result: dict[str, ProductKind] = {}
+        snapshot = self.answer_source_snapshot_v2
+        if snapshot is None:
+            return result
+        for product in response.products:
+            source = snapshot.product(product.sku)
+            if source is not None:
+                result[product.sku] = source.product_kind
+        return result
+
+    def _commit_v2_response(
+        self,
+        before_turn: SessionState,
+        message: str,
+        client_turn_id: str | None,
+        turn_id: str,
+        decision: Any,
+        candidate: Any,
+    ) -> tuple[ChatResponse, TurnCommit]:
+        if candidate.response is None or candidate.response_digest is None:
+            raise RuntimeError("cannot commit an incomplete V2 candidate")
+        if self._response_digest(candidate.response) != candidate.response_digest:
+            raise RuntimeError("v2_response_digest_mismatch_before_commit")
+        snapshot = self.answer_source_snapshot_v2
+        if (
+            snapshot is None
+            or candidate.catalog_revision != snapshot.source_revision
+            or candidate.source_revision != snapshot.source_revision
+        ):
+            raise RuntimeError("stale_catalog_revision_before_v2_commit")
+        live_epoch_id = before_turn.v2_live_epoch_id or hashlib.sha256(
+            f"{before_turn.session_id}:v2-live".encode("utf-8")
+        ).hexdigest()[:24]
+        delivery_id = hashlib.sha256(
+            f"{turn_id}:{candidate.answer_plan_id}:{candidate.response_digest}".encode(
+                "utf-8"
+            )
+        ).hexdigest()[:32]
+        delivery = record_response_delivery(
+            candidate.state_after,
+            TurnMetadata(turn_id=turn_id),
+            plan_id=str(candidate.answer_plan_id),
+            response_digest=candidate.response_digest,
+            delivery_id=delivery_id,
+            live_epoch_id=live_epoch_id,
+        )
+        selected = before_turn.model_copy(deep=True)
+        selected.live_dialogue_state_v2 = delivery.state
+        selected.v2_live_epoch_id = live_epoch_id
+        selected.v2_sticky_assignment_id = decision.sticky_assignment_id
+        selected.v2_migration_cell_id = decision.cell_id
+        selected.session_revision = before_turn.session_revision + 1
+        cards: list[ProductCard] = []
+        for public in candidate.response.products:
+            snapshot_product = snapshot.product(public.sku)
+            if snapshot_product is None or any(
+                (
+                    snapshot_product.name != public.name,
+                    snapshot_product.price != public.price,
+                    snapshot_product.currency != public.currency,
+                    snapshot_product.stock_status != public.stock_status,
+                    snapshot_product.url != public.url,
+                    snapshot_product.image_url != public.image_url,
+                )
+            ):
+                raise RuntimeError("stale_catalog_fact_before_v2_commit")
+            source = self._find_product_by_sku(public.sku)
+            if source is None or source.price is None or not source.url:
+                raise RuntimeError("V2 response source changed before commit")
+            cards.append(
+                ProductCard(
+                    sku=source.sku,
+                    name=source.name,
+                    brand=source.brand,
+                    price=source.price,
+                    currency=source.currency,
+                    stock_status=source.stock_status,
+                    stock_qty=source.stock_qty,
+                    url=source.url,
+                    image_url=source.image_url,
+                    characteristics={},
+                )
+            )
+        selected.v2_last_products = cards
+        # History and the presentation cache are shared transport context, not
+        # legacy decision slots.  A technical fallback therefore still knows
+        # which cards the customer actually saw.
+        selected.last_products = cards
+        selected.shown_product_skus = [card.sku for card in cards]
+        self._append_history(selected, message, candidate.response.answer)
+        self._record_idempotent_response(
+            selected,
+            client_turn_id,
+            candidate.response,
+        )
+        selected_state_revision = hashlib.sha256(
+            delivery.state.model_dump_json().encode("utf-8")
+        ).hexdigest()
+        commit = TurnCommit(
+            commit_id=delivery_id,
+            turn_id=turn_id,
+            response_owner=ResponseOwner.V2,
+            execution_mode=decision.execution_mode,
+            session_revision_before=before_turn.session_revision,
+            session_revision_after=selected.session_revision,
+            response_digest=candidate.response_digest,
+            selected_state_revision=selected_state_revision,
+            answer_plan_id=candidate.answer_plan_id,
+            catalog_revision=candidate.catalog_revision,
+            live_epoch_id=live_epoch_id,
+            external_command_ids=(),
+            committed=True,
+            reason_codes=("v2_state_and_response_committed_atomically",),
+        )
+        self.sessions.save(selected)
+        return candidate.response, commit
+
+    def _cutover_trace_payload(
+        self,
+        *,
+        early_control: EarlyControlResult,
+        decision: Any | None = None,
+        candidate: Any | None = None,
+        arbitration: Any | None = None,
+        commit: TurnCommit | None = None,
+        parity: Any | None = None,
+        error: str | None = None,
+    ) -> dict[str, Any]:
+        candidate_summary = None
+        if candidate is not None:
+            candidate_summary = candidate.model_dump(
+                mode="json",
+                exclude={"response", "state_before", "state_after"},
+            )
+        return {
+            "schema_version": "1.0",
+            "rollout_registry": {
+                "revision": self.cutover_registry_v2.revision,
+                "valid": self.cutover_registry_v2.valid,
+                "source": self.cutover_registry_v2.source,
+            },
+            "runtime_controls": {
+                "routing_enabled": self.settings.dialogue_v2_routing_enabled,
+                "shadow_compare_enabled": (
+                    self.settings.dialogue_v2_shadow_compare_enabled
+                ),
+                "live_delivery_enabled": (
+                    self.settings.dialogue_v2_live_delivery_enabled
+                ),
+                "internal_canary_enabled": (
+                    self.settings.dialogue_v2_internal_canary_enabled
+                ),
+                "internal_canary_percent": (
+                    self.settings.dialogue_v2_internal_canary_percent
+                ),
+                "force_legacy": self.settings.dialogue_v2_force_legacy,
+                "external_execution_enabled": (
+                    self.settings.commerce_external_execution_enabled
+                ),
+            },
+            "early_control": early_control,
+            "decision": decision,
+            "candidate": candidate_summary,
+            "arbitration": arbitration,
+            "commit": commit,
+            "parity": parity,
+            "fallback_attempted": bool(
+                arbitration is not None and arbitration.fallback_required
+            ),
+            "external_fallback_forbidden": bool(
+                arbitration is not None
+                and arbitration.external_fallback_forbidden
+            ),
+            "error": error,
+        }
+
+    def handle_chat(
+        self,
+        session_id: str,
+        message: str,
+        client_turn_id: str | None = None,
+    ) -> ChatResponse:
         # Turns inside one dialogue are transactional, while independent users
         # may proceed in parallel.  This preserves session history without the
         # latency penalty of a process-wide chat lock.
@@ -813,6 +1199,9 @@ class ChatOrchestrator:
                 # Capture state while holding the distributed lock so a failed
                 # turn cannot overwrite a successful concurrent worker turn.
                 before_turn = self.sessions.snapshot(session_id)
+                cached = self._idempotent_response(before_turn, client_turn_id)
+                if cached is not None:
+                    return cached
                 trace = None
                 if (
                     self.settings.diagnostic_telemetry_enabled
@@ -822,26 +1211,151 @@ class ChatOrchestrator:
                     or self._stage3_shadow_enabled()
                     or self._stage4_shadow_enabled()
                     or self._stage5_shadow_enabled()
+                    or self._stage6_pipeline_enabled()
+                    or self.settings.dialogue_v2_force_legacy
                 ):
-                    trace = build_turn_trace(
-                        self.settings,
-                        session_id=session_id,
-                        message=message,
-                        state_before=before_turn,
-                        catalog=self.search_agent.get_catalog_manifest(
-                            self.products_loaded_from
-                        ),
-                    )
+                    try:
+                        trace = build_turn_trace(
+                            self.settings,
+                            session_id=session_id,
+                            message=message,
+                            state_before=before_turn,
+                            catalog=self.search_agent.get_catalog_manifest(
+                                self.products_loaded_from
+                            ),
+                        )
+                    except Exception as trace_exc:
+                        logger.warning(
+                            "Could not start diagnostic trace error_type=%s",
+                            type(trace_exc).__name__,
+                        )
+                        trace = None
                 request_budget = getattr(self.llm_client, "request_budget", None)
                 budget_scope = request_budget() if callable(request_budget) else nullcontext()
                 with activate_turn_trace(trace):
                     try:
+                        early_control = EarlyControlResult()
+                        semantic = None
+                        live_v2_outcome = None
+                        live_candidate = None
+                        live_decision = None
+                        live_arbitration = None
+                        live_commit = None
+                        cutover_error = None
                         with budget_scope:
                             self._request_agents.composer = ResponseComposerAgent(self.llm_client)
                             self._request_agents.consultant = ConsultantAgent(
                                 self.llm_client,
                                 model=self.settings.llm_model_strong,
                             )
+                            if self._stage6_live_attempt_enabled():
+                                early_control = self._stage6_early_control(
+                                    message,
+                                    before_turn,
+                                )
+                                if early_control.outcome == EarlyControlOutcome.PASS:
+                                    try:
+                                        if not self.catalog_snapshot_v2:
+                                            self._ensure_products_loaded()
+                                        semantic = self.semantic_interpreter.interpret(
+                                            message,
+                                            before_turn,
+                                        )
+                                        record_semantic_shadow(semantic)
+                                        turn_id = (
+                                            client_turn_id
+                                            or (trace.trace_id if trace is not None else None)
+                                            or hashlib.sha256(
+                                                (
+                                                    f"{session_id}:"
+                                                    f"{before_turn.session_revision}:"
+                                                    f"{len(before_turn.history)}"
+                                                ).encode("utf-8")
+                                            ).hexdigest()
+                                        )
+                                        live_v2_outcome = self._run_stage6_v2_candidate(
+                                            before_turn.live_dialogue_state_v2
+                                            or DialogueStateV2(),
+                                            semantic,
+                                            turn_id,
+                                            before_turn,
+                                        )
+                                        live_candidate = build_v2_turn_candidate(
+                                            live_v2_outcome,
+                                            self.answer_source_snapshot_v2,
+                                            session_id=session_id,
+                                            turn_id=turn_id,
+                                        )
+                                        # Record every live-attempt outcome,
+                                        # including candidates rejected before
+                                        # arbitration.  Otherwise the release
+                                        # trace would show only the compact
+                                        # rejection summary and lose the exact
+                                        # failing Stage 2–5 boundary.
+                                        record_dialogue_v2_shadow(live_v2_outcome)
+                                        session_fingerprint = hashlib.sha256(
+                                            session_id.encode("utf-8")
+                                        ).hexdigest()
+                                        live_decision = decide_cutover(
+                                            early_control,
+                                            live_candidate,
+                                            self.cutover_registry_v2.registry(),
+                                            self._stage6_runtime(before_turn),
+                                            session_fingerprint=session_fingerprint,
+                                        )
+                                        live_arbitration = arbitrate_turn(
+                                            live_decision,
+                                            live_candidate,
+                                        )
+                                        if live_arbitration.response_owner == ResponseOwner.V2:
+                                            response, live_commit = self._commit_v2_response(
+                                                before_turn,
+                                                message,
+                                                client_turn_id,
+                                                turn_id,
+                                                live_decision,
+                                                live_candidate,
+                                            )
+                                            record_cutover_v2(
+                                                self._cutover_trace_payload(
+                                                    early_control=early_control,
+                                                    decision=live_decision,
+                                                    candidate=live_candidate,
+                                                    arbitration=live_arbitration,
+                                                    commit=live_commit,
+                                                )
+                                            )
+                                            finish_turn_trace(
+                                                trace,
+                                                response=response,
+                                                state_after=self.sessions.snapshot(session_id),
+                                            )
+                                            return response
+                                    except Exception as live_exc:
+                                        # No external commands are enabled for the
+                                        # internal canary. Restore the untouched
+                                        # snapshot and let legacy own the whole turn.
+                                        self.sessions.restore(before_turn)
+                                        # Exception text from a provider or a
+                                        # store can contain credential-bearing
+                                        # URLs.  The trace keeps a stable
+                                        # layer/code without persisting the
+                                        # provider exception text.
+                                        cutover_error = (
+                                            f"{type(live_exc).__name__}:"
+                                            "stage6_candidate_or_commit_failed"
+                                        )
+                                else:
+                                    session_fingerprint = hashlib.sha256(
+                                        session_id.encode("utf-8")
+                                    ).hexdigest()
+                                    live_decision = decide_cutover(
+                                        early_control,
+                                        None,
+                                        self.cutover_registry_v2.registry(),
+                                        self._stage6_runtime(before_turn),
+                                        session_fingerprint=session_fingerprint,
+                                    )
                             response = self._handle_chat(session_id, message)
 
                         # Run only after the legacy response is fully produced.
@@ -853,9 +1367,27 @@ class ChatOrchestrator:
                             or self._stage3_shadow_enabled()
                             or self._stage4_shadow_enabled()
                             or self._stage5_shadow_enabled()
+                            or (
+                                self.settings.dialogue_v2_routing_enabled
+                                and self.settings.dialogue_v2_shadow_compare_enabled
+                            )
                         )
-                        semantic = None
-                        if self.settings.semantic_shadow_enabled or v2_shadow_enabled:
+                        if (
+                            semantic is None
+                            and (
+                                self.settings.semantic_shadow_enabled
+                                or v2_shadow_enabled
+                            )
+                            and not (
+                                self._stage6_pipeline_enabled()
+                                and early_control.outcome
+                                in {
+                                    EarlyControlOutcome.SAFETY_RESPONSE,
+                                    EarlyControlOutcome.EMERGENCY_RESPONSE,
+                                    EarlyControlOutcome.BLOCKED,
+                                }
+                            )
+                        ):
                             semantic = self.semantic_interpreter.interpret(
                                 message,
                                 before_turn,
@@ -884,16 +1416,20 @@ class ChatOrchestrator:
                                     TurnMetadata(turn_id=turn_id),
                                     policy_enabled=(
                                         self.settings.seller_policy_v2_shadow_enabled
+                                        or self.settings.dialogue_v2_shadow_compare_enabled
                                     ),
                                     product_contracts_enabled=(
                                         self._stage3_shadow_enabled()
+                                        or self.settings.dialogue_v2_shadow_compare_enabled
                                     ),
                                     catalog_planner_enabled=(
                                         self.settings.catalog_planner_v2_shadow_enabled
                                         or self.settings.solution_plan_v2_shadow_enabled
+                                        or self.settings.dialogue_v2_shadow_compare_enabled
                                     ),
                                     solution_plan_enabled=(
                                         self.settings.solution_plan_v2_shadow_enabled
+                                        or self.settings.dialogue_v2_shadow_compare_enabled
                                     ),
                                     catalog_snapshot=self.catalog_snapshot_v2,
                                     commerce_workflows_enabled=(
@@ -912,15 +1448,19 @@ class ChatOrchestrator:
                                     commerce_capabilities=self.commerce_capabilities_v2,
                                     answer_plan_enabled=(
                                         self.settings.answer_plan_v2_shadow_enabled
+                                        or self.settings.dialogue_v2_shadow_compare_enabled
                                     ),
                                     response_renderer_enabled=(
                                         self.settings.response_renderer_v2_shadow_enabled
+                                        or self.settings.dialogue_v2_shadow_compare_enabled
                                     ),
                                     response_grounding_enabled=(
                                         self.settings.response_grounding_v2_shadow_enabled
+                                        or self.settings.dialogue_v2_shadow_compare_enabled
                                     ),
                                     progress_guard_enabled=(
                                         self.settings.progress_guard_v2_shadow_enabled
+                                        or self.settings.dialogue_v2_shadow_compare_enabled
                                     ),
                                     answer_source_snapshot=(
                                         self.answer_source_snapshot_v2
@@ -933,6 +1473,7 @@ class ChatOrchestrator:
                                         or self._stage3_shadow_enabled()
                                         or self._stage4_shadow_enabled()
                                         or self._stage5_shadow_enabled()
+                                        or self.settings.dialogue_v2_shadow_compare_enabled
                                     )
                                 ):
                                     state_with_v2 = self.sessions.snapshot(session_id)
@@ -941,6 +1482,41 @@ class ChatOrchestrator:
                                     )
                                     self.sessions.save(state_with_v2)
                                 record_dialogue_v2_shadow(v2_outcome)
+                                if self.settings.dialogue_v2_shadow_compare_enabled:
+                                    shadow_candidate = build_v2_turn_candidate(
+                                        v2_outcome,
+                                        self.answer_source_snapshot_v2,
+                                        session_id=session_id,
+                                        turn_id=turn_id,
+                                    )
+                                    parity = assess_response_parity(
+                                        response,
+                                        shadow_candidate,
+                                        self.sessions.snapshot(session_id),
+                                        self._public_product_kinds_v2(response),
+                                    )
+                                    shadow_decision = decide_cutover(
+                                        early_control,
+                                        shadow_candidate,
+                                        self.cutover_registry_v2.registry(),
+                                        self._stage6_runtime(before_turn).model_copy(
+                                            update={
+                                                "live_delivery_enabled": False,
+                                                "internal_canary_enabled": False,
+                                            }
+                                        ),
+                                        session_fingerprint=hashlib.sha256(
+                                            session_id.encode("utf-8")
+                                        ).hexdigest(),
+                                    )
+                                    record_cutover_v2(
+                                        self._cutover_trace_payload(
+                                            early_control=early_control,
+                                            decision=shadow_decision,
+                                            candidate=shadow_candidate,
+                                            parity=parity,
+                                        )
+                                    )
                             except Exception as shadow_exc:
                                 # Stage 2 is observational.  A reducer, policy,
                                 # telemetry or persistence failure must not
@@ -956,6 +1532,49 @@ class ChatOrchestrator:
                                         )[:1200],
                                     )
                                 )
+
+                        if live_candidate is not None and not self.settings.dialogue_v2_shadow_compare_enabled:
+                            parity = assess_response_parity(
+                                response,
+                                live_candidate,
+                                self.sessions.snapshot(session_id),
+                                self._public_product_kinds_v2(response),
+                            )
+                            record_cutover_v2(
+                                self._cutover_trace_payload(
+                                    early_control=early_control,
+                                    decision=live_decision,
+                                    candidate=live_candidate,
+                                    arbitration=live_arbitration,
+                                    parity=parity,
+                                    error=cutover_error,
+                                )
+                            )
+                        elif live_candidate is None and live_decision is not None:
+                            record_cutover_v2(
+                                self._cutover_trace_payload(
+                                    early_control=early_control,
+                                    decision=live_decision,
+                                    error=cutover_error,
+                                )
+                            )
+                        elif cutover_error is not None:
+                            record_cutover_v2(
+                                self._cutover_trace_payload(
+                                    early_control=early_control,
+                                    error=cutover_error,
+                                )
+                            )
+
+                        if client_turn_id or self._stage6_pipeline_enabled():
+                            committed_legacy = self.sessions.snapshot(session_id)
+                            committed_legacy.session_revision += 1
+                            self._record_idempotent_response(
+                                committed_legacy,
+                                client_turn_id,
+                                response,
+                            )
+                            self.sessions.save(committed_legacy)
 
                         finish_turn_trace(
                             trace,

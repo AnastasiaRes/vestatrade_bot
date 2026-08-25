@@ -164,11 +164,22 @@ async def chat(request: ChatRequest) -> ChatResponse:
     # The orchestration path intentionally waits for a local LLM for up to the
     # shared request budget.  Keep that blocking work outside the ASGI event
     # loop so /health and static pages stay responsive meanwhile.
-    response = await run_in_threadpool(
-        orchestrator.handle_chat,
-        request.session_id,
-        request.message,
-    )
+    if request.client_turn_id is None:
+        # Preserve the original two-argument controller boundary for existing
+        # integrations and tests.  The optional retry key is forwarded only
+        # when the client actually supplies it.
+        response = await run_in_threadpool(
+            orchestrator.handle_chat,
+            request.session_id,
+            request.message,
+        )
+    else:
+        response = await run_in_threadpool(
+            orchestrator.handle_chat,
+            request.session_id,
+            request.message,
+            request.client_turn_id,
+        )
     await run_in_threadpool(
         chat_logger.log_turn,
         request.session_id,
