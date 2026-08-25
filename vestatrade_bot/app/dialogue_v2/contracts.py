@@ -12,6 +12,8 @@ from typing import Any, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.catalog_v2.contracts import CatalogPlanningResult, ProductKind, ReadinessStatus
+
 
 DIALOGUE_STATE_SCHEMA_VERSION = "2.0"
 
@@ -247,6 +249,7 @@ class DialogueStateV2(FrozenModel):
     ambiguities: tuple[Ambiguity, ...] = ()
     progress: ProgressState = Field(default_factory=ProgressState)
     last_policy: NextActionPlan | None = None
+    catalog_planning: CatalogPlanningResult | None = None
     applied_turn_ids: tuple[str, ...] = ()
 
 
@@ -346,6 +349,51 @@ class PolicyDecisionRecorded(StateEventBase):
     secondary: NextActionKind | None = None
 
 
+class ProductContractResolved(StateEventBase):
+    event_type: Literal["product_contract_resolved"] = "product_contract_resolved"
+    task_id: str
+    contract_id: str
+    product_kind: ProductKind
+
+
+class TaskReadinessAssessed(StateEventBase):
+    event_type: Literal["task_readiness_assessed"] = "task_readiness_assessed"
+    task_id: str
+    status: ReadinessStatus
+
+
+class CatalogPlanCreated(StateEventBase):
+    event_type: Literal["catalog_plan_created"] = "catalog_plan_created"
+    task_id: str
+    plan_id: str
+
+
+class CatalogCandidateRejected(StateEventBase):
+    event_type: Literal["catalog_candidate_rejected"] = "catalog_candidate_rejected"
+    task_id: str
+    sku: str
+    reason_codes: tuple[str, ...]
+
+
+class CatalogRelaxationRecorded(StateEventBase):
+    event_type: Literal["catalog_relaxation_recorded"] = "catalog_relaxation_recorded"
+    task_id: str
+    sku: str
+    fact_name: str
+
+
+class CatalogNoMatchRecorded(StateEventBase):
+    event_type: Literal["catalog_no_match_recorded"] = "catalog_no_match_recorded"
+    task_id: str
+    reason_code: str
+
+
+class SolutionPlanCreated(StateEventBase):
+    event_type: Literal["solution_plan_created"] = "solution_plan_created"
+    solution_id: str
+    task_ids: tuple[str, ...]
+
+
 ReducerEvent: TypeAlias = (
     TaskCreated
     | TaskSuspended
@@ -362,6 +410,13 @@ ReducerEvent: TypeAlias = (
     | AmbiguityRegistered
     | TurnIgnoredAsDuplicate
     | PolicyDecisionRecorded
+    | ProductContractResolved
+    | TaskReadinessAssessed
+    | CatalogPlanCreated
+    | CatalogCandidateRejected
+    | CatalogRelaxationRecorded
+    | CatalogNoMatchRecorded
+    | SolutionPlanCreated
 )
 
 

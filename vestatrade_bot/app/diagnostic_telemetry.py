@@ -213,6 +213,7 @@ class TurnTrace:
             }
         )
         v2_plan = (self.dialogue_v2_shadow or {}).get("next_action_plan") or {}
+        catalog_v2 = (self.dialogue_v2_shadow or {}).get("catalog_planning")
         v2_primary = (v2_plan.get("primary") or {}).get("kind")
         legacy_primary = selected_next_action.get("primary")
         payload = {
@@ -279,6 +280,22 @@ class TurnTrace:
             },
             "selected_next_action": selected_next_action,
             "v2_next_action": v2_plan or None,
+            "catalog_planner_v2_shadow": catalog_v2,
+            "v2_candidate_skus": (
+                (catalog_v2 or {}).get("candidate_skus")
+                if catalog_v2 is not None
+                else None
+            ),
+            "v2_legacy_catalog_divergence": (
+                {
+                    "v2_candidate_skus": (catalog_v2 or {}).get("candidate_skus", []),
+                    "legacy_product_skus": [item.sku for item in response.products],
+                    "same_sku_set": set((catalog_v2 or {}).get("candidate_skus", []))
+                    == {item.sku for item in response.products},
+                }
+                if catalog_v2 is not None and response is not None
+                else None
+            ),
             "v2_legacy_decision_divergence": (
                 {
                     "v2_primary": v2_primary,
@@ -349,6 +366,9 @@ def build_turn_trace(
         or settings.semantic_shadow_enabled
         or settings.dialogue_state_v2_shadow_enabled
         or settings.seller_policy_v2_shadow_enabled
+        or settings.product_contracts_v2_shadow_enabled
+        or settings.catalog_planner_v2_shadow_enabled
+        or settings.solution_plan_v2_shadow_enabled
     ):
         return None
     return TurnTrace(

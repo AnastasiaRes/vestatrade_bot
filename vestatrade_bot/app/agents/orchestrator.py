@@ -27,6 +27,7 @@ except ImportError:  # pragma: no cover - exercised only without optional depend
     fuzz = _FuzzFallback()
 
 from app.config import PROJECT_ROOT, Settings, get_settings
+from app.catalog_v2.normalization import build_catalog_snapshot
 from app.diagnostic_telemetry import (
     activate_turn_trace,
     build_turn_trace,
@@ -680,6 +681,11 @@ class ChatOrchestrator:
             ),
         )
         self.dialogue_controller_v2 = DialogueControllerV2()
+        self.catalog_snapshot_v2 = (
+            build_catalog_snapshot(products or [])
+            if self._stage3_shadow_enabled()
+            else ()
+        )
         self.ranking_agent = RankingAgent()
         self.card_agent = ProductCardAgent()
         self.guardrails = GuardrailsAgent()
@@ -704,6 +710,8 @@ class ChatOrchestrator:
             products, source = self.feed_loader.load_products(refresh=refresh)
             self.docs_attached = load_docs_for_products(products, self._docs_dirs())
             self.search_agent.set_products(products)
+            if self._stage3_shadow_enabled():
+                self.catalog_snapshot_v2 = build_catalog_snapshot(products)
             self.intent_router.set_catalog_brands(
                 [product.brand for product in products if product.brand]
             )
@@ -722,6 +730,13 @@ class ChatOrchestrator:
             except Exception as exc:
                 logger.exception("Cannot load products for intent handling: %s", exc)
         return bool(self.search_agent.products)
+
+    def _stage3_shadow_enabled(self) -> bool:
+        return bool(
+            self.settings.product_contracts_v2_shadow_enabled
+            or self.settings.catalog_planner_v2_shadow_enabled
+            or self.settings.solution_plan_v2_shadow_enabled
+        )
 
     @property
     def composer(self) -> ResponseComposerAgent:
@@ -762,6 +777,7 @@ class ChatOrchestrator:
                     or self.settings.semantic_shadow_enabled
                     or self.settings.dialogue_state_v2_shadow_enabled
                     or self.settings.seller_policy_v2_shadow_enabled
+                    or self._stage3_shadow_enabled()
                 ):
                     trace = build_turn_trace(
                         self.settings,
@@ -790,6 +806,7 @@ class ChatOrchestrator:
                         v2_shadow_enabled = (
                             self.settings.dialogue_state_v2_shadow_enabled
                             or self.settings.seller_policy_v2_shadow_enabled
+                            or self._stage3_shadow_enabled()
                         )
                         semantic = None
                         if self.settings.semantic_shadow_enabled or v2_shadow_enabled:
@@ -822,10 +839,24 @@ class ChatOrchestrator:
                                     policy_enabled=(
                                         self.settings.seller_policy_v2_shadow_enabled
                                     ),
+                                    product_contracts_enabled=(
+                                        self._stage3_shadow_enabled()
+                                    ),
+                                    catalog_planner_enabled=(
+                                        self.settings.catalog_planner_v2_shadow_enabled
+                                        or self.settings.solution_plan_v2_shadow_enabled
+                                    ),
+                                    solution_plan_enabled=(
+                                        self.settings.solution_plan_v2_shadow_enabled
+                                    ),
+                                    catalog_snapshot=self.catalog_snapshot_v2,
                                 )
                                 if (
                                     v2_outcome.status == "applied"
-                                    and self.settings.dialogue_state_v2_shadow_enabled
+                                    and (
+                                        self.settings.dialogue_state_v2_shadow_enabled
+                                        or self._stage3_shadow_enabled()
+                                    )
                                 ):
                                     state_with_v2 = self.sessions.snapshot(session_id)
                                     state_with_v2.dialogue_state_v2 = (

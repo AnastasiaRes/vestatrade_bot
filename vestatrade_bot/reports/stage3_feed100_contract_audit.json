@@ -1,0 +1,667 @@
+{
+  "entries": [
+    {
+      "ambiguity_codes": [],
+      "catalog_type_values": [
+        "Кран шаровой",
+        "Кран шаровой угловой"
+      ],
+      "categories": [
+        "Водозапорная арматура"
+      ],
+      "contract_id": "valve.ball.v1",
+      "count": 20,
+      "fact_presence_coverage": {
+        "connection_pattern": 1.0,
+        "connection_size": 1.0,
+        "material": 1.0,
+        "sku": 1.0,
+        "valve_shape": 1.0
+      },
+      "missing_fact_fraction": {
+        "connection_pattern": 0.0,
+        "connection_size": 0.0,
+        "material": 0.0,
+        "sku": 0.0,
+        "valve_shape": 0.0
+      },
+      "name_or_description_facts": [],
+      "product_kind": "ball_valve",
+      "role": "component",
+      "structured_attribute_coverage": {
+        "connection_pattern": 1.0,
+        "connection_size": 1.0,
+        "material": 1.0,
+        "sku": 0.0,
+        "valve_shape": 1.0
+      }
+    },
+    {
+      "ambiguity_codes": [],
+      "catalog_type_values": [
+        "Насос"
+      ],
+      "categories": [
+        "Насосное оборудование"
+      ],
+      "contract_id": "pump.borehole.v1",
+      "count": 1,
+      "fact_presence_coverage": {
+        "max_flow_l_h": 0.0,
+        "max_head_m": 1.0,
+        "sku": 1.0
+      },
+      "missing_fact_fraction": {
+        "max_flow_l_h": 1.0,
+        "max_head_m": 0.0,
+        "sku": 0.0
+      },
+      "name_or_description_facts": [],
+      "product_kind": "borehole_pump",
+      "role": "base_product",
+      "structured_attribute_coverage": {
+        "max_flow_l_h": 0.0,
+        "max_head_m": 1.0,
+        "sku": 0.0
+      }
+    },
+    {
+      "ambiguity_codes": [
+        "product_kind_spans_multiple_feed_categories"
+      ],
+      "catalog_type_values": [
+        "Насос"
+      ],
+      "categories": [
+        "Насосное оборудование",
+        "ПРОКАЧИВАЕМ СКИДКИ"
+      ],
+      "contract_id": "pump.circulation.v1",
+      "count": 8,
+      "fact_presence_coverage": {
+        "diameter_mm": 1.0,
+        "max_flow_l_h": 0.0,
+        "max_head_m": 1.0,
+        "mounting_length_mm": 1.0,
+        "sku": 1.0
+      },
+      "missing_fact_fraction": {
+        "diameter_mm": 0.0,
+        "max_flow_l_h": 1.0,
+        "max_head_m": 0.0,
+        "mounting_length_mm": 0.0,
+        "sku": 0.0
+      },
+      "name_or_description_facts": [
+        "diameter_mm"
+      ],
+      "product_kind": "circulation_pump",
+      "role": "base_product",
+      "structured_attribute_coverage": {
+        "diameter_mm": 0.0,
+        "max_flow_l_h": 0.0,
+        "max_head_m": 1.0,
+        "mounting_length_mm": 1.0,
+        "sku": 0.0
+      }
+    },
+    {
+      "ambiguity_codes": [],
+      "catalog_type_values": [
+        "Муфта"
+      ],
+      "categories": [
+        "Канализационные системы"
+      ],
+      "contract_id": "sewer.coupling.v1",
+      "count": 2,
+      "fact_presence_coverage": {
+        "diameter_mm": 0.0,
+        "sewer_scope": 1.0,
+        "sku": 1.0
+      },
+      "missing_fact_fraction": {
+        "diameter_mm": 1.0,
+        "sewer_scope": 0.0,
+        "sku": 0.0
+      },
+      "name_or_description_facts": [
+        "sewer_scope"
+      ],
+      "product_kind": "coupling",
+      "role": "component",
+      "structured_attribute_coverage": {
+        "diameter_mm": 0.0,
+        "sewer_scope": 0.0,
+        "sku": 0.0
+      }
+    },
+    {
+      "ambiguity_codes": [],
+      "catalog_type_values": [
+        "Насос"
+      ],
+      "categories": [
+        "Насосное оборудование"
+      ],
+      "contract_id": "pump.dhw_circulation.v1",
+      "count": 1,
+      "fact_presence_coverage": {
+        "max_head_m": 1.0,
+        "mounting_length_mm": 1.0,
+        "sku": 1.0
+      },
+      "missing_fact_fraction": {
+        "max_head_m": 0.0,
+        "mounting_length_mm": 0.0,
+        "sku": 0.0
+      },
+      "name_or_description_facts": [],
+      "product_kind": "dhw_circulation_pump",
+      "role": "base_product",
+      "structured_attribute_coverage": {
+        "max_head_m": 1.0,
+        "mounting_length_mm": 1.0,
+        "sku": 0.0
+      }
+    },
+    {
+      "ambiguity_codes": [
+        "structured_product_type_missing_for_some",
+        "product_kind_spans_multiple_feed_categories"
+      ],
+      "catalog_type_values": [],
+      "categories": [
+        "Насосное оборудование",
+        "ПРОКАЧИВАЕМ СКИДКИ"
+      ],
+      "contract_id": "pump.drainage.v1",
+      "count": 2,
+      "fact_presence_coverage": {
+        "max_flow_l_h": 1.0,
+        "max_head_m": 1.0,
+        "sku": 1.0
+      },
+      "missing_fact_fraction": {
+        "max_flow_l_h": 0.0,
+        "max_head_m": 0.0,
+        "sku": 0.0
+      },
+      "name_or_description_facts": [],
+      "product_kind": "drainage_pump",
+      "role": "base_product",
+      "structured_attribute_coverage": {
+        "max_flow_l_h": 1.0,
+        "max_head_m": 1.0,
+        "sku": 0.0
+      }
+    },
+    {
+      "ambiguity_codes": [],
+      "catalog_type_values": [
+        "Угольник"
+      ],
+      "categories": [
+        "Фитинги"
+      ],
+      "contract_id": "fitting.elbow.v1",
+      "count": 4,
+      "fact_presence_coverage": {
+        "angle_deg": 1.0,
+        "connection_size": 0.25,
+        "diameter_mm": 1.0,
+        "sku": 1.0
+      },
+      "missing_fact_fraction": {
+        "angle_deg": 0.0,
+        "connection_size": 0.75,
+        "diameter_mm": 0.0,
+        "sku": 0.0
+      },
+      "name_or_description_facts": [],
+      "product_kind": "elbow",
+      "role": "component",
+      "structured_attribute_coverage": {
+        "angle_deg": 1.0,
+        "connection_size": 0.25,
+        "diameter_mm": 1.0,
+        "sku": 0.0
+      }
+    },
+    {
+      "ambiguity_codes": [],
+      "catalog_type_values": [
+        "Котёл"
+      ],
+      "categories": [
+        "ПРОКАЧИВАЕМ СКИДКИ"
+      ],
+      "contract_id": "boiler.electric.v1",
+      "count": 2,
+      "fact_presence_coverage": {
+        "circuits": 0.5,
+        "power_kw": 1.0,
+        "sku": 1.0
+      },
+      "missing_fact_fraction": {
+        "circuits": 0.5,
+        "power_kw": 0.0,
+        "sku": 0.0
+      },
+      "name_or_description_facts": [
+        "circuits"
+      ],
+      "product_kind": "electric_boiler",
+      "role": "base_product",
+      "structured_attribute_coverage": {
+        "circuits": 0.0,
+        "power_kw": 1.0,
+        "sku": 0.0
+      }
+    },
+    {
+      "ambiguity_codes": [
+        "product_kind_spans_multiple_feed_categories"
+      ],
+      "catalog_type_values": [
+        "Котёл"
+      ],
+      "categories": [
+        "Котельное оборудование",
+        "ПРОКАЧИВАЕМ СКИДКИ"
+      ],
+      "contract_id": "boiler.gas.v1",
+      "count": 5,
+      "fact_presence_coverage": {
+        "circuits": 1.0,
+        "combustion_chamber": 1.0,
+        "power_kw": 1.0,
+        "sku": 1.0
+      },
+      "missing_fact_fraction": {
+        "circuits": 0.0,
+        "combustion_chamber": 0.0,
+        "power_kw": 0.0,
+        "sku": 0.0
+      },
+      "name_or_description_facts": [
+        "circuits"
+      ],
+      "product_kind": "gas_boiler",
+      "role": "base_product",
+      "structured_attribute_coverage": {
+        "circuits": 0.0,
+        "combustion_chamber": 1.0,
+        "power_kw": 1.0,
+        "sku": 0.0
+      }
+    },
+    {
+      "ambiguity_codes": [
+        "structured_product_type_missing_for_some"
+      ],
+      "catalog_type_values": [],
+      "categories": [
+        "Трубы"
+      ],
+      "contract_id": "pipe.ppr.v1",
+      "count": 14,
+      "fact_presence_coverage": {
+        "diameter_mm": 1.0,
+        "material": 1.0,
+        "pressure_class": 1.0,
+        "sku": 1.0
+      },
+      "missing_fact_fraction": {
+        "diameter_mm": 0.0,
+        "material": 0.0,
+        "pressure_class": 0.0,
+        "sku": 0.0
+      },
+      "name_or_description_facts": [
+        "diameter_mm",
+        "material",
+        "pressure_class"
+      ],
+      "product_kind": "pipe",
+      "role": "base_product",
+      "structured_attribute_coverage": {
+        "diameter_mm": 0.0,
+        "material": 0.0,
+        "pressure_class": 0.0,
+        "sku": 0.0
+      }
+    },
+    {
+      "ambiguity_codes": [],
+      "catalog_type_values": [
+        "Насосная станция"
+      ],
+      "categories": [
+        "Насосное оборудование"
+      ],
+      "contract_id": "pump.station.v1",
+      "count": 1,
+      "fact_presence_coverage": {
+        "max_flow_l_h": 0.0,
+        "max_head_m": 0.0,
+        "sku": 1.0,
+        "suction_depth_m": 1.0
+      },
+      "missing_fact_fraction": {
+        "max_flow_l_h": 1.0,
+        "max_head_m": 1.0,
+        "sku": 0.0,
+        "suction_depth_m": 0.0
+      },
+      "name_or_description_facts": [],
+      "product_kind": "pump_station",
+      "role": "base_product",
+      "structured_attribute_coverage": {
+        "max_flow_l_h": 0.0,
+        "max_head_m": 0.0,
+        "sku": 0.0,
+        "suction_depth_m": 1.0
+      }
+    },
+    {
+      "ambiguity_codes": [],
+      "catalog_type_values": [
+        "Радиатор отопления"
+      ],
+      "categories": [
+        "Радиаторы отопления"
+      ],
+      "contract_id": "radiator.v1",
+      "count": 4,
+      "fact_presence_coverage": {
+        "center_distance_mm": 1.0,
+        "connection_size": 1.0,
+        "heat_output_w": 1.0,
+        "material": 1.0,
+        "sku": 1.0
+      },
+      "missing_fact_fraction": {
+        "center_distance_mm": 0.0,
+        "connection_size": 0.0,
+        "heat_output_w": 0.0,
+        "material": 0.0,
+        "sku": 0.0
+      },
+      "name_or_description_facts": [],
+      "product_kind": "radiator",
+      "role": "base_product",
+      "structured_attribute_coverage": {
+        "center_distance_mm": 1.0,
+        "connection_size": 1.0,
+        "heat_output_w": 1.0,
+        "material": 1.0,
+        "sku": 0.0
+      }
+    },
+    {
+      "ambiguity_codes": [
+        "structured_product_type_missing_for_some"
+      ],
+      "catalog_type_values": [],
+      "categories": [
+        "Арматура для радиаторов"
+      ],
+      "contract_id": "radiator.valve.v1",
+      "count": 10,
+      "fact_presence_coverage": {
+        "connection_size": 1.0,
+        "control_thread": 0.9,
+        "sku": 1.0,
+        "valve_shape": 0.8
+      },
+      "missing_fact_fraction": {
+        "connection_size": 0.0,
+        "control_thread": 0.1,
+        "sku": 0.0,
+        "valve_shape": 0.2
+      },
+      "name_or_description_facts": [
+        "connection_size",
+        "control_thread",
+        "valve_shape"
+      ],
+      "product_kind": "radiator_valve",
+      "role": "component",
+      "structured_attribute_coverage": {
+        "connection_size": 0.0,
+        "control_thread": 0.0,
+        "sku": 0.0,
+        "valve_shape": 0.0
+      }
+    },
+    {
+      "ambiguity_codes": [
+        "structured_product_type_missing_for_some"
+      ],
+      "catalog_type_values": [],
+      "categories": [
+        "Арматура для радиаторов"
+      ],
+      "contract_id": "radiator.valve_kit.v1",
+      "count": 2,
+      "fact_presence_coverage": {
+        "connection_size": 1.0,
+        "sku": 1.0,
+        "valve_shape": 1.0
+      },
+      "missing_fact_fraction": {
+        "connection_size": 0.0,
+        "sku": 0.0,
+        "valve_shape": 0.0
+      },
+      "name_or_description_facts": [
+        "connection_size",
+        "valve_shape"
+      ],
+      "product_kind": "radiator_valve_kit",
+      "role": "component",
+      "structured_attribute_coverage": {
+        "connection_size": 0.0,
+        "sku": 0.0,
+        "valve_shape": 0.0
+      }
+    },
+    {
+      "ambiguity_codes": [],
+      "catalog_type_values": [
+        "Муфта"
+      ],
+      "categories": [
+        "Фитинги"
+      ],
+      "contract_id": "fitting.reducing_coupling.v1",
+      "count": 2,
+      "fact_presence_coverage": {
+        "diameter_mm": 1.0,
+        "material": 1.0,
+        "secondary_diameter_mm": 1.0,
+        "sku": 1.0
+      },
+      "missing_fact_fraction": {
+        "diameter_mm": 0.0,
+        "material": 0.0,
+        "secondary_diameter_mm": 0.0,
+        "sku": 0.0
+      },
+      "name_or_description_facts": [
+        "secondary_diameter_mm"
+      ],
+      "product_kind": "reducing_coupling",
+      "role": "component",
+      "structured_attribute_coverage": {
+        "diameter_mm": 1.0,
+        "material": 1.0,
+        "secondary_diameter_mm": 0.0,
+        "sku": 0.0
+      }
+    },
+    {
+      "ambiguity_codes": [],
+      "catalog_type_values": [
+        "Отвод"
+      ],
+      "categories": [
+        "Канализационные системы"
+      ],
+      "contract_id": "sewer.elbow.v1",
+      "count": 5,
+      "fact_presence_coverage": {
+        "angle_deg": 1.0,
+        "diameter_mm": 0.0,
+        "sewer_scope": 1.0,
+        "sku": 1.0
+      },
+      "missing_fact_fraction": {
+        "angle_deg": 0.0,
+        "diameter_mm": 1.0,
+        "sewer_scope": 0.0,
+        "sku": 0.0
+      },
+      "name_or_description_facts": [
+        "angle_deg",
+        "sewer_scope"
+      ],
+      "product_kind": "sewer_elbow",
+      "role": "component",
+      "structured_attribute_coverage": {
+        "angle_deg": 0.0,
+        "diameter_mm": 0.0,
+        "sewer_scope": 0.0,
+        "sku": 0.0
+      }
+    },
+    {
+      "ambiguity_codes": [],
+      "catalog_type_values": [
+        "Труба"
+      ],
+      "categories": [
+        "Канализационные системы"
+      ],
+      "contract_id": "pipe.sewer.v1",
+      "count": 8,
+      "fact_presence_coverage": {
+        "diameter_mm": 1.0,
+        "length_mm": 1.0,
+        "sewer_scope": 1.0,
+        "sku": 1.0
+      },
+      "missing_fact_fraction": {
+        "diameter_mm": 0.0,
+        "length_mm": 0.0,
+        "sewer_scope": 0.0,
+        "sku": 0.0
+      },
+      "name_or_description_facts": [
+        "diameter_mm",
+        "length_mm",
+        "sewer_scope"
+      ],
+      "product_kind": "sewer_pipe",
+      "role": "base_product",
+      "structured_attribute_coverage": {
+        "diameter_mm": 0.0,
+        "length_mm": 0.0,
+        "sewer_scope": 0.0,
+        "sku": 0.0
+      }
+    },
+    {
+      "ambiguity_codes": [
+        "product_kind_spans_multiple_feed_categories"
+      ],
+      "catalog_type_values": [
+        "Тройник"
+      ],
+      "categories": [
+        "АКЦИОННЫЕ ТОВАРЫ",
+        "Канализационные системы"
+      ],
+      "contract_id": "sewer.tee.v1",
+      "count": 5,
+      "fact_presence_coverage": {
+        "angle_deg": 1.0,
+        "diameter_mm": 0.8,
+        "secondary_diameter_mm": 0.8,
+        "sewer_scope": 1.0,
+        "sku": 1.0
+      },
+      "missing_fact_fraction": {
+        "angle_deg": 0.0,
+        "diameter_mm": 0.2,
+        "secondary_diameter_mm": 0.2,
+        "sewer_scope": 0.0,
+        "sku": 0.0
+      },
+      "name_or_description_facts": [
+        "angle_deg",
+        "diameter_mm",
+        "secondary_diameter_mm",
+        "sewer_scope"
+      ],
+      "product_kind": "tee",
+      "role": "component",
+      "structured_attribute_coverage": {
+        "angle_deg": 0.0,
+        "diameter_mm": 0.0,
+        "secondary_diameter_mm": 0.0,
+        "sewer_scope": 0.0,
+        "sku": 0.0
+      }
+    },
+    {
+      "ambiguity_codes": [
+        "structured_product_type_missing_for_some"
+      ],
+      "catalog_type_values": [],
+      "categories": [
+        "Арматура для радиаторов"
+      ],
+      "contract_id": "radiator.thermostatic_head.v1",
+      "count": 4,
+      "fact_presence_coverage": {
+        "control_thread": 1.0,
+        "sku": 1.0
+      },
+      "missing_fact_fraction": {
+        "control_thread": 0.0,
+        "sku": 0.0
+      },
+      "name_or_description_facts": [
+        "control_thread"
+      ],
+      "product_kind": "thermostatic_head",
+      "role": "component",
+      "structured_attribute_coverage": {
+        "control_thread": 0.0,
+        "sku": 0.0
+      }
+    }
+  ],
+  "metadata": {
+    "attached_xml_byte_identical": true,
+    "attached_xml_path": "external:index.php (1).xml",
+    "catalog_was_not_modified": true,
+    "contract_count": 21,
+    "covered_product_kind_count": 19,
+    "full_feed_raw_offer_count": 14182,
+    "full_feed_sanitized_product_count": 14035,
+    "full_feed_shadow_supported_count": 5450,
+    "full_feed_shadow_unsupported_count": 8585,
+    "full_feed_smoke_seconds": 6.2,
+    "source_is_read_only": true
+  },
+  "raw_offer_count": 100,
+  "sanitized_product_count": 100,
+  "schema_version": "1.0",
+  "source_path": "data/feed_showcase_100_2026-06-14.xml",
+  "source_sha256": "81ed35da3a188c88d5f000bb7d6df9c02c562047616f97f88d36ea6046a9384f",
+  "unsupported_count": 0,
+  "unsupported_reason_counts": {}
+}

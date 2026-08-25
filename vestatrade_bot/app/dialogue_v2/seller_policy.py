@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
+from app.catalog_v2.contracts import ReadinessStatus, TaskReadinessAssessment
+
 from .contracts import (
     ConstraintStatus,
     DialogueStateV2,
@@ -36,6 +40,7 @@ class SellerPolicy:
         *,
         semantic_available: bool = True,
         policy_enabled: bool = True,
+        readiness_assessments: Iterable[TaskReadinessAssessment] = (),
     ) -> NextActionPlan:
         if not semantic_available:
             return NextActionPlan(
@@ -54,6 +59,9 @@ class SellerPolicy:
                 reason_codes=("seller_policy_v2_shadow_disabled",),
             )
 
+        readiness_by_task = {
+            item.task_id: item for item in readiness_assessments
+        }
         current_tasks = sorted(
             (
                 task
@@ -88,7 +96,9 @@ class SellerPolicy:
                 task_id=direct[0].task_id,
                 reason_code="direct_question_has_priority",
             )
-            secondary = self._selection_action(state, selections[0]) if selections else None
+            secondary = self._selection_action(
+                state, selections[0], readiness_by_task
+            ) if selections else None
             reasons = ["direct_question_has_priority"]
             if secondary:
                 reasons.append("unfinished_selection_preserved")
@@ -108,7 +118,9 @@ class SellerPolicy:
                 "explicit_explanation_request",
                 task_ids,
                 state,
-                secondary=self._selection_action(state, selections[0]) if selections else None,
+                secondary=self._selection_action(
+                    state, selections[0], readiness_by_task
+                ) if selections else None,
             )
 
         if comparisons:
@@ -118,7 +130,9 @@ class SellerPolicy:
                 "explicit_comparison_request",
                 task_ids,
                 state,
-                secondary=self._selection_action(state, selections[0]) if selections else None,
+                secondary=self._selection_action(
+                    state, selections[0], readiness_by_task
+                ) if selections else None,
             )
 
         if calculations:
@@ -128,7 +142,9 @@ class SellerPolicy:
                 "explicit_calculation_request",
                 task_ids,
                 state,
-                secondary=self._selection_action(state, selections[0]) if selections else None,
+                secondary=self._selection_action(
+                    state, selections[0], readiness_by_task
+                ) if selections else None,
             )
 
         if handoffs:
@@ -141,7 +157,9 @@ class SellerPolicy:
             )
 
         if selections:
-            action = self._selection_action(state, selections[0])
+            action = self._selection_action(
+                state, selections[0], readiness_by_task
+            )
             return NextActionPlan(
                 primary=action,
                 reason_codes=(action.reason_code,),
@@ -174,9 +192,45 @@ class SellerPolicy:
             blocking_facts=self._blocking_facts(state),
         )
 
-    def _selection_action(self, state: DialogueStateV2, task: object) -> NextAction:
+    def _selection_action(
+        self,
+        state: DialogueStateV2,
+        task: object,
+        readiness_by_task: dict[str, TaskReadinessAssessment] | None = None,
+    ) -> NextAction:
         task_id = task.task_id
         goal_id = task.target_goal_id
+        readiness = (readiness_by_task or {}).get(task_id)
+        if readiness is not None:
+            if readiness.status == ReadinessStatus.NEEDS_DECISION_FACT:
+                return NextAction(
+                    kind=NextActionKind.ASK_DECISION_CHANGING_QUESTION,
+                    task_id=task_id,
+                    fact_name=readiness.recommended_question_fact,
+                    reason_code="product_contract_requires_decision_fact",
+                )
+            if readiness.status == ReadinessStatus.EXACT_READY:
+                return NextAction(
+                    kind=NextActionKind.SEARCH_EXACT,
+                    task_id=task_id,
+                    reason_code="product_contract_exact_ready",
+                )
+            if readiness.status == ReadinessStatus.PRELIMINARY_READY:
+                return NextAction(
+                    kind=NextActionKind.SHOW_PRELIMINARY_OPTIONS,
+                    task_id=task_id,
+                    reason_code="product_contract_preliminary_ready",
+                )
+            if readiness.status in {
+                ReadinessStatus.BLOCKED,
+                ReadinessStatus.UNSUPPORTED,
+                ReadinessStatus.AMBIGUOUS,
+            }:
+                return NextAction(
+                    kind=NextActionKind.SHOW_PRELIMINARY_OPTIONS,
+                    task_id=task_id,
+                    reason_code="product_contract_honest_boundary",
+                )
         active_facts = [
             fact for fact in state.constraints
             if fact.active and (goal_id is None or fact.goal_id == goal_id)

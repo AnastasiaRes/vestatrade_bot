@@ -6,11 +6,16 @@ import hashlib
 from collections.abc import Iterable
 
 from app.agents.semantic_interpreter import TurnUnderstanding
+from app.catalog_v2.contracts import CandidateStatus, CatalogPlanningResult
 from app.pii import redact_pii_for_model
 
 from .contracts import (
     Ambiguity,
     AmbiguityRegistered,
+    CatalogCandidateRejected,
+    CatalogNoMatchRecorded,
+    CatalogPlanCreated,
+    CatalogRelaxationRecorded,
     ConstraintAdded,
     ConstraintCorrected,
     ConstraintDeferred,
@@ -27,6 +32,7 @@ from .contracts import (
     DirectQuestionRegistered,
     NextActionPlan,
     PolicyDecisionRecorded,
+    ProductContractResolved,
     ProductCategory,
     ProductGoal,
     ProductGoalConfirmed,
@@ -43,8 +49,10 @@ from .contracts import (
     TaskStack,
     TaskStatus,
     TaskSuspended,
+    TaskReadinessAssessed,
     TurnIgnoredAsDuplicate,
     TurnMetadata,
+    SolutionPlanCreated,
 )
 
 
@@ -821,6 +829,7 @@ def reduce_dialogue_state(
         ambiguities=tuple(ambiguities),
         progress=progress,
         last_policy=previous.last_policy,
+        catalog_planning=previous.catalog_planning,
         applied_turn_ids=(*previous.applied_turn_ids, turn_metadata.turn_id),
     )
     return ReductionResult(
@@ -851,4 +860,89 @@ def record_policy_decision(
             "state": state,
             "events": (*reduction.events, event),
         }
+    )
+
+
+def record_catalog_planning(
+    reduction: ReductionResult,
+    planning: CatalogPlanningResult,
+    turn_metadata: TurnMetadata,
+) -> ReductionResult:
+    """Apply a completed shadow catalogue decision at the reducer boundary."""
+
+    events: list[object] = list(reduction.events)
+    turn_number = reduction.state.turn_number
+    for resolution in planning.contract_resolutions:
+        if resolution.contract_id is not None:
+            events.append(
+                ProductContractResolved(
+                    turn_id=turn_metadata.turn_id,
+                    turn_number=turn_number,
+                    task_id=resolution.task_id,
+                    contract_id=resolution.contract_id,
+                    product_kind=resolution.product_kind,
+                )
+            )
+    for assessment in planning.readiness_assessments:
+        events.append(
+            TaskReadinessAssessed(
+                turn_id=turn_metadata.turn_id,
+                turn_number=turn_number,
+                task_id=assessment.task_id,
+                status=assessment.status,
+            )
+        )
+    for search_plan in planning.search_plans:
+        events.append(
+            CatalogPlanCreated(
+                turn_id=turn_metadata.turn_id,
+                turn_number=turn_number,
+                task_id=search_plan.task_id,
+                plan_id=search_plan.plan_id,
+            )
+        )
+        for candidate in search_plan.candidate_assessments:
+            if candidate.status == CandidateStatus.REJECTED:
+                events.append(
+                    CatalogCandidateRejected(
+                        turn_id=turn_metadata.turn_id,
+                        turn_number=turn_number,
+                        task_id=search_plan.task_id,
+                        sku=candidate.sku,
+                        reason_codes=candidate.reason_codes,
+                    )
+                )
+            for relaxation in candidate.relaxations:
+                events.append(
+                    CatalogRelaxationRecorded(
+                        turn_id=turn_metadata.turn_id,
+                        turn_number=turn_number,
+                        task_id=search_plan.task_id,
+                        sku=candidate.sku,
+                        fact_name=relaxation.fact_name,
+                    )
+                )
+        if "honest_no_match" in {
+            stage.value for stage in search_plan.stages
+        }:
+            events.append(
+                CatalogNoMatchRecorded(
+                    turn_id=turn_metadata.turn_id,
+                    turn_number=turn_number,
+                    task_id=search_plan.task_id,
+                    reason_code="no_verified_contract_match",
+                )
+            )
+    if planning.solution_plan is not None:
+        events.append(
+            SolutionPlanCreated(
+                turn_id=turn_metadata.turn_id,
+                turn_number=turn_number,
+                solution_id=planning.solution_plan.solution_id,
+                task_ids=planning.solution_plan.task_ids,
+            )
+        )
+    state = reduction.state.model_copy(update={"catalog_planning": planning})
+    return reduction.model_copy(
+        update={"state": state, "events": tuple(events)}
     )

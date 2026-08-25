@@ -75,6 +75,9 @@ class Settings(BaseModel):
     semantic_shadow_model: str | None = None
     dialogue_state_v2_shadow_enabled: bool = False
     seller_policy_v2_shadow_enabled: bool = False
+    product_contracts_v2_shadow_enabled: bool = False
+    catalog_planner_v2_shadow_enabled: bool = False
+    solution_plan_v2_shadow_enabled: bool = False
 
     @property
     def llm_model(self) -> str:
@@ -202,6 +205,18 @@ def get_settings() -> Settings:
         ),
         seller_policy_v2_shadow_enabled=_env_bool(
             "SELLER_POLICY_V2_SHADOW_ENABLED",
+            False,
+        ),
+        product_contracts_v2_shadow_enabled=_env_bool(
+            "PRODUCT_CONTRACTS_V2_SHADOW_ENABLED",
+            False,
+        ),
+        catalog_planner_v2_shadow_enabled=_env_bool(
+            "CATALOG_PLANNER_V2_SHADOW_ENABLED",
+            False,
+        ),
+        solution_plan_v2_shadow_enabled=_env_bool(
+            "SOLUTION_PLAN_V2_SHADOW_ENABLED",
             False,
         ),
     )
