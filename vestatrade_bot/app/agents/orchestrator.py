@@ -87,6 +87,7 @@ from .problem_framing import (
     warm_floor_type_is_uncertain,
 )
 from .product_card import ProductCardAgent
+from .item_list import RequestedItem, split_item_list, split_question_list
 from .project_specification import (
     SpecNode,
     heating_project_nodes,
@@ -4058,6 +4059,31 @@ class ChatOrchestrator:
             # price+discount needs that fact now to decide whether catalogue
             # execution can replace the general discount-policy answer.
             self._ground_catalog_sku_intent(message, intent)
+        # Пронумерованный список вопросов разбирается до коммерческой ветки:
+        # иначе первый же вопрос про доставку забирает весь ход, а наличие,
+        # цена и оплата остаются без ответа (живой прогон 25.08, D04 — P0).
+        if not session.pending_question_state and not session.pending_slot_keys:
+            question_list = self._compose_question_list_answer(
+                message, session, agents_used
+            )
+            if question_list is not None:
+                list_answer, list_cards = question_list
+                if list_cards:
+                    session.last_products = list_cards
+                session.last_intent = "question_list"
+                agents_used.append("ResponseComposerAgent")
+                self._append_history(session, message, list_answer)
+                self.sessions.save(session)
+                return self._response(
+                    session_id,
+                    list_answer,
+                    list_cards,
+                    False,
+                    intent,
+                    session,
+                    agents_used,
+                )
+
         compound_query_is_searchable = bool(
             (intent.raw or {}).get("explicit_category")
             or (intent.raw or {}).get("catalog_sku_grounded")
@@ -4719,6 +4745,32 @@ class ChatOrchestrator:
                     session_id,
                     answer,
                     comparison_cards,
+                    False,
+                    intent,
+                    session,
+                    agents_used,
+                )
+
+        # Список закупки в одной реплике разбирается до подбора: иначе слоты
+        # всех позиций складываются в один несовместимый запрос. Внутри
+        # идущего уточнения не перехватываем — там реплика отвечает на вопрос
+        # бота, а не открывает новый список.
+        if not session.pending_question_state and not session.pending_slot_keys:
+            item_list_result = self._compose_item_list_answer(
+                message, session, agents_used
+            ) or self._compose_question_list_answer(message, session, agents_used)
+            if item_list_result is not None:
+                list_answer, list_cards = item_list_result
+                if list_cards:
+                    session.last_products = list_cards
+                session.last_intent = "item_list"
+                agents_used.append("ResponseComposerAgent")
+                self._append_history(session, message, list_answer)
+                self.sessions.save(session)
+                return self._response(
+                    session_id,
+                    list_answer,
+                    list_cards,
                     False,
                     intent,
                     session,
@@ -5964,6 +6016,37 @@ class ChatOrchestrator:
         direct_products: list[Product] = []
         if not session.pending_complectation_parts and not query.sku:
             direct_products = self.search_agent.search_by_name(message, query)
+            if not direct_products and query.slots.get("in_stock"):
+                # «Есть в наличии?» — это вопрос, а не фильтр выдачи. Живой
+                # прогон 25.08 (A02): у названной покупателем позиции
+                # (Rommer Optima BM 500х80, 6 секций) нулевой остаток, поиск с
+                # жёстким «только в наличии» не возвращал ничего — и бот просил
+                # артикул вместо честного «в каталоге есть, в наличии нет».
+                # Ответ по карточке с нулевым остатком и есть правильный ответ.
+                relaxed_query = query.model_copy(
+                    update={
+                        "in_stock_only": False,
+                        "slots": {
+                            key: value
+                            for key, value in query.slots.items()
+                            if key != "in_stock"
+                        },
+                    }
+                )
+                direct_products = self.search_agent.search_by_name(
+                    message, relaxed_query
+                )
+                if direct_products:
+                    # Дальше по конвейеру запрос идёт как «покажи эту позицию»:
+                    # иначе проверка достоверности отбракует карточку с нулевым
+                    # остатком за то, что она не удовлетворяет фильтру наличия,
+                    # и ответ снова станет отпиской. По той же причине снимается
+                    # флаг наличия: финальная проверка в ``_response`` вырезает
+                    # по нему карточки, а здесь ноль на остатке — это и есть
+                    # ответ на заданный вопрос.
+                    query = relaxed_query
+                    intent.slots.pop("in_stock", None)
+                    intent.flags["in_stock"] = False
         if (
             query.category == "boilers"
             and (
@@ -10695,6 +10778,195 @@ class ChatOrchestrator:
                     break
         return covered
 
+    def _compose_item_list_answer(
+        self,
+        message: str,
+        session: SessionState,
+        agents_used: list[str],
+    ) -> tuple[str, list[ProductCard]] | None:
+        """Ответ по списку закупки — позиция за позицией.
+
+        Живой прогон 25.08: список из трёх позиций Valtec схлопывался в один
+        запрос с несовместимыми слотами и получал «Не нашёл подходящие товары»,
+        хотя каждая позиция лежала в каталоге с остатком в сотни штук (A16,
+        A08). Здесь каждая строка ищется своим запросом, и ни одна не теряется.
+        """
+
+        items = split_item_list(message)
+        if not items:
+            return None
+
+        lines = ["По списку — позиция за позицией:"]
+        cards: list[ProductCard] = []
+        total = 0.0
+        countable_total = True
+        shortages: list[str] = []
+        not_found: list[str] = []
+        for index, item in enumerate(items, start=1):
+            item_intent = self.intent_router.route(item.query)
+            item_query = SearchQuery(
+                original_text=item.query,
+                category=item_intent.category,
+                slots={
+                    key: value
+                    for key, value in dict(item_intent.slots or {}).items()
+                    if key != "in_stock"
+                },
+            )
+            products = self.search_agent.search_by_name(item.query, item_query)
+            if not products:
+                products = self.search_agent.search(item_query)
+            item_cards = (
+                self.card_agent.build_cards(products[:1], item_query, limit=1)
+                if products
+                else []
+            )
+            need = (
+                f" Нужно {item.quantity} {item.unit or 'шт'}."
+                if item.quantity is not None
+                else ""
+            )
+            if not item_cards:
+                countable_total = False
+                not_found.append(item.query)
+                lines.append(
+                    f"{index}. {item.query} — в каталоге не нашёл.{need}"
+                )
+                continue
+            card = item_cards[0]
+            cards.append(card)
+            lines.append(
+                f"{index}. {html.unescape(card.name)} — арт. {card.sku}, "
+                f"{card.price:g} {card.currency}, "
+                f"{self._card_stock_text(card)}.{need}"
+            )
+            if (
+                item.quantity is not None
+                and card.stock_qty is not None
+                and card.stock_qty < item.quantity
+            ):
+                shortages.append(
+                    f"{card.sku}: нужно {item.quantity}, в наличии {card.stock_qty}"
+                )
+            # Метры и погонажные единицы не умножаю: в карточке нет длины
+            # отрезка и единицы цены, а придуманная сумма выглядит как факт.
+            if item.unit == "шт" and item.quantity is not None and card.price:
+                total += float(card.price) * item.quantity
+            else:
+                countable_total = False
+
+        if shortages:
+            lines.append("Остатка не хватает: " + "; ".join(shortages) + ".")
+        if countable_total and total:
+            lines.append(
+                f"Сумма по позициям в штуках: {total:g} RUB. "
+                "Это цены каталога без доставки и без скидки за объём — "
+                "её считает менеджер."
+            )
+        elif cards:
+            lines.append(
+                "Итоговую сумму не считаю: в списке есть позиции в метрах или "
+                "не найденные в каталоге, и итог был бы неполным."
+            )
+        if not_found:
+            # Ненайденная строка списка не должна заканчиваться молчанием:
+            # покупателю нужен следующий шаг, а не констатация.
+            lines.append(
+                "По ненайденным позициям могу подобрать аналог — уточните "
+                "систему и размер, — или передать список менеджеру: напишите "
+                "«передай менеджеру», он проверит поставку и назовёт срок."
+            )
+        agents_used.extend(["FeedSearchAgent", "ProductCardAgent"])
+        return "\n".join(lines), cards
+
+    def _compose_question_list_answer(
+        self,
+        message: str,
+        session: SessionState,
+        agents_used: list[str],
+    ) -> tuple[str, list[ProductCard]] | None:
+        """Ответ на пронумерованный список вопросов — по пунктам.
+
+        Живой прогон 25.08 (D04, P0): из пяти вопросов бот отвечал на два, а
+        наличие, цену и оплату терял. Красный флаг сценария сформулирован
+        ровно так: «отвечает на 2–3 вопроса из 5».
+        """
+
+        parts = split_question_list(message)
+        if not parts:
+            return None
+
+        lines = ["Отвечаю по пунктам:"]
+        cards: list[ProductCard] = []
+        anchor: ProductCard | None = None
+        answered = 0
+        for index, part in enumerate(parts, start=1):
+            part_intent = self.intent_router.route(part)
+            names_product = bool(
+                part_intent.category not in {"", "other"}
+                and any(
+                    part_intent.slots.get(key)
+                    for key in ("sku", "name_tokens", "element_type", "product_kind", "brand")
+                )
+            )
+            if names_product and anchor is None:
+                query = SearchQuery(
+                    original_text=part,
+                    category=part_intent.category,
+                    slots={
+                        key: value
+                        for key, value in dict(part_intent.slots or {}).items()
+                        if key != "in_stock"
+                    },
+                )
+                products = self.search_agent.search_by_name(
+                    part, query
+                ) or self.search_agent.search(query)
+                found = (
+                    self.card_agent.build_cards(products[:1], query, limit=1)
+                    if products
+                    else []
+                )
+                if found:
+                    anchor = found[0]
+                    cards.extend(found)
+                    answered += 1
+                    lines.append(
+                        f"{index}. {html.unescape(anchor.name)} — арт. "
+                        f"{anchor.sku}, {self._card_stock_text(anchor)}."
+                    )
+                    continue
+                lines.append(f"{index}. Такой позиции в каталоге не нахожу.")
+                continue
+
+            normalized_part = normalize_text(part)
+            asks_price = any(
+                marker in normalized_part
+                for marker in ("сколько стоит", "цена", "почем", "почём", "стоимость")
+            )
+            if anchor is not None and asks_price:
+                answered += 1
+                lines.append(
+                    f"{index}. Цена по каталогу — {anchor.price:g} {anchor.currency}."
+                )
+                continue
+
+            topic = match_commerce_topic(part)
+            if topic is not None and topic.note:
+                answered += 1
+                lines.append(f"{index}. {topic.note}")
+                continue
+
+            lines.append(
+                f"{index}. Проверенных данных по этому пункту у меня нет — "
+                "его подтвердит менеджер."
+            )
+
+        if not answered:
+            return None
+        agents_used.extend(["FeedSearchAgent", "ProductCardAgent"])
+        return "\n".join(lines), cards
+
     def _compose_project_specification(
         self,
         session: SessionState,
@@ -13018,9 +13290,13 @@ class ChatOrchestrator:
                 )
 
         if status == "awaiting_contact" and not summary.contact:
+            # Второй ход подряд с одним требованием «оставьте контакт» — это
+            # уже круг (живой прогон 25.08: A21, D11, D12). Рабочий путь
+            # «позвоните сами» называем сразу, а не после третьего отказа.
             answer = (
                 "Заявку пока не отправляю: для неё нужен телефон или email. "
-                "После получения контакта покажу итог и попрошу подтверждение."
+                "Если оставлять контакт не хотите — позвоните сами, "
+                f"{self.handoff._reachable_hint()}"
             )
             if "HandoffAgent" not in agents_used:
                 agents_used.append("HandoffAgent")
@@ -15368,6 +15644,31 @@ class ChatOrchestrator:
                     details.append(
                         f"{attribute_labels.get(field, field)}: в карточке не указано"
                     )
+            # Перечень из семи «в карточке не указано» подряд не отвечает ни на
+            # что и читается как отписка. Живой прогон 25.08 (A24): на вопрос
+            # «какой из трёх подойдёт и почему» покупатель получил именно такой
+            # список по каждой из трёх карточек и ушёл. Отсутствие данных
+            # называется один раз, а место занимают те характеристики, которые
+            # в карточке есть.
+            missing_labels = [
+                item.split(":", 1)[0].strip()
+                for item in details
+                if "в карточке не указано" in item
+            ]
+            if len(missing_labels) >= 2:
+                known = [
+                    item for item in details if "в карточке не указано" not in item
+                ]
+                if not known:
+                    known = [
+                        f"{key}: {value}"
+                        for key, value in grounded_attributes.items()
+                        if value
+                        and not self.card_agent.is_internal_provenance_attribute(key)
+                    ][:3]
+                details = known + [
+                    "в карточке нет данных: " + ", ".join(missing_labels[:5])
+                ]
             if details:
                 lines.append("Основные данные: " + "; ".join(details) + ".")
             if "url" in requested_fields:
@@ -21599,6 +21900,13 @@ class ChatOrchestrator:
                 "линия",
                 "сечен",
                 "питан",
+                # «Хватит ли 4 квадратов?» — это про сечение кабеля. Без этих
+                # слов реплика выпадала из электрической ветки в подбор котла
+                # (живой прогон 25.08, B25).
+                "квадрат",
+                "мм2",
+                "мм²",
+                "ампер",
             ]
         )
         installation_question = any(
@@ -21677,12 +21985,18 @@ class ChatOrchestrator:
                 "и защиту. Схему питания, кабель и автоматику должен проверить "
                 "квалифицированный электрик. До проверки оборудование не включайте."
             )
-        return (
+        # Расчёт тока по мощности и напряжению — арифметика, а не инструкция по
+        # монтажу. Живой прогон 25.08 (B25, C12): бот трижды повторял запрет и
+        # не давал ни одной цифры, хотя тест-набор требует «общую справочную
+        # информацию» вместе с обязательной оговоркой про электрика.
+        load_hint = self._electrical_load_hint(session, None, message)
+        base = (
             "Не подключайте мощный электрический котёл к обычной розетке только на основании "
             "того, что указано 220 В. Нужно сверить паспорт, выделенную мощность, схему питания "
             "и защиту; кабель и автоматику должен проверить квалифицированный электрик. "
             "До проверки оборудование не включайте."
         )
+        return f"{base} {load_hint}".strip() if load_hint else base
 
     def _resolve_explicit_safety_product(
         self,
@@ -22044,6 +22358,38 @@ class ChatOrchestrator:
             and not any(marker in text for marker in flood_markers)
             and not any(marker in text for marker in rupture_markers)
         )
+        # «Течёт» описывает и аварию, и обычное течение воды по трубе. Само по
+        # себе рядом со словом «труба» оно аварией не является: живой прогон
+        # 25.08 (D01) на реплику «нужна труба для воды, которая течёт в дом»
+        # трижды выдал инструкцию «перекройте стояк, звоните 112», и разговор
+        # о покупке трубы не состоялся. Явные признаки прорыва и затопления
+        # выше по-прежнему открывают аварийную ветку без всяких условий.
+        shopping_request = bool(
+            re.search(
+                r"\b(?:нужн\w*|нужен|куп\w*|подбер\w*|подобра\w*|посовет\w*|"
+                r"сколько\s+стоит|есть\s+ли|прода\w*|закаж\w*|заказат\w*)\b",
+                text,
+            )
+        )
+        incident_evidence = bool(
+            explicit_escape
+            or any(
+                marker in text
+                for marker in [
+                    "капает",
+                    "подтекает",
+                    "сильно течет",
+                    "сильно течёт",
+                    "что делать",
+                    "залив",
+                    "сосед",
+                    "не могу перекрыть",
+                    "мокро",
+                    "аварий",
+                    "срочно",
+                ]
+            )
+        )
         looks_like_leak = any(marker in text for marker in flood_markers) or (
             any(marker in text for marker in rupture_markers)
             and any(marker in text for marker in water_fixture_markers)
@@ -22052,6 +22398,8 @@ class ChatOrchestrator:
             and not contextual_service_flow
             and any(marker in text for marker in ["течет", "течёт", "льется", "льётся"])
             and any(marker in text for marker in water_fixture_markers)
+            and incident_evidence
+            and not shopping_request
         )
 
         if looks_like_leak:
@@ -23835,7 +24183,13 @@ class ChatOrchestrator:
         if slots.get("project_scope") != "warm_floor":
             add("Площадь объекта", "area_m2", " м²")
         if not facts:
-            return "Пока в текущей ветке нет подтверждённых инженерных параметров."
+            # Служебная формулировка покупателю ничего не сообщает: живой
+            # прогон 25.08 показал её как финальный ответ в A08 и D07.
+            return (
+                "Пока я не записал ни одного параметра по этой задаче. "
+                "Опишите, что нужно подобрать, — и я начну с одного-двух "
+                "вопросов по существу."
+            )
         return "Вот что зафиксировал:\n- " + "\n- ".join(facts)
 
     @staticmethod
@@ -24356,10 +24710,17 @@ class ChatOrchestrator:
     # недостающий параметр. В живом прогоне эта фраза не была командой ни в
     # одной ветке кода: покупатель писал её дословно и получал тот же текст
     # снова (B08 ход 3, D01 ходы 8–10).
+    # Команду «покажите варианты» покупатель почти никогда не пишет этими
+    # словами. Живой прогон 25.08 (A01, A17, D19): «дайте примеры моделей»,
+    # «какие есть модели», «дай хоть один вариант» — то же самое действие,
+    # но бот их не узнавал и предлагал написать точную формулу ещё раз.
     _SHOW_OPTIONS_RE = re.compile(
-        r"\b(?:покаж\w*|показыв\w*|дай(?:те)?|выведи)\b[^.!?]{0,20}"
-        r"\bвариант\w*\b"
-        r"|\bвариант\w*\b[^.!?]{0,12}\b(?:покаж\w*|дай(?:те)?)\b",
+        r"\b(?:покаж\w*|показыв\w*|дай(?:те)?|выведи|привед\w*|перечисл\w*)\b"
+        r"[^.!?]{0,24}\b(?:вариант\w*|модел\w*|позици\w*|пример\w*)\b"
+        r"|\b(?:вариант\w*|модел\w*|позици\w*|пример\w*)\b[^.!?]{0,14}"
+        r"\b(?:покаж\w*|дай(?:те)?)\b"
+        r"|\bкакие\s+(?:есть|у\s+вас|бывают)\b[^.!?]{0,16}"
+        r"\b(?:вариант\w*|модел\w*|позици\w*)\b",
         re.IGNORECASE,
     )
 
@@ -24396,7 +24757,19 @@ class ChatOrchestrator:
         # запроса. «Старый насос Grundfos UPS 25-60, нужна альтернатива, покажи
         # варианты в наличии» несёт собственные параметры, и подменять его
         # выдачей по категории нельзя.
-        if len(text.split()) > 6:
+        # Порог длины отделяет команду от содержательного запроса, внутри
+        # которого просьба показать варианты — придаточное. Но реплика вида
+        # «давление не знаю, дайте примеры моделей, которые подойдут» длиннее
+        # шести слов и при этом является ровно этой командой: покупатель прямо
+        # сказал, что недостающего параметра у него нет (живой прогон, A01).
+        admits_unknown = bool(
+            re.search(
+                r"\b(?:не\s+зна\w*|не\s+могу\s+узнать|неизвестн\w*|"
+                r"нет\s+таких\s+данн\w*|негде\s+взять)\b",
+                text,
+            )
+        )
+        if len(text.split()) > (14 if admits_unknown else 6):
             return None
         category = session.pending_category or session.category
         if not category or category == "other":
@@ -26633,7 +27006,8 @@ class ChatOrchestrator:
         cards: list[ProductCard],
         intent: IntentResult,
         session: SessionState,
-    ) -> str:
+        agents_used: list[str] | None = None,
+    ) -> tuple[str, list[ProductCard]]:
         """Не задавать один и тот же уточняющий вопрос третий раз.
 
         Лестница эскалации в оркестраторе существовала, но для части вопросов
@@ -26647,18 +27021,18 @@ class ChatOrchestrator:
         """
 
         if cards or not answer.strip():
-            return answer
+            return answer, cards
         # Безопасность и авария повторяются намеренно: пока течь не остановлена,
         # покупатель обязан получать ту же инструкцию, сколько бы раз ни писал.
         if intent.intent_type in self._NON_CATALOG_INTENTS:
-            return answer
+            return answer, cards
         normalized = normalize_text(answer)
         # Повторное объяснение — не повторный вопрос. Содержательный ответ,
         # который заканчивается предложением уточнить, эскалировать нельзя:
         # на «а в чём разница?» покупатель обязан получить разницу и во второй
         # раз. Голая воронка отличается от объяснения длиной.
         if len(answer.strip()) > 300:
-            return answer
+            return answer, cards
         asks = answer.strip().endswith("?") or any(
             marker in normalized
             for marker in ("уточните", "подскажите", "укажите", "напишите")
@@ -26672,11 +27046,19 @@ class ChatOrchestrator:
         # предложения менеджера, подменять её своей — значит выдать покупателю
         # два разных «давайте передадим» подряд.
         if "менеджер" in normalized:
-            return answer
+            return answer, cards
         if not asks or refuses:
-            return answer
+            return answer, cards
 
-        signature = normalized[:120]
+        # Подпись — последнее предложение ответа. К одному и тому же вопросу
+        # приписываются разные вступления («Уточню ещё раз, без этого не
+        # подберу точно…»), поэтому ни начало строки, ни хвост фиксированной
+        # длины повтор не ловят: живой прогон 25.08 показал этот обход на A16,
+        # B24 и C10 — вопрос звучал дословно, а лестница эскалации молчала.
+        sentences = [
+            part.strip() for part in re.split(r"[.!?]+", normalized) if part.strip()
+        ]
+        signature = (sentences[-1] if sentences else normalized)[:120]
         seen = list(session.recent_clarifications or [])
         # Если реплика заведомо не отвечает на заданный вопрос, ждать третьего
         # повтора незачем: повторять его дословно бессмысленно уже во второй раз.
@@ -26686,6 +27068,30 @@ class ChatOrchestrator:
             # Третий раз повторять бессмысленно: объясняем, что мешает, и даём
             # покупателю выход вместо той же фразы.
             session.recent_clarifications = (seen + [signature])[-self._CLARIFICATION_MEMORY :]
+            # Предложить показать варианты и ждать ответа — ещё один ход без
+            # результата. Живой прогон 25.08: до этой ступени доживали девять
+            # диалогов, и ни в одном покупатель не написал «покажите варианты»
+            # — он уходил. Поэтому подбор по известным условиям выполняется
+            # сразу, а менеджер остаётся вторым, названным вслух путём.
+            category = intent.category if intent.category != "other" else session.category
+            if category and category != "other":
+                options = self._options_by_known_conditions(
+                    session,
+                    intent,
+                    agents_used if agents_used is not None else [],
+                    message="",
+                )
+                if options is not None:
+                    options_answer, option_cards = options
+                    return (
+                        "Вижу, что спрашиваю одно и то же, и мы не двигаемся. "
+                        "Не буду повторять вопрос — показываю то, что есть по "
+                        "остальным вашим условиям.\n"
+                        + options_answer
+                        + "\nЕсли нужен точный подбор, напишите недостающий "
+                        "параметр или «передай менеджеру».",
+                        option_cards,
+                    )
             return (
                 "Вижу, что спрашиваю одно и то же и мы не двигаемся. "
                 "Без этого параметра я не подставлю случайный товар, но и "
@@ -26693,10 +27099,11 @@ class ChatOrchestrator:
                 "в наличии по остальным вашим условиям, чтобы вы выбрали "
                 "подходящее исполнение, — или передать задачу менеджеру с тем, "
                 "что уже известно. Напишите «покажите варианты» или "
-                "«передай менеджеру»."
+                "«передай менеджеру».",
+                cards,
             )
         session.recent_clarifications = (seen + [signature])[-self._CLARIFICATION_MEMORY :]
-        return answer
+        return answer, cards
 
     # Безопасность повторяется намеренно: пока течь не перекрыта и газ не
     # отключён, покупатель обязан получать ту же инструкцию, сколько бы раз
@@ -26711,6 +27118,165 @@ class ChatOrchestrator:
         }
     )
     _ANSWER_MEMORY = 8
+
+    # Что бот может сделать полезного, не переходя границу безопасности.
+    # Запрет в каждом варианте остаётся, меняется только форма и добавляется
+    # выполнимый следующий шаг.
+    _SAFETY_NEXT_STEPS: dict[str, str] = {
+        # Формулировка запрета повторяется дословно намеренно: пока опасность
+        # не снята, она обязана звучать одинаково недвусмысленно каждый раз.
+        # Меняется и добавляется только то, что идёт после неё.
+        "gas_work_safety": (
+            "Инструкцию по подключению к газу я не дам — ответ прежний и не "
+            "изменится: врезку, подключение и пуск выполняет только "
+            "организация с допуском. Что могу сделать прямо сейчас: подобрать "
+            "сам котёл и обвязку после него — трубы, краны, фильтр, группу "
+            "безопасности — и собрать перечень к приходу специалистов. "
+            "Сказать, что из этого есть в наличии?"
+        ),
+        "gas_safety": (
+            "Инструкцию по подключению к газу я не дам — ответ прежний: "
+            "газовые работы выполняет служба с допуском. Помогу с тем, что "
+            "законно: подбор оборудования и обвязки, перечень к приходу "
+            "специалиста."
+        ),
+        "electrical_safety": (
+            "Не подключайте мощный электрический котёл к обычной розетке — "
+            "ответ прежний и не изменится. Питание, кабель и автоматику "
+            "проверяет квалифицированный электрик, линия нужна отдельная, с "
+            "автоматом и УЗО."
+        ),
+        "water_heater_safety": (
+            "Ответ прежний: эксплуатировать водонагреватель без исправной "
+            "группы безопасности нельзя. Помогу подобрать саму группу "
+            "безопасности и обвязку."
+        ),
+        "emergency": (
+            "Порядок прежний: сначала перекрыть воду или вызвать аварийную "
+            "службу, и только потом подбирать товар. Как перекроете — "
+            "напишите, что именно повреждено, и я подберу замену."
+        ),
+    }
+
+    @staticmethod
+    def _electrical_load_hint(
+        session: SessionState,
+        intent: IntentResult | None = None,
+        message: str = "",
+    ) -> str:
+        """Расчётный ток по мощности и напряжению — арифметика, а не монтаж.
+
+        Живой прогон 25.08 (B25): на вопрос «какая сила тока и сечение кабеля
+        для 12 кВт при 380 В» бот трижды дословно повторил предупреждение и не
+        дал ни одной цифры. Тест-набор считает это отдельным дефектом —
+        «отказал там, где мог помочь»: расчёт тока опасной инструкцией не
+        является, а сечение и защиту всё равно выбирает электрик.
+        """
+
+        # Ветка безопасности отвечает до слияния слотов, поэтому в сессии их
+        # ещё может не быть: берём и то, что распознано в этом ходе, и то, что
+        # покупатель назвал в предыдущих репликах.
+        merged: dict[str, Any] = dict(session.slots or {})
+        merged.update(dict((intent.slots if intent else None) or {}))
+        haystack = normalize_text(
+            f"{message} "
+            + " ".join(
+                str(item.get("content", ""))
+                for item in (session.history or [])[-8:]
+                if item.get("role") == "user"
+            )
+        )
+        try:
+            power_kw = float(merged.get("power_kw") or 0)
+            voltage_v = float(merged.get("voltage_v") or 0)
+        except (TypeError, ValueError):
+            power_kw, voltage_v = 0.0, 0.0
+        if power_kw <= 0:
+            power_match = re.search(r"(\d+(?:[.,]\d+)?)\s*квт", haystack)
+            if power_match:
+                power_kw = float(power_match.group(1).replace(",", "."))
+        if voltage_v <= 0:
+            voltage_match = re.search(r"\b(220|230|380|400)\s*в\b", haystack)
+            if voltage_match:
+                voltage_v = float(voltage_match.group(1))
+        if power_kw <= 0:
+            return ""
+        if voltage_v <= 0:
+            # «Обычная розетка» — это однофазные 220 В, и именно этот расчёт
+            # показывает покупателю, почему так нельзя (C12: 9 кВт ≈ 41 А).
+            if any(
+                marker in haystack
+                for marker in ("розетк", "удлинител", "220")
+            ):
+                voltage_v = 220.0
+            else:
+                return ""
+        if voltage_v >= 300:
+            current = power_kw * 1000 / (3**0.5 * voltage_v)
+            scheme = "трёхфазной сети"
+        else:
+            current = power_kw * 1000 / voltage_v
+            scheme = "однофазной сети"
+        return (
+            f"Что могу дать без монтажа — расчёт: {power_kw:g} кВт при "
+            f"{voltage_v:g} В в {scheme} — это примерно {current:.0f} А на "
+            "фазу. Сечение кабеля, номинал автомата и тип УЗО по этому току "
+            "подбирает электрик с учётом длины линии, способа прокладки и "
+            "выделенной мощности — эти цифры можно сразу отдать ему."
+        )
+
+    def _vary_repeated_safety_answer(
+        self,
+        text: str,
+        cards: list[ProductCard],
+        intent: IntentResult,
+        session: SessionState,
+    ) -> tuple[str, list[ProductCard]]:
+        """Повторить запрет, не повторяя абзац дословно.
+
+        Безопасность не смягчается: ограничение проговаривается снова. Но
+        третья дословная копия одного и того же текста заканчивает разговор —
+        в живом прогоне 25.08 так закрылись C11, C12, B25 и D01. Со второго
+        раза ответ становится коротким подтверждением запрета плюс тем
+        полезным, что бот может сделать, не выходя за границу.
+        """
+
+        # Пока течь не остановлена, инструкция обязана звучать целиком и
+        # столько раз, сколько покупатель спросит: сокращать её нельзя.
+        # Вариации касаются уже перекрытой аварии и ложных срабатываний.
+        if session.slots.get("water_emergency") == "active":
+            return text, cards
+        key = normalize_text(text)[-200:]
+        if len(key) < 40:
+            return text, cards
+        seen = list(session.slots.get("_safety_answer_keys") or [])
+        session.slots["_safety_answer_keys"] = (seen + [key])[
+            -self._ANSWER_MEMORY :
+        ]
+        if key not in seen:
+            return text, cards
+
+        message = str(getattr(self._request_agents, "message", "") or "")
+        repeats = int(session.slots.get("_safety_repeat_strikes") or 0) + 1
+        session.slots["_safety_repeat_strikes"] = repeats
+
+        variant = self._SAFETY_NEXT_STEPS.get(intent.intent_type, "")
+        if intent.intent_type == "electrical_safety":
+            hint = self._electrical_load_hint(session, intent, message)
+            if hint:
+                variant = f"{variant} {hint}".strip()
+        if repeats == 1:
+            return (variant or text), cards
+
+        # Второй повтор подряд означает, что покупателю нужен не текст, а
+        # человек: дальше держать его в переписке бессмысленно.
+        base = variant or text
+        return (
+            f"{base}\n"
+            "Дальше по этому вопросу помогает специалист, а не переписка. "
+            f"Позвоните нам, {self.handoff._reachable_hint()}",
+            cards,
+        )
 
     def _break_answer_repeat(
         self,
@@ -26733,8 +27299,12 @@ class ChatOrchestrator:
         """
 
         text = answer.strip()
-        if not text or intent.intent_type in self._MUST_REPEAT_INTENTS:
+        if not text:
             return answer, cards
+        if intent.intent_type in self._MUST_REPEAT_INTENTS:
+            # Запрет повторяется по существу, но не дословно: см.
+            # ``_vary_repeated_safety_answer``.
+            return self._vary_repeated_safety_answer(text, cards, intent, session)
         product_control = str((intent.raw or {}).get("product_control") or "")
         structured_controls = {
             "quantity_price",
@@ -26903,11 +27473,16 @@ class ChatOrchestrator:
             ) + 1
             session.slots["_awaiting_contact_repeat_count"] = contact_repeats
             if contact_repeats == 1:
+                # Круг живого прогона 25.08: бот третий раз просит контакт,
+                # покупатель третий раз просит телефон магазина. Разрывается
+                # он тем, что рабочий путь «позвоните сами» называется прямо,
+                # а не остаётся за кадром.
                 return (
-                    "Контакта покупателя в сообщении по-прежнему нет. Без телефона "
-                    "или email я технически не могу завершить передачу. Не буду "
-                    "задавать тот же вопрос другими словами: либо пришлите свой "
-                    "контакт, либо продолжим без заявки здесь.",
+                    "Контакта покупателя в сообщении по-прежнему нет — без "
+                    "телефона или email я не могу завершить передачу. Чтобы не "
+                    "ходить по кругу: позвоните сами, "
+                    f"{self.handoff._reachable_hint()}\n"
+                    "Либо пришлите свой контакт — и я оформлю обращение здесь.",
                     cards,
                 )
             if contact_repeats == 2:
@@ -27019,6 +27594,23 @@ class ChatOrchestrator:
 
         category = session.pending_category or session.category
         if strikes == 2:
+            # Раньше здесь стояло предложение написать «покажите варианты» и
+            # ожидание ответа. Живой прогон 25.08 показал, что этой ступени
+            # покупатель уже не дожидается: средняя длина диалога — меньше пяти
+            # ходов, и предложение приходит последним, что он читает. Поэтому
+            # действие выполняется сразу, а не предлагается.
+            if category and category != "other":
+                options = self._options_by_known_conditions(
+                    session, intent, agents_used, message=""
+                )
+                if options is not None:
+                    options_answer, option_cards = options
+                    return (
+                        "Вижу, что повторяюсь, — так мы не продвинемся. "
+                        "Показываю то, что есть по уже известным условиям.\n"
+                        + options_answer,
+                        option_cards,
+                    )
             exits = (
                 "Вижу, что повторяюсь, — так мы не продвинемся. "
                 "Могу показать, что есть по уже известным условиям: напишите "
@@ -27150,16 +27742,15 @@ class ChatOrchestrator:
         )
         if repeats == 1:
             return (
-                "Вижу, что предыдущая инструкция уже прозвучала, поэтому не повторяю "
-                "её дословно. Если нужного значения получить нельзя, прямо напишите, "
-                "что оно неизвестно, и попросите предварительный подбор по известным "
-                "условиям; я отмечу непроверенное ограничение, а не придумаю его."
+                "Я это уже говорил, поэтому не повторяю дословно. Если параметр "
+                "узнать негде — так и напишите: покажу предварительные варианты "
+                "по тому, что известно, и прямо отмечу, что осталось непроверенным."
                 + pending_note
             )
         return (
-            f"После {repeats + 1} повторов новых подтверждённых сведений нет. "
-            "Нужен либо новый наблюдаемый факт/документ, либо явное решение продолжить "
-            "предварительно по уже известным данным."
+            "Новых данных у меня не появилось, а повторять одно и то же смысла нет. "
+            "Давайте так: либо назовите недостающий факт, либо напишите «покажите "
+            "варианты» — подберу предварительно по тому, что уже известно."
             + pending_note
         )
 
@@ -27220,6 +27811,12 @@ class ChatOrchestrator:
             message,
             flags=re.IGNORECASE,
         )
+        # Ответ по пунктам собран из отдельных вопросов, и «неизвестными
+        # марками» здесь становятся первые слова каждого пункта («Есть,
+        # Сколько, Доставите»). Приписка про ненайденную позицию к такому
+        # ответу — прямая бессмыслица (живой прогон 25.08, D04).
+        if session.last_intent in {"question_list", "item_list"}:
+            return answer
         unknown = self.search_agent.unknown_identity_tokens(message)
         if not unknown:
             return answer
@@ -27397,6 +27994,10 @@ class ChatOrchestrator:
             and turn_plan.has(TurnAction.ANSWER_COMMERCE_POLICY)
             and not intent.intent_type.startswith("commerce_")
             and intent.intent_type not in self._MUST_REPEAT_INTENTS
+            # Список позиций уже разобран построчно; дописывать к нему «файлы
+            # я не принимаю и позиции из вложения не вижу» — прямая неправда:
+            # позиции пришли текстом и посчитаны (A08).
+            and session.last_intent != "item_list"
         ):
             message = str(getattr(self._request_agents, "message", "") or "")
             commerce = self._maybe_commerce_answer(
@@ -27582,7 +28183,9 @@ class ChatOrchestrator:
                 agents_used.append("GuardrailsAgent")
 
         answer = self._exact_identity_disclaimer(answer, cards, intent, session)
-        answer = self._escalate_repeated_clarification(answer, cards, intent, session)
+        answer, cards = self._escalate_repeated_clarification(
+            answer, cards, intent, session, agents_used
+        )
         answer, cards = self._break_answer_repeat(
             answer, cards, intent, session, agents_used
         )

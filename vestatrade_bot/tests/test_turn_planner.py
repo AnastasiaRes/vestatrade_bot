@@ -306,7 +306,10 @@ def test_a01_browse_escapes_clarification_and_returns_requested_cards() -> None:
     assert all(product.sku.startswith("RAD-") for product in second.products)
     assert all(product.price > 0 for product in second.products)
     assert second.need_handoff is False
-    assert "Показываю по тому, что уже известно" in second.answer
+    # Оговорка получила приставку «Предварительно», и утверждение с заглавной
+    # буквы перестало совпадать, хотя поведение осталось верным. Сверяем смысл,
+    # а не регистр первого слова.
+    assert "показываю по тому, что уже известно" in second.answer.lower()
     assert "не буду подставлять случайный товар" not in second.answer.lower()
     assert second.debug["turn_actions"][0] == TurnAction.CATALOG_BROWSE.value
     state = bot.sessions.get(session_id)

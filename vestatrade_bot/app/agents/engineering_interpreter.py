@@ -542,6 +542,32 @@ class EngineeringInterpreterAgent:
             )
         return result
 
+    # Модель называет слот словом из вопроса, а не ключом схемы: «diameter»
+    # вместо «diameter_mm», «power» вместо «power_kw». Живой прогон 25.08
+    # показал, что из-за этого терялось верно понятое значение: на «уголок
+    # девяносто градусов на двадцатую трубу» модель вернула diameter=20, и
+    # слот отбрасывался как неизвестный. Переименование смысла не меняет —
+    # значение по-прежнему проходит все проверки достоверности ниже.
+    _SLOT_KEY_ALIASES: dict[str, str] = {
+        "diameter": "diameter_mm",
+        "diameter_mm_": "diameter_mm",
+        "size_mm": "diameter_mm",
+        "angle": "angle_deg",
+        "angle_degrees": "angle_deg",
+        "power": "power_kw",
+        "power_kwt": "power_kw",
+        "head": "head_m",
+        "flow": "required_flow_m3_h",
+        "area": "area_m2",
+        "voltage": "voltage_v",
+        "temperature": "operating_temperature_c",
+        "pressure": "operating_pressure_bar",
+        "length": "length_mm",
+        "mounting_length": "mounting_length_mm",
+        "sections_count": "sections",
+        "section_count": "sections",
+    }
+
     def _clean_slots(
         self,
         raw: Any,
@@ -553,6 +579,10 @@ class EngineeringInterpreterAgent:
     ) -> dict[str, Any]:
         if not isinstance(raw, dict):
             return {}
+        raw = {
+            self._SLOT_KEY_ALIASES.get(str(key), str(key)): value
+            for key, value in raw.items()
+        }
         cleaned: dict[str, Any] = {}
         for key, value in raw.items():
             if key in self._DERIVED_SLOTS:
@@ -1012,11 +1042,59 @@ class EngineeringInterpreterAgent:
             "восемьсот": 800,
             "девятьсот": 900,
         }
+        # Разговорные и порядковые формы: «на двадцатую трубу», «тридцатка»,
+        # «сороковую». Точная таблица выше знает «двадцать», но не «двадцатую»,
+        # и в живом прогоне 25.08 из-за этого терялось верно понятое моделью
+        # число: реплика без цифр считалась неподтверждённой целиком.
+        # Проверка остаётся той же по существу — число обязано быть названо
+        # покупателем, — просто теперь оно засчитывается и словом.
+        stems: tuple[tuple[str, int], ...] = tuple(
+            sorted(
+                (
+                    ("девяност", 90),
+                    ("восемьдесят", 80),
+                    ("восьмидесят", 80),
+                    ("семьдесят", 70),
+                    ("семидесят", 70),
+                    ("шестьдесят", 60),
+                    ("шестидесят", 60),
+                    ("пятьдесят", 50),
+                    ("пятидесят", 50),
+                    ("сороков", 40),
+                    ("сорок", 40),
+                    ("тридцат", 30),
+                    ("двадцат", 20),
+                    ("девятнадцат", 19),
+                    ("восемнадцат", 18),
+                    ("семнадцат", 17),
+                    ("шестнадцат", 16),
+                    ("пятнадцат", 15),
+                    ("четырнадцат", 14),
+                    ("тринадцат", 13),
+                    ("двенадцат", 12),
+                    ("одиннадцат", 11),
+                    ("десят", 10),
+                ),
+                key=lambda item: len(item[0]),
+                reverse=True,
+            )
+        )
+
         current = 0
         for token in text.split() + [""]:
             normalized_token = token.strip(".,-/")
+            stem_value = next(
+                (
+                    value
+                    for stem, value in stems
+                    if normalized_token.startswith(stem)
+                ),
+                None,
+            )
             if normalized_token in word_values:
                 current += word_values[normalized_token]
+            elif stem_value is not None:
+                current += stem_value
             elif normalized_token in {"тысяча", "тысячи", "тысяч"}:
                 current = max(current, 1) * 1000
             elif current:

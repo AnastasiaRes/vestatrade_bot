@@ -30,7 +30,13 @@ _SCALAR_NUMBER_RE = re.compile(
 # and unambiguous temperature notation.
 _TEMPERATURE_UNIT = r"(?:°\s*[cс]|градус\w*|c\b)"
 _PRESSURE_UNIT = r"(?:бар\w*|bar\b|атм(?:осфер\w*)?)"
-_MONEY_UNIT = r"(?:руб\w*|р\b|тыс(?:яч\w*)?|т\s*\.?\s*р\.?|к\b)"
+# «т.р.» — тысячи рублей, но без границы слова этот вариант ловил ещё и
+# начало слова «труба»: «20 трубу» распознавалось как денежная сумма, и
+# число переставало быть диаметром. Все буквенные варианты закрыты проверкой
+# на то, что дальше не идёт кириллическая буква.
+_MONEY_UNIT = (
+    r"(?:руб\w*|р\b|тыс(?:яч\w*)?(?![а-яё])|т\s*\.?\s*р\.?(?![а-яё])|к\b)"
+)
 _METRE_UNIT = r"(?:м\b|метр(?:а|ов)?)"
 _AREA_UNIT = r"(?:м\s*(?:2|²)|кв\.?\s*м|квадрат\w*(?:\s+метр\w*)?)"
 
@@ -121,6 +127,52 @@ def _is_compound_component(text: str, start: int, end: int) -> bool:
     )
 
 
+# Числительные словом и разговорные формы монтажника: «двадцатую трубу»,
+# «тридцатка», «на сороковую».  Проверки контекста ниже искали значение только
+# цифрами, поэтому реплика без цифр считалась не содержащей числа вовсе — и
+# верно понятый моделью размер отбраковывался (живой прогон 25.08).
+_WORD_NUMBER_STEMS: tuple[tuple[str, float], ...] = tuple(
+    sorted(
+        (
+            ("девяност", 90.0),
+            ("восемьдесят", 80.0),
+            ("восьмидесят", 80.0),
+            ("семьдесят", 70.0),
+            ("семидесят", 70.0),
+            ("шестьдесят", 60.0),
+            ("шестидесят", 60.0),
+            ("пятьдесят", 50.0),
+            ("пятидесят", 50.0),
+            ("сороков", 40.0),
+            ("сорок", 40.0),
+            ("тридцат", 30.0),
+            ("двадцат", 20.0),
+            ("пятнадцат", 15.0),
+            ("шестнадцат", 16.0),
+            ("двенадцат", 12.0),
+            ("десят", 10.0),
+        ),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    )
+)
+
+
+def _word_number_mentions(normalized: str, value: float) -> list[NumericMention]:
+    mentions: list[NumericMention] = []
+    for match in re.finditer(r"[а-яё]+", normalized):
+        token = match.group(0)
+        stem_value = next(
+            (number for stem, number in _WORD_NUMBER_STEMS if token.startswith(stem)),
+            None,
+        )
+        if stem_value is None:
+            continue
+        if math.isclose(stem_value, float(value), rel_tol=0.0, abs_tol=0.0001):
+            mentions.append(NumericMention(stem_value, match.start(), match.end()))
+    return mentions
+
+
 def _mentions_for_value(text: str, value: float) -> list[NumericMention]:
     normalized = normalize_text(text)
     mentions: list[NumericMention] = []
@@ -129,6 +181,7 @@ def _mentions_for_value(text: str, value: float) -> list[NumericMention]:
         if not math.isclose(number, float(value), rel_tol=0.0, abs_tol=0.0001):
             continue
         mentions.append(NumericMention(number, match.start("value"), match.end("value")))
+    mentions.extend(_word_number_mentions(normalized, value))
     return mentions
 
 
@@ -534,6 +587,16 @@ def _value_has_metric_dimension_context(text: str, value: float) -> bool:
             continue
         before = normalized[max(0, mention.start - 32) : mention.start]
         if re.search(r"(?:диаметр\w*|размер\w*|\b(?:dn|ду|дн)\s*|[øф]\s*)$", before):
+            return True
+        # Монтажная идиома: «двадцатая труба», «на сороковую», «тройник 32».
+        # Число, за которым стоит трубный элемент, называет его размер — это
+        # тот самый разговорный способ, которым размер и произносят.
+        after = normalized[mention.end : mention.end + 24]
+        if re.match(
+            r"\s*(?:труб\w*|уголь?ник\w*|уголок\w*|тройник\w*|муфт\w*|"
+            r"отвод\w*|переходник\w*|фитинг\w*|кран\w*|стояк\w*)",
+            after,
+        ):
             return True
     return False
 

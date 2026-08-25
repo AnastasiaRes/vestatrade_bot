@@ -251,9 +251,16 @@ def test_same_clarification_is_never_asked_a_third_time(bot: ChatOrchestrator) -
 
 
 def test_third_repetition_offers_a_way_out(bot: ChatOrchestrator) -> None:
-    """Вместо третьего повтора — выход: менеджер или предложение показать варианты."""
-    for message in A16_TURNS[:2]:
-        bot.handle_chat("a16-exit", message)
+    """Вместо третьего повтора — выход: менеджер или предложение показать варианты.
+
+    Первая реплика намеренно без количеств. С количествами («уголок 20х1/2 —
+    30 шт, тройник 20х20х20 — 20 шт») это уже список закупки, и он с 25.08
+    разбирается по позициям: бот отвечает артикулами и ценами, а не вопросом,
+    поэтому третьего повтора вопроса просто не возникает. Здесь проверяется
+    лестница эскалации, а не разбор списка, — вход подобран под неё.
+    """
+    bot.handle_chat("a16-exit", "Мне нужны фитинги Valtec")
+    bot.handle_chat("a16-exit", A16_TURNS[1])
     third = normalize_text(bot.handle_chat("a16-exit", A16_TURNS[2]).answer)
 
     assert any(marker in third for marker in ["менеджер", "покажу", "подберу", "могу показать"])
@@ -743,10 +750,31 @@ def test_product_facts_are_not_mistaken_for_operational_claims() -> None:
 
 
 def test_live_answer_never_shows_an_unverified_phone(bot: ChatOrchestrator) -> None:
-    """Сквозная проверка: телефон не может выйти наружу ни по одной ветке."""
+    """Сквозная проверка: наружу выходит только телефон из конфигурации.
+
+    Раньше проверка была строже — «никакого телефона ни по одной ветке», —
+    потому что проверенных телефонов в конфигурации не было и любой номер был
+    бы выдумкой. Теперь в ``business_config`` лежат телефоны шестнадцати точек,
+    и запрет отдавать их превратился в собственный дефект: живой прогон 25.08
+    показал, что на «дайте живого человека» бот не даёт контакт вообще (A21,
+    D11) — а это красный флаг тест-набора заказчика.
+
+    Инвариант остался тем же и проверяется по существу: показанный номер
+    обязан совпадать с проверенным фактом, а не быть сгенерированным.
+    """
+    from app.business_config import get_business_facts
+
     response = bot.handle_chat("a21", "Просто дайте телефон")
 
-    assert not re.search(r"\+?\d[\d\s().-]{9,}\d", response.answer)
+    verified = {
+        re.sub(r"\D", "", phone) for phone in get_business_facts().phones
+    }
+    shown = {
+        re.sub(r"\D", "", match)
+        for match in re.findall(r"\+?\d[\d\s().-]{9,}\d", response.answer)
+    }
+    assert shown, "на прямую просьбу дать телефон бот обязан назвать номер"
+    assert shown <= verified, f"неподтверждённые номера в ответе: {shown - verified}"
 
 
 def test_radiator_question_never_returns_a_boiler_card() -> None:

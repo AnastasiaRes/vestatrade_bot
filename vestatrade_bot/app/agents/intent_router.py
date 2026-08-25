@@ -643,6 +643,16 @@ class IntentRouterAgent:
         ):
             slots["sku"] = sku_match.group(0)
 
+        # Номер заказа, накладной или реквизит артикулом не бывает. Живой
+        # прогон 25.08 (A07): «в заказе 148237 поменять два радиатора» ушло в
+        # ветку точного артикула и получило «Точного артикула 148237 в
+        # каталоге нет» — про изменение заказа не было сказано ничего.
+        sku_candidate = str(slots.get("sku") or "")
+        if sku_candidate.isdigit() and number_has_domestic_role(
+            text, float(sku_candidate)
+        ):
+            slots.pop("sku", None)
+
         for brand in self._catalog_brands:
             brand_text = normalize_text(brand)
             if re.search(
@@ -3293,12 +3303,51 @@ class IntentRouterAgent:
             elif warm_floor_mentioned and not warm_floor_negated:
                 slots["system_type"] = "тёплый пол"
 
+        # Каталожное имя фитинга ставит угол перед диаметром: «Угольник 90 PPR
+        # 20мм», «Отвод 67°, HTB, 110». Покупатель копирует его дословно, и
+        # первое число — угол, а не диаметр. В живом прогоне 25.08 (A16)
+        # «угольник 90 PPR 20 мм» превратился в угольник диаметром 90 мм, а
+        # реальная позиция VTp.751.0.020 с остатком 1789 шт. не нашлась.
+        #
+        # Условие намеренно узкое: угол засчитывается только тогда, когда в
+        # реплике есть второе число, годное на роль диаметра. Иначе «угольник
+        # 90» без других чисел остаётся диаметром, как и раньше.
+        angle_span: tuple[int, int] | None = None
+        if category in {"fittings", "sewer"} and slots.get("element_type") in {
+            "угольник",
+            "отвод",
+            "тройник",
+        }:
+            angle_match = re.search(
+                # Между словом и углом помещается уточнение из каталога:
+                # «Тройник двухраструбный 45», «угольник под пайку 90».
+                r"\b(?:угольник|уголок|колен|отвод|тройник)\w*\s*"
+                r"(?:[а-яё]+\s+){0,2}(?:на\s+)?"
+                r"(15|22|30|45|60|67|87|88|90)(?!\s*мм)(?!\s*°)(?!\d)",
+                text,
+            )
+            if angle_match:
+                other_size = any(
+                    10 <= int(match.group(1)) <= 250
+                    and not (
+                        angle_match.start(1) <= match.start(1) < angle_match.end(1)
+                    )
+                    for match in re.finditer(r"(?<!\d)(\d{2,3})(?!\d)", text)
+                )
+                if other_size:
+                    slots.setdefault("angle_deg", int(angle_match.group(1)))
+                    angle_span = (angle_match.start(1), angle_match.end(1))
+
         if category in {"pipes", "sewer", "fittings", "valves", "radiator_fittings"} or any(
             marker in text for marker in ["диаметр", "ø"]
         ):
             for diameter_match in re.finditer(
                 r"(?:^|\s|dn\s*|d\s*|ø\s*)(\d{2,3})(?:\s*мм|\s|[,;.!?]|$)", text
             ):
+                if angle_span is not None and (
+                    angle_span[0] <= diameter_match.start(1) < angle_span[1]
+                ):
+                    continue
                 value = int(diameter_match.group(1))
                 # A weak standalone-size guess must yield to any explicit unit.
                 # This also avoids treating pressure/voltage as a diameter while
@@ -3315,9 +3364,60 @@ class IntentRouterAgent:
                 # 22 мм и уводило весь разговор про радиаторы в трубы (B13).
                 if number_has_domestic_role(text, value):
                     continue
+                # Число, за которым стоит прибор, — это количество приборов, а
+                # не диаметр трубы. Живой прогон 25.08 (B17): «двухтрубная
+                # система, 12 радиаторов, дальние не греют» превращалось в
+                # «Понял, труба 12 мм», и весь диалог о балансировке уходил в
+                # подбор трубы. Проверка стоит только здесь: в общей таблице
+                # бытовых ролей она заблокировала бы законные слоты вроде
+                # количества секций или контуров.
+                if re.match(
+                    r"\s*(?:шт\.?\s*)?(?:радиатор|батаре|прибор|секци|контур|"
+                    r"котл|котёл|котел|насос|стояк|санузл|комнат|окн|точк|"
+                    r"полотенцесушител|унитаз|смесител)\w*",
+                    text[diameter_match.end(1) :],
+                ):
+                    continue
                 if 10 <= value <= 250:
                     slots["diameter_mm"] = value
                     break
+
+        # Размер, названный словом: «на двадцатую трубу», «тридцатка»,
+        # «сороковой уголок». Так размер и произносят на объекте, и без этого
+        # правила реплика без цифр оставалась без диаметра вовсе — понимание
+        # держалось только на модели, а при выключенной LLM пропадало совсем.
+        if category in {"pipes", "sewer", "fittings"} and not slots.get("diameter_mm"):
+            word_size = re.search(
+                r"\b(девяност\w*|сороков\w*|сорок|тридцат\w*|двадцат\w*|"
+                r"пятнадцат\w*|шестнадцат\w*|двенадцат\w*|десят\w*)\s*"
+                r"(?:мм\s*)?"
+                r"(?:труб\w*|уголь?ник\w*|уголок\w*|тройник\w*|муфт\w*|"
+                r"отвод\w*|переходник\w*|фитинг\w*|кран\w*|стояк\w*)",
+                text,
+            )
+            if word_size:
+                word_values = (
+                    ("девяност", 90),
+                    ("сороков", 40),
+                    ("сорок", 40),
+                    ("тридцат", 30),
+                    ("двадцат", 20),
+                    ("пятнадцат", 15),
+                    ("шестнадцат", 16),
+                    ("двенадцат", 12),
+                    ("десят", 10),
+                )
+                token = word_size.group(1)
+                value = next(
+                    (
+                        number
+                        for stem, number in word_values
+                        if token.startswith(stem)
+                    ),
+                    None,
+                )
+                if value is not None and 10 <= value <= 250:
+                    slots["diameter_mm"] = value
 
         if category in {"pipes", "sewer"}:
             colloquial_diameter = re.search(
