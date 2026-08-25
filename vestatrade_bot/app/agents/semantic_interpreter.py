@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
 from enum import Enum
 from time import monotonic
 from typing import Any, Literal
@@ -22,7 +23,7 @@ from app.pii import redact_pii_for_model
 from .domain_ontology import semantic_ontology_payload
 
 
-SEMANTIC_PROMPT_VERSION = "turn-understanding-v1"
+SEMANTIC_PROMPT_VERSION = "turn-understanding-v1.5"
 SEMANTIC_INTERPRETER_PROMPT = """
 Ты — семантический интерпретатор одного нового сообщения покупателя магазина
 инженерной сантехники. Верни только JSON по переданной схеме.
@@ -59,7 +60,48 @@ SEMANTIC_INTERPRETER_PROMPT = """
 - calculate — посчитать результат по исходным данным;
 - check_price, check_stock и get_link — отдельные действия, если покупатель
   одновременно просит цену, наличие или ссылку;
-- остальные действия выбирай строго по их именам в JSON-схеме.
+- остальные действия выбирай строго по их именам в JSON-схеме;
+- просьба сначала подобрать товар, а затем выполнить коммерческую операцию —
+  это два самостоятельных acts. Не теряй коммерческое действие из-за того,
+  что в той же реплике есть товар или подбор;
+- request_quote — оценка стоимости или коммерческое предложение, когда
+  покупатель не просит платёжный документ; request_invoice — именно счёт как
+  отдельный платёжный/бухгалтерский документ, не request_quote;
+  reserve_product — любая просьба временно удержать или отложить товар за
+  покупателем; place_order — оформление
+  заказа; modify_order — изменение существующего заказа; cancel_order — его
+  отмена; order_status — проверка состояния заказа; check_delivery — условия
+  или стоимость доставки; return_product — возврат; warranty — гарантийное
+  обращение; complaint — претензия; handoff — явная просьба передать обращение
+  сотруднику.
+
+Как кодировать управление commerce workflow:
+- workflow_controls содержит только явно сказанное confirm, decline,
+  withdraw_consent, opt_out или resume_after_opt_out;
+- короткое «да» является confirm только когда оно отвечает на pending-вопрос о
+  согласии; не выбирай workflow и не утверждай, что операция выполнена;
+- явное подтверждение, отклонение или отзыв ранее подготовленной операции — это
+  workflow_control, а не новая просьба выполнить ту же предметную операцию.
+  Не повторяй соответствующий commerce act только из-за упоминания его объекта
+  внутри подтверждения; новый act добавляй лишь для отдельной новой просьбы;
+- каждый control сохраняет дословное evidence из current_message.
+
+Взаимоисключающие инварианты перед возвратом JSON:
+- прямой запрос выставить/подготовить счёт или invoice как документ всегда
+  требует act=request_invoice. Не заменяй его request_quote; оба act допустимы
+  только если покупатель отдельно просит и счёт, и коммерческое предложение;
+- confirm, decline, withdraw_consent, opt_out и resume_after_opt_out никогда не
+  допустимы внутри acts — только внутри workflow_controls;
+- handoff, request_invoice и остальные предметные действия никогда не
+  допустимы внутри workflow_controls. Явная новая просьба передать обращение
+  сотруднику — act=handoff;
+- operation описывает только связь новой реплики с задачей: new, continue,
+  refine, correct, switch, return, cancel или unknown. Предметные действия
+  вроде modify_order, cancel_order и return_product никогда не допустимы в
+  operation — они находятся в acts;
+- если новая реплика только подтверждает или отклоняет ожидающую операцию,
+  acts может быть пустым. До ещё не данного согласия отрицательный ответ —
+  decline; withdraw_consent относится к отзыву уже ранее данного согласия.
 
 Как кодировать ограничения:
 - name — стабильное имя характеристики, а не вся бытовая фраза;
@@ -76,8 +118,9 @@ pumps, pipes, boilers, water_heaters, hydraulic_accumulators, filters, controls,
 valves, sewer, radiator_fittings, radiators, fittings, meters, sanitary_ware,
 installation_systems, other.
 
-Верни объект с schema_version="1.0", language, operation, acts, products,
-constraints, references, ambiguities, answers_pending_question и confidence.
+Верни объект с schema_version="1.1", language, operation, acts, products,
+constraints, references, ambiguities, workflow_controls,
+answers_pending_question и confidence.
 Не добавляй никаких других полей.
 """.strip()
 
@@ -94,7 +137,14 @@ candidate от первого прохода. Верни исправленны�
 Проверь смысл, а не отдельные ключевые слова:
 1. Каждая самостоятельная просьба отражена отдельным acts: подбор подходящего
    товара — select, простой поиск/показ — find, цена/наличие/ссылка — отдельные
-   check_price/check_stock/get_link.
+   check_price/check_stock/get_link. Отдельно проверь все commerce-просьбы:
+   request_quote, request_invoice, reserve_product, place_order, modify_order,
+   cancel_order, order_status, check_delivery, return_product, warranty,
+   complaint и handoff. Товарный подбор и commerce-просьбу в одной реплике не
+   схлопывай. Не смешивай request_invoice с request_quote: платёжный или
+   бухгалтерский счёт — request_invoice, оценка/предложение без счёта —
+   request_quote. Просьба временно удержать товар — reserve_product, даже если
+   покупатель использует разговорный глагол.
 2. Главный запрошенный товар имеет role=target. Уже установленный — existing;
    объект системы, который только задаёт условия, — context. Контекст не может
    заменить цель.
@@ -104,6 +154,16 @@ candidate от первого прохода. Верни исправленны�
    связан с pending_question, если он есть.
 5. Никаких вычислений, ответов, SKU и фактов из истории. Evidence каждого
    элемента — непустая дословная часть current_message.
+6. Явное согласие, отказ, отзыв согласия, opt-out или возобновление ранее
+   подготовленного workflow отражено в workflow_controls. Само упоминание
+   предмета подтверждаемой операции не создаёт повторный commerce act. Новый
+   act нужен только для самостоятельной новой просьбы.
+7. Выполни финальную взаимоисключающую проверку: запрос счёта как документа —
+   request_invoice, не request_quote; control-kind никогда не находится в
+   acts; предметный act, включая handoff, никогда не находится в
+   workflow_controls; предметный act никогда не находится в operation; чистый
+   ответ на consent может иметь acts=[]. До выдачи согласия «нет» означает
+   decline, а не withdraw_consent.
 
 Если candidate уже точен и полон, верни его без смысловых изменений.
 """.strip()
@@ -137,9 +197,13 @@ class CustomerAct(str, Enum):
     CHECK_STOCK = "check_stock"
     GET_LINK = "get_link"
     REQUEST_QUOTE = "request_quote"
+    REQUEST_INVOICE = "request_invoice"
+    RESERVE_PRODUCT = "reserve_product"
     PLACE_ORDER = "place_order"
     MODIFY_ORDER = "modify_order"
+    CANCEL_ORDER = "cancel_order"
     ORDER_STATUS = "order_status"
+    CHECK_DELIVERY = "check_delivery"
     RETURN_PRODUCT = "return_product"
     WARRANTY = "warranty"
     COMPLAINT = "complaint"
@@ -200,6 +264,14 @@ class ReferenceKind(str, Enum):
     OTHER = "other"
 
 
+class WorkflowControlKind(str, Enum):
+    CONFIRM = "confirm"
+    DECLINE = "decline"
+    WITHDRAW_CONSENT = "withdraw_consent"
+    OPT_OUT = "opt_out"
+    RESUME_AFTER_OPT_OUT = "resume_after_opt_out"
+
+
 class ProductMention(StrictModel):
     text: str = Field(min_length=1, max_length=240)
     canonical_type: str | None = Field(default=None, max_length=120)
@@ -258,24 +330,47 @@ class TurnAmbiguity(StrictModel):
     evidence: str = Field(min_length=1, max_length=240)
 
 
+class WorkflowControl(StrictModel):
+    kind: WorkflowControlKind
+    evidence: str = Field(min_length=1, max_length=240)
+
+
 class TurnUnderstanding(StrictModel):
     """Grounded semantics of the current message; never an execution plan."""
 
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["1.0", "1.1"] = "1.1"
     language: str = Field(default="ru", min_length=2, max_length=16)
-    operation: GoalOperation = GoalOperation.UNKNOWN
+    operation: GoalOperation = Field(
+        default=GoalOperation.UNKNOWN,
+        description=(
+            "Dialogue relation only (new/continue/refine/correct/switch/return/"
+            "cancel/unknown), never a domain action such as modify_order."
+        ),
+    )
     acts: list[CustomerAct] = Field(
         default_factory=list,
         max_length=12,
         description=(
             "Every independent customer action; do not collapse selection, "
-            "price, stock, link or comparison requests into one action."
+            "price, stock, link or comparison requests into one action. "
+            "request_invoice is a requested invoice/payment document and is "
+            "not interchangeable with request_quote. Workflow control kinds "
+            "never belong in acts."
         ),
     )
     products: list[ProductMention] = Field(default_factory=list, max_length=12)
     constraints: list[ConstraintFact] = Field(default_factory=list, max_length=40)
     references: list[TurnReference] = Field(default_factory=list, max_length=12)
     ambiguities: list[TurnAmbiguity] = Field(default_factory=list, max_length=12)
+    workflow_controls: list[WorkflowControl] = Field(
+        default_factory=list,
+        max_length=8,
+        description=(
+            "Explicit control of an already prepared workflow. A control-only "
+            "turn may have no acts; decline precedes consent, while "
+            "withdraw_consent revokes consent already granted."
+        ),
+    )
     answers_pending_question: bool = False
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
@@ -303,6 +398,7 @@ class SemanticInterpretationResult(StrictModel):
     audit_requested: bool = False
     audit_output_accepted: bool = False
     audit_rejection_reason: str | None = None
+    structural_repairs: tuple[str, ...] = ()
     understanding: TurnUnderstanding | None = None
     rejection_reason: str | None = None
     fallback_reason: str | None = None
@@ -324,11 +420,73 @@ def validate_current_turn_evidence(
         *(item.evidence for item in understanding.constraints),
         *(item.evidence for item in understanding.references),
         *(item.evidence for item in understanding.ambiguities),
+        *(item.evidence for item in understanding.workflow_controls),
     ]
     for evidence in evidence_values:
         normalized = _normalize_evidence(evidence)
         if not normalized or normalized not in normalized_message:
             raise ValueError(f"evidence is absent from current_message: {evidence!r}")
+
+
+def repair_structural_enum_placement(
+    raw: Any,
+    current_message: str,
+) -> tuple[Any, tuple[str, ...]]:
+    """Repair only misplaced known enums; never infer a speech act from text."""
+
+    if not isinstance(raw, dict):
+        return raw, ()
+    repaired = deepcopy(raw)
+    acts = list(repaired.get("acts") or [])
+    controls = list(repaired.get("workflow_controls") or [])
+    operation = repaired.get("operation")
+    act_values = {item.value for item in CustomerAct}
+    control_values = {item.value for item in WorkflowControlKind}
+    operation_values = {item.value for item in GoalOperation}
+    evidence = str(current_message or "")[:240]
+    changes: list[str] = []
+
+    if operation in control_values:
+        controls.append({"kind": operation, "evidence": evidence})
+        repaired["operation"] = GoalOperation.CONTINUE.value
+        changes.append("operation_control_moved_to_workflow_controls")
+    elif operation in act_values and operation not in operation_values:
+        acts.append(operation)
+        repaired["operation"] = GoalOperation.UNKNOWN.value
+        changes.append("operation_act_moved_to_acts")
+
+    normalized_acts: list[Any] = []
+    for item in acts:
+        value = getattr(item, "value", item)
+        if value in control_values:
+            controls.append({"kind": value, "evidence": evidence})
+            changes.append("act_control_moved_to_workflow_controls")
+        else:
+            normalized_acts.append(item)
+
+    normalized_controls: list[Any] = []
+    for item in controls:
+        kind = item.get("kind") if isinstance(item, dict) else None
+        if kind in act_values:
+            normalized_acts.append(kind)
+            changes.append("workflow_control_act_moved_to_acts")
+        else:
+            normalized_controls.append(item)
+
+    repaired["acts"] = list(dict.fromkeys(normalized_acts))
+    unique_controls: list[Any] = []
+    seen_controls: set[tuple[object, object]] = set()
+    for item in normalized_controls:
+        key = (
+            item.get("kind") if isinstance(item, dict) else None,
+            item.get("evidence") if isinstance(item, dict) else None,
+        )
+        if key in seen_controls:
+            continue
+        seen_controls.add(key)
+        unique_controls.append(item)
+    repaired["workflow_controls"] = unique_controls
+    return repaired, tuple(dict.fromkeys(changes))
 
 
 def semantic_context(state: SessionState) -> dict[str, Any]:
@@ -388,7 +546,7 @@ class SemanticInterpreter:
             "output_schema": TurnUnderstanding.model_json_schema(),
         }
         fallback: dict[str, Any] = {
-            "schema_version": "1.0",
+            "schema_version": "1.1",
             "language": "ru",
             "operation": "unknown",
             "acts": [],
@@ -396,6 +554,7 @@ class SemanticInterpreter:
             "constraints": [],
             "references": [],
             "ambiguities": [],
+            "workflow_controls": [],
             "answers_pending_question": False,
             "confidence": 0.0,
         }
@@ -448,20 +607,31 @@ class SemanticInterpreter:
             audit_rejection: str | None = None
             understanding: TurnUnderstanding | None = None
             validation_errors: list[str] = []
+            structural_repairs: tuple[str, ...] = ()
             if audit_transport:
                 try:
-                    audited = TurnUnderstanding.model_validate(audited_raw)
+                    repaired_audit, audit_repairs = repair_structural_enum_placement(
+                        audited_raw,
+                        safe_message,
+                    )
+                    audited = TurnUnderstanding.model_validate(repaired_audit)
                     validate_current_turn_evidence(audited, safe_message)
                     understanding = audited
                     audit_accepted = True
+                    structural_repairs = audit_repairs
                 except (ValidationError, ValueError, TypeError) as exc:
                     audit_rejection = str(exc)[:1200]
                     validation_errors.append(f"audit: {exc}")
             if understanding is None:
                 try:
-                    first_pass = TurnUnderstanding.model_validate(raw)
+                    repaired_first, first_repairs = repair_structural_enum_placement(
+                        raw,
+                        safe_message,
+                    )
+                    first_pass = TurnUnderstanding.model_validate(repaired_first)
                     validate_current_turn_evidence(first_pass, safe_message)
                     understanding = first_pass
+                    structural_repairs = first_repairs
                 except (ValidationError, ValueError, TypeError) as exc:
                     validation_errors.append(f"first_pass: {exc}")
             if understanding is None:
@@ -476,6 +646,7 @@ class SemanticInterpreter:
                 understanding=understanding,
                 audit_requested=True,
                 audit_output_accepted=audit_accepted,
+                structural_repairs=structural_repairs,
                 audit_rejection_reason=(
                     audit_rejection
                     or (

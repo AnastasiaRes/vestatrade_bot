@@ -19,6 +19,10 @@ from uuid import uuid4
 
 from app.chat_logger import _file_lock, _interprocess_file_lock
 from app.config import PROJECT_ROOT, Settings
+from app.commerce_v2.registry import (
+    canonical_commerce_field_name,
+    sensitive_value_kind,
+)
 from app.models import ChatResponse, Product, SearchQuery, SessionState, model_to_dict
 from app.pii import redact_pii_for_model
 
@@ -50,11 +54,35 @@ def _json_safe(value: Any) -> Any:
     return redact_pii_for_model(str(value))
 
 
+def _scrub_commerce_sensitive(value: Any, *, parent_key: str = "") -> Any:
+    """Remove typed sensitive commerce values without inspecting message text."""
+
+    if isinstance(value, dict):
+        result: dict[str, Any] = {}
+        fact_name = canonical_commerce_field_name(str(value.get("name") or ""))
+        fact_sensitive = sensitive_value_kind(fact_name) is not None
+        for key, item in value.items():
+            canonical_key = canonical_commerce_field_name(str(key))
+            if sensitive_value_kind(canonical_key) is not None:
+                result[str(key)] = "[sensitive-present]" if item not in (None, "", [], {}) else None
+            elif fact_sensitive and key in {"value", "evidence"}:
+                result[str(key)] = "[sensitive-present]" if item not in (None, "", [], {}) else None
+            else:
+                result[str(key)] = _scrub_commerce_sensitive(
+                    item,
+                    parent_key=str(key),
+                )
+        return result
+    if isinstance(value, list):
+        return [_scrub_commerce_sensitive(item, parent_key=parent_key) for item in value]
+    return value
+
+
 def _state_view(state: SessionState) -> dict[str, Any]:
     """Keep decision state while excluding history and stored contact data."""
 
     pending = state.pending_question_state
-    return _json_safe(
+    return _scrub_commerce_sensitive(_json_safe(
         {
             "last_intent": state.last_intent,
             "category": state.category,
@@ -78,7 +106,7 @@ def _state_view(state: SessionState) -> dict[str, Any]:
             "handoff_status": state.handoff_status,
             "has_pending_handoff": bool(state.pending_handoff),
         }
-    )
+    ))
 
 
 @lru_cache(maxsize=1)
@@ -182,7 +210,7 @@ class TurnTrace:
         self.search_events.append(_json_safe(event))
 
     def record_semantic(self, result: Any) -> None:
-        self.semantic_shadow = _json_safe(result)
+        self.semantic_shadow = _scrub_commerce_sensitive(_json_safe(result))
 
     def record_dialogue_v2(self, result: Any) -> None:
         self.dialogue_v2_shadow = _json_safe(result)
@@ -224,7 +252,15 @@ class TurnTrace:
             "session_fingerprint": hashlib.sha256(
                 self.session_id.encode("utf-8")
             ).hexdigest(),
-            "current_message": redact_pii_for_model(self.message),
+            "current_message": (
+                None
+                if (
+                    self.settings.commerce_workflows_v2_shadow_enabled
+                    or self.settings.handoff_workflow_v2_shadow_enabled
+                    or self.settings.commerce_outbox_v2_shadow_enabled
+                )
+                else redact_pii_for_model(self.message)
+            ),
             "runtime": {
                 **runtime_revision(),
                 "llm_provider": self.settings.llm_provider,
@@ -281,6 +317,9 @@ class TurnTrace:
             "selected_next_action": selected_next_action,
             "v2_next_action": v2_plan or None,
             "catalog_planner_v2_shadow": catalog_v2,
+            "commerce_workflows_v2_shadow": (
+                (self.dialogue_v2_shadow or {}).get("commerce_planning")
+            ),
             "v2_candidate_skus": (
                 (catalog_v2 or {}).get("candidate_skus")
                 if catalog_v2 is not None
@@ -369,6 +408,9 @@ def build_turn_trace(
         or settings.product_contracts_v2_shadow_enabled
         or settings.catalog_planner_v2_shadow_enabled
         or settings.solution_plan_v2_shadow_enabled
+        or settings.commerce_workflows_v2_shadow_enabled
+        or settings.handoff_workflow_v2_shadow_enabled
+        or settings.commerce_outbox_v2_shadow_enabled
     ):
         return None
     return TurnTrace(

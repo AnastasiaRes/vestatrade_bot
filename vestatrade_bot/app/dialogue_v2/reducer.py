@@ -7,6 +7,22 @@ from collections.abc import Iterable
 
 from app.agents.semantic_interpreter import TurnUnderstanding
 from app.catalog_v2.contracts import CandidateStatus, CatalogPlanningResult
+from app.commerce_v2.contracts import (
+    CapabilityMode,
+    CommerceExecutionResult,
+    CommerceExecutionStatus,
+    CommerceFieldStatus,
+    CommercePlanningResult,
+    CommerceWorkflowStatus,
+    OutboxStatus,
+    SensitiveValueRef,
+    WorkflowControlKind,
+    WorkflowControlSignal,
+)
+from app.commerce_v2.registry import (
+    canonical_commerce_field_name,
+    sensitive_value_kind,
+)
 from app.pii import redact_pii_for_model
 
 from .contracts import (
@@ -16,6 +32,19 @@ from .contracts import (
     CatalogNoMatchRecorded,
     CatalogPlanCreated,
     CatalogRelaxationRecorded,
+    CommerceCapabilityBoundaryRecorded,
+    CommerceCommandIgnoredAsDuplicate,
+    CommerceCommandPrepared,
+    CommerceConsentChanged,
+    CommerceDeliveryConfirmed,
+    CommerceDeliveryFailed,
+    CommerceDeliveryUnknown,
+    CommerceLocalDraftRecorded,
+    CommercePayloadRevised,
+    CommercePreviewPrepared,
+    CommerceSensitiveFactLinked,
+    CommerceWorkflowControlRegistered,
+    CommerceWorkflowCreated,
     ConstraintAdded,
     ConstraintCorrected,
     ConstraintDeferred,
@@ -61,7 +90,13 @@ _DIRECT_ACTS = {
     TaskAct.CHECK_STOCK,
     TaskAct.GET_LINK,
     TaskAct.REQUEST_QUOTE,
+    TaskAct.REQUEST_INVOICE,
+    TaskAct.RESERVE_PRODUCT,
+    TaskAct.PLACE_ORDER,
+    TaskAct.MODIFY_ORDER,
+    TaskAct.CANCEL_ORDER,
     TaskAct.ORDER_STATUS,
+    TaskAct.CHECK_DELIVERY,
     TaskAct.RETURN_PRODUCT,
     TaskAct.WARRANTY,
     TaskAct.COMPLAINT,
@@ -328,6 +363,8 @@ def reduce_dialogue_state(
     goals = list(previous.product_goals)
     tasks = list(previous.tasks)
     constraints = list(previous.constraints)
+    commerce_sensitive_values = list(previous.commerce_sensitive_values)
+    commerce_controls = list(previous.commerce_controls)
     questions = list(previous.direct_questions)
     ambiguities = list(previous.ambiguities)
     events: list[object] = []
@@ -337,6 +374,31 @@ def reduce_dialogue_state(
     active_goal_id = previous.active_goal_id
     preferred_active_task = previous.task_stack.active_task_id
     activated_target_this_turn = False
+
+    for control_index, semantic_control in enumerate(
+        turn_understanding.workflow_controls
+    ):
+        control_id = _stable_id(
+            "commerce_control",
+            turn_metadata.turn_id,
+            control_index,
+            semantic_control.kind.value,
+        )
+        control = WorkflowControlSignal(
+            control_id=control_id,
+            kind=WorkflowControlKind(semantic_control.kind.value),
+            source_turn=turn_number,
+            source=turn_metadata.source,
+        )
+        commerce_controls.append(control)
+        events.append(
+            CommerceWorkflowControlRegistered(
+                turn_id=turn_metadata.turn_id,
+                turn_number=turn_number,
+                control_id=control_id,
+                control_kind=control.kind,
+            )
+        )
 
     targets = [
         (index, mention)
@@ -708,11 +770,79 @@ def reduce_dialogue_state(
             ),
             preferred_active_task,
         )
+        canonical_field = canonical_commerce_field_name(semantic_fact.name)
+        sensitive_kind = sensitive_value_kind(canonical_field)
+        if sensitive_kind is not None:
+            existing_sensitive = next(
+                (
+                    item
+                    for item in reversed(commerce_sensitive_values)
+                    if item.active and item.field_name == canonical_field
+                ),
+                None,
+            )
+            commerce_status = CommerceFieldStatus(status.value)
+            if (
+                existing_sensitive is not None
+                and existing_sensitive.status == commerce_status
+                and operation != "correct"
+            ):
+                rejected.append(
+                    RejectedProposal(
+                        proposal_type="commerce_sensitive_fact",
+                        reason_code="duplicate_sensitive_fact_reference",
+                        details={"existing_ref_id": existing_sensitive.ref_id},
+                    )
+                )
+                continue
+            ref_id = _stable_id(
+                "sensitive_ref",
+                turn_metadata.turn_id,
+                constraint_index,
+                canonical_field,
+            )
+            if existing_sensitive is not None:
+                commerce_sensitive_values = [
+                    (
+                        item.model_copy(update={"active": False})
+                        if item.ref_id == existing_sensitive.ref_id
+                        else item
+                    )
+                    for item in commerce_sensitive_values
+                ]
+            commerce_sensitive_values.append(
+                SensitiveValueRef(
+                    ref_id=ref_id,
+                    kind=sensitive_kind,
+                    field_name=canonical_field,
+                    status=commerce_status,
+                    source=turn_metadata.source,
+                    source_turn=turn_number,
+                    replaces_ref_id=(
+                        existing_sensitive.ref_id if existing_sensitive else None
+                    ),
+                )
+            )
+            events.append(
+                CommerceSensitiveFactLinked(
+                    turn_id=turn_metadata.turn_id,
+                    turn_number=turn_number,
+                    ref_id=ref_id,
+                    field_name=canonical_field,
+                )
+            )
+            progress_changes.append(
+                ProgressKind.UNKNOWN_REGISTERED
+                if commerce_status != CommerceFieldStatus.KNOWN
+                else ProgressKind.CONSTRAINT_ADDED
+            )
+            continue
         existing = next(
             (
                 fact
                 for fact in reversed(constraints)
-                if fact.active and fact.name == semantic_fact.name
+                if fact.active
+                and fact.name == semantic_fact.name
                 and fact.goal_id == goal_id
             ),
             None,
@@ -830,6 +960,11 @@ def reduce_dialogue_state(
         progress=progress,
         last_policy=previous.last_policy,
         catalog_planning=previous.catalog_planning,
+        commerce_workflows=previous.commerce_workflows,
+        commerce_sensitive_values=tuple(commerce_sensitive_values),
+        commerce_controls=tuple(commerce_controls[-100:]),
+        commerce_outbox=previous.commerce_outbox,
+        commerce_planning=previous.commerce_planning,
         applied_turn_ids=(*previous.applied_turn_ids, turn_metadata.turn_id),
     )
     return ReductionResult(
@@ -943,6 +1078,227 @@ def record_catalog_planning(
             )
         )
     state = reduction.state.model_copy(update={"catalog_planning": planning})
+    return reduction.model_copy(update={"state": state, "events": tuple(events)})
+
+
+def record_commerce_planning(
+    reduction: ReductionResult,
+    planning: CommercePlanningResult,
+    turn_metadata: TurnMetadata,
+) -> ReductionResult:
+    """Apply one complete commerce shadow decision at the reducer boundary."""
+
+    events: list[object] = list(reduction.events)
+    before = {item.workflow_id: item for item in reduction.state.commerce_workflows}
+    for workflow in planning.workflows:
+        previous = before.get(workflow.workflow_id)
+        if previous is None:
+            events.append(
+                CommerceWorkflowCreated(
+                    turn_id=turn_metadata.turn_id,
+                    turn_number=reduction.state.turn_number,
+                    workflow_id=workflow.workflow_id,
+                    workflow_kind=workflow.workflow_kind,
+                )
+            )
+        elif previous.payload_revision != workflow.payload_revision:
+            events.append(
+                CommercePayloadRevised(
+                    turn_id=turn_metadata.turn_id,
+                    turn_number=reduction.state.turn_number,
+                    workflow_id=workflow.workflow_id,
+                    payload_revision=workflow.payload_revision,
+                )
+            )
+        if workflow.preview_revision is not None and (
+            previous is None or previous.preview_revision != workflow.preview_revision
+        ):
+            events.append(
+                CommercePreviewPrepared(
+                    turn_id=turn_metadata.turn_id,
+                    turn_number=reduction.state.turn_number,
+                    workflow_id=workflow.workflow_id,
+                    payload_revision=workflow.preview_revision,
+                )
+            )
+        if previous is None or previous.consent.status != workflow.consent.status:
+            events.append(
+                CommerceConsentChanged(
+                    turn_id=turn_metadata.turn_id,
+                    turn_number=reduction.state.turn_number,
+                    workflow_id=workflow.workflow_id,
+                    consent_status=workflow.consent.status,
+                )
+            )
+    for boundary in planning.capability_boundaries:
+        workflow_id, _, reason = boundary.partition(":")
+        events.append(
+            CommerceCapabilityBoundaryRecorded(
+                turn_id=turn_metadata.turn_id,
+                turn_number=reduction.state.turn_number,
+                workflow_id=workflow_id,
+                reason_code=reason or "commerce_capability_boundary",
+            )
+        )
+    for command in planning.prepared_commands:
+        events.append(
+            CommerceCommandPrepared(
+                turn_id=turn_metadata.turn_id,
+                turn_number=reduction.state.turn_number,
+                workflow_id=command.workflow_id,
+                command_id=command.command_id,
+                payload_revision=command.payload_revision,
+            )
+        )
+    for rejected in planning.rejected_proposals:
+        if rejected.reason_code == "duplicate_command_ignored" and rejected.workflow_id:
+            events.append(
+                CommerceCommandIgnoredAsDuplicate(
+                    turn_id=turn_metadata.turn_id,
+                    turn_number=reduction.state.turn_number,
+                    workflow_id=rejected.workflow_id,
+                )
+            )
+    state = reduction.state.model_copy(
+        update={
+            "commerce_workflows": planning.workflows,
+            "commerce_controls": planning.controls,
+            "commerce_outbox": planning.outbox,
+            "commerce_planning": planning,
+        }
+    )
+    return reduction.model_copy(update={"state": state, "events": tuple(events)})
+
+
+def record_commerce_execution_result(
+    reduction: ReductionResult,
+    result: CommerceExecutionResult,
+    turn_metadata: TurnMetadata,
+) -> ReductionResult:
+    """Record a gateway result; gateway code never mutates dialogue state."""
+
+    entry = next(
+        (
+            item
+            for item in reduction.state.commerce_outbox
+            if item.command.command_id == result.command_id
+        ),
+        None,
+    )
+    if entry is None:
+        return reduction.model_copy(
+            update={
+                "rejected_proposals": (
+                    *reduction.rejected_proposals,
+                    RejectedProposal(
+                        proposal_type="commerce_execution",
+                        reason_code="commerce_command_not_found",
+                    ),
+                )
+            }
+        )
+    if result.capability_id != entry.command.capability_id:
+        return reduction.model_copy(
+            update={
+                "rejected_proposals": (
+                    *reduction.rejected_proposals,
+                    RejectedProposal(
+                        proposal_type="commerce_execution",
+                        reason_code="commerce_execution_capability_mismatch",
+                    ),
+                )
+            }
+        )
+    workflows = list(reduction.state.commerce_workflows)
+    workflow = next(
+        item for item in workflows if item.workflow_id == entry.command.workflow_id
+    )
+    if result.status == CommerceExecutionStatus.DELIVERED and (
+        workflow.capability_mode != CapabilityMode.TRANSACTIONAL_EXTERNAL
+        or not result.receipt_verified
+    ):
+        return reduction.model_copy(
+            update={
+                "rejected_proposals": (
+                    *reduction.rejected_proposals,
+                    RejectedProposal(
+                        proposal_type="commerce_execution",
+                        reason_code="unverified_transactional_delivery_result",
+                    ),
+                )
+            }
+        )
+    event: object
+    if result.status == CommerceExecutionStatus.LOCAL_DRAFT_SAVED:
+        workflow_status = CommerceWorkflowStatus.LOCAL_DRAFT_SAVED
+        outbox_status = OutboxStatus.ACKNOWLEDGED
+        event = CommerceLocalDraftRecorded(
+            turn_id=turn_metadata.turn_id,
+            turn_number=reduction.state.turn_number,
+            workflow_id=workflow.workflow_id,
+            command_id=result.command_id,
+        )
+    elif result.status == CommerceExecutionStatus.DELIVERED:
+        workflow_status = CommerceWorkflowStatus.DELIVERED
+        outbox_status = OutboxStatus.ACKNOWLEDGED
+        event = CommerceDeliveryConfirmed(
+            turn_id=turn_metadata.turn_id,
+            turn_number=reduction.state.turn_number,
+            workflow_id=workflow.workflow_id,
+            command_id=result.command_id,
+            receipt_ref=result.receipt_ref or "",
+        )
+    elif result.status == CommerceExecutionStatus.DELIVERY_UNKNOWN:
+        workflow_status = CommerceWorkflowStatus.DELIVERY_UNKNOWN
+        outbox_status = OutboxStatus.DELIVERY_UNKNOWN
+        event = CommerceDeliveryUnknown(
+            turn_id=turn_metadata.turn_id,
+            turn_number=reduction.state.turn_number,
+            workflow_id=workflow.workflow_id,
+            command_id=result.command_id,
+            reason_code=result.reason_code,
+        )
+    else:
+        workflow_status = CommerceWorkflowStatus.DELIVERY_FAILED
+        outbox_status = OutboxStatus.FAILED
+        event = CommerceDeliveryFailed(
+            turn_id=turn_metadata.turn_id,
+            turn_number=reduction.state.turn_number,
+            workflow_id=workflow.workflow_id,
+            command_id=result.command_id,
+            reason_code=result.reason_code,
+        )
+    workflows = [
+        (
+            item.model_copy(
+                update={
+                    "status": workflow_status,
+                    "execution_status": result.status,
+                    "external_receipt_ref": result.receipt_ref,
+                }
+            )
+            if item.workflow_id == workflow.workflow_id
+            else item
+        )
+        for item in workflows
+    ]
+    outbox = tuple(
+        (
+            item.model_copy(
+                update={
+                    "status": outbox_status,
+                    "receipt_ref": result.receipt_ref,
+                    "last_reason_code": result.reason_code,
+                }
+            )
+            if item.command.command_id == result.command_id
+            else item
+        )
+        for item in reduction.state.commerce_outbox
+    )
+    state = reduction.state.model_copy(
+        update={"commerce_workflows": tuple(workflows), "commerce_outbox": outbox}
+    )
     return reduction.model_copy(
-        update={"state": state, "events": tuple(events)}
+        update={"state": state, "events": (*reduction.events, event)}
     )

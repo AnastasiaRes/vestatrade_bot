@@ -78,6 +78,10 @@ class Settings(BaseModel):
     product_contracts_v2_shadow_enabled: bool = False
     catalog_planner_v2_shadow_enabled: bool = False
     solution_plan_v2_shadow_enabled: bool = False
+    commerce_workflows_v2_shadow_enabled: bool = False
+    handoff_workflow_v2_shadow_enabled: bool = False
+    commerce_outbox_v2_shadow_enabled: bool = False
+    commerce_external_execution_enabled: bool = False
 
     @property
     def llm_model(self) -> str:
@@ -217,6 +221,22 @@ def get_settings() -> Settings:
         ),
         solution_plan_v2_shadow_enabled=_env_bool(
             "SOLUTION_PLAN_V2_SHADOW_ENABLED",
+            False,
+        ),
+        commerce_workflows_v2_shadow_enabled=_env_bool(
+            "COMMERCE_WORKFLOWS_V2_SHADOW_ENABLED",
+            False,
+        ),
+        handoff_workflow_v2_shadow_enabled=_env_bool(
+            "HANDOFF_WORKFLOW_V2_SHADOW_ENABLED",
+            False,
+        ),
+        commerce_outbox_v2_shadow_enabled=_env_bool(
+            "COMMERCE_OUTBOX_V2_SHADOW_ENABLED",
+            False,
+        ),
+        commerce_external_execution_enabled=_env_bool(
+            "COMMERCE_EXTERNAL_EXECUTION_ENABLED",
             False,
         ),
     )

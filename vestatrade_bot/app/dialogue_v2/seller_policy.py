@@ -5,6 +5,12 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from app.catalog_v2.contracts import ReadinessStatus, TaskReadinessAssessment
+from app.commerce_v2.contracts import (
+    CapabilityMode,
+    CommerceReadinessAssessment,
+    CommerceReadinessStatus,
+    CommerceWorkflowKind,
+)
 
 from .contracts import (
     ConstraintStatus,
@@ -22,7 +28,13 @@ _DIRECT_ACTS = {
     TaskAct.CHECK_STOCK,
     TaskAct.GET_LINK,
     TaskAct.REQUEST_QUOTE,
+    TaskAct.REQUEST_INVOICE,
+    TaskAct.RESERVE_PRODUCT,
+    TaskAct.PLACE_ORDER,
+    TaskAct.MODIFY_ORDER,
+    TaskAct.CANCEL_ORDER,
     TaskAct.ORDER_STATUS,
+    TaskAct.CHECK_DELIVERY,
     TaskAct.RETURN_PRODUCT,
     TaskAct.WARRANTY,
     TaskAct.COMPLAINT,
@@ -41,6 +53,9 @@ class SellerPolicy:
         semantic_available: bool = True,
         policy_enabled: bool = True,
         readiness_assessments: Iterable[TaskReadinessAssessment] = (),
+        commerce_readiness_assessments: Iterable[
+            CommerceReadinessAssessment
+        ] = (),
     ) -> NextActionPlan:
         if not semantic_available:
             return NextActionPlan(
@@ -61,6 +76,11 @@ class SellerPolicy:
 
         readiness_by_task = {
             item.task_id: item for item in readiness_assessments
+        }
+        commerce_by_task = {
+            task_id: item
+            for item in commerce_readiness_assessments
+            for task_id in item.task_ids
         }
         current_tasks = sorted(
             (
@@ -84,6 +104,20 @@ class SellerPolicy:
         task_ids = tuple(task.task_id for task in current_tasks)
 
         direct = [task for task in current_tasks if task.act in _DIRECT_ACTS]
+        commerce_actionable = sorted(
+            (
+                task
+                for task in state.tasks
+                if task.task_id in commerce_by_task
+                and task.status
+                not in {
+                    TaskStatus.CANCELLED,
+                    TaskStatus.SATISFIED,
+                    TaskStatus.SUSPENDED,
+                }
+            ),
+            key=lambda task: (task.priority, task.task_id),
+        )
         selections = [task for task in actionable if task.act in _SELECTION_ACTS]
         explanations = [task for task in current_tasks if task.act == TaskAct.EXPLAIN]
         comparisons = [task for task in current_tasks if task.act == TaskAct.COMPARE]
@@ -91,22 +125,40 @@ class SellerPolicy:
         handoffs = [task for task in current_tasks if task.act == TaskAct.HANDOFF]
 
         if direct:
-            primary = NextAction(
-                kind=NextActionKind.ANSWER_DIRECT_QUESTION,
-                task_id=direct[0].task_id,
-                reason_code="direct_question_has_priority",
+            primary = self._direct_or_commerce_action(
+                direct[0], commerce_by_task
             )
-            secondary = self._selection_action(
-                state, selections[0], readiness_by_task
-            ) if selections else None
+            secondary = None
+            if len(direct) > 1:
+                secondary = self._direct_or_commerce_action(
+                    direct[1], commerce_by_task
+                )
+            elif selections:
+                secondary = self._selection_action(
+                    state, selections[0], readiness_by_task
+                )
             reasons = ["direct_question_has_priority"]
             if secondary:
-                reasons.append("unfinished_selection_preserved")
+                reasons.append("additional_customer_action_preserved")
             return NextActionPlan(
                 primary=primary,
                 secondary=secondary,
                 reason_codes=tuple(reasons),
                 task_ids=task_ids,
+                required_facts=self._required_facts(state),
+                blocking_facts=self._blocking_facts(state),
+            )
+
+        if commerce_actionable:
+            task = commerce_actionable[0]
+            action = self._commerce_action(
+                task.task_id,
+                commerce_by_task[task.task_id],
+            )
+            return NextActionPlan(
+                primary=action,
+                reason_codes=(action.reason_code,),
+                task_ids=tuple(item.task_id for item in commerce_actionable),
                 required_facts=self._required_facts(state),
                 blocking_facts=self._blocking_facts(state),
             )
@@ -148,6 +200,16 @@ class SellerPolicy:
             )
 
         if handoffs:
+            commerce = commerce_by_task.get(handoffs[0].task_id)
+            if commerce is not None:
+                action = self._commerce_action(handoffs[0].task_id, commerce)
+                return NextActionPlan(
+                    primary=action,
+                    reason_codes=(action.reason_code,),
+                    task_ids=task_ids,
+                    required_facts=self._required_facts(state),
+                    blocking_facts=self._blocking_facts(state),
+                )
             return self._single(
                 NextActionKind.START_OR_CONTINUE_HANDOFF,
                 handoffs[0].task_id,
@@ -190,6 +252,88 @@ class SellerPolicy:
             reason_codes=("accepted_semantics_has_no_actionable_task",),
             required_facts=self._required_facts(state),
             blocking_facts=self._blocking_facts(state),
+        )
+
+    def _direct_or_commerce_action(
+        self,
+        task: object,
+        commerce_by_task: dict[str, CommerceReadinessAssessment],
+    ) -> NextAction:
+        assessment = commerce_by_task.get(task.task_id)
+        if assessment is not None:
+            return self._commerce_action(task.task_id, assessment)
+        return NextAction(
+            kind=NextActionKind.ANSWER_DIRECT_QUESTION,
+            task_id=task.task_id,
+            reason_code="direct_question_has_priority",
+        )
+
+    @staticmethod
+    def _commerce_action(
+        task_id: str,
+        assessment: CommerceReadinessAssessment,
+    ) -> NextAction:
+        if assessment.status in {
+            CommerceReadinessStatus.NEEDS_CUSTOMER_FACT,
+            CommerceReadinessStatus.NEEDS_PRODUCT_SELECTION,
+            CommerceReadinessStatus.NEEDS_BUSINESS_FACT,
+        }:
+            return NextAction(
+                kind=NextActionKind.COLLECT_COMMERCE_FACT,
+                task_id=task_id,
+                fact_name=assessment.recommended_next_field,
+                reason_code=assessment.reason_codes[0],
+            )
+        if assessment.status == CommerceReadinessStatus.NEEDS_PREVIEW:
+            return NextAction(
+                kind=NextActionKind.PREVIEW_COMMERCE_REQUEST,
+                task_id=task_id,
+                reason_code="commerce_preview_required",
+            )
+        if assessment.status == CommerceReadinessStatus.NEEDS_CONSENT:
+            return NextAction(
+                kind=NextActionKind.REQUEST_SCOPED_CONSENT,
+                task_id=task_id,
+                reason_code="scoped_consent_required",
+            )
+        if assessment.status in {
+            CommerceReadinessStatus.CAPABILITY_UNAVAILABLE,
+            CommerceReadinessStatus.BLOCKED,
+        }:
+            return NextAction(
+                kind=NextActionKind.STATE_COMMERCE_CAPABILITY_BOUNDARY,
+                task_id=task_id,
+                reason_code=assessment.reason_codes[0],
+            )
+        if assessment.status == CommerceReadinessStatus.CANCELLED:
+            return NextAction(
+                kind=(
+                    NextActionKind.ACKNOWLEDGE_COMMERCE_OPT_OUT
+                    if assessment.workflow_kind == CommerceWorkflowKind.HANDOFF
+                    else NextActionKind.REPORT_COMMERCE_EXECUTION_STATUS
+                ),
+                task_id=task_id,
+                reason_code="commerce_workflow_cancelled",
+            )
+        if assessment.status == CommerceReadinessStatus.COMPLETED:
+            return NextAction(
+                kind=NextActionKind.REPORT_COMMERCE_EXECUTION_STATUS,
+                task_id=task_id,
+                reason_code="commerce_workflow_terminal",
+            )
+        if (
+            assessment.status == CommerceReadinessStatus.READY_TO_PREPARE
+            and assessment.capability_mode == CapabilityMode.VERIFIED_STATIC
+        ):
+            return NextAction(
+                kind=NextActionKind.ANSWER_VERIFIED_COMMERCE_QUESTION,
+                task_id=task_id,
+                reason_code="verified_commerce_fact_available",
+            )
+        return NextAction(
+            kind=NextActionKind.PREPARE_COMMERCE_COMMAND,
+            task_id=task_id,
+            reason_code="commerce_command_ready_for_shadow_outbox",
         )
 
     def _selection_action(

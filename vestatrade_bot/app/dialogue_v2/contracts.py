@@ -13,6 +13,16 @@ from typing import Any, Literal, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.catalog_v2.contracts import CatalogPlanningResult, ProductKind, ReadinessStatus
+from app.commerce_v2.contracts import (
+    CommerceOutboxEntry,
+    CommercePlanningResult,
+    CommerceWorkflowKind,
+    CommerceWorkflowState,
+    ConsentStatus,
+    SensitiveValueRef,
+    WorkflowControlKind,
+    WorkflowControlSignal,
+)
 
 
 DIALOGUE_STATE_SCHEMA_VERSION = "2.0"
@@ -45,9 +55,13 @@ class TaskAct(str, Enum):
     CHECK_STOCK = "check_stock"
     GET_LINK = "get_link"
     REQUEST_QUOTE = "request_quote"
+    REQUEST_INVOICE = "request_invoice"
+    RESERVE_PRODUCT = "reserve_product"
     PLACE_ORDER = "place_order"
     MODIFY_ORDER = "modify_order"
+    CANCEL_ORDER = "cancel_order"
     ORDER_STATUS = "order_status"
+    CHECK_DELIVERY = "check_delivery"
     RETURN_PRODUCT = "return_product"
     WARRANTY = "warranty"
     COMPLAINT = "complaint"
@@ -128,6 +142,14 @@ class NextActionKind(str, Enum):
     START_OR_CONTINUE_HANDOFF = "start_or_continue_handoff"
     CLOSE_TASK = "close_task"
     WAIT_FOR_SEMANTIC_UNDERSTANDING = "wait_for_semantic_understanding"
+    ANSWER_VERIFIED_COMMERCE_QUESTION = "answer_verified_commerce_question"
+    COLLECT_COMMERCE_FACT = "collect_commerce_fact"
+    PREVIEW_COMMERCE_REQUEST = "preview_commerce_request"
+    REQUEST_SCOPED_CONSENT = "request_scoped_consent"
+    PREPARE_COMMERCE_COMMAND = "prepare_commerce_command"
+    REPORT_COMMERCE_EXECUTION_STATUS = "report_commerce_execution_status"
+    STATE_COMMERCE_CAPABILITY_BOUNDARY = "state_commerce_capability_boundary"
+    ACKNOWLEDGE_COMMERCE_OPT_OUT = "acknowledge_commerce_opt_out"
 
 
 class TurnMetadata(FrozenModel):
@@ -250,6 +272,11 @@ class DialogueStateV2(FrozenModel):
     progress: ProgressState = Field(default_factory=ProgressState)
     last_policy: NextActionPlan | None = None
     catalog_planning: CatalogPlanningResult | None = None
+    commerce_workflows: tuple[CommerceWorkflowState, ...] = ()
+    commerce_sensitive_values: tuple[SensitiveValueRef, ...] = ()
+    commerce_controls: tuple[WorkflowControlSignal, ...] = ()
+    commerce_outbox: tuple[CommerceOutboxEntry, ...] = ()
+    commerce_planning: CommercePlanningResult | None = None
     applied_turn_ids: tuple[str, ...] = ()
 
 
@@ -394,6 +421,100 @@ class SolutionPlanCreated(StateEventBase):
     task_ids: tuple[str, ...]
 
 
+class CommerceSensitiveFactLinked(StateEventBase):
+    event_type: Literal["commerce_sensitive_fact_linked"] = (
+        "commerce_sensitive_fact_linked"
+    )
+    ref_id: str
+    field_name: str
+
+
+class CommerceWorkflowControlRegistered(StateEventBase):
+    event_type: Literal["commerce_workflow_control_registered"] = (
+        "commerce_workflow_control_registered"
+    )
+    control_id: str
+    control_kind: WorkflowControlKind
+
+
+class CommerceWorkflowCreated(StateEventBase):
+    event_type: Literal["commerce_workflow_created"] = "commerce_workflow_created"
+    workflow_id: str
+    workflow_kind: CommerceWorkflowKind
+
+
+class CommercePayloadRevised(StateEventBase):
+    event_type: Literal["commerce_payload_revised"] = "commerce_payload_revised"
+    workflow_id: str
+    payload_revision: int
+
+
+class CommercePreviewPrepared(StateEventBase):
+    event_type: Literal["commerce_preview_prepared"] = "commerce_preview_prepared"
+    workflow_id: str
+    payload_revision: int
+
+
+class CommerceConsentChanged(StateEventBase):
+    event_type: Literal["commerce_consent_changed"] = "commerce_consent_changed"
+    workflow_id: str
+    consent_status: ConsentStatus
+
+
+class CommerceCapabilityBoundaryRecorded(StateEventBase):
+    event_type: Literal["commerce_capability_boundary_recorded"] = (
+        "commerce_capability_boundary_recorded"
+    )
+    workflow_id: str
+    reason_code: str
+
+
+class CommerceCommandPrepared(StateEventBase):
+    event_type: Literal["commerce_command_prepared"] = "commerce_command_prepared"
+    workflow_id: str
+    command_id: str
+    payload_revision: int
+
+
+class CommerceCommandIgnoredAsDuplicate(StateEventBase):
+    event_type: Literal["commerce_command_ignored_as_duplicate"] = (
+        "commerce_command_ignored_as_duplicate"
+    )
+    workflow_id: str
+    reason_code: str = "duplicate_command_ignored"
+
+
+class CommerceLocalDraftRecorded(StateEventBase):
+    event_type: Literal["commerce_local_draft_recorded"] = (
+        "commerce_local_draft_recorded"
+    )
+    workflow_id: str
+    command_id: str
+
+
+class CommerceDeliveryConfirmed(StateEventBase):
+    event_type: Literal["commerce_delivery_confirmed"] = (
+        "commerce_delivery_confirmed"
+    )
+    workflow_id: str
+    command_id: str
+    receipt_ref: str
+
+
+class CommerceDeliveryFailed(StateEventBase):
+    event_type: Literal["commerce_delivery_failed"] = "commerce_delivery_failed"
+    workflow_id: str
+    command_id: str
+    reason_code: str
+
+
+class CommerceDeliveryUnknown(StateEventBase):
+    event_type: Literal["commerce_delivery_unknown"] = "commerce_delivery_unknown"
+    workflow_id: str
+    command_id: str
+    reason_code: str
+
+
 ReducerEvent: TypeAlias = (
     TaskCreated
     | TaskSuspended
@@ -417,6 +538,19 @@ ReducerEvent: TypeAlias = (
     | CatalogRelaxationRecorded
     | CatalogNoMatchRecorded
     | SolutionPlanCreated
+    | CommerceSensitiveFactLinked
+    | CommerceWorkflowControlRegistered
+    | CommerceWorkflowCreated
+    | CommercePayloadRevised
+    | CommercePreviewPrepared
+    | CommerceConsentChanged
+    | CommerceCapabilityBoundaryRecorded
+    | CommerceCommandPrepared
+    | CommerceCommandIgnoredAsDuplicate
+    | CommerceLocalDraftRecorded
+    | CommerceDeliveryConfirmed
+    | CommerceDeliveryFailed
+    | CommerceDeliveryUnknown
 )
 
 

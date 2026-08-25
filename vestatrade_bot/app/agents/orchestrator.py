@@ -28,6 +28,8 @@ except ImportError:  # pragma: no cover - exercised only without optional depend
 
 from app.config import PROJECT_ROOT, Settings, get_settings
 from app.catalog_v2.normalization import build_catalog_snapshot
+from app.commerce_v2.context import build_commerce_context_snapshot
+from app.commerce_v2.registry import build_capability_snapshot
 from app.diagnostic_telemetry import (
     activate_turn_trace,
     build_turn_trace,
@@ -681,6 +683,11 @@ class ChatOrchestrator:
             ),
         )
         self.dialogue_controller_v2 = DialogueControllerV2()
+        self.commerce_capabilities_v2 = (
+            build_capability_snapshot(get_business_facts())
+            if self._stage4_shadow_enabled()
+            else build_capability_snapshot()
+        )
         self.catalog_snapshot_v2 = (
             build_catalog_snapshot(products or [])
             if self._stage3_shadow_enabled()
@@ -738,6 +745,13 @@ class ChatOrchestrator:
             or self.settings.solution_plan_v2_shadow_enabled
         )
 
+    def _stage4_shadow_enabled(self) -> bool:
+        return bool(
+            self.settings.commerce_workflows_v2_shadow_enabled
+            or self.settings.handoff_workflow_v2_shadow_enabled
+            or self.settings.commerce_outbox_v2_shadow_enabled
+        )
+
     @property
     def composer(self) -> ResponseComposerAgent:
         agent = getattr(self._request_agents, "composer", None)
@@ -778,6 +792,7 @@ class ChatOrchestrator:
                     or self.settings.dialogue_state_v2_shadow_enabled
                     or self.settings.seller_policy_v2_shadow_enabled
                     or self._stage3_shadow_enabled()
+                    or self._stage4_shadow_enabled()
                 ):
                     trace = build_turn_trace(
                         self.settings,
@@ -807,6 +822,7 @@ class ChatOrchestrator:
                             self.settings.dialogue_state_v2_shadow_enabled
                             or self.settings.seller_policy_v2_shadow_enabled
                             or self._stage3_shadow_enabled()
+                            or self._stage4_shadow_enabled()
                         )
                         semantic = None
                         if self.settings.semantic_shadow_enabled or v2_shadow_enabled:
@@ -850,12 +866,27 @@ class ChatOrchestrator:
                                         self.settings.solution_plan_v2_shadow_enabled
                                     ),
                                     catalog_snapshot=self.catalog_snapshot_v2,
+                                    commerce_workflows_enabled=(
+                                        self.settings.commerce_workflows_v2_shadow_enabled
+                                    ),
+                                    handoff_workflow_enabled=(
+                                        self.settings.handoff_workflow_v2_shadow_enabled
+                                    ),
+                                    commerce_outbox_enabled=(
+                                        self.settings.commerce_outbox_v2_shadow_enabled
+                                    ),
+                                    commerce_context=build_commerce_context_snapshot(
+                                        self.sessions.snapshot(session_id),
+                                        get_business_facts(),
+                                    ),
+                                    commerce_capabilities=self.commerce_capabilities_v2,
                                 )
                                 if (
                                     v2_outcome.status == "applied"
                                     and (
                                         self.settings.dialogue_state_v2_shadow_enabled
                                         or self._stage3_shadow_enabled()
+                                        or self._stage4_shadow_enabled()
                                     )
                                 ):
                                     state_with_v2 = self.sessions.snapshot(session_id)
