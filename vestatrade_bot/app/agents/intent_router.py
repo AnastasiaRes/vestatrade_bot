@@ -3437,6 +3437,12 @@ class IntentRouterAgent:
             fitting_pair = re.search(
                 r"(?<!\d)(\d{2,3})\s*(?:[xх×-]|на)\s*(\d{2,3})(?!\d)", text
             )
+            if not fitting_pair:
+                fitting_pair = re.search(
+                    r"\b(?:с|от)\s*(\d{2,3})\s*(?:мм)?\s*"
+                    r"(?:на|до|к)\s*(\d{2,3})\s*(?:мм)?\b",
+                    text,
+                )
             if fitting_pair:
                 slots["diameter_mm"] = int(fitting_pair.group(1))
                 slots["secondary_diameter_mm"] = int(fitting_pair.group(2))

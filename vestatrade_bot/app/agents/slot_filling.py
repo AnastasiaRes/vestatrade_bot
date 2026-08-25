@@ -36,13 +36,67 @@ class SlotFillingAgent:
             "fitting_system": re.compile(r"\b(?:систем|материал\w*\s+труб)\w*"),
             "element_type": re.compile(r"\b(?:фитинг|детал|элемент)\w*"),
             "diameter_mm": re.compile(r"\b(?:диаметр|размер|маркиров|надпис)\w*"),
+            "secondary_diameter_mm": re.compile(
+                r"\b(?:втор\w*\s+диаметр|диаметр\w*\s+(?:переход|ответв)|"
+                r"ответвлен|боков\w*\s+(?:выход|отвод)|с\s+какого\s+на\s+какой)\w*"
+            ),
             "size_inch": re.compile(r"\b(?:дюйм|размер|резьб)\w*"),
         },
         "sewer": {
             "sewer_scope": re.compile(r"\b(?:внутрен|наружн|место\s+проклад)\w*"),
             "element_type": re.compile(r"\b(?:труб|отвод|тройник|муфт|детал)\w*"),
             "diameter_mm": re.compile(r"\b(?:dn|дн|диаметр|размер|маркиров|надпис)\w*"),
+            "secondary_diameter_mm": re.compile(
+                r"\b(?:втор\w*\s+диаметр|диаметр\w*\s+(?:переход|ответв)|"
+                r"ответвлен|боков\w*\s+(?:выход|отвод)|с\s+какого\s+на\s+какой)\w*"
+            ),
             "length_mm": re.compile(r"\b(?:длин|отрез|участ)\w*"),
+        },
+        "pumps": {
+            "head_m": re.compile(r"\b(?:напор|рабоч\w*\s+точк)\w*"),
+            "required_flow_m3_h": re.compile(
+                r"\b(?:расход|производительност|подач)\w*"
+            ),
+            "mounting_length_mm": re.compile(
+                r"\b(?:монтажн\w*\s+длин|межосев|длин\w*\s+насос)\w*"
+            ),
+            "connection_size": re.compile(
+                r"\b(?:присоедин|подключен|dn|размер\w*\s+резьб)\w*"
+            ),
+            "old_model": re.compile(r"\b(?:маркировк|модел|шильдик)\w*"),
+            "system_type": re.compile(r"\b(?:схем|тип\w*\s+систем)\w*"),
+            "dynamic_water_level_m": re.compile(
+                r"\b(?:динамическ\w*\s+уров|уров\w*\s+вод)\w*"
+            ),
+            "lift_height_m": re.compile(
+                r"\b(?:высот\w*\s+под[ъь]?ем|перепад\w*\s+высот|"
+                r"вертикальн\w*\s+под[ъь]?ем)\w*"
+            ),
+            "horizontal_run_m": re.compile(
+                r"\b(?:длин\w*\s+трасс|горизонтальн\w*\s+(?:трасс|отвод)|"
+                r"расстоян\w*\s+по\s+горизонтал)\w*"
+            ),
+            "required_pressure_bar": re.compile(
+                r"\b(?:нужн\w*\s+давлен|давлен\w*\s+после\s+насос)\w*"
+            ),
+            "inlet_pressure_bar": re.compile(
+                r"\b(?:входн\w*\s+давлен|давлен\w*\s+на\s+вход|"
+                r"давлен\w*\s+в\s+водопровод)\w*"
+            ),
+            "discharge_diameter_mm": re.compile(
+                r"\b(?:диаметр\w*\s+(?:шланг|напорн\w*\s+труб)|"
+                r"напорн\w*\s+труб\w*)\w*"
+            ),
+            "water_quality": re.compile(
+                r"\b(?:качеств\w*\s+вод|чист\w*\s+или\s+грязн|тип\w*\s+сток)\w*"
+            ),
+            "solids_mm": re.compile(
+                r"\b(?:размер\w*\s+частиц|частиц|включен)\w*"
+            ),
+            "connected_fixtures": re.compile(
+                r"\b(?:подключаем\w*\s+прибор|сантехнич\w*\s+прибор|"
+                r"что\s+подключ)\w*"
+            ),
         },
         "radiator_fittings": {
             "metric_thread": re.compile(r"\b(?:резьб|присоедин)\w*"),
@@ -71,8 +125,37 @@ class SlotFillingAgent:
             "diameter_mm",
             "pipe_material",
         ),
-        "fittings": ("fitting_system", "element_type", "diameter_mm", "size_inch"),
-        "sewer": ("sewer_scope", "element_type", "diameter_mm", "length_mm"),
+        "fittings": (
+            "fitting_system",
+            "element_type",
+            "diameter_mm",
+            "secondary_diameter_mm",
+            "size_inch",
+        ),
+        "sewer": (
+            "sewer_scope",
+            "element_type",
+            "diameter_mm",
+            "secondary_diameter_mm",
+            "length_mm",
+        ),
+        "pumps": (
+            "head_m",
+            "required_flow_m3_h",
+            "mounting_length_mm",
+            "connection_size",
+            "old_model",
+            "system_type",
+            "dynamic_water_level_m",
+            "lift_height_m",
+            "horizontal_run_m",
+            "required_pressure_bar",
+            "inlet_pressure_bar",
+            "discharge_diameter_mm",
+            "water_quality",
+            "solids_mm",
+            "connected_fixtures",
+        ),
         "radiator_fittings": (
             "metric_thread",
             "valve_model",
@@ -204,6 +287,57 @@ class SlotFillingAgent:
                 )
             ):
                 slots["fitting_end_form"] = "socket_socket"
+
+        if category in {"fittings", "sewer"}:
+            element = normalize_text(str(slots.get("element_type") or ""))
+            coupling = normalize_text(str(slots.get("coupling_type") or ""))
+            needs_pair = bool(
+                "тройник" in element
+                or "переход" in element
+                or "редукц" in element
+                or "переход" in coupling
+                or "редукц" in coupling
+            )
+            explicitly_equal = bool(
+                re.search(r"\bравнопроходн\w*\b", text)
+                or re.search(
+                    r"\b(?:оба|все|основн\w*\s+и\s+(?:боков\w*\s+)?"
+                    r"ответвлен\w*)[^.!?]{0,24}\b(?:одинаков|одного\s+диаметр)\w*",
+                    text,
+                )
+                or re.search(
+                    r"\b(?:ответвлен|боков\w*\s+(?:выход|отвод))\w*"
+                    r"[^.!?]{0,18}\b(?:так\w*\s+же|того\s+же|равн\w*)\b",
+                    text,
+                )
+            )
+            if (
+                needs_pair
+                and explicitly_equal
+                and slots.get("diameter_mm") is not None
+                and slots.get("secondary_diameter_mm") is None
+            ):
+                # Equal tees/reducers are still a two-ended contract.  The
+                # second size may only be copied after the customer explicitly
+                # says the ends/branch are equal; the bot never assumes it.
+                slots["secondary_diameter_mm"] = slots["diameter_mm"]
+            explicit_second = re.search(
+                r"\b(?:втор\w*\s+диаметр|диаметр\w*\s+ответвлен|"
+                r"ответвлен\w*|боков\w*\s+(?:выход|отвод))\w*"
+                r"[^\d]{0,18}(\d{2,3})\s*(?:мм)?\b",
+                text,
+            )
+            if (
+                needs_pair
+                and explicit_second
+                and previous_slots
+                and previous_slots.get("diameter_mm") is not None
+                and slots.get("secondary_diameter_mm") is None
+            ):
+                # A follow-up «второй диаметр — 32 мм» must fill the branch/end
+                # size, not overwrite the already confirmed main diameter.
+                slots["diameter_mm"] = previous_slots["diameter_mm"]
+                slots["secondary_diameter_mm"] = int(explicit_second.group(1))
 
         if category == "sewer":
             previous_slots = previous_slots or {}
@@ -632,11 +766,18 @@ class SlotFillingAgent:
             and service == "разводка внутри дома"
             and not slots.get("diameter_mm")
         ):
+            material_prefix = (
+                "По описанию это PPR (полипропиленовая труба под раструбную сварку). "
+                "Для начала не нужно угадывать диаметр по внешнему виду. "
+                if normalize_text(str(slots.get("pipe_material") or "")) == "ppr"
+                else ""
+            )
             return SlotFillingResult(
                 slots=slots,
                 needs_clarification=True,
                 question=(
-                    "Для новой разводки от стояка диаметр не угадывают по цвету трубы. "
+                    material_prefix
+                    + "Для новой разводки от стояка диаметр не угадывают по цвету трубы. "
                     "Перечислите точки водоразбора (душ, раковина, кухня, унитаз), "
                     "какие из них могут работать одновременно, и примерную длину до "
                     "самой дальней точки. Давление и максимальную температуру лучше "
@@ -768,6 +909,10 @@ class SlotFillingAgent:
             missing.append("element_type")
         if not slots.get("diameter_mm") and not slots.get("size_inch"):
             missing.extend(["diameter_mm", "size_inch"])
+        if self._fitting_requires_secondary_diameter(slots) and not slots.get(
+            "secondary_diameter_mm"
+        ):
+            missing.append("secondary_diameter_mm")
         if missing:
             assisted = self._observable_unknown_result("fittings", slots, missing)
             if assisted is not None:
@@ -777,6 +922,10 @@ class SlotFillingAgent:
                 "element_type": "тип: муфта, угольник, тройник или переходник",
                 "diameter_mm": "размер в мм или дюймах",
                 "size_inch": "размер в мм или дюймах",
+                "secondary_diameter_mm": (
+                    "второй диаметр: для перехода — конечный размер, "
+                    "для тройника — размер ответвления (если он равен основному, так и напишите)"
+                ),
             }
             visible_keys: list[str] = []
             for key in missing:
@@ -804,6 +953,10 @@ class SlotFillingAgent:
             missing.append("diameter_mm")
         if slots.get("element_type") == "труба" and not slots.get("length_mm"):
             missing.append("length_mm")
+        if self._fitting_requires_secondary_diameter(slots) and not slots.get(
+            "secondary_diameter_mm"
+        ):
+            missing.append("secondary_diameter_mm")
         if missing:
             assisted = self._observable_unknown_result("sewer", slots, missing)
             if assisted is not None:
@@ -813,6 +966,10 @@ class SlotFillingAgent:
                 "element_type": "что нужно: труба, отвод, тройник или муфта",
                 "diameter_mm": "диаметр",
                 "length_mm": "длина",
+                "secondary_diameter_mm": (
+                    "диаметр ответвления/второй стороны; если он такой же, "
+                    "напишите «равный основному»"
+                ),
             }
             question = self._build_question(
                 [labels[key] for key in missing[:2]],
@@ -827,6 +984,20 @@ class SlotFillingAgent:
                 blocking=True,
             )
         return SlotFillingResult(slots=slots)
+
+    @staticmethod
+    def _fitting_requires_secondary_diameter(slots: dict) -> bool:
+        """Whether the explicitly requested part has two catalogue sizes."""
+
+        element = normalize_text(str(slots.get("element_type") or ""))
+        coupling = normalize_text(str(slots.get("coupling_type") or ""))
+        return bool(
+            "тройник" in element
+            or "переход" in element
+            or "редукц" in element
+            or "переход" in coupling
+            or "редукц" in coupling
+        )
 
     def _infer_sewer_followup_slots(
         self,
@@ -1223,18 +1394,43 @@ class SlotFillingAgent:
             else:
                 slots.setdefault("pump_selection_mode", "новый подбор")
 
-            missing = []
-            if not (slots.get("head_m") or slots.get("required_head_m")):
-                missing.append("напор (например 4 или 6 м)")
-            if not slots.get("mounting_length_mm"):
-                missing.append("монтажную длину 130 или 180 мм")
-            if not slots.get("connection_size"):
-                missing.append("присоединение (например 25 или 32)")
-            has_any_core_param = any(
-                slots.get(key)
-                for key in ("head_m", "required_head_m", "mounting_length_mm", "connection_size")
+            core_requirements = (
+                (
+                    "head_m",
+                    ("head_m", "required_head_m"),
+                    "напор (например 4 или 6 м)",
+                ),
+                (
+                    "mounting_length_mm",
+                    ("mounting_length_mm",),
+                    "монтажную длину 130 или 180 мм",
+                ),
+                (
+                    "connection_size",
+                    ("connection_size",),
+                    "присоединение (например 25 или 32)",
+                ),
             )
-            if missing:
+            missing_core = [
+                requirement
+                for requirement in core_requirements
+                if not any(slots.get(key) is not None for key in requirement[1])
+            ]
+            askable_core = [
+                requirement
+                for requirement in missing_core
+                if not self._pump_requirement_deferred(deferred, *requirement[1])
+            ]
+            has_any_core_param = any(
+                slots.get(key) is not None
+                for key in (
+                    "head_m",
+                    "required_head_m",
+                    "mounting_length_mm",
+                    "connection_size",
+                )
+            )
+            if missing_core:
                 known_prefix = self._circulation_pump_known_prefix(slots)
                 if slots.get("pump_selection_mode") == "замена":
                     marking_unknown = "old_model" in deferred
@@ -1247,18 +1443,28 @@ class SlotFillingAgent:
                             else ""
                         )
                     )
-                    return SlotFillingResult(
-                        slots=slots,
-                        needs_clarification=True,
-                        question=(
-                            known_prefix
-                            + marking_note
-                            + "Для замены не хватает только: "
-                            + "; ".join(missing)
-                            + ". Монтажную длину измеряют между плоскостями "
-                            "подключений; присоединение часто указано как DN25/DN32."
-                        ),
-                    )
+                    if askable_core:
+                        return SlotFillingResult(
+                            slots=slots,
+                            needs_clarification=True,
+                            question=(
+                                known_prefix
+                                + marking_note
+                                + "Для замены не хватает только: "
+                                + "; ".join(item[2] for item in askable_core)
+                                + ". Монтажную длину измеряют между плоскостями "
+                                "подключений; присоединение часто указано как DN25/DN32."
+                            ),
+                            expected_slots=[item[0] for item in askable_core],
+                            blocking=True,
+                        )
+                    if has_any_core_param:
+                        # The user explicitly cannot supply the remaining
+                        # dimensions. Retrieval may still show catalogue
+                        # candidates filtered by the confirmed dimensions, but
+                        # the deferred-slot caveat makes the result non-final.
+                        slots["preliminary_selection"] = True
+                        return SlotFillingResult(slots=slots)
                 # A bare «не знаю» means the customer needs help with the
                 # whole question.  A named refusal (for example only the flow)
                 # must not erase the head and dimensions supplied in the same
@@ -1295,12 +1501,29 @@ class SlotFillingAgent:
                         ),
                     )
                 if has_any_core_param:
-                    missing_for_new_selection = list(missing)
-                    if not slots.get("required_flow_m3_h"):
-                        missing_for_new_selection.append("расчётный расход в м³/ч")
-                    if not slots.get("system_type"):
+                    missing_for_new_selection = [
+                        (item[0], item[2]) for item in askable_core
+                    ]
+                    if (
+                        not slots.get("required_flow_m3_h")
+                        and not self._pump_requirement_deferred(
+                            deferred,
+                            "required_flow_m3_h",
+                            "required_flow_l_min",
+                        )
+                    ):
                         missing_for_new_selection.append(
-                            "схема системы: радиаторы, тёплый пол или оба контура"
+                            ("required_flow_m3_h", "расчётный расход в м³/ч")
+                        )
+                    if (
+                        not slots.get("system_type")
+                        and "system_type" not in deferred
+                    ):
+                        missing_for_new_selection.append(
+                            (
+                                "system_type",
+                                "схема системы: радиаторы, тёплый пол или оба контура",
+                            )
                         )
                     flow_note = (
                         " Расход не угадываю: его можно взять из расчёта системы "
@@ -1308,17 +1531,26 @@ class SlotFillingAgent:
                         if "required_flow_m3_h" in deferred
                         else ""
                     )
-                    return SlotFillingResult(
-                        slots=slots,
-                        needs_clarification=True,
-                        question=(
-                            known_prefix
-                            + "Для точного нового подбора не хватает только: "
-                            + "; ".join(missing_for_new_selection)
-                            + "."
-                            + flow_note
-                        ),
-                    )
+                    if missing_for_new_selection:
+                        return SlotFillingResult(
+                            slots=slots,
+                            needs_clarification=True,
+                            question=(
+                                known_prefix
+                                + "Для точного нового подбора не хватает только: "
+                                + "; ".join(
+                                    label for _, label in missing_for_new_selection
+                                )
+                                + "."
+                                + flow_note
+                            ),
+                            expected_slots=[
+                                key for key, _ in missing_for_new_selection
+                            ],
+                            blocking=True,
+                        )
+                    slots["preliminary_selection"] = True
+                    return SlotFillingResult(slots=slots)
                 return SlotFillingResult(
                     slots=slots,
                     needs_clarification=True,
@@ -1328,6 +1560,16 @@ class SlotFillingAgent:
                         "длину. Для нового подбора нужны расчётный расход (м³/ч), напор (м) "
                         "и схема системы; монтажный размер всё равно нужно сверить."
                     ),
+                    expected_slots=[
+                        "pump_selection_mode",
+                        "old_model",
+                        "head_m",
+                        "mounting_length_mm",
+                        "connection_size",
+                        "required_flow_m3_h",
+                        "system_type",
+                    ],
+                    blocking=True,
                 )
             if (
                 slots.get("pump_selection_mode") == "новый подбор"
@@ -1336,110 +1578,242 @@ class SlotFillingAgent:
                     or not slots.get("system_type")
                 )
             ):
-                missing_duty = []
-                if not slots.get("required_flow_m3_h"):
-                    missing_duty.append("расчётный расход в м³/ч")
-                if not slots.get("system_type"):
-                    missing_duty.append(
-                        "схема системы: радиаторы, тёплый пол или оба контура"
+                missing_duty: list[tuple[str, str]] = []
+                if (
+                    not slots.get("required_flow_m3_h")
+                    and not self._pump_requirement_deferred(
+                        deferred,
+                        "required_flow_m3_h",
+                        "required_flow_l_min",
                     )
-                return SlotFillingResult(
-                    slots=slots,
-                    needs_clarification=True,
-                    question=(
-                        "Монтажные параметры понял. Для нового подбора ещё уточните: "
-                        + "; ".join(missing_duty)
-                        + ". Если это замена по уже заданной маркировке, так и напишите — "
-                        "тогда подберу по ней."
-                    ),
-                )
+                ):
+                    missing_duty.append(
+                        ("required_flow_m3_h", "расчётный расход в м³/ч")
+                    )
+                if not slots.get("system_type") and "system_type" not in deferred:
+                    missing_duty.append(
+                        (
+                            "system_type",
+                            "схема системы: радиаторы, тёплый пол или оба контура",
+                        )
+                    )
+                if missing_duty:
+                    return SlotFillingResult(
+                        slots=slots,
+                        needs_clarification=True,
+                        question=(
+                            "Монтажные параметры понял. Для нового подбора ещё уточните: "
+                            + "; ".join(label for _, label in missing_duty)
+                            + ". Если это замена по уже заданной маркировке, так и напишите — "
+                            "тогда подберу по ней."
+                        ),
+                        expected_slots=[key for key, _ in missing_duty],
+                        blocking=True,
+                    )
+                slots["preliminary_selection"] = True
             return SlotFillingResult(slots=slots)
 
         if slots.get("pump_type") == "скважинный":
-            missing = []
+            missing: list[tuple[str, tuple[str, ...], str]] = []
             if not (
                 slots.get("dynamic_water_level_m")
                 or slots.get("static_water_level_m")
             ):
-                missing.append("динамический уровень воды")
+                missing.append(
+                    (
+                        "dynamic_water_level_m",
+                        ("dynamic_water_level_m", "static_water_level_m"),
+                        "динамический уровень воды",
+                    )
+                )
             if not slots.get("lift_height_m"):
-                missing.append("высоту от уровня воды до верхней точки")
+                missing.append(
+                    (
+                        "lift_height_m",
+                        ("lift_height_m",),
+                        "высоту от уровня воды до верхней точки",
+                    )
+                )
             if not slots.get("horizontal_run_m"):
-                missing.append("длину горизонтальной трассы")
+                missing.append(
+                    (
+                        "horizontal_run_m",
+                        ("horizontal_run_m",),
+                        "длину горизонтальной трассы",
+                    )
+                )
             if not slots.get("required_pressure_bar"):
-                missing.append("нужное давление в доме")
+                missing.append(
+                    (
+                        "required_pressure_bar",
+                        ("required_pressure_bar",),
+                        "нужное давление в доме",
+                    )
+                )
             if not slots.get("required_flow_m3_h"):
-                missing.append("требуемый расход")
+                missing.append(
+                    (
+                        "required_flow_m3_h",
+                        ("required_flow_m3_h", "required_flow_l_min"),
+                        "требуемый расход",
+                    )
+                )
             if (
                 not slots.get("required_head_m")
                 and not slots.get("discharge_diameter_mm")
             ):
                 missing.append(
-                    "внутренний диаметр напорной трубы; для ПНД можно наружный диаметр и SDR"
+                    (
+                        "discharge_diameter_mm",
+                        ("required_head_m", "discharge_diameter_mm"),
+                        "внутренний диаметр напорной трубы; для ПНД можно наружный диаметр и SDR",
+                    )
                 )
-            if missing:
+            askable = [
+                requirement
+                for requirement in missing
+                if not self._pump_requirement_deferred(
+                    deferred,
+                    *requirement[1],
+                )
+            ]
+            if askable:
                 return SlotFillingResult(
                     slots=slots,
                     needs_clarification=True,
                     question=(
                         "Одной глубины скважины недостаточно. Чтобы я рассчитал "
                         "расчётный напор, величину потерь в трассе и рабочую точку, уточните: "
-                        + "; ".join(missing[:3])
+                        + "; ".join(item[2] for item in askable[:3])
                         + (
                             ". Затем проверим остальные данные и рабочую точку насоса."
-                            if len(missing) > 3
+                            if len(askable) > 3
                             else "."
                         )
                     ),
+                    expected_slots=[item[0] for item in askable[:3]],
+                    blocking=True,
                 )
+            if missing:
+                slots["preliminary_selection"] = True
             return SlotFillingResult(slots=slots)
 
         if slots.get("pump_type") == "дренажный":
-            missing = []
+            missing: list[tuple[str, tuple[str, ...], str]] = []
             if not slots.get("water_quality"):
-                missing.append("какая вода: чистая, грязная или фекальная")
+                missing.append(
+                    (
+                        "water_quality",
+                        ("water_quality",),
+                        "какая вода: чистая, грязная или фекальная",
+                    )
+                )
             if (
                 slots.get("water_quality") in {"грязная", "фекальная"}
                 and slots.get("solids_mm") is None
             ):
-                missing.append("максимальный размер частиц в воде")
+                missing.append(
+                    (
+                        "solids_mm",
+                        ("solids_mm",),
+                        "наблюдаемый тип включений/максимальный размер частиц в воде",
+                    )
+                )
             if slots.get("required_head_m") is None and slots.get("lift_height_m") is None:
-                missing.append("вертикальный подъём до точки сброса")
+                missing.append(
+                    (
+                        "lift_height_m",
+                        ("required_head_m", "lift_height_m"),
+                        "вертикальный подъём до точки сброса",
+                    )
+                )
             if slots.get("required_head_m") is None and slots.get("horizontal_run_m") is None:
-                missing.append("длину горизонтального отвода")
+                missing.append(
+                    (
+                        "horizontal_run_m",
+                        ("required_head_m", "horizontal_run_m"),
+                        "длину горизонтального отвода",
+                    )
+                )
             if (
                 slots.get("required_head_m") is None
                 and slots.get("discharge_diameter_mm") is None
             ):
-                missing.append("внутренний диаметр шланга или напорной трубы")
+                missing.append(
+                    (
+                        "discharge_diameter_mm",
+                        ("required_head_m", "discharge_diameter_mm"),
+                        "внутренний диаметр шланга или напорной трубы",
+                    )
+                )
             if not slots.get("required_flow_m3_h"):
-                missing.append("нужную производительность")
-            if missing:
+                missing.append(
+                    (
+                        "required_flow_m3_h",
+                        ("required_flow_m3_h", "required_flow_l_min"),
+                        "нужную производительность",
+                    )
+                )
+            askable = [
+                requirement
+                for requirement in missing
+                if not self._pump_requirement_deferred(
+                    deferred,
+                    *requirement[1],
+                )
+            ]
+            if askable:
                 return SlotFillingResult(
                     slots=slots,
                     needs_clarification=True,
                     question=(
                         "Для дренажного насоса уточните: "
-                        + "; ".join(missing[:3])
+                        + "; ".join(item[2] for item in askable[:3])
                         + ". По этим данным я рассчитаю предварительный напор; "
                         "модель затем нужно проверить по Q–H-кривой."
                     ),
+                    expected_slots=[item[0] for item in askable[:3]],
+                    blocking=True,
                 )
+            if missing:
+                slots["preliminary_selection"] = True
             return SlotFillingResult(slots=slots)
 
         if slots.get("pump_type") == "канализационная насосная установка":
-            missing = []
+            missing: list[tuple[str, str]] = []
             if not slots.get("connected_fixtures"):
                 missing.append(
-                    "какие приборы подключаются: унитаз, раковина, душ, ванна или техника"
+                    (
+                        "connected_fixtures",
+                        "какие приборы подключаются: унитаз, раковина, душ, ванна или техника",
+                    )
                 )
             if slots.get("lift_height_m") is None:
-                missing.append("вертикальный подъём от установки до точки сброса")
+                missing.append(
+                    (
+                        "lift_height_m",
+                        "вертикальный подъём от установки до точки сброса",
+                    )
+                )
             if slots.get("horizontal_run_m") is None:
-                missing.append("длину горизонтального напорного участка")
-            if not slots.get("diameter_mm"):
-                missing.append("диаметр существующей или проектной напорной трубы")
-            if missing:
+                missing.append(
+                    (
+                        "horizontal_run_m",
+                        "длину горизонтального напорного участка",
+                    )
+                )
+            if not (
+                slots.get("diameter_mm")
+                or slots.get("discharge_diameter_mm")
+            ):
+                missing.append(
+                    (
+                        "discharge_diameter_mm",
+                        "диаметр существующей или проектной напорной трубы",
+                    )
+                )
+            askable = [item for item in missing if item[0] not in deferred]
+            if askable:
                 return SlotFillingResult(
                     slots=slots,
                     needs_clarification=True,
@@ -1447,14 +1821,18 @@ class SlotFillingAgent:
                         "КНС/санитарный насос нельзя выбирать только по слову «санузел»: "
                         "нужно проверить допустимые стоки, число входов и рабочую точку. "
                         "Уточните: "
-                        + "; ".join(missing[:3])
+                        + "; ".join(label for _, label in askable[:3])
                         + "."
                     ),
+                    expected_slots=[key for key, _ in askable[:3]],
+                    blocking=True,
                 )
+            if missing:
+                slots["preliminary_selection"] = True
             return SlotFillingResult(slots=slots)
 
         if slots.get("pump_type") == "повысительный":
-            if not slots.get("water_source"):
+            if not slots.get("water_source") and "water_source" not in deferred:
                 return SlotFillingResult(
                     slots=slots,
                     needs_clarification=True,
@@ -1463,8 +1841,13 @@ class SlotFillingAgent:
                         "скважина или колодец? Причины и схема повышения давления "
                         "для них различаются."
                     ),
+                    expected_slots=["water_source"],
+                    blocking=True,
                 )
-            if slots.get("inlet_pressure_bar") is None:
+            if (
+                slots.get("inlet_pressure_bar") is None
+                and "inlet_pressure_bar" not in deferred
+            ):
                 if slots.get("symptom") or any(
                     marker in text
                     for marker in ["еле теч", "слабо теч", "плохо теч", "манометр"]
@@ -1481,6 +1864,8 @@ class SlotFillingAgent:
                             "вводе именно в слабый вечерний период. Какое давление получится "
                             "на вводе, в барах?"
                         ),
+                        expected_slots=["inlet_pressure_bar"],
+                        blocking=True,
                     )
                 return SlotFillingResult(
                     slots=slots,
@@ -1488,16 +1873,30 @@ class SlotFillingAgent:
                     question=(
                         "Какое давление сейчас на входе из центрального водопровода, в барах?"
                     ),
+                    expected_slots=["inlet_pressure_bar"],
+                    blocking=True,
                 )
-            if slots.get("required_pressure_bar") is None:
+            if (
+                slots.get("required_pressure_bar") is None
+                and "required_pressure_bar" not in deferred
+            ):
                 return SlotFillingResult(
                     slots=slots,
                     needs_clarification=True,
                     question=(
                         "Какое давление нужно получить после насоса, в барах?"
                     ),
+                    expected_slots=["required_pressure_bar"],
+                    blocking=True,
                 )
-            if not slots.get("required_flow_m3_h"):
+            if (
+                not slots.get("required_flow_m3_h")
+                and not self._pump_requirement_deferred(
+                    deferred,
+                    "required_flow_m3_h",
+                    "required_flow_l_min",
+                )
+            ):
                 return SlotFillingResult(
                     slots=slots,
                     needs_clarification=True,
@@ -1505,7 +1904,19 @@ class SlotFillingAgent:
                         "Какой нужен расход при одновременном водоразборе, "
                         "например в литрах в минуту?"
                     ),
+                    expected_slots=["required_flow_m3_h"],
+                    blocking=True,
                 )
+            if any(
+                key in deferred
+                for key in (
+                    "water_source",
+                    "inlet_pressure_bar",
+                    "required_pressure_bar",
+                    "required_flow_m3_h",
+                )
+            ):
+                slots["preliminary_selection"] = True
         return SlotFillingResult(slots=slots)
 
     def _well_water_supply(self, slots: dict) -> SlotFillingResult:
@@ -1683,6 +2094,7 @@ class SlotFillingAgent:
             slots["deferred_slot_keys"] = sorted(deferred)
         else:
             slots.pop("deferred_slot_keys", None)
+            slots.pop("preliminary_selection", None)
         return deferred
 
     @staticmethod
@@ -1710,6 +2122,39 @@ class SlotFillingAgent:
                 r"\b(?:маркировк\w*|модел\w*|шильдик\w*)\b"
             ),
             "system_type": re.compile(r"\b(?:схем\w*|тип\w*\s+систем\w*)\b"),
+            "dynamic_water_level_m": re.compile(
+                r"\b(?:динамическ\w*\s+уров\w*|уров\w*\s+вод\w*)\b"
+            ),
+            "lift_height_m": re.compile(
+                r"\b(?:высот\w*\s+под[ъь]?ем\w*|перепад\w*\s+высот\w*|"
+                r"вертикальн\w*\s+под[ъь]?ем\w*)\b"
+            ),
+            "horizontal_run_m": re.compile(
+                r"\b(?:длин\w*\s+трасс\w*|горизонтальн\w*\s+"
+                r"(?:трасс\w*|отвод\w*)|расстоян\w*\s+по\s+горизонтал\w*)\b"
+            ),
+            "required_pressure_bar": re.compile(
+                r"\b(?:нужн\w*\s+давлен\w*|давлен\w*\s+после\s+насос\w*)\b"
+            ),
+            "inlet_pressure_bar": re.compile(
+                r"\b(?:входн\w*\s+давлен\w*|давлен\w*\s+на\s+вход\w*|"
+                r"давлен\w*\s+в\s+водопровод\w*)\b"
+            ),
+            "discharge_diameter_mm": re.compile(
+                r"\b(?:диаметр\w*\s+(?:шланг\w*|напорн\w*\s+труб\w*)|"
+                r"напорн\w*\s+труб\w*)\b"
+            ),
+            "water_quality": re.compile(
+                r"\b(?:качеств\w*\s+вод\w*|чист\w*\s+или\s+грязн\w*|"
+                r"тип\w*\s+сток\w*)\b"
+            ),
+            "solids_mm": re.compile(
+                r"\b(?:размер\w*\s+частиц\w*|частиц\w*|включен\w*)\b"
+            ),
+            "connected_fixtures": re.compile(
+                r"\b(?:подключаем\w*\s+прибор\w*|сантехнич\w*\s+прибор\w*|"
+                r"что\s+подключ\w*)\b"
+            ),
         }
         return set(bind_local_refusals(text, field_patterns))
 
@@ -1721,6 +2166,27 @@ class SlotFillingAgent:
         deferred.update(unknown)
         slots["deferred_slot_keys"] = sorted(deferred)
         return unknown
+
+    @staticmethod
+    def _pump_requirement_deferred(deferred: set[str], *keys: str) -> bool:
+        """Whether any canonical representation of a pump fact was refused."""
+
+        aliases = {
+            "head_m": {"head_m", "required_head_m"},
+            "required_head_m": {"head_m", "required_head_m"},
+            "required_flow_m3_h": {
+                "required_flow_m3_h",
+                "required_flow_l_min",
+            },
+            "required_flow_l_min": {
+                "required_flow_m3_h",
+                "required_flow_l_min",
+            },
+        }
+        candidates: set[str] = set()
+        for key in keys:
+            candidates.update(aliases.get(key, {key}))
+        return bool(candidates.intersection(deferred))
 
     @staticmethod
     def _circulation_pump_known_prefix(slots: dict) -> str:

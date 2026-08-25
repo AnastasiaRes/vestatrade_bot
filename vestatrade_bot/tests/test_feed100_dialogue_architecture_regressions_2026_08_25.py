@@ -16,7 +16,7 @@ from app.agents.intent_router import IntentRouterAgent
 from app.agents.orchestrator import ChatOrchestrator
 from app.agents.slot_filling import SlotFillingAgent
 from app.config import get_settings
-from app.models import Product, SearchQuery, SessionState
+from app.models import IntentResult, Product, SearchQuery, SessionState
 from app.openrouter_client import LLMResult
 
 
@@ -110,6 +110,106 @@ def test_sewer_specific_element_outranks_generic_pipe_word_and_keeps_branch_size
     assert "length_mm" not in filled.expected_slots
 
 
+@pytest.mark.parametrize(
+    ("category", "message", "slots"),
+    [
+        (
+            "fittings",
+            "Нужен PPR-переходник с трубы 50 мм, второй размер пока не назвал.",
+            {
+                "fitting_system": "ppr",
+                "element_type": "переходник",
+                "diameter_mm": 50,
+            },
+        ),
+        (
+            "sewer",
+            "Нужен тройник 110 мм для серой канализации в квартире.",
+            {
+                "sewer_scope": "внутренняя",
+                "element_type": "тройник",
+                "diameter_mm": 110,
+            },
+        ),
+    ],
+)
+def test_two_size_parts_require_the_second_size_by_product_contract(
+    category: str,
+    message: str,
+    slots: dict[str, Any],
+) -> None:
+    filled = SlotFillingAgent().fill(
+        message,
+        IntentRouterAgent(_OfflineLLM()).route(message),
+        SessionState(session_id=f"second-size-{category}", slots=slots),
+    )
+
+    assert filled.needs_clarification
+    assert filled.blocking
+    assert "secondary_diameter_mm" in filled.expected_slots
+    assert "диаметр" in (filled.question or "").lower()
+    assert "length_mm" not in filled.expected_slots
+
+
+def test_equal_tee_size_is_copied_only_after_explicit_equal_observation() -> None:
+    session = SessionState(
+        session_id="equal-tee",
+        category="sewer",
+        slots={
+            "sewer_scope": "внутренняя",
+            "element_type": "тройник",
+            "diameter_mm": 110,
+        },
+    )
+    message = "Ответвление такого же диаметра, это равнопроходной тройник."
+    intent = IntentResult(
+        intent_type="attribute_request",
+        category="sewer",
+        confidence=1.0,
+        slots={"element_type": "тройник"},
+    )
+
+    filled = SlotFillingAgent().fill(message, intent, session)
+
+    assert filled.slots["diameter_mm"] == 110
+    assert filled.slots["secondary_diameter_mm"] == 110
+    assert not filled.needs_clarification
+
+
+def test_fitting_size_pair_accepts_from_to_wording_and_direct_second_size_answer() -> None:
+    router = IntentRouterAgent(_OfflineLLM())
+    message = "Нужен PPR-переходник от 50 мм до 32 мм, оба конца под пайку."
+    routed = router.route(message)
+
+    assert routed.category == "fittings"
+    assert routed.slots["diameter_mm"] == 50
+    assert routed.slots["secondary_diameter_mm"] == 32
+
+    session = SessionState(
+        session_id="fitting-direct-second-size",
+        category="fittings",
+        slots={
+            "fitting_system": "ppr",
+            "element_type": "переходник",
+            "diameter_mm": 50,
+        },
+    )
+    filled = SlotFillingAgent().fill(
+        "Второй диаметр — 32 мм.",
+        IntentResult(
+            intent_type="attribute_request",
+            category="fittings",
+            confidence=1.0,
+            slots={"element_type": "переходник"},
+        ),
+        session,
+    )
+
+    assert filled.slots["diameter_mm"] == 50
+    assert filled.slots["secondary_diameter_mm"] == 32
+    assert not filled.needs_clarification
+
+
 def test_ppr_reducer_wording_matches_catalogue_transition_coupling() -> None:
     reducer = _product(
         "PPR-50-32",
@@ -145,6 +245,85 @@ def test_ppr_reducer_wording_matches_catalogue_transition_coupling() -> None:
     assert [product.sku for product in search.search(query)] == ["PPR-50-32"]
 
 
+def test_circulation_pump_unknowns_become_deferred_preliminary_constraints() -> None:
+    message = (
+        "Монтажная длина 130 мм, присоединение DN25, система с радиаторами. "
+        "Напор и расход не знаю — подбери по тому, что известно."
+    )
+    intent = IntentResult(
+        intent_type="attribute_request",
+        category="pumps",
+        confidence=1.0,
+        slots={
+            "pump_type": "циркуляционный",
+            "mounting_length_mm": 130,
+            "connection_size": 25,
+            "system_type": "радиаторы",
+        },
+    )
+
+    filled = SlotFillingAgent().fill(
+        message,
+        intent,
+        SessionState(session_id="pump-deferred-preliminary"),
+    )
+
+    assert not filled.needs_clarification
+    assert filled.slots["preliminary_selection"] is True
+    assert set(filled.slots["deferred_slot_keys"]) >= {
+        "head_m",
+        "required_flow_m3_h",
+    }
+    assert filled.slots.get("head_m") is None
+
+
+def test_pump_browse_by_known_facts_keeps_constraints_and_warns_non_final() -> None:
+    pump_130 = _product(
+        "PUMP-25-6-130",
+        "Насос циркуляционный 25/6-130",
+        "Насосы циркуляционные",
+        attributes={
+            "монтажная длина, мм": "130",
+            "максимальный напор, м": "6",
+            "присоединительный размер": "25",
+        },
+    )
+    pump_180 = _product(
+        "PUMP-25-6-180",
+        "Насос циркуляционный 25/6-180",
+        "Насосы циркуляционные",
+        attributes={
+            "монтажная длина, мм": "180",
+            "максимальный напор, м": "6",
+            "присоединительный размер": "25",
+        },
+    )
+    bot = ChatOrchestrator(
+        products=[pump_180, pump_130],
+        llm_client=_OfflineLLM(),
+    )
+    session_id = "pump-known-facts-browse"
+
+    bot.handle_chat(
+        session_id,
+        "Нужен новый циркуляционный насос для системы отопления.",
+    )
+    response = bot.handle_chat(
+        session_id,
+        "Монтажная длина 130 мм, DN25, только радиаторы. Напор и расход "
+        "не знаю — покажи варианты по тому, что уже известно.",
+    )
+
+    assert [card.sku for card in response.products] == ["PUMP-25-6-130"]
+    assert response.debug["slots"]["mounting_length_mm"] == 130
+    assert response.debug["slots"]["system_type"] == "радиаторы"
+    assert set(response.debug["slots"]["deferred_slot_keys"]) >= {
+        "head_m",
+        "required_flow_m3_h",
+    }
+    assert "не обещание совместимости" in response.answer.lower()
+
+
 def test_broken_circulation_pump_is_replacement_and_radiators_are_context() -> None:
     pump = _product(
         "PUMP-130",
@@ -175,6 +354,16 @@ def test_broken_circulation_pump_is_replacement_and_radiators_are_context() -> N
     assert response.debug["slots"]["system_type"] == "радиаторы"
     assert [card.sku for card in response.products] == ["PUMP-130"]
 
+    interface = bot.handle_chat(
+        session_id,
+        "Что такое штатные гайки и резьба трубопровода со стороны системы? "
+        "Это смотреть в паспорте старого насоса или измерять руками?",
+    )
+    assert interface.debug["category"] == "pumps"
+    assert [card.sku for card in interface.products] == ["PUMP-130"]
+    assert "накидные гайки" in interface.answer.lower()
+    assert "сброса давления" in interface.answer.lower()
+
 
 def test_pipe_comparison_does_not_swallow_selection_with_unknown_ratings() -> None:
     pipe = _product(
@@ -203,6 +392,37 @@ def test_pipe_comparison_does_not_swallow_selection_with_unknown_ratings() -> No
     }
     assert "предваритель" in response.answer.lower()
 
+    hidden_comparison = bot.handle_chat(
+        session_id,
+        "Объясни разницу между этими трубами: почему одна дороже и можно ли "
+        "выбрать просто PN20 для скрытой прокладки в стене, если соединяют нагревом?",
+    )
+    hidden_repeat = bot.handle_chat(
+        session_id,
+        "Объясни разницу между этими трубами: почему одна дороже и можно ли "
+        "выбрать просто PN20 для скрытой прокладки в стене, если соединяют нагревом?",
+    )
+    assert [card.sku for card in hidden_comparison.products] == ["PIPE-25"]
+    assert [card.sku for card in hidden_repeat.products] == ["PIPE-25"]
+    assert "не контур тёплого пола" in hidden_comparison.answer.lower()
+    assert "практическая проверка" in hidden_repeat.answer.lower()
+    assert hidden_comparison.answer != hidden_repeat.answer
+
+    pn_pair = bot.handle_chat(
+        session_id,
+        "Что значит PN20 и PN25 и почему разница давления влияет на выбор, "
+        "если давление дома неизвестно?",
+    )
+    pn_pair_repeat = bot.handle_chat(
+        session_id,
+        "Что значит PN20 и PN25 и почему разница давления влияет на выбор, "
+        "если давление дома неизвестно?",
+    )
+    assert "pn25 всегда лучше" in pn_pair.answer.lower()
+    assert "запросите у ук/тсж" in pn_pair_repeat.answer.lower()
+    assert pn_pair.answer != pn_pair_repeat.answer
+    assert [card.sku for card in pn_pair_repeat.products] == ["PIPE-25"]
+
     marking = bot.handle_chat(
         session_id,
         "Что означает PN20 и как отличить армирование стекловолокном от алюминия "
@@ -212,6 +432,47 @@ def test_pipe_comparison_does_not_swallow_selection_with_unknown_ratings() -> No
     assert "одновременно" in marking.answer.lower()
     assert [card.sku for card in marking.products] == ["PIPE-25"]
 
+    choice = bot.handle_chat(
+        session_id,
+        "Почему труба с алюминием может быть лучше? Нужно ли брать армированную, "
+        "или обычная PN20 подойдёт?",
+    )
+    choice_checklist = bot.handle_chat(
+        session_id,
+        "Почему труба с алюминием может быть лучше? Нужно ли брать армированную, "
+        "или обычная PN20 подойдёт?",
+    )
+    assert "не три последовательных класса" in choice.answer.lower()
+    assert "четыре вещи" in choice_checklist.answer.lower()
+    assert choice.answer != choice_checklist.answer
+    assert [card.sku for card in choice_checklist.products] == ["PIPE-25"]
+
+    ordinary_risk = bot.handle_chat(
+        session_id,
+        "Если просто взять обычную PN20, она не деформируется или не разрушится "
+        "при нагреве?",
+    )
+    ordinary_risk_repeat = bot.handle_chat(
+        session_id,
+        "Если просто взять обычную PN20, она не деформируется или не разрушится "
+        "при нагреве?",
+    )
+    assert "армированной pp-fiber" in ordinary_risk.answer.lower()
+    assert "нельзя переносить" in ordinary_risk.answer.lower()
+    assert "практический вывод" in ordinary_risk_repeat.answer.lower()
+    assert ordinary_risk.answer != ordinary_risk_repeat.answer
+    assert [card.sku for card in ordinary_risk_repeat.products] == ["PIPE-25"]
+
+    buy_then_check = bot.handle_chat(
+        session_id,
+        "А если просто взять этот вариант, а давление и температуру проверить у "
+        "мастера уже после покупки?",
+    )
+    assert "после покупки не стоит" in buy_then_check.answer.lower()
+    assert "до покупки" in buy_then_check.answer.lower()
+    assert "предварительного кандидата" in buy_then_check.answer.lower()
+    assert [card.sku for card in buy_then_check.products] == ["PIPE-25"]
+
     applicability = bot.handle_chat(
         session_id,
         "Где в карточке видно, подходит ли эта труба для обычной ванной и крана?",
@@ -219,6 +480,35 @@ def test_pipe_comparison_does_not_swallow_selection_with_unknown_ratings() -> No
     assert "разводка гвс внутри квартиры" in applicability.answer.lower()
     assert "горяч" in applicability.answer.lower()
     assert [card.sku for card in applicability.products] == ["PIPE-25"]
+
+    candidate = bot.handle_chat(
+        session_id,
+        "Тогда я возьму эту PN20 со стекловолокном — она точно подойдёт "
+        "для моей квартиры?",
+    )
+    assert "точно подойдёт" in candidate.answer.lower()
+    assert "нельзя" in candidate.answer.lower()
+    assert "предваритель" in candidate.answer.lower()
+
+    verification = bot.handle_chat(
+        session_id,
+        "А как мне проверить реальные давление и температуру ГВС? Где их можно "
+        "измерить или узнать?",
+    )
+    assert verification.answer != candidate.answer
+    assert "ук/тсж" in verification.answer.lower()
+    assert "pn20 нельзя читать" in verification.answer.lower()
+    assert [card.sku for card in verification.products] == ["PIPE-25"]
+
+    request_template = bot.handle_chat(
+        session_id,
+        "Где найти данные о максимальных температуре и давлении дома — в паспорте "
+        "дома или у управляющей компании?",
+    )
+    assert "в письменном запросе" in request_template.answer.lower()
+    assert "паспорт старой трубы" in request_template.answer.lower()
+    assert request_template.answer != verification.answer
+    assert [card.sku for card in request_template.products] == ["PIPE-25"]
 
 
 def test_hot_water_supply_word_does_not_mean_country_house() -> None:
@@ -277,6 +567,15 @@ def test_missing_head_can_be_described_as_lost_and_photo_policy_is_direct() -> N
     assert "загрузка фотографий" in response.answer.lower()
     assert "не поддерживается" in response.answer.lower()
     assert "пришлите фото" not in response.answer.lower()
+
+    repeated = bot.handle_chat(
+        "lost-head",
+        "С клапана на батарее пропала головка. Могу сфотографировать, "
+        "но маркировку и резьбу пока не понимаю.",
+    )
+    assert repeated.answer != response.answer
+    assert "без проверки нельзя" in repeated.answer.lower()
+    assert "не поддерживается" in repeated.answer.lower()
 
 
 def test_photo_upload_boundary_is_global_not_product_specific() -> None:
@@ -459,6 +758,16 @@ def test_shown_thermostatic_valves_explain_eurocone_and_separate_head() -> None:
     assert "ответная часть" in eurocone.answer.lower()
     assert "нельзя считать подходящим" in eurocone.answer.lower()
 
+    counterpart = bot.handle_chat(
+        session_id,
+        "Что значит ответное соединение трубы и как его проверить, если труба "
+        "просто выходит из стены?",
+    )
+    assert counterpart.debug["category"] == "radiator_fittings"
+    assert counterpart.products == response.products
+    assert "реальная деталь на трубной стороне" in counterpart.answer.lower()
+    assert "не поддерживается" in counterpart.answer.lower()
+
 
 def test_sewer_tee_identity_survives_branch_description_and_angle_followup() -> None:
     tee_87 = _product(
@@ -497,6 +806,16 @@ def test_sewer_tee_identity_survives_branch_description_and_angle_followup() -> 
     assert "45°" in explanation.answer
     assert [card.sku for card in explanation.products] == ["TEE-110-50-87"]
 
+    visual = bot.handle_chat(
+        session_id,
+        "Покажи, как выглядит такой тройник 87° в реальности — есть фото, "
+        "видео или чертёж на странице?",
+    )
+    assert visual.debug["category"] == "sewer"
+    assert [card.sku for card in visual.products] == ["TEE-110-50-87"]
+    assert "странице его карточки" in visual.answer.lower()
+    assert "110×50" in visual.answer
+
 
 def test_rejected_transition_tee_does_not_replace_active_reducer() -> None:
     reducer = _product(
@@ -532,6 +851,29 @@ def test_rejected_transition_tee_does_not_replace_active_reducer() -> None:
     assert "не означает металлическую резьбу" in notation.answer.lower()
     assert "50×32" in notation.answer
     assert [card.sku for card in notation.products] == ["REDUCER"]
+
+    purchase_check = bot.handle_chat(
+        session_id,
+        "Почему вн-нар важно для сварки и что дополнительно проверить перед покупкой?",
+    )
+    repeated_check = bot.handle_chat(
+        session_id,
+        "Почему вн-нар важно для сварки и что дополнительно проверить перед покупкой?",
+    )
+    assert "глубину вставки" in purchase_check.answer.lower()
+    assert "итоговая проверка" in repeated_check.answer.lower()
+    assert purchase_check.answer != repeated_check.answer
+    assert [card.sku for card in repeated_check.products] == ["REDUCER"]
+
+    geometry = bot.handle_chat(
+        session_id,
+        "Надо проверить, как устроена муфта. Есть схема или чертёж: где "
+        "внутренний раструб, а где наружный патрубок?",
+    )
+    assert geometry.debug["category"] == "fittings"
+    assert [card.sku for card in geometry.products] == ["REDUCER"]
+    assert "не буду восстанавливать геометрию" in geometry.answer.lower()
+    assert "чертёж" in geometry.answer.lower()
 
 
 def test_boiler_sizing_followup_uses_session_area_and_electric_checks() -> None:
@@ -609,6 +951,15 @@ def test_central_radiator_unknown_pressure_can_show_preliminary_cards() -> None:
     assert "предваритель" in response.answer.lower()
     assert "не обещ" in response.answer.lower() or "не подтверж" in response.answer.lower()
 
+    companions = bot.handle_chat(
+        session_id,
+        "Что значит сверить с карточкой радиатора — какие именно узлы и клапаны нужны?",
+    )
+    assert [card.sku for card in companions.products] == ["RAD-6-500"]
+    assert "на обратке" in companions.answer.lower()
+    assert "термоголовку" in companions.answer.lower()
+    assert companions.debug["category"] == "radiators"
+
     plain = bot.handle_chat(
         session_id,
         "Почему площадь обогрева около 10 м² не означает, что он перегреет "
@@ -617,6 +968,80 @@ def test_central_radiator_unknown_pressure_can_show_preliminary_cards() -> None:
     assert "не означает" in plain.answer.lower()
     assert "предваритель" in plain.answer.lower()
     assert [card.sku for card in plain.products] == ["RAD-6-500"]
+
+    heat_meaning = bot.handle_chat(
+        session_id,
+        "Что означает теплоотдача 1038 Вт и как это число влияет на выбор?",
+    )
+    heat_check = bot.handle_chat(
+        session_id,
+        "Как тогда проверить эту теплоотдачу для моей комнаты и системы?",
+    )
+    heat_repeat = bot.handle_chat(
+        session_id,
+        "Повторю: теплоотдача в ваттах точно подтверждает, что радиатора хватит?",
+    )
+
+    assert "не потребление электричества" in heat_meaning.answer.lower()
+    assert "температурный график" in heat_check.answer.lower()
+    assert "нельзя подтвердить" in heat_repeat.answer.lower()
+    assert len({heat_meaning.answer, heat_check.answer, heat_repeat.answer}) == 3
+    assert [card.sku for card in heat_repeat.products] == ["RAD-6-500"]
+
+
+def test_radiator_pressure_help_stays_deterministic_then_allows_preliminary_cards() -> None:
+    radiator = _product(
+        "RAD-LIVE-6-500",
+        "Радиатор биметаллический 6 секций 500 мм",
+        "Радиаторы отопления",
+        attributes={
+            "количество секций": "6",
+            "межосевое расстояние, мм": "500",
+            "площадь обогрева, м2": "10",
+            "рабочее давление, бар": "20",
+        },
+    )
+    settings = get_settings().model_copy(
+        update={"llm_provider": "openrouter", "openrouter_api_key": "test-key"}
+    )
+    bot = ChatOrchestrator(
+        settings=settings,
+        products=[radiator],
+        llm_client=_TemptingConsultLLM(),
+    )
+    session_id = "radiator-pressure-observation"
+
+    bot.handle_chat(
+        session_id,
+        "Нужно заменить батарею, старая на шесть секций, но больше ничего не знаю.",
+    )
+    help_answer = bot.handle_chat(
+        session_id,
+        "Центральное отопление, давление и гидроудары не знаю — где посмотреть?",
+    )
+
+    assert help_answer.debug["category"] == "radiators"
+    assert help_answer.debug["final_answer_source"] != "consultant_llm"
+    assert "ук/тсж" in help_answer.answer.lower()
+    assert "паспорт старого радиатора" in help_answer.answer.lower()
+    assert "operating_pressure_bar" in help_answer.debug["slots"][
+        "deferred_slot_keys"
+    ]
+
+    bot.handle_chat(
+        session_id,
+        "Межосевое 500 мм, шесть секций. Где взять давление, если данных нет?",
+    )
+    shown = bot.handle_chat(
+        session_id,
+        "Давление не знаю — покажи предварительный вариант для комнаты 10 м² "
+        "по тому, что уже известно.",
+    )
+
+    assert shown.debug["category"] == "radiators"
+    assert [card.sku for card in shown.products] == ["RAD-LIVE-6-500"]
+    assert "предваритель" in shown.answer.lower()
+    assert "не обещание совместимости" in shown.answer.lower()
 
 
 def test_thermostatic_thread_pitch_question_gets_a_specific_explanation() -> None:

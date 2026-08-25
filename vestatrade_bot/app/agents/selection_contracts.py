@@ -69,29 +69,57 @@ class ObservableSelectionGuide:
 OBSERVABLE_SELECTION_GUIDES: dict[str, tuple[ObservableSelectionGuide, ...]] = {
     "fittings": (
         ObservableSelectionGuide(
-            ("fitting_system", "element_type", "diameter_mm", "size_inch"),
+            (
+                "fitting_system",
+                "element_type",
+                "diameter_mm",
+                "secondary_diameter_mm",
+                "size_inch",
+            ),
             (
                 "Техническое название знать не обязательно. Опишите соединение: "
                 "белые/серые пластиковые трубы соединяются нагревом (PPR) или это "
                 "раструбная канализация; нужно соединить прямо, повернуть, сделать "
                 "ответвление либо перейти на другой диаметр/резьбу. Размер обычно "
-                "напечатан на трубе — например 20, 25, 32, DN50 или DN110. Если "
-                "маркировки нет, напишите наружный диаметр и что находится с обеих сторон."
+                "напечатан на трубе — например 20, 25, 32, DN50 или DN110. Для "
+                "тройника нужны основной диаметр и размер ответвления, для перехода — "
+                "оба конечных размера. Если они одинаковы, так и напишите. Если "
+                "маркировки нет, укажите наружный диаметр и что находится с обеих сторон."
             ),
-            ("fitting_system", "element_type", "diameter_mm", "size_inch"),
+            (
+                "fitting_system",
+                "element_type",
+                "diameter_mm",
+                "secondary_diameter_mm",
+                "size_inch",
+            ),
         ),
     ),
     "sewer": (
         ObservableSelectionGuide(
-            ("sewer_scope", "element_type", "diameter_mm", "length_mm"),
+            (
+                "sewer_scope",
+                "element_type",
+                "diameter_mm",
+                "secondary_diameter_mm",
+                "length_mm",
+            ),
             (
                 "Специальные обозначения знать не нужно. Подскажите, труба находится "
                 "внутри помещения или в земле/на улице; она серая или оранжевая; нужен "
                 "прямой участок, поворот, ответвление либо ремонтная муфта. Диаметр можно "
-                "прочитать как DN50/DN110 или измерить наружный размер, а для прямой трубы "
+                "прочитать как DN50/DN110 или измерить наружный размер. Для тройника "
+                "нужны основной диаметр и диаметр ответвления, для перехода — размеры "
+                "обеих сторон; равные размеры тоже нужно подтвердить. Для прямой трубы "
                 "нужна ещё длина заменяемого участка."
             ),
-            ("sewer_scope", "element_type", "diameter_mm", "length_mm"),
+            (
+                "sewer_scope",
+                "element_type",
+                "diameter_mm",
+                "secondary_diameter_mm",
+                "length_mm",
+            ),
         ),
     ),
     "valves": (
