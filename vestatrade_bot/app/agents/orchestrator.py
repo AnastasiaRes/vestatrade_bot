@@ -31,8 +31,11 @@ from app.diagnostic_telemetry import (
     activate_turn_trace,
     build_turn_trace,
     finish_turn_trace,
+    record_dialogue_v2_shadow,
     record_semantic_shadow,
 )
+from app.dialogue_v2.contracts import DialogueStateV2, TurnMetadata
+from app.dialogue_v2.controller import DialogueControllerV2, DialogueV2Outcome
 from app.docs_loader import load_docs_for_products
 from app.feed_loader import FeedLoader
 from app.models import (
@@ -676,6 +679,7 @@ class ChatOrchestrator:
                 or self.settings.llm_model_strong
             ),
         )
+        self.dialogue_controller_v2 = DialogueControllerV2()
         self.ranking_agent = RankingAgent()
         self.card_agent = ProductCardAgent()
         self.guardrails = GuardrailsAgent()
@@ -756,6 +760,8 @@ class ChatOrchestrator:
                 if (
                     self.settings.diagnostic_telemetry_enabled
                     or self.settings.semantic_shadow_enabled
+                    or self.settings.dialogue_state_v2_shadow_enabled
+                    or self.settings.seller_policy_v2_shadow_enabled
                 ):
                     trace = build_turn_trace(
                         self.settings,
@@ -781,12 +787,67 @@ class ChatOrchestrator:
                         # Run only after the legacy response is fully produced.
                         # The result is never copied to intent, session, search
                         # or response and its failures are contained internally.
-                        if self.settings.semantic_shadow_enabled:
+                        v2_shadow_enabled = (
+                            self.settings.dialogue_state_v2_shadow_enabled
+                            or self.settings.seller_policy_v2_shadow_enabled
+                        )
+                        semantic = None
+                        if self.settings.semantic_shadow_enabled or v2_shadow_enabled:
                             semantic = self.semantic_interpreter.interpret(
                                 message,
                                 before_turn,
                             )
                             record_semantic_shadow(semantic)
+
+                        if v2_shadow_enabled and semantic is not None:
+                            v2_before = (
+                                before_turn.dialogue_state_v2
+                                or DialogueStateV2()
+                            )
+                            try:
+                                turn_id = (
+                                    trace.trace_id
+                                    if trace is not None
+                                    else hashlib.sha256(
+                                        (
+                                            f"{session_id}:{len(before_turn.history)}:"
+                                            f"{message}"
+                                        ).encode("utf-8")
+                                    ).hexdigest()
+                                )
+                                v2_outcome = self.dialogue_controller_v2.run(
+                                    v2_before,
+                                    semantic,
+                                    TurnMetadata(turn_id=turn_id),
+                                    policy_enabled=(
+                                        self.settings.seller_policy_v2_shadow_enabled
+                                    ),
+                                )
+                                if (
+                                    v2_outcome.status == "applied"
+                                    and self.settings.dialogue_state_v2_shadow_enabled
+                                ):
+                                    state_with_v2 = self.sessions.snapshot(session_id)
+                                    state_with_v2.dialogue_state_v2 = (
+                                        v2_outcome.state_after
+                                    )
+                                    self.sessions.save(state_with_v2)
+                                record_dialogue_v2_shadow(v2_outcome)
+                            except Exception as shadow_exc:
+                                # Stage 2 is observational.  A reducer, policy,
+                                # telemetry or persistence failure must not
+                                # roll back the already successful legacy turn.
+                                record_dialogue_v2_shadow(
+                                    DialogueV2Outcome(
+                                        status="failed",
+                                        state_before=v2_before,
+                                        state_after=v2_before,
+                                        error=(
+                                            f"{type(shadow_exc).__name__}: "
+                                            f"{shadow_exc}"
+                                        )[:1200],
+                                    )
+                                )
 
                         finish_turn_trace(
                             trace,

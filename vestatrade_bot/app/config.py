@@ -73,6 +73,8 @@ class Settings(BaseModel):
     diagnostic_trace_path: Path = PROJECT_ROOT / "app/data/diagnostics/turns.jsonl"
     semantic_shadow_enabled: bool = False
     semantic_shadow_model: str | None = None
+    dialogue_state_v2_shadow_enabled: bool = False
+    seller_policy_v2_shadow_enabled: bool = False
 
     @property
     def llm_model(self) -> str:
@@ -193,5 +195,13 @@ def get_settings() -> Settings:
         semantic_shadow_enabled=_env_bool("SEMANTIC_SHADOW_ENABLED", False),
         semantic_shadow_model=(
             os.getenv("SEMANTIC_SHADOW_MODEL") or None
+        ),
+        dialogue_state_v2_shadow_enabled=_env_bool(
+            "DIALOGUE_STATE_V2_SHADOW_ENABLED",
+            False,
+        ),
+        seller_policy_v2_shadow_enabled=_env_bool(
+            "SELLER_POLICY_V2_SHADOW_ENABLED",
+            False,
         ),
     )

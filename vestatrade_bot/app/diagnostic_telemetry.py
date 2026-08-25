@@ -172,6 +172,7 @@ class TurnTrace:
     llm_calls: list[dict[str, Any]] = field(default_factory=list)
     search_events: list[dict[str, Any]] = field(default_factory=list)
     semantic_shadow: dict[str, Any] | None = None
+    dialogue_v2_shadow: dict[str, Any] | None = None
     _written: bool = False
 
     def record_llm(self, event: dict[str, Any]) -> None:
@@ -182,6 +183,9 @@ class TurnTrace:
 
     def record_semantic(self, result: Any) -> None:
         self.semantic_shadow = _json_safe(result)
+
+    def record_dialogue_v2(self, result: Any) -> None:
+        self.dialogue_v2_shadow = _json_safe(result)
 
     def finish(
         self,
@@ -208,6 +212,9 @@ class TurnTrace:
                 "additional": [],
             }
         )
+        v2_plan = (self.dialogue_v2_shadow or {}).get("next_action_plan") or {}
+        v2_primary = (v2_plan.get("primary") or {}).get("kind")
+        legacy_primary = selected_next_action.get("primary")
         payload = {
             "schema_version": TRACE_SCHEMA_VERSION,
             "trace_id": self.trace_id,
@@ -271,6 +278,17 @@ class TurnTrace:
                 },
             },
             "selected_next_action": selected_next_action,
+            "v2_next_action": v2_plan or None,
+            "v2_legacy_decision_divergence": (
+                {
+                    "v2_primary": v2_primary,
+                    "legacy_primary": legacy_primary,
+                    "exact_name_match": v2_primary == legacy_primary,
+                }
+                if self.dialogue_v2_shadow is not None
+                else None
+            ),
+            "dialogue_v2_shadow": self.dialogue_v2_shadow,
             "search_plan_events": self.search_events,
             "llm_calls": self.llm_calls,
             "legacy_answer_plan": (
@@ -326,7 +344,12 @@ def build_turn_trace(
     state_before: SessionState,
     catalog: dict[str, Any],
 ) -> TurnTrace | None:
-    if not (settings.diagnostic_telemetry_enabled or settings.semantic_shadow_enabled):
+    if not (
+        settings.diagnostic_telemetry_enabled
+        or settings.semantic_shadow_enabled
+        or settings.dialogue_state_v2_shadow_enabled
+        or settings.seller_policy_v2_shadow_enabled
+    ):
         return None
     return TurnTrace(
         path=settings.diagnostic_trace_path,
@@ -388,6 +411,12 @@ def record_semantic_shadow(result: Any) -> None:
     trace = _ACTIVE_TRACE.get()
     if trace is not None:
         trace.record_semantic(result)
+
+
+def record_dialogue_v2_shadow(result: Any) -> None:
+    trace = _ACTIVE_TRACE.get()
+    if trace is not None:
+        trace.record_dialogue_v2(result)
 
 
 def finish_turn_trace(

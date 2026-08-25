@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from app.dialogue_v2.contracts import DialogueStateV2
+
 
 def model_to_dict(model: BaseModel) -> dict[str, Any]:
     if hasattr(model, "model_dump"):
@@ -321,6 +323,10 @@ class SessionState(BaseModel):
     # хода контакт показывается маской и требует согласия — так сохраняется
     # смысл прежнего ограничения: чужой адрес из другой темы не уедет молча.
     contact_confirmed: bool = False
+    # Immutable Stage 2 shadow state.  It is serialized with the session for
+    # both in-memory and Redis stores, but legacy routing and slots never read
+    # it.  Old sessions omit the field and therefore load as ``None``.
+    dialogue_state_v2: DialogueStateV2 | None = None
 
     @property
     def pending_question_id(self) -> str | None:
