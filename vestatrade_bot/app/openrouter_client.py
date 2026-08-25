@@ -12,6 +12,10 @@ import httpx
 
 from app.budget import BudgetManager
 from app.config import Settings, get_settings
+from app.diagnostic_telemetry import (
+    record_llm_event,
+    record_llm_json_validation,
+)
 from app.pii import redact_pii_for_model
 
 
@@ -258,25 +262,54 @@ class OpenRouterClient:
         model: str | None = None,
         json_mode: bool = False,
     ) -> LLMResult:
+        started = monotonic()
+        model_name = model or self.settings.llm_model
+
+        def observed(result: LLMResult) -> LLMResult:
+            record_llm_event(
+                event="completion",
+                agent=agent,
+                provider=self.settings.llm_provider,
+                model=model_name,
+                requested=True,
+                transport_succeeded=result.llm_used,
+                finish_reason=result.finish_reason,
+                fallback_reason=result.fallback_reason,
+                usage=result.usage or {},
+                cost_usd=result.cost_usd,
+                latency_ms=int((monotonic() - started) * 1000),
+                json_mode=json_mode,
+            )
+            return result
+
         self._telemetry.fallback_reason = None
         if self._request_budget_exhausted():
-            return self._request_budget_fallback()
+            return observed(self._request_budget_fallback())
         if not self.settings.llm_enabled:
-            return self._fallback(f"LLM provider '{self.settings.llm_provider}' is not configured")
+            return observed(
+                self._fallback(
+                    f"LLM provider '{self.settings.llm_provider}' is not configured"
+                )
+            )
         if not self.budget.can_call():
-            return self._fallback("daily LLM budget is exhausted")
+            return observed(self._fallback("daily LLM budget is exhausted"))
 
         endpoint = self._endpoint()
         headers = self._headers()
         if not endpoint or not headers:
-            return self._fallback(f"LLM provider '{self.settings.llm_provider}' is not configured")
+            return observed(
+                self._fallback(
+                    f"LLM provider '{self.settings.llm_provider}' is not configured"
+                )
+            )
 
         circuit_allowed, circuit_permit, circuit_error = self._acquire_circuit(endpoint)
         if not circuit_allowed:
             detail = f" after: {circuit_error}" if circuit_error else ""
-            return self._fallback(f"ollama request skipped: circuit is open{detail}")
+            return observed(
+                self._fallback(f"ollama request skipped: circuit is open{detail}")
+            )
 
-        model_name = model or self.settings.llm_model
         messages = self.sanitize_messages(messages)
         payload = {
             "model": model_name,
@@ -306,7 +339,9 @@ class OpenRouterClient:
                 max_tokens=max_tokens,
             )
             if reservation_id is None:
-                return self._fallback("daily LLM budget has no unreserved headroom")
+                return observed(
+                    self._fallback("daily LLM budget has no unreserved headroom")
+                )
 
         def release_reservation() -> None:
             nonlocal reservation_id
@@ -328,7 +363,7 @@ class OpenRouterClient:
                         circuit_permit,
                     )
                 release_reservation()
-                return self._request_budget_fallback()
+                return observed(self._request_budget_fallback())
             # A local model should be allowed to use the entire remaining
             # turn budget.  Fast connection/write/pool limits still detect an
             # unreachable Ollama quickly.  Hosted providers retain their
@@ -368,7 +403,7 @@ class OpenRouterClient:
                 # this request. Account for it before discarding content that
                 # arrived after the customer-facing turn deadline.
                 if self._request_budget_exhausted():
-                    return self._request_budget_fallback()
+                    return observed(self._request_budget_fallback())
                 if finish_reason == "length":
                     # Обрезанный ответ нельзя показывать покупателю: в живом
                     # прогоне так уходили «Кон…» и «— труб PPR и армиров».
@@ -378,21 +413,25 @@ class OpenRouterClient:
                         agent,
                         model_name,
                     )
-                    return LLMResult(
-                        content=None,
-                        llm_used=False,
-                        fallback_reason="llm output truncated by max_tokens",
+                    return observed(
+                        LLMResult(
+                            content=None,
+                            llm_used=False,
+                            fallback_reason="llm output truncated by max_tokens",
+                            usage=usage,
+                            cost_usd=cost,
+                            finish_reason=finish_reason,
+                        )
+                    )
+                self.record_completion(content)
+                return observed(
+                    LLMResult(
+                        content=content,
+                        llm_used=True,
                         usage=usage,
                         cost_usd=cost,
                         finish_reason=finish_reason,
                     )
-                self.record_completion(content)
-                return LLMResult(
-                    content=content,
-                    llm_used=True,
-                    usage=usage,
-                    cost_usd=cost,
-                    finish_reason=finish_reason,
                 )
             except httpx.HTTPStatusError as exc:
                 last_error = exc
@@ -426,7 +465,7 @@ class OpenRouterClient:
                     if self.settings.llm_provider == "ollama":
                         self._open_circuit(endpoint, exc, circuit_permit)
                     release_reservation()
-                    return self._request_budget_fallback()
+                    return observed(self._request_budget_fallback())
                 if attempt < self.settings.llm_max_retries:
                     self._wait_before_retry(attempt)
                     continue
@@ -460,7 +499,11 @@ class OpenRouterClient:
         if isinstance(last_error, (ValueError, KeyError)):
             self._close_half_open_circuit(endpoint, circuit_permit)
         release_reservation()
-        return self._fallback(f"{self.settings.llm_provider} request failed: {last_error}")
+        return observed(
+            self._fallback(
+                f"{self.settings.llm_provider} request failed: {last_error}"
+            )
+        )
 
     @staticmethod
     def sanitize_messages(
@@ -498,6 +541,11 @@ class OpenRouterClient:
             json_mode=True,
         )
         if not result.llm_used or not result.content:
+            record_llm_json_validation(
+                agent=agent,
+                accepted=False,
+                rejection_reason=result.fallback_reason or "empty LLM response",
+            )
             return fallback, False
         content = result.content.strip()
         if content.startswith("```"):
@@ -506,7 +554,13 @@ class OpenRouterClient:
         try:
             parsed = json.loads(content)
             self._telemetry.json_output_accepted = True
+            record_llm_json_validation(agent=agent, accepted=True)
             return parsed, True
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as exc:
             logger.warning("LLM JSON parse failed for %s: %s", agent, content[:500])
+            record_llm_json_validation(
+                agent=agent,
+                accepted=False,
+                rejection_reason=f"JSONDecodeError: {exc}",
+            )
             return fallback, True

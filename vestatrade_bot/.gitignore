@@ -10,5 +10,6 @@ server.log
 app/data/products_cache.json
 app/data/usage_budget.json
 app/data/*.lock
+app/data/diagnostics/
 tmp/
 qa_runtime/

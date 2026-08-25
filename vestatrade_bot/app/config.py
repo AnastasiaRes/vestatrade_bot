@@ -33,6 +33,13 @@ def _split_csv(value: str | None, default: str) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 class Settings(BaseModel):
     feed_url: str
     feed_file_path: Path | None
@@ -60,6 +67,12 @@ class Settings(BaseModel):
     session_store_url: str | None = None
     session_ttl_seconds: int = 86_400
     session_lock_timeout_seconds: float = 30.0
+    # Both capabilities are opt-in during rollout.  Shadow interpretation is
+    # observable but never consumed by the legacy controller.
+    diagnostic_telemetry_enabled: bool = False
+    diagnostic_trace_path: Path = PROJECT_ROOT / "app/data/diagnostics/turns.jsonl"
+    semantic_shadow_enabled: bool = False
+    semantic_shadow_model: str | None = None
 
     @property
     def llm_model(self) -> str:
@@ -168,5 +181,17 @@ def get_settings() -> Settings:
         session_lock_timeout_seconds=max(
             1.0,
             float(os.getenv("SESSION_LOCK_TIMEOUT_SECONDS", "30")),
+        ),
+        diagnostic_telemetry_enabled=_env_bool(
+            "DIAGNOSTIC_TELEMETRY_ENABLED",
+            False,
+        ),
+        diagnostic_trace_path=_resolve_project_path(
+            os.getenv("DIAGNOSTIC_TRACE_PATH"),
+            "app/data/diagnostics/turns.jsonl",
+        ),
+        semantic_shadow_enabled=_env_bool("SEMANTIC_SHADOW_ENABLED", False),
+        semantic_shadow_model=(
+            os.getenv("SEMANTIC_SHADOW_MODEL") or None
         ),
     )

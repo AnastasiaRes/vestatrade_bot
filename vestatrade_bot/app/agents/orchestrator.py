@@ -27,6 +27,12 @@ except ImportError:  # pragma: no cover - exercised only without optional depend
     fuzz = _FuzzFallback()
 
 from app.config import PROJECT_ROOT, Settings, get_settings
+from app.diagnostic_telemetry import (
+    activate_turn_trace,
+    build_turn_trace,
+    finish_turn_trace,
+    record_semantic_shadow,
+)
 from app.docs_loader import load_docs_for_products
 from app.feed_loader import FeedLoader
 from app.models import (
@@ -70,7 +76,7 @@ from .engineering_interpreter import (
 from .engineering_norms import match_engineering_norm
 from .engineering_requirements import EngineeringRequirementsAgent
 from .catalog_scope import UnsupportedFamily, match_unsupported_family
-from .feed_search import FeedSearchAgent
+from .diagnostic_feed_search import DiagnosticFeedSearchAgent
 from .selection_contracts import observable_selection_guidance, slot_answer_hint
 from .guardrails import GuardrailsAgent
 from .handoff import HandoffAgent
@@ -102,6 +108,7 @@ from .slot_answer_resolver import (
     ResolvedAnswer,
 )
 from .slot_filling import SlotFillingAgent
+from .semantic_interpreter import SemanticInterpreter
 from .turn_classifier import TurnClassifierAgent
 from .turn_planner import (
     ContactDirection,
@@ -661,7 +668,14 @@ class ChatOrchestrator:
         self.engineering_requirements = EngineeringRequirementsAgent(
             self.slot_filling
         )
-        self.search_agent = FeedSearchAgent(products or [])
+        self.search_agent = DiagnosticFeedSearchAgent(products or [])
+        self.semantic_interpreter = SemanticInterpreter(
+            self.llm_client,
+            model=(
+                self.settings.semantic_shadow_model
+                or self.settings.llm_model_strong
+            ),
+        )
         self.ranking_agent = RankingAgent()
         self.card_agent = ProductCardAgent()
         self.guardrails = GuardrailsAgent()
@@ -738,19 +752,57 @@ class ChatOrchestrator:
                 # Capture state while holding the distributed lock so a failed
                 # turn cannot overwrite a successful concurrent worker turn.
                 before_turn = self.sessions.snapshot(session_id)
+                trace = None
+                if (
+                    self.settings.diagnostic_telemetry_enabled
+                    or self.settings.semantic_shadow_enabled
+                ):
+                    trace = build_turn_trace(
+                        self.settings,
+                        session_id=session_id,
+                        message=message,
+                        state_before=before_turn,
+                        catalog=self.search_agent.get_catalog_manifest(
+                            self.products_loaded_from
+                        ),
+                    )
                 request_budget = getattr(self.llm_client, "request_budget", None)
                 budget_scope = request_budget() if callable(request_budget) else nullcontext()
-                try:
-                    with budget_scope:
-                        self._request_agents.composer = ResponseComposerAgent(self.llm_client)
-                        self._request_agents.consultant = ConsultantAgent(
-                            self.llm_client,
-                            model=self.settings.llm_model_strong,
+                with activate_turn_trace(trace):
+                    try:
+                        with budget_scope:
+                            self._request_agents.composer = ResponseComposerAgent(self.llm_client)
+                            self._request_agents.consultant = ConsultantAgent(
+                                self.llm_client,
+                                model=self.settings.llm_model_strong,
+                            )
+                            response = self._handle_chat(session_id, message)
+
+                        # Run only after the legacy response is fully produced.
+                        # The result is never copied to intent, session, search
+                        # or response and its failures are contained internally.
+                        if self.settings.semantic_shadow_enabled:
+                            semantic = self.semantic_interpreter.interpret(
+                                message,
+                                before_turn,
+                            )
+                            record_semantic_shadow(semantic)
+
+                        finish_turn_trace(
+                            trace,
+                            response=response,
+                            state_after=self.sessions.snapshot(session_id),
                         )
-                        return self._handle_chat(session_id, message)
-                except Exception:
-                    self.sessions.restore(before_turn)
-                    raise
+                        return response
+                    except Exception as exc:
+                        self.sessions.restore(before_turn)
+                        finish_turn_trace(
+                            trace,
+                            response=None,
+                            state_after=self.sessions.snapshot(session_id),
+                            error=exc,
+                        )
+                        raise
 
     def _session_lock(self, session_id: str) -> RLock:
         with self._session_locks_guard:
