@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+import pytest
+
 from app.answer_v2.contracts import (
+    AnswerClaim,
     AnswerSourceSnapshot,
     CatalogAnswerProduct,
     ClaimKind,
+    KnowledgeStatus,
     NextStepKind,
     ProductRecommendationRole,
     ProductPresentationStatus,
@@ -16,7 +20,11 @@ from app.answer_v2.planner import (
     _presentable_candidate_shortlist,
     build_answer_plan,
 )
-from app.answer_v2.renderer import deterministic_render
+from app.answer_v2.renderer import (
+    _claim_text,
+    _product_claim_detail,
+    deterministic_render,
+)
 from app.answer_v2.sources import attach_turn_source_evidence
 from app.answer_v2.validator import validate_rendered_answer
 from app.catalog_v2.contracts import (
@@ -294,6 +302,42 @@ def test_direct_price_answer_is_first_and_every_claim_has_provenance() -> None:
     assert plan.next_step is not None
 
 
+@pytest.mark.parametrize(
+    ("canonical", "public"),
+    [
+        ("glass_fiber", "стекловолокно"),
+        ("aluminium", "алюминий"),
+        ("unreinforced", "без армирования"),
+    ],
+)
+def test_reinforcement_is_human_readable_in_confirmed_fact_and_product_card(
+    canonical: str,
+    public: str,
+) -> None:
+    confirmed = AnswerClaim(
+        claim_id=f"confirmed-reinforcement-{canonical}",
+        kind=ClaimKind.CUSTOMER_CONSTRAINT,
+        subject_ref="goal-pipe",
+        predicate="reinforcement",
+        value=canonical,
+        knowledge_status=KnowledgeStatus.CONFIRMED,
+        source_ref_ids=("source-reinforcement",),
+        allowed_in_response=True,
+    )
+    product_attribute = confirmed.model_copy(
+        update={
+            "claim_id": f"product-reinforcement-{canonical}",
+            "kind": ClaimKind.PRODUCT_ATTRIBUTE,
+            "subject_ref": "PIPE-25",
+        }
+    )
+
+    assert _claim_text(confirmed) == f"Тип армирования: {public}."
+    assert _product_claim_detail(product_attribute) == (
+        f"тип армирования — {public}"
+    )
+
+
 def test_direct_stock_preserves_one_secondary_decision_question() -> None:
     base_state = _state(act=TaskAct.CHECK_STOCK)
     goal = base_state.product_goals[0].model_copy(
@@ -405,6 +449,56 @@ def test_question_only_product_plan_is_ready_and_grounded() -> None:
     assert not plan.products
     rendered = deterministic_render(plan)
     assert rendered.segments[0].kind.value == "question"
+    assert validate_rendered_answer(plan, rendered, sources).status == "accepted"
+
+
+def test_preliminary_browse_names_missing_customer_fact_honestly() -> None:
+    state = _state(act=TaskAct.FIND)
+    catalog = _catalog(candidate_status=CandidateStatus.UNVERIFIED)
+    readiness = catalog.readiness_assessments[0].model_copy(
+        update={
+            "missing_decision_facts": ("diameter_mm",),
+            "recommended_question_fact": None,
+        }
+    )
+    search = catalog.search_plans[0].model_copy(
+        update={
+            "unavailable_constraints": ("diameter_mm",),
+            "candidate_assessments": (
+                catalog.search_plans[0].candidate_assessments[0].model_copy(
+                    update={
+                        "matched_hard_facts": (),
+                        "reason_codes": ("required_customer_fact_unavailable",),
+                    }
+                ),
+            ),
+        }
+    )
+    catalog = catalog.model_copy(
+        update={
+            "readiness_assessments": (readiness,),
+            "search_plans": (search,),
+        }
+    )
+    sources = _sources(catalog=catalog, state=state)
+
+    plan = _compile(
+        state=state,
+        catalog=catalog,
+        sources=sources,
+        policy=_policy(NextActionKind.SHOW_PRELIMINARY_OPTIONS),
+    ).answer_plan
+
+    assert plan is not None
+    limitation = next(
+        item
+        for item in plan.limitations
+        if item.reason_code == "customer_fact_missing_for_exact_match"
+    )
+    assert limitation.fact_name == "diameter_mm"
+    rendered = deterministic_render(plan)
+    assert "Параметр «диаметр присоединения» пока не указан" in rendered.text
+    assert "варианты предварительные" in rendered.text
     assert validate_rendered_answer(plan, rendered, sources).status == "accepted"
 
 

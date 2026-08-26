@@ -94,6 +94,20 @@ def frame_customer_problem(message: str) -> ProblemFrame | None:
     if not text:
         return None
 
+    # ``не знаю, холодная или горячая, вода течёт из крана`` is an attempt to
+    # classify a service pipe, not evidence that hot water is disappearing.
+    # The hot-water-loss pattern sees the same words, so keep an explicit
+    # either/or temperature question out of the diagnostic frame unless a real
+    # shortage symptom is also present.
+    temperature_classification = bool(
+        re.search(
+            r"\b(?:холодн\w*\s+или\s+горяч\w*|"
+            r"горяч\w*\s+или\s+холодн\w*)\b",
+            text,
+        )
+        and not _SHORTAGE_RE.search(text)
+    )
+
     # Odour from a bathroom/drain is a diagnostic sewer problem, not a broad
     # bathroom renovation and not evidence that a particular pipe is needed.
     if _ODOR_RE.search(text) and _SEWER_CONTEXT_RE.search(text):
@@ -144,6 +158,7 @@ def frame_customer_problem(message: str) -> ProblemFrame | None:
         _HOT_WATER_CONTEXT_RE.search(text)
         and _HOT_WATER_LOSS_RE.search(text)
         and any(marker in text for marker in ("душ", "кухн", "кран"))
+        and not temperature_classification
     ):
         return ProblemFrame("hot_water_shortage", "water_heaters", 0.93)
 

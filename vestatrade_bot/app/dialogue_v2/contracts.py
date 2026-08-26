@@ -173,6 +173,7 @@ class ProgressKind(str, Enum):
     INFORMATION_REQUEST_REGISTERED = "information_request_registered"
     TASK_SWITCHED = "task_switched"
     TASK_RETURNED = "task_returned"
+    SELECTION_STRATEGY_CHANGED = "selection_strategy_changed"
     NO_PROGRESS = "no_progress"
 
 
@@ -221,6 +222,10 @@ class ShadowDeliveryStatus(str, Enum):
     SELECTED = "selected"
     COMMITTED_TO_SESSION = "committed_to_session"
     LEGACY_FALLBACK = "legacy_fallback"
+
+
+class SelectionControlKind(str, Enum):
+    CONTINUE_WITH_CONFIRMED_FACTS = "continue_with_confirmed_facts"
 
 
 class TurnMetadata(FrozenModel):
@@ -390,6 +395,18 @@ class TaskStack(FrozenModel):
     completed_task_ids: tuple[str, ...] = ()
 
 
+class SelectionControlSignal(FrozenModel):
+    """A scoped customer choice about how selection may proceed."""
+
+    control_id: str
+    kind: SelectionControlKind
+    task_id: str
+    goal_id: str | None = None
+    evidence: str = Field(default="", max_length=240)
+    source: str
+    source_turn: int = Field(ge=1)
+
+
 class PresentedCandidateSummary(FrozenModel):
     """PII-free identity of a card included in the last answer candidate."""
 
@@ -462,6 +479,7 @@ class DialogueStateV2(FrozenModel):
     information_requests: tuple[InformationRequestV2, ...] = ()
     direct_questions: tuple[DirectQuestion, ...] = ()
     ambiguities: tuple[Ambiguity, ...] = ()
+    selection_controls: tuple[SelectionControlSignal, ...] = ()
     progress: ProgressState = Field(default_factory=ProgressState)
     last_policy: NextActionPlan | None = None
     catalog_planning: CatalogPlanningResult | None = None
@@ -593,6 +611,16 @@ class AmbiguityRegistered(StateEventBase):
     event_type: Literal["ambiguity_registered"] = "ambiguity_registered"
     ambiguity_id: str
     kind: str
+
+
+class SelectionControlRegistered(StateEventBase):
+    event_type: Literal["selection_control_registered"] = (
+        "selection_control_registered"
+    )
+    control_id: str
+    control_kind: SelectionControlKind
+    task_id: str
+    goal_id: str | None = None
 
 
 class TurnIgnoredAsDuplicate(StateEventBase):
@@ -829,6 +857,7 @@ ReducerEvent: TypeAlias = (
     | InformationRequestResolved
     | InformationRequestUnavailable
     | AmbiguityRegistered
+    | SelectionControlRegistered
     | TurnIgnoredAsDuplicate
     | PolicyDecisionRecorded
     | ProductContractResolved

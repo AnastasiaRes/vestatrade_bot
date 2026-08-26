@@ -92,6 +92,48 @@ def test_question_uses_contract_learn_method_and_expected_unit() -> None:
     assert "миллиметрах (мм)" in rendered.text
 
 
+def test_pipe_service_question_explains_supported_system_choices() -> None:
+    state = _state(act=TaskAct.SELECT)
+    catalog = CatalogPlanningResult(
+        status="planned",
+        readiness_assessments=(
+            TaskReadinessAssessment(
+                task_id="task-pipe",
+                goal_id="goal-pipe",
+                contract_id="pipe.ppr.v1",
+                product_kind=ProductKind.PIPE,
+                status=ReadinessStatus.NEEDS_DECISION_FACT,
+                missing_decision_facts=("pipe_service",),
+                recommended_question_fact="pipe_service",
+                learn_method_code="identify_pipe_service",
+            ),
+        ),
+    )
+    policy = NextActionPlan(
+        primary=NextAction(
+            kind=NextActionKind.ASK_DECISION_CHANGING_QUESTION,
+            task_id="task-pipe",
+            fact_name="pipe_service",
+            reason_code="pipe_service_changes_selection",
+        ),
+        task_ids=("task-pipe",),
+    )
+    sources = _sources(catalog=catalog, state=state)
+
+    plan = _compile(
+        state=state,
+        catalog=catalog,
+        policy=policy,
+        sources=sources,
+    ).answer_plan
+
+    assert plan is not None and plan.question is not None
+    assert plan.question.learn_method_code == "identify_pipe_service"
+    rendered = deterministic_render(plan)
+    assert "холодное или горячее водоснабжение" in rendered.text
+    assert "для канализации нужен отдельный тип трубы" in rendered.text.lower()
+
+
 def test_independent_explain_task_inherits_same_goal_readiness_guidance() -> None:
     goal = ProductGoal(
         goal_id="goal-pump",

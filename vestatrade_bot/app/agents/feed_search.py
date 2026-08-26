@@ -222,6 +222,12 @@ _TRUE_VALUES = {
 }
 _FEATURE_ALIASES: dict[str, tuple[str, ...]] = {
     "wifi": ("wifi", "wi-fi", "wi fi", "вайфай", "вай-фай", "вай фай"),
+    "измельчитель": (
+        "измельчитель",
+        "измельчительным",
+        "режущий механизм",
+        "режущим механизмом",
+    ),
 }
 
 
@@ -4374,6 +4380,15 @@ class FeedSearchAgent:
                     or maximum_temperature < float(requested_temperature)
                 ):
                     return False
+            requested_pressure = slots.get("operating_pressure_bar")
+            if requested_pressure is not None:
+                maximum_pressure = self._maximum_pressure_bar(product)
+                if (
+                    maximum_pressure is None
+                    or maximum_pressure < float(requested_pressure)
+                ):
+                    return False
+        if category == "radiators":
             requested_pressure = slots.get("operating_pressure_bar")
             if requested_pressure is not None:
                 maximum_pressure = self._maximum_pressure_bar(product)

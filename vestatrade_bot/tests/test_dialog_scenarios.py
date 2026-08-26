@@ -2485,9 +2485,15 @@ def test_gas_vs_electric_question_gets_advice_not_silent_assumption(orchestrator
 
     followup = orchestrator.handle_chat("gve1", "газа нет, дом 100 квадратов")
 
-    assert followup.products
-    assert followup.debug["slots"]["boiler_type"] == "электрический"
+    assert followup.products == []
+    assert "boiler_type" not in followup.debug["slots"]
+    assert "электрич" in followup.answer.lower()
+    assert "тверд" in followup.answer.lower() or "твёрд" in followup.answer.lower()
     assert followup.debug["slots"]["area_m2"] == 100.0
+
+    selected = orchestrator.handle_chat("gve1", "Выбираю электрический")
+    assert selected.products
+    assert selected.debug["slots"]["boiler_type"] == "электрический"
 
 
 def test_gas_vs_electric_question_does_not_reask_area_from_same_message(orchestrator) -> None:
@@ -2632,7 +2638,7 @@ def test_direct_boiler_meters_are_area(orchestrator) -> None:
     assert response.debug["slots"]["area_m2"] == 240.0
 
 
-def test_radiator_dimensions_select_radiator_not_valve(sample_products) -> None:
+def test_radiator_dimensions_keep_radiator_goal_and_ask_system_type(sample_products) -> None:
     radiator = Product(
         sku="RAD-500-6",
         name="Радиатор биметаллический 500 х 80 6 секций",
@@ -2652,7 +2658,8 @@ def test_radiator_dimensions_select_radiator_not_valve(sample_products) -> None:
     assert response.debug["category"] == "radiators"
     assert response.debug["slots"]["radiator_size_mm"] == 500
     assert response.debug["slots"]["sections"] == 6
-    assert [product.sku for product in response.products] == ["RAD-500-6"]
+    assert response.products == []
+    assert "центральная или автономная" in response.answer.lower()
 
 
 def test_ppr_reducer_keeps_both_diameters(sample_products) -> None:

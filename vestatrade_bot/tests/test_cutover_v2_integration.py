@@ -6,7 +6,10 @@ from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 
-from app.agents.semantic_interpreter import SemanticInterpretationResult
+from app.agents.semantic_interpreter import (
+    SemanticInterpretationResult,
+    TurnUnderstanding,
+)
 from app.agents.orchestrator import ChatOrchestrator
 from app.answer_v2.contracts import AnswerPlanStatus
 from app.catalog_v2.contracts import ProductKind
@@ -19,7 +22,7 @@ from app.cutover_v2.contracts import (
 )
 from app.dialogue_v2.contracts import DialogueStateV2, NextActionKind, TaskAct
 from app.dialogue_v2.controller import DialogueV2Outcome
-from app.models import ChatProductSummary, ChatResponse
+from app.models import ChatProductSummary, ChatResponse, SessionState
 from app.session_store import InMemorySessionStore
 
 
@@ -129,6 +132,36 @@ def _candidate(
         contracts_resolved=True,
         eligible_for_delivery=True,
     )
+
+
+def test_local_preview_enables_live_attempt_only_without_external_execution(
+    sample_products,
+    tmp_path,
+) -> None:
+    registry_path = _write_canary_registry(tmp_path)
+    base = _settings(tmp_path, registry_path).model_copy(
+        update={
+            "dialogue_v2_internal_canary_enabled": False,
+            "dialogue_v2_internal_canary_percent": 0,
+            "dialogue_v2_local_preview_enabled": True,
+            "commerce_external_execution_enabled": False,
+        }
+    )
+    bot = ChatOrchestrator(
+        settings=base,
+        products=sample_products,
+        llm_client=_NoNetworkClient(base),
+    )
+
+    assert bot._stage6_live_attempt_enabled() is True
+    bot.settings = base.model_copy(
+        update={"commerce_external_execution_enabled": True}
+    )
+    assert bot._stage6_live_attempt_enabled() is False
+    bot.settings = base.model_copy(
+        update={"dialogue_v2_local_preview_enabled": False}
+    )
+    assert bot._stage6_live_attempt_enabled() is False
 
 
 def test_internal_canary_has_one_owner_and_does_not_execute_legacy(
@@ -338,6 +371,140 @@ def test_early_safety_prevents_semantic_and_v2_execution(
     assert response == safety
     trace = json.loads(settings.diagnostic_trace_path.read_text().splitlines()[0])
     assert trace["cutover_v2"]["decision"]["owner_candidate"] == "safety"
+
+
+def test_customer_photo_capability_boundary_stays_on_verified_legacy_path(
+    sample_products,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    registry_path = _write_canary_registry(tmp_path)
+    settings = _settings(tmp_path, registry_path)
+    bot = ChatOrchestrator(
+        settings=settings,
+        products=sample_products,
+        llm_client=_NoNetworkClient(settings),
+    )
+    session_id = _eligible_session(bot.cutover_registry_v2.revision)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("semantic/V2 executed for an unavailable photo")
+
+    monkeypatch.setattr(bot.semantic_interpreter, "interpret", forbidden)
+    monkeypatch.setattr(bot, "_run_stage6_v2_candidate", forbidden)
+    legacy = ChatResponse(
+        session_id=session_id,
+        answer="Фото здесь не загружаются; опишите маркировку и соединения словами.",
+    )
+    monkeypatch.setattr(bot, "_handle_chat", lambda *_args: legacy)
+
+    response = bot.handle_chat(
+        session_id,
+        "Хотел загрузить фото крана. Можешь определить, что это?",
+    )
+
+    assert response == legacy
+    trace = json.loads(settings.diagnostic_trace_path.read_text().splitlines()[0])
+    assert trace["cutover_v2"]["early_control"]["outcome"] == "blocked"
+    assert (
+        "customer_photo_capability_boundary"
+        in trace["cutover_v2"]["early_control"]["reason_codes"]
+    )
+
+    safety_wins = bot._stage6_early_control(
+        "На фото газовый котёл, возле него пахнет газом — что делать?",
+        SessionState(session_id="photo-with-emergency"),
+    )
+    assert safety_wins.outcome.value == "safety_response"
+
+    described = bot._stage6_early_control(
+        "На корпусе KRAUS, три присоединения G1/2, наружная резьба.",
+        SessionState(session_id="text-description"),
+    )
+    assert described.outcome.value == "pass"
+
+
+def test_stage6_candidate_keeps_delivery_as_read_only_workflow_without_outbox(
+    sample_products,
+    tmp_path,
+) -> None:
+    registry_path = _write_canary_registry(tmp_path)
+    settings = _settings(tmp_path, registry_path)
+    bot = ChatOrchestrator(
+        settings=settings,
+        products=sample_products,
+        llm_client=_NoNetworkClient(settings),
+    )
+    understanding = TurnUnderstanding.model_validate(
+        {
+            "schema_version": "1.1",
+            "language": "ru",
+            "operation": "new",
+            "acts": ["check_stock", "check_delivery"],
+            "products": [
+                {
+                    "text": "шаровой кран",
+                    "canonical_type": "ball_valve",
+                    "category": "valves",
+                    "role": "target",
+                    "evidence": "шаровой кран",
+                }
+            ],
+            "constraints": [
+                {
+                    "name": "quantity",
+                    "value": 800,
+                    "unit": "m",
+                    "status": "known",
+                    "polarity": "required",
+                    "applies_to_product": 0,
+                    "evidence": "800 м",
+                },
+                {
+                    "name": "destination_region",
+                    "value": "Казахстан",
+                    "status": "known",
+                    "polarity": "required",
+                    "evidence": "в Казахстан",
+                }
+            ],
+            "references": [],
+            "ambiguities": [],
+            "workflow_controls": [],
+            "answers_pending_question": False,
+            "confidence": 1.0,
+        }
+    )
+    semantic = SemanticInterpretationResult(
+        status="accepted",
+        requested=True,
+        transport_succeeded=True,
+        output_accepted=True,
+        understanding=understanding,
+    )
+
+    outcome = bot._run_stage6_v2_candidate(
+        DialogueStateV2(),
+        semantic,
+        "read-only-delivery-turn",
+        SessionState(session_id="read-only-delivery"),
+    )
+
+    assert outcome.status == "applied"
+    assert outcome.commerce_planning is not None
+    assert [
+        item.workflow_kind.value
+        for item in outcome.commerce_planning.workflow_resolutions
+    ] == ["check_delivery"]
+    assert not outcome.state_after.commerce_outbox
+    assert not outcome.commerce_planning.prepared_commands
+    assert not outcome.commerce_planning.outbox
+    assert outcome.response_rendering is not None
+    assert outcome.response_rendering.rendered_answer is not None
+    rendered = outcome.response_rendering.rendered_answer.text
+    assert "Запрошенное количество: 800 м" in rendered
+    assert "Пункт назначения: Казахстан" in rendered
+    assert rendered.count("Доставку, её стоимость и срок") == 1
 
 
 def test_pii_turn_stays_legacy_and_trace_contains_no_contact(

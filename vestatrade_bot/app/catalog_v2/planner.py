@@ -202,6 +202,12 @@ def _same_value(mode: ComparisonMode, name: str, requested: object, actual: obje
     if mode == ComparisonMode.BOOLEAN:
         return bool(left) is bool(right)
     if mode == ComparisonMode.CONTAINS:
+        if name == "pipe_service":
+            requested_services = set(str(left).split())
+            actual_services = set(str(right).split())
+            return bool(requested_services) and requested_services.issubset(
+                actual_services
+            )
         return str(left) in str(right) or str(right) in str(left)
     return str(left).casefold() == str(right).casefold()
 
@@ -263,6 +269,12 @@ def _assess_candidate(
     mismatched_soft: list[str] = []
     provenance = []
     availability_status = _catalog_availability(product)
+    exclusively_cold_water = any(
+        constraint.name == "pipe_service"
+        and constraint.polarity != "excluded"
+        and normalize_fact_value("pipe_service", constraint.value) == "cold_water"
+        for constraint in hard
+    )
 
     if product.role not in contract.allowed_catalog_roles:
         return CandidateAssessment(
@@ -276,6 +288,8 @@ def _assess_candidate(
 
     for constraint in hard:
         actual = fact_map.get(constraint.name)
+        if constraint.name == "operating_pressure_bar" and exclusively_cold_water:
+            actual = fact_map.get("cold_water_pressure_bar") or actual
         if actual is None:
             missing_hard.append(constraint.name)
             continue
@@ -379,6 +393,11 @@ def _make_search_plan(
     unavailable_hard = tuple(
         dict.fromkeys(
             (
+                *(
+                    assessment.missing_decision_facts
+                    if assessment.status == ReadinessStatus.PRELIMINARY_READY
+                    else ()
+                ),
                 *assessment.unknown_facts,
                 *assessment.refused_facts,
                 *assessment.deferred_facts,
@@ -415,10 +434,12 @@ def _make_search_plan(
         product for product in catalog_snapshot
         if product.product_kind in compatible_kinds
     )
-    # Missing decision-changing facts are not a licence to return every item
-    # of a broad category.  Keep an empty, typed plan for diagnostics and let
-    # SellerPolicy ask the selected question.  Explicitly unavailable facts
-    # take the preliminary path below and make candidates unverified.
+    # Missing decision-changing facts normally block broad catalogue output.
+    # The exception is a typed PRELIMINARY_READY assessment produced for an
+    # explicit confirmed-facts control or an explicit terminal customer fact
+    # (unknown/refused/deferred) when the contract permits that path. Those
+    # candidates stay unverified; the absent fact is never treated as known or
+    # relaxed.
     assessments = (
         ()
         if search_blocked

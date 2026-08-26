@@ -966,6 +966,16 @@ class IntentRouterAgent:
         )
 
     def _detect_category(self, text: str) -> tuple[str, float]:
+        # A product head named by the customer outranks the system in which it
+        # works.  Otherwise ``насос для канализации`` became a sewer pipe and
+        # ``запорная арматура на трубе`` became the pipe itself.  These are
+        # grammatical head nouns, not a phrase whitelist.
+        if re.search(r"\b(?:насос|помп)\w*\b", text):
+            return "pumps", 0.99
+        if re.search(r"\b(?:кран\w*\s+маевск\w*|ручн\w*\s+воздухоотвод\w*)\b", text):
+            return "radiator_fittings", 0.99
+        if re.search(r"\bзапорн\w*\s+арматур\w*\b", text):
+            return "valves", 0.99
         if OLD_CIRCULATION_PUMP_RE.search(text):
             return "pumps", 0.9
         if (
@@ -1941,7 +1951,21 @@ class IntentRouterAgent:
                 slots["allow_alternatives"] = False
 
         if category == "pumps":
-            if "циркуляц" in text:
+            if (
+                re.search(r"(?<![a-zа-я])кнс(?![a-zа-я])", text)
+                or "санитарн" in text and "насос" in text
+                or (
+                    "канализац" in text
+                    and "насос" in text
+                    and any(
+                        marker in text
+                        for marker in ["установ", "станц", "сануз", "унитаз"]
+                    )
+                )
+            ):
+                slots["pump_type"] = "канализационная насосная установка"
+                slots["pump_use"] = "отвод стоков"
+            elif "циркуляц" in text:
                 slots["pump_type"] = "циркуляционный"
                 # An explicit circulation-pump request starts an отопление branch.
                 # Do not inherit a previous irrigation purpose from the session.
@@ -1952,6 +1976,11 @@ class IntentRouterAgent:
                 slots["pump_type"] = "дренажный"
             elif "скважин" in text:
                 slots["pump_type"] = "скважинный"
+            if "измельч" in text or "режущ" in text:
+                features = list(slots.get("required_features") or [])
+                if "измельчитель" not in features:
+                    features.append("измельчитель")
+                slots["required_features"] = features
 
         has_electric = "электр" in text
         has_gas = bool(re.search(r"\bгаз(?:ов\w*|а|у|ом)?\b", text))
@@ -1973,14 +2002,26 @@ class IntentRouterAgent:
                 re.search(r"\bгазов\w*\s+кот(?:ел|ёл|л\w*)\b", text)
                 or re.search(r"\bкот(?:ел|ёл|л\w*)\s+газов\w*\b", text)
             )
-            if explicit_electric_boiler and not explicit_gas_boiler:
+            explicit_solid_fuel_boiler = bool(
+                re.search(
+                    r"\b(?:тверд|твёрд)\w*\s*топлив\w*\b|"
+                    r"\b(?:дров\w*|угол\w*)\b",
+                    text,
+                )
+            )
+            if explicit_solid_fuel_boiler:
+                slots["boiler_type"] = "твердотопливный"
+            elif explicit_electric_boiler and not explicit_gas_boiler:
                 slots["boiler_type"] = "электрический"
             elif explicit_gas_boiler and not explicit_electric_boiler:
                 slots["boiler_type"] = "газовый"
             elif rejects_electric and has_gas:
                 slots["boiler_type"] = "газовый"
             elif rejects_gas:
-                slots["boiler_type"] = "электрический"
+                # Absence of gas excludes one energy source; it does not prove
+                # the customer has sufficient electricity or prefers an
+                # electric boiler over solid fuel.
+                slots["gas_available"] = False
             elif has_gas and not has_electric:
                 slots["boiler_type"] = "газовый"
             elif has_electric and not has_gas:
@@ -2798,9 +2839,27 @@ class IntentRouterAgent:
             "pipes",
             "valves",
             "radiator_fittings",
+            "radiators",
         }:
             pressure_value = float(pressure_match.group(1).replace(",", "."))
             slots["operating_pressure_bar"] = pressure_value
+
+        if category == "radiators":
+            radiator_pressure = re.search(
+                r"(?:давлен\w*|выдерж\w*)[^\d]{0,24}"
+                r"(\d+(?:[,.]\d+)?)\s*"
+                r"(?:бар(?:а|ов)?|bar|атм(?:осфер\w*)?)\b",
+                text,
+            )
+            if radiator_pressure:
+                slots["operating_pressure_bar"] = float(
+                    radiator_pressure.group(1).replace(",", ".")
+                )
+                if any(
+                    marker in text
+                    for marker in ["выдерж", "выше", "не менее", "минимум", "от "]
+                ):
+                    slots["capability_browse"] = True
 
         if category in {"pipes", "sewer"}:
             piece_length_mm = extract_piece_length_mm(text)
@@ -3072,6 +3131,26 @@ class IntentRouterAgent:
                     slots["flow_unit_assumed"] = True
                     slots["flow_unit_status"] = "assumed"
 
+            # A working point is often written compactly as
+            # ``1.8 m3/h / 4.5 m`` or ``1.8 m3/h and 4.5 m``.  The second
+            # value is a required head, not a pump model marking and not a
+            # horizontal pipe length.  Bind it only when it follows a flow
+            # unit through a duty-point separator, so unrelated measurements
+            # elsewhere in the sentence are not guessed as head.
+            duty_pair = re.search(
+                r"(?<!\d)\d+(?:[,.]\d+)?\s*"
+                r"(?:м3/ч|м³/ч|л/мин|л/ч)\s*"
+                r"(?:[/;,]|и|при)\s*(?:h\s*=?\s*|напор\w*\s*)?"
+                r"(\d+(?:[,.]\d+)?)\s*(?:м\b|метр\w*)",
+                text,
+            )
+            if duty_pair:
+                duty_head = float(duty_pair.group(1).replace(",", "."))
+                if 0 < duty_head <= 100:
+                    slots["required_head_m"] = duty_head
+                    slots["required_head_calculated"] = False
+                    slots.pop("head_m", None)
+
             symbolic_head = re.search(
                 r"(?<![a-zа-я])h\s*(?:=\s*)?(\d+(?:[,.]\d+)?)\s*(?:м\b|метр\w*)?",
                 text,
@@ -3088,6 +3167,16 @@ class IntentRouterAgent:
                 r"[^\d]{0,12}(?:dn\s*)?(25|32|40|50)\b",
                 text,
             )
+            if not connection_match:
+                # A customer may quote a thread first and then state the pump
+                # nominal explicitly: ``присоединение G1/2 — это 25 мм``.
+                # The first digit must not prevent us from reading the later
+                # DN-sized value.
+                connection_match = re.search(
+                    r"(?:присоедин\w*|условн\w*\s+проход\w*)"
+                    r"[^.!?]{0,36}\b(25|32|40|50)\s*(?:мм|dn)?\b",
+                    text,
+                )
             if connection_match:
                 slots["connection_size"] = int(connection_match.group(1))
 
@@ -3105,6 +3194,31 @@ class IntentRouterAgent:
                 # duty head is a minimum capability and must not be compared as
                 # exact equality with the product's maximum head.
                 slots.pop("head_m", None)
+
+            # A heat-transfer fluid plus an explicit Q/H duty point describes
+            # a circulation-pump selection.  It is not a complaint about weak
+            # tap pressure and does not justify asking for a well or main.
+            if (
+                slots.get("required_flow_m3_h") is not None
+                and slots.get("required_head_m") is not None
+                and any(
+                    marker in text
+                    for marker in [
+                        "теплоносител",
+                        "гликол",
+                        "антифриз",
+                        "этиленгликол",
+                        "пропиленгликол",
+                    ]
+                )
+                and not any(
+                    marker in text
+                    for marker in ["скваж", "колод", "полив", "откач", "дренаж"]
+                )
+            ):
+                slots["pump_type"] = "циркуляционный"
+                slots["pump_use"] = "отопление"
+                slots.pop("symptom", None)
 
             for key, pattern in [
                 (
@@ -3165,6 +3279,16 @@ class IntentRouterAgent:
                     slots["horizontal_run_m"] = float(
                         generic_horizontal.group(1).replace(",", ".")
                     )
+                else:
+                    horizontal_after_value = re.search(
+                        r"(?<!\d)(\d+(?:[,.]\d+)?)\s*(?:м\b|метр\w*)"
+                        r"\s+(?:по\s+)?горизонтал\w*",
+                        text,
+                    )
+                    if horizontal_after_value:
+                        slots["horizontal_run_m"] = float(
+                            horizontal_after_value.group(1).replace(",", ".")
+                        )
 
             if "фекал" in text:
                 slots["water_quality"] = "фекальная"
@@ -4703,6 +4827,8 @@ class IntentRouterAgent:
                 slots["boiler_type"] = "электрический"
             elif boiler_type in {"gas", "gas boiler"} or "газ" in boiler_type:
                 slots["boiler_type"] = "газовый"
+            elif "тверд" in boiler_type or "твёрд" in boiler_type:
+                slots["boiler_type"] = "твердотопливный"
 
         contours = normalize_text(str(slots.get("contours") or ""))
         if contours:

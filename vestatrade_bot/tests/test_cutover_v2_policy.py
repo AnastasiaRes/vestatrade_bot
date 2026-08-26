@@ -437,6 +437,58 @@ def test_future_primary_registry_cannot_enable_public_traffic_in_stage6a() -> No
     assert "v2_primary_not_enabled_in_stage6a" in decision.reason_codes
 
 
+def test_primary_cell_requires_explicit_local_preview_gate() -> None:
+    primary = _cell(
+        stage=RolloutStage.V2_PRIMARY,
+        canary_percent=0,
+        gate_artifact_ref="local-preview-evidence",
+    )
+    decision = decide_cutover(
+        EarlyControlResult(),
+        _candidate(),
+        _registry(primary),
+        _runtime(local_preview_enabled=True),
+        session_fingerprint=_eligible_fingerprint(),
+    )
+
+    assert decision.owner_candidate == ResponseOwner.V2
+    assert decision.execution_mode == ExecutionMode.V2_PRIMARY
+    assert decision.eligible is True
+    assert "approved_local_v2_primary_preview" in decision.reason_codes
+
+
+@pytest.mark.parametrize(
+    ("runtime_updates", "cell_updates"),
+    [
+        ({"routing_enabled": False}, {}),
+        ({"live_delivery_enabled": False}, {}),
+        ({"registry_valid": False}, {}),
+        ({"external_actions_enabled": True}, {}),
+        ({}, {"external_actions_allowed": True}),
+    ],
+)
+def test_local_primary_preview_remains_fail_closed(
+    runtime_updates: dict[str, bool],
+    cell_updates: dict[str, bool],
+) -> None:
+    primary = _cell(
+        stage=RolloutStage.V2_PRIMARY,
+        canary_percent=0,
+        gate_artifact_ref="local-preview-evidence",
+        **cell_updates,
+    )
+    decision = decide_cutover(
+        EarlyControlResult(),
+        _candidate(),
+        _registry(primary),
+        _runtime(local_preview_enabled=True, **runtime_updates),
+        session_fingerprint=_eligible_fingerprint(),
+    )
+
+    assert decision.owner_candidate == ResponseOwner.LEGACY
+    assert decision.eligible is False
+
+
 def test_candidate_without_complete_delivery_proof_fails_closed() -> None:
     candidate = _candidate(
         validation_status="rejected",

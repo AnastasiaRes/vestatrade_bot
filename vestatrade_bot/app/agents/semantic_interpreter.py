@@ -32,7 +32,7 @@ from .domain_ontology import (
 )
 
 
-SEMANTIC_PROMPT_VERSION = "turn-understanding-v1.18"
+SEMANTIC_PROMPT_VERSION = "turn-understanding-v1.19"
 SEMANTIC_INTERPRETER_PROMPT = """
 Ты — семантический интерпретатор одного нового сообщения покупателя магазина
 инженерной сантехники. Верни только JSON по переданной схеме.
@@ -61,6 +61,16 @@ SEMANTIC_INTERPRETER_PROMPT = """
   продолжение текущей цели; это не новый подбор и не unknown-ограничение;
 - явное разрешение ослабить ранее заданное условие сохрани как refine/correct
   и preferred-ограничение, а не как новое обязательное required-условие;
+- явную просьбу продолжить подбор только по уже подтверждённым данным, не
+  задавая сейчас недостающий вопрос, сохрани в selection_controls как
+  continue_with_confirmed_facts. Это не означает, что отсутствующий параметр
+  известен, неважен или что hard-ограничение можно ослабить;
+- selection_control допустим и в первой реплике с operation=new: уже
+  подтверждёнными данными могут быть только явно названные тип товара и
+  несколько характеристик. Если покупатель одновременно просит показать
+  варианты и говорит, что параметр неизвестен, отказался его уточнять или
+  хочет предварительную выдачу без уточнений, сохрани и эпистемический статус
+  явно названного параметра, и continue_with_confirmed_facts;
 - короткий ответ можно связать с pending_question из контекста, однако evidence
   всё равно должен быть дословным фрагментом НОВОЙ реплики;
 - authoritative_dialogue_state_v2 содержит подтверждённые типизированные цели,
@@ -125,6 +135,10 @@ SEMANTIC_INTERPRETER_PROMPT = """
 Как кодировать действия (не схлопывай несколько действий в одно):
 - find — показать/найти варианты без просьбы решить, какой подходит;
 - select — подобрать или рекомендовать подходящий вариант по условиям;
+- простое сообщение о потребности («нужен товар») без явной просьбы показать,
+  найти или открыть ассортимент кодируй как select: покупатель описал задачу,
+  но ещё не попросил немедленную выдачу. Явная просьба показать/найти варианты
+  или ассортимент — find;
 - compare — сопоставить варианты;
 - explain — объяснить свойство или правило;
 - calculate — посчитать результат по исходным данным;
@@ -179,6 +193,25 @@ SEMANTIC_INTERPRETER_PROMPT = """
   внутри подтверждения; новый act добавляй лишь для отдельной новой просьбы;
 - каждый control сохраняет дословное evidence из current_message.
 
+Как кодировать управление подбором:
+- selection_controls содержит только явную просьбу продолжить поиск, показ или
+  подбор по уже подтверждённым фактам без очередного уточнения сейчас;
+- такой control допустим вместе с operation=new и новой target-задачей. Он не
+  требует старого pending-вопроса: в первой реплике подтверждёнными фактами уже
+  могут быть тип товара или отдельные явно сообщённые характеристики;
+- используй kind=continue_with_confirmed_facts для перефразирований вроде
+  просьбы показать по имеющимся данным или продолжить без ответа на последний
+  typed-вопрос. Короткую ссылку вроде «без этого» связывай только с
+  authoritative_dialogue_state_v2.pending_decision_question; если такой
+  типизированной связи нет и смысл неоднозначен, зарегистрируй ambiguity;
+- control не превращает отсутствующий факт в unknown/refused/deferred, не
+  снимает уже известное hard-условие и не разрешает выдумывать значение;
+- если в той же реплике покупатель явно говорит, что конкретный параметр не
+  знает, отказывается сообщать или уточнит позже, сохрани одновременно и
+  соответствующий constraint со status=unknown/refused/deferred, и отдельный
+  selection_control. Control не заменяет эпистемический статус параметра;
+- каждый control сохраняет дословное evidence из current_message.
+
 Взаимоисключающие инварианты перед возвратом JSON:
 - прямой запрос выставить/подготовить счёт или invoice как документ всегда
   требует act=request_invoice. Не заменяй его request_quote; оба act допустимы
@@ -202,6 +235,11 @@ SEMANTIC_INTERPRETER_PROMPT = """
 - требование отсутствия функции: polarity=excluded, status=known, value=true;
 - качественный признак («настенный», «для горячей воды») — это известное
   строковое или булево value, а не null;
+- конструкция «для X» задаёт требуемое назначение/применение X и имеет
+  polarity=required, если в самой реплике нет явного отрицания или запрета;
+  эллиптический ответ вроде «для холодной» сам по себе не означает excluded;
+- polarity=excluded используй только для явно запрещённого или исключённого
+  значения, а не для краткого положительного ответа о назначении;
 - value=null допустимо только при unknown/refused/deferred;
 - unknown, refused и deferred допустимы только когда покупатель явно сказал,
   что не знает параметр, отказался его сообщать или отложил уточнение. Молчание
@@ -214,9 +252,12 @@ pumps, pipes, boilers, water_heaters, hydraulic_accumulators, filters, controls,
 valves, sewer, radiator_fittings, radiators, fittings, meters, sanitary_ware,
 installation_systems, other.
 
-Верни объект с schema_version="1.2", language, operation, acts, products,
-constraints, references, ambiguities, workflow_controls, information_requests,
-answers_pending_question и confidence.
+Верни объект с schema_version="1.3", language, operation, acts, products,
+constraints, references, ambiguities, workflow_controls, selection_controls,
+selection_strategy, information_requests, answers_pending_question и confidence.
+selection_strategy обязателен на каждом ходе: standard без control,
+continue_with_confirmed_facts с ровно одним согласованным selection_control
+либо ambiguous с типизированной ambiguity. Не пропускай этот verdict.
 Не добавляй никаких других полей.
 """.strip()
 
@@ -257,6 +298,9 @@ candidate от первого прохода. Верни исправленны�
    Технические модификаторы, входящие прямо в название товара, не теряй: они
    тоже становятся отдельными constraints. Явное разрешение ослабить прежнее
    требование кодируй как preferred и refine/correct, не как новое required.
+   Положительная конструкция «для X», включая краткий ответ о назначении,
+   имеет polarity=required. Excluded допустим только при явном отрицании или
+   запрете X; не переворачивай смысл эллиптического ответа.
 4. Исправление, смена и возврат отражены в operation; короткий ответ правильно
    связан с pending_question, если он есть. Подтверждённый
    authoritative_dialogue_state_v2 сильнее старого текста бота и legacy
@@ -295,6 +339,27 @@ candidate от первого прохода. Верни исправленны�
     Если спрашивают факт именно у уже показанных моделей/карточек,
     ставь subject_scope=presented_candidates; запрос факта о системе или задаче
     покупателя остаётся customer_goal. Факты карточек не копируй в constraints.
+12. Явную просьбу продолжить подбор по уже подтверждённым данным без очередного
+    уточнения сохрани в selection_controls как continue_with_confirmed_facts.
+    Это отдельное управление подбором, не commerce workflow и не предметный
+    act. Не превращай из-за него отсутствующий параметр в unknown/refused/
+    deferred и не снимай hard-ограничения. Местоименную ссылку «без этого»
+    разрешай только через typed pending_decision_question из authoritative
+    dialogue state; без такой связи сохраняй неоднозначность.
+    Если эта же реплика явно содержит unknown/refused/deferred конкретного
+    параметра, сохрани и constraint, и selection_control: ни один из них не
+    заменяет другой.
+    Это правило действует и для operation=new: первая реплика с target и
+    просьбой сразу показать предварительные варианты по известному должна
+    содержать control. Старый pending-вопрос для этого не требуется.
+13. Проверь различие find/select: простая потребность в подходящем товаре без
+    просьбы немедленно показать ассортимент — select; явная просьба показать,
+    найти или открыть варианты — find.
+14. Независимо от candidate заново определи обязательный selection_strategy:
+    standard, continue_with_confirmed_facts или ambiguous. Для continue verdict
+    верни ровно один согласованный selection_control с тем же evidence; для
+    ambiguous — типизированную ambiguity с тем же evidence; для standard — ни
+    control, ни evidence. Schema 1.3 без этого verdict неполна.
 
 Если candidate уже точен и полон, верни его без смысловых изменений.
 """.strip()
@@ -403,6 +468,16 @@ class WorkflowControlKind(str, Enum):
     RESUME_AFTER_OPT_OUT = "resume_after_opt_out"
 
 
+class SelectionControlKind(str, Enum):
+    CONTINUE_WITH_CONFIRMED_FACTS = "continue_with_confirmed_facts"
+
+
+class SelectionStrategyKind(str, Enum):
+    STANDARD = "standard"
+    CONTINUE_WITH_CONFIRMED_FACTS = "continue_with_confirmed_facts"
+    AMBIGUOUS = "ambiguous"
+
+
 class InformationPurpose(str, Enum):
     VALUE = "value"
     MEANING = "meaning"
@@ -505,6 +580,29 @@ class WorkflowControl(StrictModel):
     evidence: str = Field(min_length=1, max_length=240)
 
 
+class SelectionControl(StrictModel):
+    """Explicit customer control of selection strategy, not a product fact."""
+
+    kind: SelectionControlKind
+    evidence: str = Field(min_length=1, max_length=240)
+
+
+class SelectionStrategyDecision(StrictModel):
+    """Mandatory semantic verdict about how product selection may proceed."""
+
+    kind: SelectionStrategyKind
+    evidence: str | None = Field(default=None, min_length=1, max_length=240)
+
+    @model_validator(mode="after")
+    def evidence_matches_kind(self) -> "SelectionStrategyDecision":
+        if self.kind == SelectionStrategyKind.STANDARD:
+            if self.evidence is not None:
+                raise ValueError("standard selection strategy cannot have evidence")
+        elif self.evidence is None:
+            raise ValueError("non-standard selection strategy requires evidence")
+        return self
+
+
 class InformationRequest(StrictModel):
     """Explicit information the customer asks the assistant to provide."""
 
@@ -542,7 +640,7 @@ class InformationRequest(StrictModel):
 class TurnUnderstanding(StrictModel):
     """Grounded semantics of the current message; never an execution plan."""
 
-    schema_version: Literal["1.0", "1.1", "1.2"] = "1.2"
+    schema_version: Literal["1.0", "1.1", "1.2", "1.3"] = "1.3"
     language: str = Field(default="ru", min_length=2, max_length=16)
     operation: GoalOperation = Field(
         default=GoalOperation.UNKNOWN,
@@ -576,6 +674,21 @@ class TurnUnderstanding(StrictModel):
             "withdraw_consent revokes consent already granted."
         ),
     )
+    selection_controls: list[SelectionControl] = Field(
+        default_factory=list,
+        max_length=4,
+        description=(
+            "Explicit request to continue selection using confirmed facts only. "
+            "It never supplies, relaxes or changes a technical fact."
+        ),
+    )
+    selection_strategy: SelectionStrategyDecision | None = Field(
+        default=None,
+        description=(
+            "Required for schema 1.3. An explicit verdict independent of the "
+            "optional selection-control collection."
+        ),
+    )
     information_requests: list[InformationRequest] = Field(
         default_factory=list,
         max_length=12,
@@ -606,6 +719,37 @@ class TurnUnderstanding(StrictModel):
             if CustomerAct(request.act.value) not in self.acts:
                 raise ValueError(
                     "information request act is absent from turn acts"
+                )
+        decision = self.selection_strategy
+        if self.schema_version == "1.3" and decision is None:
+            raise ValueError("schema 1.3 requires selection_strategy")
+        if decision is None:
+            return self
+
+        controls = self.selection_controls
+        def normalize(value: object) -> str:
+            return " ".join(str(value).casefold().split())
+        if decision.kind == SelectionStrategyKind.STANDARD:
+            if controls:
+                raise ValueError("standard strategy cannot contain selection controls")
+        elif decision.kind == SelectionStrategyKind.CONTINUE_WITH_CONFIRMED_FACTS:
+            if len(controls) != 1 or controls[0].kind != (
+                SelectionControlKind.CONTINUE_WITH_CONFIRMED_FACTS
+            ):
+                raise ValueError(
+                    "continue strategy requires exactly one matching control"
+                )
+            if normalize(controls[0].evidence) != normalize(decision.evidence):
+                raise ValueError("selection strategy/control evidence mismatch")
+        elif decision.kind == SelectionStrategyKind.AMBIGUOUS:
+            if controls:
+                raise ValueError("ambiguous strategy cannot contain selection controls")
+            if not any(
+                normalize(item.evidence) == normalize(decision.evidence)
+                for item in self.ambiguities
+            ):
+                raise ValueError(
+                    "ambiguous strategy requires a matching typed ambiguity"
                 )
         return self
 
@@ -712,7 +856,7 @@ _EXPLICIT_UNIT_FAMILY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "temperature",
         re.compile(
-            r"^\s*(?:°\s*[cс]|℃|celsius|цельси\w*)(?![\w])",
+            r"^\s*(?:°\s*[cс]|[cс]|℃|celsius|цельси\w*)(?![\w])",
             flags=re.IGNORECASE,
         ),
     ),
@@ -805,7 +949,14 @@ _EXPLICIT_NON_KNOWN_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
             r"\bнеизвест\w*\b|\bнет\s+(?:данн\w*|информац\w*)\b|"
             r"\bбез\s+понятия\b|"
             r"\bне\s+(?:мог|мож)\w*\s+"
-            r"(?:определ\w*|уточн\w*|измер\w*|сказ\w*)\b",
+            r"(?:определ\w*|уточн\w*|измер\w*|сказ\w*)\b|"
+            r"\b(?:выясн\w*|узна\w*|уточн\w*|определ\w*|измер\w*)\s+"
+            r"не\s+получ\w*\b|\bне\s+получ\w*\s+"
+            r"(?:выясн\w*|узна\w*|уточн\w*|определ\w*|измер\w*)\b|"
+            r"\bневозмож\w*\s+"
+            r"(?:выясн\w*|узна\w*|уточн\w*|определ\w*|измер\w*)\b|"
+            r"\b(?:неоткуда|негде)\s+"
+            r"(?:выясн\w*|узна\w*|уточн\w*|определ\w*|измер\w*)\b",
             flags=re.IGNORECASE,
         ),
         re.compile(
@@ -818,7 +969,11 @@ _EXPLICIT_NON_KNOWN_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
         re.compile(
             r"\bотказыва\w*\b|\bне\s+(?:хоч\w*|буд\w*|стан\w*)\s+"
             r"(?:сообщ\w*|говор\w*|уточн\w*|предостав\w*)\b|"
-            r"\bне\s+(?:скаж\w*|сообщ\w*|предостав\w*)\b",
+            r"\b(?:сообщ\w*|говор\w*|уточн\w*|предостав\w*)\s+"
+            r"не\s+(?:хоч\w*|буд\w*|стан\w*)\b|"
+            r"\bне\s+(?:скаж\w*|сообщ\w*|предостав\w*)\b|"
+            r"\bне\s*важ\w*\b|\bне\s+принципиаль\w*\b|"
+            r"\bбез\s+разниц\w*\b",
             flags=re.IGNORECASE,
         ),
         re.compile(
@@ -829,12 +984,16 @@ _EXPLICIT_NON_KNOWN_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
     ),
     "deferred": (
         re.compile(
-            r"\b(?:позже|потом)\s+"
+            r"\b(?:позже|потом|поздн\w*)\s+"
             r"(?:уточн\w*|скаж\w*|сообщ\w*|измер\w*|провер\w*)\b|"
             r"\b(?:уточн\w*|скаж\w*|сообщ\w*|измер\w*|провер\w*)\s+"
-            r"(?:позже|потом)\b|\b(?:отлож\w*|остав\w*)\s+"
+            r"(?:позже|потом|поздн\w*)\b|\b(?:отлож\w*|остав\w*)\s+"
             r"(?:это\s+)?(?:на\s+потом|пока)\b|"
-            r"\bверн\w*\s+к\s+(?:этому|параметр\w*)\s+(?:позже|потом)\b",
+            r"\bверн\w*\s+к\s+(?:этому|параметр\w*)\s+"
+            r"(?:позже|потом|поздн\w*)\b|"
+            r"\bс\s+[\w-]+\s+верн\w*\s+"
+            r"(?:позже|потом|поздн\w*)\b|"
+            r"\b(?:позже|потом|поздн\w*)\s+верн\w*\b",
             flags=re.IGNORECASE,
         ),
         re.compile(
@@ -1233,6 +1392,332 @@ def _numeric_constraint_unit_incompatibility(
     if incompatible:
         return expected, incompatible
     return None
+
+
+_CONTEXTUAL_UNIT_FAMILIES: dict[str, frozenset[str]] = {
+    "degree": frozenset({"angle", "temperature"}),
+    "degrees": frozenset({"angle", "temperature"}),
+    "deg": frozenset({"angle", "temperature"}),
+    "градус": frozenset({"angle", "temperature"}),
+    "градуса": frozenset({"angle", "temperature"}),
+    "градусов": frozenset({"angle", "temperature"}),
+    "градусы": frozenset({"angle", "temperature"}),
+}
+_CANONICAL_UNIT_FOR_FAMILY = {
+    "angle": "deg",
+    "temperature": "C",
+}
+
+
+def _contextual_unit_families_for_numeric_evidence(
+    evidence: str,
+    values: tuple[float, ...],
+) -> tuple[frozenset[str], ...]:
+    """Return declared contextual units attached to exact numeric anchors."""
+
+    contextual: list[frozenset[str]] = []
+    for match in _NUMERIC_LITERAL_RE.finditer(evidence):
+        evidence_value = float(match.group(0).replace(",", "."))
+        if not any(
+            math.isclose(
+                evidence_value,
+                value,
+                rel_tol=1e-9,
+                abs_tol=1e-9,
+            )
+            for value in values
+        ):
+            continue
+        suffix = evidence[match.end() :]
+        tokens = _source_tokens(suffix)
+        if not tokens:
+            continue
+        unit_token, token_start, _token_end = tokens[0]
+        # The unit must be immediately attached to the numeric coordinate;
+        # punctuation and whitespace are harmless, intervening words are not.
+        if any(character.isalnum() for character in suffix[:token_start]):
+            continue
+        families = _CONTEXTUAL_UNIT_FAMILIES.get(unit_token)
+        if families is not None and families not in contextual:
+            contextual.append(families)
+    return tuple(contextual)
+
+
+def _repair_known_numeric_pending_answer(
+    constraint: dict[str, Any],
+    authoritative_state: dict[str, Any] | None,
+    repaired_turn: dict[str, Any],
+    changes: list[str],
+) -> bool:
+    """Use a committed typed question to disambiguate a numeric answer unit."""
+
+    if constraint.get("status") != ConstraintStatus.KNOWN.value:
+        return False
+    pending = (authoritative_state or {}).get("pending_decision_question")
+    if not isinstance(pending, dict):
+        return False
+    pending_name = _canonical_constraint_fact_name(
+        str(pending.get("fact_name") or "")
+    )
+    proposed_name = _canonical_constraint_fact_name(
+        str(constraint.get("name") or "")
+    )
+    if proposed_name != pending_name or not _numeric_coordinates(constraint):
+        return False
+
+    contextual_unit_was_repaired = False
+    issue = _numeric_constraint_unit_incompatibility(constraint)
+    if issue is not None:
+        expected_family, observed_families = issue
+        raw_unit = constraint.get("unit")
+        unit_key = _normalize_evidence(str(raw_unit or ""))
+        contextual_candidates = [
+            candidate
+            for candidate in (
+                _CONTEXTUAL_UNIT_FAMILIES.get(unit_key),
+                *_contextual_unit_families_for_numeric_evidence(
+                    str(constraint.get("evidence") or ""),
+                    _numeric_coordinates(constraint),
+                ),
+            )
+            if candidate is not None
+        ]
+        contextual_families = next(
+            (
+                candidate
+                for candidate in contextual_candidates
+                if expected_family in candidate
+                and set(observed_families).issubset(candidate)
+            ),
+            None,
+        )
+        canonical_unit = _CANONICAL_UNIT_FOR_FAMILY.get(expected_family)
+        if (
+            contextual_families is None
+            or canonical_unit is None
+        ):
+            return False
+        if constraint.get("unit") != canonical_unit:
+            constraint["unit"] = canonical_unit
+            changes.append("pending_numeric_contextual_unit_canonicalized")
+        else:
+            changes.append("pending_numeric_contextual_evidence_disambiguated")
+        contextual_unit_was_repaired = True
+
+    if not repaired_turn.get("answers_pending_question"):
+        repaired_turn["answers_pending_question"] = True
+        changes.append("pending_numeric_answer_confirmed")
+    return contextual_unit_was_repaired
+
+
+def _normalize_terminal_pending_selection_strategy(
+    repaired_turn: dict[str, Any],
+    authoritative_state: dict[str, Any] | None,
+    changes: list[str],
+) -> None:
+    """Ignore an unrelated malformed strategy on one terminal pending answer.
+
+    A committed typed decision question supplies the unique fact scope.  Once
+    the current turn has a grounded terminal status for that exact fact, a
+    model-only ``ambiguous`` strategy without its required typed ambiguity is
+    irrelevant to state reduction and must not invalidate the entire turn.
+    Genuine typed ambiguity and selection-control conflicts still fail closed.
+    """
+
+    pending = (authoritative_state or {}).get("pending_decision_question")
+    if not isinstance(pending, dict):
+        return
+    pending_name = _canonical_constraint_fact_name(
+        str(pending.get("fact_name") or "")
+    )
+    if not pending_name:
+        return
+
+    terminal_statuses = {
+        ConstraintStatus.UNKNOWN.value,
+        ConstraintStatus.REFUSED.value,
+        ConstraintStatus.DEFERRED.value,
+    }
+    matching_terminal = [
+        item
+        for item in repaired_turn.get("constraints") or ()
+        if isinstance(item, dict)
+        and _canonical_constraint_fact_name(str(item.get("name") or ""))
+        == pending_name
+        and str(item.get("status") or "") in terminal_statuses
+    ]
+    if len(matching_terminal) != 1:
+        return
+
+    if not repaired_turn.get("answers_pending_question"):
+        repaired_turn["answers_pending_question"] = True
+        changes.append("terminal_pending_answer_confirmed")
+    if repaired_turn.get("selection_controls"):
+        return
+
+    strategy = repaired_turn.get("selection_strategy")
+    if not isinstance(strategy, dict):
+        return
+    strategy_kind = str(getattr(strategy.get("kind"), "value", strategy.get("kind")))
+    strategy_evidence = _normalize_evidence(str(strategy.get("evidence") or ""))
+    if strategy_kind == SelectionStrategyKind.AMBIGUOUS.value:
+        has_matching_ambiguity = any(
+            isinstance(item, dict)
+            and _normalize_evidence(str(item.get("evidence") or ""))
+            == strategy_evidence
+            for item in repaired_turn.get("ambiguities") or ()
+        )
+        if has_matching_ambiguity:
+            return
+    elif strategy_kind == SelectionStrategyKind.CONTINUE_WITH_CONFIRMED_FACTS.value:
+        # A missing verdict evidence cannot authorize a selection control.  It
+        # is safe to discard only because the exact pending terminal fact is
+        # already independently grounded and no control proposal exists.
+        if strategy_evidence:
+            return
+    elif strategy_kind == SelectionStrategyKind.STANDARD.value:
+        return
+    else:
+        return
+
+    repaired_turn["selection_strategy"] = {
+        "kind": SelectionStrategyKind.STANDARD.value,
+        "evidence": None,
+    }
+    changes.append("terminal_pending_answer_selection_strategy_normalized")
+
+
+def _reconcile_selection_strategy_contract(
+    repaired_turn: dict[str, Any],
+    current_message: str,
+    changes: list[str],
+) -> None:
+    """Reconcile the redundant strategy verdict with grounded typed controls.
+
+    ``selection_strategy`` is a semantic-model verdict, while
+    ``selection_controls`` is the typed fact consumed downstream.  Rejecting
+    an otherwise useful turn merely because the model omitted the latter makes
+    continuation needlessly brittle.  This repair may derive the typed control
+    from a complete verdict, but only when its continue evidence is an exact
+    fragment of the current message.  The reverse direction remains a strict
+    schema conflict because a control alone lacks the required independent
+    verdict.
+
+    No permission is invented from prose here: an ungrounded or evidence-less
+    continue verdict is narrowed to ``standard``.  Multiple controls and a
+    genuine typed ambiguity remain untouched so strict validation can reject
+    the conflict fail-closed.
+    """
+
+    raw_controls = repaired_turn.get("selection_controls")
+    if raw_controls is None:
+        raw_controls = []
+        repaired_turn["selection_controls"] = raw_controls
+    if not isinstance(raw_controls, list):
+        return
+
+    valid_continue_controls: list[dict[str, Any]] = []
+    invalid_or_other_controls = False
+    discarded_ungrounded_continue = False
+    for item in raw_controls:
+        if not isinstance(item, dict):
+            invalid_or_other_controls = True
+            continue
+        kind = str(getattr(item.get("kind"), "value", item.get("kind")))
+        evidence = item.get("evidence")
+        grounded = (
+            _grounded_evidence_fragment(evidence, current_message)
+            if isinstance(evidence, str) and evidence.strip()
+            else None
+        )
+        if kind == SelectionControlKind.CONTINUE_WITH_CONFIRMED_FACTS.value:
+            if grounded is not None:
+                valid_continue_controls.append(
+                    {
+                        "kind": (
+                            SelectionControlKind.CONTINUE_WITH_CONFIRMED_FACTS.value
+                        ),
+                        "evidence": grounded,
+                    }
+                )
+            else:
+                # An evidence-less control has no authority.  Dropping it is
+                # a narrowing repair and preserves independently grounded
+                # facts from the same turn.
+                discarded_ungrounded_continue = True
+        else:
+            invalid_or_other_controls = True
+
+    if invalid_or_other_controls or len(valid_continue_controls) > 1:
+        return
+    if discarded_ungrounded_continue:
+        repaired_turn["selection_controls"] = valid_continue_controls
+        changes.append("ungrounded_selection_control_dropped")
+
+    strategy = repaired_turn.get("selection_strategy")
+    strategy_kind = ""
+    strategy_evidence: str | None = None
+    grounded_strategy_evidence: str | None = None
+    if isinstance(strategy, dict):
+        strategy_kind = str(
+            getattr(strategy.get("kind"), "value", strategy.get("kind"))
+        )
+        raw_evidence = strategy.get("evidence")
+        if isinstance(raw_evidence, str) and raw_evidence.strip():
+            strategy_evidence = raw_evidence
+            grounded_strategy_evidence = _grounded_evidence_fragment(
+                raw_evidence,
+                current_message,
+            )
+
+    if len(valid_continue_controls) == 1:
+        control = valid_continue_controls[0]
+        if (
+            strategy_kind
+            == SelectionStrategyKind.CONTINUE_WITH_CONFIRMED_FACTS.value
+            and strategy_evidence is None
+        ):
+            # The typed control is already an exact fragment of this message
+            # and the independent verdict agrees on the operation.  Copying
+            # that same evidence into the redundant verdict reconciles two
+            # representations of one grounded permission; it does not infer a
+            # permission from prose or from dialogue history.
+            repaired_turn["selection_strategy"] = {
+                "kind": SelectionStrategyKind.CONTINUE_WITH_CONFIRMED_FACTS.value,
+                "evidence": control["evidence"],
+            }
+            changes.append("selection_strategy_evidence_recovered_from_control")
+        # A control plus an inconsistent or absent verdict is still a schema
+        # conflict.  Likewise, two different grounded fragments are left for
+        # strict validation instead of choosing between model outputs.
+        return
+
+    if (
+        strategy_kind == SelectionStrategyKind.CONTINUE_WITH_CONFIRMED_FACTS.value
+        and grounded_strategy_evidence is not None
+    ):
+        control = {
+            "kind": SelectionControlKind.CONTINUE_WITH_CONFIRMED_FACTS.value,
+            "evidence": grounded_strategy_evidence,
+        }
+        repaired_turn["selection_controls"] = [control]
+        repaired_turn["selection_strategy"] = {
+            "kind": SelectionStrategyKind.CONTINUE_WITH_CONFIRMED_FACTS.value,
+            "evidence": grounded_strategy_evidence,
+        }
+        changes.append("selection_control_recovered_from_grounded_strategy")
+        return
+
+    if strategy_kind != SelectionStrategyKind.CONTINUE_WITH_CONFIRMED_FACTS.value:
+        return
+
+    canonical_standard = {
+        "kind": SelectionStrategyKind.STANDARD.value,
+        "evidence": None,
+    }
+    if strategy_evidence is None and strategy != canonical_standard:
+        repaired_turn["selection_strategy"] = canonical_standard
+        changes.append("selection_strategy_safely_defaulted_to_standard")
 
 
 def _numeric_string_declared_unit_is_ungrounded(
@@ -2449,6 +2934,349 @@ def _product_family(item: dict[str, Any]) -> str | None:
     return None
 
 
+def _non_known_fact_definitions(
+    constraint: dict[str, Any],
+    products: list[dict[str, Any]],
+    authoritative_hints: tuple[dict[str, str], ...],
+) -> list[dict[str, Any]] | None:
+    """Return product-scoped declarative vocabulary, or None for compatibility."""
+
+    product_index = constraint.get("applies_to_product")
+    scoped_product: dict[str, Any] | None = None
+    if (
+        isinstance(product_index, int)
+        and not isinstance(product_index, bool)
+        and 0 <= product_index < len(products)
+    ):
+        scoped_product = products[product_index]
+    elif len(products) == 1:
+        scoped_product = products[0]
+    elif not products and len(authoritative_hints) == 1:
+        scoped_product = authoritative_hints[0]
+    if scoped_product is None:
+        # Multiple typed products with vocabularies are an unresolved scope,
+        # not a legacy product type without a vocabulary.  An empty definition
+        # set therefore makes the caller reject instead of failing open.
+        vocabulary = semantic_ontology_payload().get("constraint_vocabulary") or {}
+        if any(
+            vocabulary.get(
+                _normalize_schema_identifier(item.get("canonical_type"))
+            )
+            is not None
+            for item in (*products, *authoritative_hints)
+        ):
+            return []
+        return None
+
+    product_type = _normalize_schema_identifier(
+        scoped_product.get("canonical_type")
+    )
+    vocabulary = semantic_ontology_payload().get("constraint_vocabulary") or {}
+    definitions = vocabulary.get(product_type)
+    if definitions is None:
+        family = _product_family(scoped_product)
+        definitions = vocabulary.get(family) if family is not None else None
+    return definitions if isinstance(definitions, list) else None
+
+
+def _non_known_alias_matches(
+    definitions: list[dict[str, Any]],
+    evidence: str,
+) -> set[str]:
+    matches: set[str] = set()
+    for definition in definitions:
+        if not isinstance(definition, dict):
+            continue
+        fact_name = _normalize_schema_identifier(definition.get("name"))
+        if not fact_name:
+            continue
+        aliases = [definition.get("name"), *(definition.get("aliases") or ())]
+        if any(
+            isinstance(alias, str)
+            and _declared_alias_matches_text(alias, evidence)
+            for alias in aliases
+        ):
+            matches.add(fact_name)
+    return matches
+
+
+_NON_KNOWN_GROUP_COORDINATORS = frozenset(
+    {"and", "both", "nor", "и", "ни", "оба", "обе"}
+)
+_SEMANTIC_GROUP_RE = re.compile(r"[^.!?;\n—–]+")
+
+
+def _non_known_alias_spans(
+    definitions: list[dict[str, Any]],
+    evidence: str,
+) -> dict[str, tuple[int, int]]:
+    """Locate the strongest declared alias for each fact in exact evidence."""
+
+    text_tokens = _source_tokens(evidence)
+    strongest: dict[str, tuple[int, int, int]] = {}
+    for definition in definitions:
+        if not isinstance(definition, dict):
+            continue
+        fact_name = _normalize_schema_identifier(definition.get("name"))
+        if not fact_name:
+            continue
+        aliases = [definition.get("name"), *(definition.get("aliases") or ())]
+        for alias in aliases:
+            if not isinstance(alias, str):
+                continue
+            alias_tokens = [item[0] for item in _source_tokens(alias)]
+            if not alias_tokens or len(alias_tokens) > len(text_tokens):
+                continue
+            width = len(alias_tokens)
+            for start in range(len(text_tokens) - width + 1):
+                window = text_tokens[start : start + width]
+                if not all(
+                    _source_tokens_match(alias_token, source_token[0])
+                    for alias_token, source_token in zip(alias_tokens, window)
+                ):
+                    continue
+                score = width * 1000 + len(_normalize_evidence(alias))
+                candidate = (score, window[0][1], window[-1][2])
+                if candidate > strongest.get(fact_name, (-1, -1, -1)):
+                    strongest[fact_name] = candidate
+    return {
+        fact_name: (start, end)
+        for fact_name, (_score, start, end) in strongest.items()
+    }
+
+
+def _coordinated_non_known_group(
+    definitions: list[dict[str, Any]],
+    evidence: str,
+) -> tuple[str, tuple[str, ...]] | None:
+    """Resolve one status governing a fully coordinated group of fact aliases."""
+
+    status_spans: set[tuple[str, int, int]] = set()
+    for status, patterns in _EXPLICIT_NON_KNOWN_PATTERNS.items():
+        for pattern in patterns:
+            for match in pattern.finditer(evidence):
+                status_spans.add((status, match.start(), match.end()))
+    if len(status_spans) != 1:
+        return None
+    status, status_start, status_end = next(iter(status_spans))
+
+    alias_spans = _non_known_alias_spans(definitions, evidence)
+    if len(alias_spans) < 2:
+        return None
+    all_before = all(end <= status_start for start, end in alias_spans.values())
+    all_after = all(start >= status_end for start, end in alias_spans.values())
+    if not (all_before or all_after):
+        return None
+
+    first_alias = min(start for start, _end in alias_spans.values())
+    last_alias = max(end for _start, end in alias_spans.values())
+    group_tokens = {
+        token for token, _start, _end in _source_tokens(evidence[first_alias:last_alias])
+    }
+    if not group_tokens.intersection(_NON_KNOWN_GROUP_COORDINATORS):
+        return None
+    return status, tuple(sorted(alias_spans))
+
+
+def _pending_non_known_fact_name(
+    authoritative_state: dict[str, Any] | None,
+    definitions: list[dict[str, Any]],
+) -> str | None:
+    pending = (authoritative_state or {}).get("pending_decision_question")
+    if not isinstance(pending, dict):
+        return None
+    pending_name = _canonical_constraint_fact_name(
+        str(pending.get("fact_name") or "")
+    )
+    allowed_names = {
+        _normalize_schema_identifier(item.get("name"))
+        for item in definitions
+        if isinstance(item, dict)
+    }
+    normalized_pending = _normalize_schema_identifier(pending_name)
+    return pending_name if normalized_pending in allowed_names else None
+
+
+def _grounded_non_known_fact_name(
+    constraint: dict[str, Any],
+    products: list[dict[str, Any]],
+    authoritative_hints: tuple[dict[str, str], ...],
+    authoritative_state: dict[str, Any] | None,
+) -> tuple[Literal["compatible", "grounded", "rebound", "reject"], str | None]:
+    """Validate a non-known fact name against one declarative product scope.
+
+    Product types without a vocabulary retain backward compatibility.  Once a
+    vocabulary exists, zero or multiple current-turn aliases fail closed.  An
+    ellipsis may bind only to a committed typed pending decision fact.
+    """
+
+    if constraint.get("status") == ConstraintStatus.KNOWN.value:
+        return "compatible", None
+    definitions = _non_known_fact_definitions(
+        constraint,
+        products,
+        authoritative_hints,
+    )
+    if definitions is None:
+        return "compatible", None
+
+    matches = _non_known_alias_matches(
+        definitions,
+        str(constraint.get("evidence") or ""),
+    )
+    if len(matches) == 1:
+        grounded_name = next(iter(matches))
+        proposed_name = _canonical_constraint_fact_name(
+            str(constraint.get("name") or "")
+        )
+        if _normalize_schema_identifier(proposed_name) == grounded_name:
+            return "grounded", proposed_name
+        return "rebound", grounded_name
+    if not matches:
+        pending_name = _pending_non_known_fact_name(
+            authoritative_state,
+            definitions,
+        )
+        if pending_name is not None:
+            return "rebound", pending_name
+    return "reject", None
+
+
+_SEMANTIC_CLAUSE_RE = re.compile(r"[^.!?;,\n—–]+")
+
+
+def _recover_explicit_non_known_constraints(
+    constraints: list[dict[str, Any]],
+    products: list[dict[str, Any]],
+    current_message: str,
+    authoritative_hints: tuple[dict[str, str], ...],
+    authoritative_state: dict[str, Any] | None,
+    ambiguities: list[dict[str, Any]],
+    changes: list[str],
+) -> list[dict[str, Any]]:
+    """Recover one unambiguous epistemic fact from declarative evidence.
+
+    This is a fail-closed completeness guard for a semantic-model omission. It
+    uses the existing language-level status markers plus product-scoped fact
+    aliases; it never supplies a value or guesses across multiple products,
+    clauses, facts, or statuses.
+    """
+
+    if len(products) > 1 or (not products and len(authoritative_hints) != 1):
+        return constraints
+    scope_constraint = {"applies_to_product": 0 if products else None}
+    definitions = _non_known_fact_definitions(
+        scope_constraint,
+        products,
+        authoritative_hints,
+    )
+    if definitions is None:
+        return constraints
+
+    recovered = list(constraints)
+    existing_names = {
+        _normalize_schema_identifier(item.get("name")) for item in recovered
+    }
+    for group_match in _SEMANTIC_GROUP_RE.finditer(current_message):
+        evidence = group_match.group(0).strip()
+        coordinated = _coordinated_non_known_group(definitions, evidence)
+        if coordinated is None:
+            continue
+        status, fact_names = coordinated
+        for fact_name in fact_names:
+            if fact_name in existing_names:
+                continue
+            recovered.append(
+                ConstraintFact(
+                    name=fact_name,
+                    value=None,
+                    unit=None,
+                    status=ConstraintStatus(status),
+                    polarity=ConstraintPolarity.REQUIRED,
+                    applies_to_product=0 if products else None,
+                    evidence=evidence,
+                ).model_dump(mode="json")
+            )
+            existing_names.add(fact_name)
+            changes.append("constraint_coordinated_non_known_fact_recovered")
+        if all(fact_name in existing_names for fact_name in fact_names):
+            before = len(ambiguities)
+            ambiguities[:] = [
+                item
+                for item in ambiguities
+                if not (
+                    item.get("kind") == "constraint_non_known_fact_unresolved"
+                    and _normalize_evidence(str(item.get("evidence") or ""))
+                    == _normalize_evidence(evidence)
+                )
+            ]
+            if len(ambiguities) != before:
+                changes.append("constraint_non_known_group_ambiguity_resolved")
+
+    for clause_match in _SEMANTIC_CLAUSE_RE.finditer(current_message):
+        evidence = clause_match.group(0).strip()
+        if not evidence:
+            continue
+        statuses = [
+            status
+            for status in (
+                ConstraintStatus.UNKNOWN.value,
+                ConstraintStatus.REFUSED.value,
+                ConstraintStatus.DEFERRED.value,
+            )
+            if _has_explicit_non_known_status(status, evidence)
+        ]
+        if len(statuses) != 1:
+            continue
+
+        names = _non_known_alias_matches(definitions, evidence)
+        if names and names.issubset(existing_names):
+            continue
+        if len(names) == 1:
+            fact_name = next(iter(names))
+        elif not names:
+            pending_name = _pending_non_known_fact_name(
+                authoritative_state,
+                definitions,
+            )
+            fact_name = (
+                _normalize_schema_identifier(pending_name)
+                if pending_name is not None
+                else ""
+            )
+        else:
+            fact_name = ""
+        if not fact_name:
+            ambiguity = TurnAmbiguity(
+                kind="constraint_non_known_fact_unresolved",
+                description=(
+                    "The unavailable fact could not be bound uniquely to the "
+                    "typed product vocabulary."
+                ),
+                evidence=evidence,
+            ).model_dump(mode="json")
+            if ambiguity not in ambiguities and len(ambiguities) < 12:
+                ambiguities.append(ambiguity)
+                changes.append("constraint_non_known_fact_ambiguity_added")
+            continue
+        if fact_name in existing_names:
+            continue
+        recovered.append(
+            ConstraintFact(
+                name=fact_name,
+                value=None,
+                unit=None,
+                status=ConstraintStatus(statuses[0]),
+                polarity=ConstraintPolarity.REQUIRED,
+                applies_to_product=0 if products else None,
+                evidence=evidence,
+            ).model_dump(mode="json")
+        )
+        existing_names.add(fact_name)
+        changes.append("constraint_explicit_non_known_fact_recovered")
+    return recovered
+
+
 def _is_technical_characteristic_question(
     current_message: str,
     products: list[dict[str, Any]],
@@ -3174,6 +4002,13 @@ def validate_current_turn_evidence(
         *(item.evidence for item in understanding.references),
         *(item.evidence for item in understanding.ambiguities),
         *(item.evidence for item in understanding.workflow_controls),
+        *(item.evidence for item in understanding.selection_controls),
+        *(
+            (understanding.selection_strategy.evidence,)
+            if understanding.selection_strategy is not None
+            and understanding.selection_strategy.evidence is not None
+            else ()
+        ),
         *(item.evidence for item in understanding.information_requests),
     ]
     for evidence in evidence_values:
@@ -3257,6 +4092,7 @@ def validate_semantic_content_coverage(
             understanding.references,
             understanding.ambiguities,
             understanding.workflow_controls,
+            understanding.selection_controls,
         )
     ) or understanding.answers_pending_question
     if has_semantic_content:
@@ -3397,6 +4233,64 @@ def repair_structural_enum_placement(
         unique_controls.append(item)
     repaired["workflow_controls"] = unique_controls
     return repaired, tuple(dict.fromkeys(changes))
+
+
+def _migrate_selection_strategy_schema(
+    payload: dict[str, Any],
+    current_message: str,
+) -> None:
+    """Migrate accepted legacy frames without repairing incomplete v1.3 output."""
+
+    version = str(payload.get("schema_version") or "1.0")
+    if version not in {"1.0", "1.1", "1.2"}:
+        return
+
+    controls = payload.get("selection_controls")
+    controls = controls if isinstance(controls, list) else []
+    if not controls:
+        decision = {
+            "kind": SelectionStrategyKind.STANDARD.value,
+            "evidence": None,
+        }
+        payload["selection_controls"] = []
+    elif (
+        len(controls) == 1
+        and isinstance(controls[0], dict)
+        and controls[0].get("kind")
+        == SelectionControlKind.CONTINUE_WITH_CONFIRMED_FACTS.value
+        and isinstance(controls[0].get("evidence"), str)
+        and controls[0]["evidence"].strip()
+    ):
+        decision = {
+            "kind": SelectionStrategyKind.CONTINUE_WITH_CONFIRMED_FACTS.value,
+            "evidence": controls[0]["evidence"],
+        }
+    else:
+        # An old malformed collection cannot be promoted to a real control.
+        # Preserve the uncertainty as typed data grounded in this turn.
+        evidence = str(current_message or "")[:240]
+        decision = {
+            "kind": SelectionStrategyKind.AMBIGUOUS.value,
+            "evidence": evidence,
+        }
+        payload["selection_controls"] = []
+        ambiguities = payload.get("ambiguities")
+        if not isinstance(ambiguities, list):
+            ambiguities = []
+            payload["ambiguities"] = ambiguities
+        if len(ambiguities) < 12:
+            ambiguities.append(
+                {
+                    "kind": "legacy_selection_strategy_ambiguous",
+                    "description": (
+                        "Legacy selection controls could not be migrated "
+                        "unambiguously."
+                    ),
+                    "evidence": evidence,
+                }
+            )
+    payload["selection_strategy"] = decision
+    payload["schema_version"] = "1.3"
 
 
 def _repair_information_requests(
@@ -3540,6 +4434,7 @@ def repair_grounded_semantic_payload(
     if not isinstance(repaired, dict):
         return repaired, placement_repairs
     changes = list(placement_repairs)
+    _migrate_selection_strategy_schema(repaired, current_message)
     operation = getattr(
         repaired.get("operation"),
         "value",
@@ -3689,6 +4584,7 @@ def repair_grounded_semantic_payload(
         "references": "reference",
         "ambiguities": "ambiguity",
         "workflow_controls": "workflow_control",
+        "selection_controls": "selection_control",
     }
     for collection, label in collection_labels.items():
         items = repaired.get(collection)
@@ -3705,11 +4601,23 @@ def repair_grounded_semantic_payload(
                 item["evidence"] = grounded
                 changes.append(f"{label}_evidence_rebound_to_current_message")
 
+    strategy = repaired.get("selection_strategy")
+    if isinstance(strategy, dict):
+        evidence = strategy.get("evidence")
+        if isinstance(evidence, str) and evidence.strip():
+            grounded = _grounded_evidence_fragment(evidence, current_message)
+            if grounded is not None and grounded != evidence:
+                strategy["evidence"] = grounded
+                changes.append(
+                    "selection_strategy_evidence_rebound_to_current_message"
+                )
+
     raw_constraints = repaired.get("constraints")
     normalized_constraints: list[dict[str, Any]] = []
     pending_softenings: list[tuple[str, int | None, str]] = []
     unit_ambiguities: list[dict[str, Any]] = []
     categorical_ambiguities: list[dict[str, Any]] = []
+    non_known_ambiguities: list[dict[str, Any]] = []
     if isinstance(raw_constraints, list):
         valid_statuses = {item.value for item in ConstraintStatus}
         valid_polarities = {item.value for item in ConstraintPolarity}
@@ -3849,8 +4757,18 @@ def repair_grounded_semantic_payload(
                             "constraint_numeric_value_not_in_evidence_dropped"
                         )
                         continue
-                unit_incompatibility = _numeric_constraint_unit_incompatibility(
-                    item
+                pending_contextual_unit_repaired = (
+                    _repair_known_numeric_pending_answer(
+                        item,
+                        authoritative_dialogue_state,
+                        repaired,
+                        changes,
+                    )
+                )
+                unit_incompatibility = (
+                    None
+                    if pending_contextual_unit_repaired
+                    else _numeric_constraint_unit_incompatibility(item)
                 )
                 if unit_incompatibility is not None:
                     expected_family, observed_families = unit_incompatibility
@@ -3886,6 +4804,36 @@ def repair_grounded_semantic_payload(
                         "constraint_numeric_unit_not_in_evidence_dropped"
                     )
                     continue
+
+            non_known_grounding, grounded_non_known_name = (
+                _grounded_non_known_fact_name(
+                item,
+                normalized_products,
+                authoritative_product_hints,
+                authoritative_dialogue_state,
+            )
+            )
+            if non_known_grounding == "reject":
+                non_known_ambiguities.append(
+                    TurnAmbiguity(
+                        kind="constraint_non_known_fact_unresolved",
+                        description=(
+                            "The unavailable fact could not be bound uniquely "
+                            "to the typed product vocabulary."
+                        ),
+                        evidence=str(item["evidence"]),
+                    ).model_dump(mode="json")
+                )
+                changes.append("constraint_non_known_fact_unresolved_dropped")
+                continue
+            if (
+                non_known_grounding == "rebound"
+                and grounded_non_known_name is not None
+                and _normalize_schema_identifier(item.get("name"))
+                != _normalize_schema_identifier(grounded_non_known_name)
+            ):
+                item["name"] = grounded_non_known_name
+                changes.append("constraint_non_known_fact_name_rebound")
 
             categorical_issue = _closed_categorical_constraint_issue(item)
             if categorical_issue is not None:
@@ -4135,6 +5083,28 @@ def repair_grounded_semantic_payload(
                 existing_keys.add(key)
                 changes.append("constraint_categorical_ambiguity_added")
 
+    if non_known_ambiguities:
+        ambiguities = repaired.get("ambiguities")
+        if isinstance(ambiguities, list):
+            for ambiguity in non_known_ambiguities:
+                if ambiguity in ambiguities or len(ambiguities) >= 12:
+                    continue
+                ambiguities.append(ambiguity)
+                changes.append("constraint_non_known_fact_ambiguity_added")
+
+    ambiguities = repaired.get("ambiguities")
+    if not isinstance(ambiguities, list):
+        ambiguities = []
+        repaired["ambiguities"] = ambiguities
+    normalized_constraints = _recover_explicit_non_known_constraints(
+        normalized_constraints,
+        normalized_products,
+        current_message,
+        authoritative_product_hints,
+        authoritative_dialogue_state,
+        ambiguities,
+        changes,
+    )
     normalized_constraints = _dedupe_equivalent_numeric_constraints(
         normalized_constraints,
         changes,
@@ -4161,6 +5131,16 @@ def repair_grounded_semantic_payload(
     )
     repaired["constraints"] = _dedupe_equivalent_numeric_constraints(
         repaired["constraints"],
+        changes,
+    )
+    _reconcile_selection_strategy_contract(
+        repaired,
+        current_message,
+        changes,
+    )
+    _normalize_terminal_pending_selection_strategy(
+        repaired,
+        authoritative_dialogue_state,
         changes,
     )
     _promote_unambiguous_constraint_correction(
@@ -4294,6 +5274,32 @@ def _authoritative_dialogue_state_context(
         if len(active_facts) >= 24:
             break
 
+    pending_decision_question = None
+    answer_summary = typed_state.answer_plan_summary
+    if (
+        answer_summary is not None
+        and _enum_value(answer_summary.delivery_status) == "committed_to_session"
+        and answer_summary.question_fact is not None
+    ):
+        pending_decision_question = {
+            "question_id": (
+                _bounded_context_text(answer_summary.question_id, 120)
+                if answer_summary.question_id is not None
+                else None
+            ),
+            "fact_name": _bounded_context_text(answer_summary.question_fact, 120),
+            "task_id": (
+                _bounded_context_text(answer_summary.question_task_id, 120)
+                if answer_summary.question_task_id is not None
+                else None
+            ),
+            "goal_id": (
+                _bounded_context_text(answer_summary.question_goal_id, 120)
+                if answer_summary.question_goal_id is not None
+                else None
+            ),
+        }
+
     return {
         "schema_version": typed_state.schema_version,
         "turn_number": typed_state.turn_number,
@@ -4317,6 +5323,7 @@ def _authoritative_dialogue_state_context(
                 for item in typed_state.task_stack.suspended_task_ids[:12]
             ],
         },
+        "pending_decision_question": pending_decision_question,
         "goals": [
             {
                 "goal_id": _bounded_context_text(goal.goal_id, 120),
@@ -4489,7 +5496,7 @@ class SemanticInterpreter:
             "output_schema": TurnUnderstanding.model_json_schema(),
         }
         fallback: dict[str, Any] = {
-            "schema_version": "1.2",
+            "schema_version": "1.3",
             "language": "ru",
             "operation": "unknown",
             "acts": [],
@@ -4498,6 +5505,11 @@ class SemanticInterpreter:
             "references": [],
             "ambiguities": [],
             "workflow_controls": [],
+            "selection_controls": [],
+            "selection_strategy": {
+                "kind": "standard",
+                "evidence": None,
+            },
             "information_requests": [],
             "answers_pending_question": False,
             "confidence": 0.0,

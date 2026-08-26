@@ -1780,6 +1780,16 @@ class SlotFillingAgent:
             return SlotFillingResult(slots=slots)
 
         if slots.get("pump_type") == "канализационная насосная установка":
+            discharge = slots.get("discharge_diameter_mm") or slots.get("diameter_mm")
+            if discharge is not None and float(discharge) >= 75:
+                # 110 mm next to a toilet normally describes the gravity inlet,
+                # not the smaller pressure outlet of a sanitary station.  Do
+                # not use it as a hard discharge filter and reject every valid
+                # catalogue unit.
+                slots["gravity_inlet_diameter_mm"] = float(discharge)
+                slots.pop("discharge_diameter_mm", None)
+                slots.pop("diameter_mm", None)
+                slots["preliminary_selection"] = True
             missing: list[tuple[str, str]] = []
             if not slots.get("connected_fixtures"):
                 missing.append(
@@ -1802,16 +1812,12 @@ class SlotFillingAgent:
                         "длину горизонтального напорного участка",
                     )
                 )
-            if not (
-                slots.get("diameter_mm")
-                or slots.get("discharge_diameter_mm")
-            ):
-                missing.append(
-                    (
-                        "discharge_diameter_mm",
-                        "диаметр существующей или проектной напорной трубы",
-                    )
-                )
+            if not (slots.get("diameter_mm") or slots.get("discharge_diameter_mm")):
+                # The outlet is a property of the candidate station.  Without
+                # it we can still show a preliminary shortlist from fixtures
+                # and lift/run, then tell the customer which pressure pipe the
+                # selected model requires.
+                slots["preliminary_selection"] = True
             askable = [item for item in missing if item[0] not in deferred]
             if askable:
                 return SlotFillingResult(
@@ -1946,6 +1952,13 @@ class SlotFillingAgent:
             or slots.get("dynamic_water_level_m")
             or slots.get("static_water_level_m")
         )
+        water_level_deferred = bool(
+            {
+                "water_level_depth_m",
+                "dynamic_water_level_m",
+                "static_water_level_m",
+            }.intersection(deferred)
+        )
         if water_level is not None:
             level_text = f"{float(water_level):g}".replace(".", ",")
             known.append(f"глубина до воды ~{level_text} м")
@@ -1988,18 +2001,30 @@ class SlotFillingAgent:
                     "Подтвердите: это литры в минуту или общий объём?"
                 ),
             )
-        if water_level is None and not ambiguous_level:
+        expected_slot: str | None = None
+        if water_level is None and not ambiguous_level and not water_level_deferred:
             question = "Уточните глубину от верха колодца до поверхности воды."
+            expected_slot = "water_level_depth_m"
         elif not slots.get("horizontal_run_m") and "horizontal_run_m" not in deferred:
             question = "Какое расстояние по горизонтали от колодца до дома или полива?"
-        elif slots.get("lift_height_m") is None:
+            expected_slot = "horizontal_run_m"
+        elif slots.get("lift_height_m") is None and "lift_height_m" not in deferred:
             question = (
                 "Есть ли дополнительный перепад высоты от уровня земли у колодца "
                 "до точки полива? Если участок ровный — ответьте «0 метров»; "
                 "иначе укажите, на сколько метров точка выше."
             )
-        elif not slots.get("required_flow_m3_h"):
+            expected_slot = "lift_height_m"
+        elif (
+            not slots.get("required_flow_m3_h")
+            and not self._pump_requirement_deferred(
+                deferred,
+                "required_flow_m3_h",
+                "required_flow_l_min",
+            )
+        ):
             question = "Какой нужен расход: сколько литров в минуту?"
+            expected_slot = "required_flow_m3_h"
         elif ambiguous_level:
             return SlotFillingResult(
                 slots=slots,
@@ -2011,15 +2036,12 @@ class SlotFillingAgent:
                 ),
             )
         elif deferred:
-            return SlotFillingResult(
-                slots=slots,
-                needs_clarification=True,
-                question=(
-                    "Остался отложенный обязательный параметр: расстояние от колодца "
-                    "до дома или полива. Без него не учитываются потери в трассе, поэтому "
-                    "окончательный вариант насоса пока не подтверждаю."
-                ),
-            )
+            # The customer has explicitly said that the remaining field(s)
+            # are unavailable.  Re-asking one of them under a different label
+            # is still the same loop.  Let the catalogue layer show a clearly
+            # caveated preliminary shortlist from the confirmed facts.
+            slots["preliminary_selection"] = True
+            return SlotFillingResult(slots=slots)
         else:
             # The installation family follows from suction depth; the customer
             # is not asked to make an engineering choice on our behalf.
@@ -2037,6 +2059,8 @@ class SlotFillingAgent:
             slots=slots,
             needs_clarification=True,
             question=prefix + question,
+            expected_slots=[expected_slot] if expected_slot else [],
+            blocking=True,
         )
 
     def _does_not_know_params(self, text: str) -> bool:
@@ -2238,14 +2262,19 @@ class SlotFillingAgent:
                 if area
                 else pair_prefix
             )
+            source_question = (
+                "Газа нет — какой источник выбираете: электричество, "
+                "твёрдое топливо или другой?"
+                if slots.get("gas_available") is False
+                or slots.get("has_gas") is False
+                else "Газовый или электрический, либо твердотопливный?"
+            )
+            if not area and not pair_prefix:
+                source_question += " И на какую площадь нужен котёл?"
             return SlotFillingResult(
                 slots=slots,
                 needs_clarification=True,
-                question=(
-                    prefix + "Газовый или электрический?"
-                    if prefix
-                    else "Котёл нужен газовый или электрический и на какую площадь?"
-                ),
+                question=prefix + source_question,
                 expected_slots=["boiler_type", "area_m2"],
                 blocking=True,
             )
@@ -2693,6 +2722,12 @@ class SlotFillingAgent:
         *,
         require_compatibility_context: bool = False,
     ) -> SlotFillingResult:
+        # A capability browse (``which models tolerate at least 16 bar``) is
+        # intentionally not a final room sizing.  Pressure is enough to show
+        # grounded candidates; dimensions and heat output are chosen only
+        # after the customer selects the required format.
+        if slots.get("capability_browse") and slots.get("operating_pressure_bar"):
+            return SlotFillingResult(slots=slots)
         has_type = bool(slots.get("radiator_type"))
         has_size = any(
             slots.get(key)

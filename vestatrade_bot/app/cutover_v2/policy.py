@@ -28,6 +28,8 @@ class CutoverRuntime(BaseModel):
     live_delivery_enabled: bool = False
     internal_canary_enabled: bool = False
     internal_canary_percent: int = Field(default=0, ge=0, le=5)
+    local_preview_enabled: bool = False
+    external_actions_enabled: bool = False
     force_legacy: bool = False
     registry_valid: bool = True
     is_existing_session: bool = False
@@ -282,6 +284,37 @@ def decide_cutover(
             cell=cell,
             bucket=cohort,
             assignment=assignment,
+            candidate=candidate,
+        )
+
+    if cell.stage == RolloutStage.V2_PRIMARY:
+        if not runtime.local_preview_enabled:
+            return _decision(
+                ResponseOwner.LEGACY,
+                ExecutionMode.LEGACY_ONLY,
+                "v2_primary_not_enabled_in_stage6a",
+                cell=cell,
+                candidate=candidate,
+            )
+        if (
+            runtime.external_actions_enabled
+            or cell.external_actions_allowed
+            or candidate.pending_command_ids
+            or candidate.external_side_effect_started
+        ):
+            return _decision(
+                ResponseOwner.LEGACY,
+                ExecutionMode.LEGACY_ONLY,
+                "local_preview_external_actions_not_disabled",
+                cell=cell,
+                candidate=candidate,
+            )
+        return _decision(
+            ResponseOwner.V2,
+            ExecutionMode.V2_PRIMARY,
+            "approved_local_v2_primary_preview",
+            eligible=True,
+            cell=cell,
             candidate=candidate,
         )
 

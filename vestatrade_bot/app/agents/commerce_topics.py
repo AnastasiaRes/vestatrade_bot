@@ -186,6 +186,10 @@ TOPICS: tuple[CommerceTopic, ...] = (
         excludes=(
             "монтажн",
             "монтажу трубы",
+            # A connection technology, not a request for an installer.
+            "аксиальн",
+            "способ монтажа",
+            "тип монтажа",
         ),
         needs=("город и объём работ",),
         note=(

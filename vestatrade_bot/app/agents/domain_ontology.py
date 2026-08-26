@@ -177,6 +177,44 @@ PRODUCT_TYPE_ONTOLOGY: tuple[dict[str, Any], ...] = (
 # table.  It keeps fact names stable when the same characteristic is phrased
 # differently and lets product modifiers become typed constraints on the same
 # turn.  Values still require exact evidence from the current message.
+_COLD_WATER_SERVICE_ALIASES = (
+    "cold water",
+    "cold water supply",
+    "domestic cold water",
+    "холодная вода",
+    "холодной воды",
+    "для холодной воды",
+    "для холодной",
+    "холодная",
+    "холодное водоснабжение",
+    "холодного водоснабжения",
+    "холодному водоснабжению",
+    "холодным водоснабжением",
+    "холодном водоснабжении",
+    "система холодного водоснабжения",
+    "системы холодного водоснабжения",
+    "хвс",
+)
+_HOT_WATER_SERVICE_ALIASES = (
+    "hot water",
+    "hot water supply",
+    "domestic hot water",
+    "горячая вода",
+    "горячей воды",
+    "для горячей воды",
+    "для горячей",
+    "горячая",
+    "горячее водоснабжение",
+    "горячего водоснабжения",
+    "горячему водоснабжению",
+    "горячим водоснабжением",
+    "горячем водоснабжении",
+    "система горячего водоснабжения",
+    "системы горячего водоснабжения",
+    "гвс",
+)
+
+
 CONSTRAINT_FACT_ONTOLOGY: dict[str, tuple[dict[str, Any], ...]] = {
     "circulation_pump": (
         {
@@ -341,11 +379,122 @@ CONSTRAINT_FACT_ONTOLOGY: dict[str, tuple[dict[str, Any], ...]] = {
             ],
         },
     ),
+    "pipe": (
+        {
+            "name": "diameter_mm",
+            "meaning": "explicit outer pipe diameter",
+            "aliases": ["диаметр", "наружный диаметр", "размер трубы"],
+        },
+        {
+            "name": "pipe_service",
+            "meaning": "declared pipe service, without guessing temperature or pressure",
+            "aliases": [
+                "назначение трубы",
+                "для холодной воды",
+                "для горячей воды",
+                "для холодной",
+                "для горячей",
+                "для отопления",
+                "application",
+                "application_type",
+                "water_type",
+            ],
+            "closed_values": [
+                {
+                    "value": "cold_water",
+                    "aliases": [*_COLD_WATER_SERVICE_ALIASES],
+                },
+                {
+                    "value": "hot_water",
+                    "aliases": [*_HOT_WATER_SERVICE_ALIASES],
+                },
+                {
+                    "value": "heating",
+                    "aliases": ["heating", "отопление", "для отопления"],
+                },
+            ],
+        },
+        {
+            "name": "operating_temperature_c",
+            "meaning": "maximum or working temperature the pipe must withstand",
+            "aliases": [
+                "operating_temperature_c",
+                "max_operating_temperature_c",
+                "maximum_operating_temperature_c",
+                "working_temperature_c",
+                "рабочая температура",
+                "максимальная температура",
+                "максимальная рабочая температура",
+                "температура",
+            ],
+        },
+        {
+            "name": "operating_pressure_bar",
+            "meaning": "maximum or working pressure the pipe must withstand",
+            "aliases": [
+                "operating_pressure_bar",
+                "max_operating_pressure_bar",
+                "maximum_operating_pressure_bar",
+                "working_pressure_bar",
+                "рабочее давление",
+                "максимальное давление",
+                "максимальное рабочее давление",
+                "давление",
+            ],
+        },
+        {
+            "name": "reinforcement",
+            "meaning": "explicit pipe reinforcement type or its explicit absence",
+            "aliases": [
+                "reinforcement",
+                "reinforcement_material",
+                "армирование",
+                "армирована",
+                "армированная",
+                "армированный",
+            ],
+            "closed_values": [
+                {
+                    "value": "glass_fiber",
+                    "aliases": [
+                        "glass_fiber",
+                        "glass fiber",
+                        "стекловолокно",
+                        "стекловолокном",
+                        "PP-FIBER",
+                        "PP FIBER",
+                    ],
+                },
+                {
+                    "value": "aluminium",
+                    "aliases": [
+                        "aluminium",
+                        "aluminum",
+                        "алюминий",
+                        "алюминием",
+                        "фольга",
+                        "фольгой",
+                        "PP-ALUX",
+                        "PP ALUX",
+                    ],
+                },
+                {
+                    "value": "unreinforced",
+                    "aliases": [
+                        "unreinforced",
+                        "без армирования",
+                        "неармированная",
+                        "неармированный",
+                    ],
+                },
+            ],
+        },
+    ),
     "pex_pipe": (
         {
             "name": "diameter_mm",
             "meaning": "explicit outer pipe diameter",
-            "aliases": ["PEX 16", "16x2", "диаметр"],
+            "aliases": ["PEX 16", "16x2", "диаметр", "размер трубы"],
         },
         {
             "name": "requested_quantity_m",
@@ -356,6 +505,110 @@ CONSTRAINT_FACT_ONTOLOGY: dict[str, tuple[dict[str, Any], ...]] = {
             "name": "delivery_destination",
             "meaning": "destination for delivery check",
             "aliases": ["доставка в", "объект в"],
+        },
+        {
+            "name": "pipe_service",
+            "meaning": "declared pipe service, without guessing temperature or pressure",
+            "aliases": [
+                "назначение трубы",
+                "для холодной воды",
+                "для горячей воды",
+                "для холодной",
+                "для горячей",
+                "для отопления",
+                "application",
+                "application_type",
+                "water_type",
+            ],
+            "closed_values": [
+                {
+                    "value": "cold_water",
+                    "aliases": [*_COLD_WATER_SERVICE_ALIASES],
+                },
+                {
+                    "value": "hot_water",
+                    "aliases": [*_HOT_WATER_SERVICE_ALIASES],
+                },
+                {
+                    "value": "heating",
+                    "aliases": ["heating", "отопление", "для отопления"],
+                },
+            ],
+        },
+        {
+            "name": "operating_temperature_c",
+            "meaning": "maximum or working temperature the pipe must withstand",
+            "aliases": [
+                "operating_temperature_c",
+                "max_operating_temperature_c",
+                "maximum_operating_temperature_c",
+                "working_temperature_c",
+                "рабочая температура",
+                "максимальная температура",
+                "максимальная рабочая температура",
+                "температура",
+            ],
+        },
+        {
+            "name": "operating_pressure_bar",
+            "meaning": "maximum or working pressure the pipe must withstand",
+            "aliases": [
+                "operating_pressure_bar",
+                "max_operating_pressure_bar",
+                "maximum_operating_pressure_bar",
+                "working_pressure_bar",
+                "рабочее давление",
+                "максимальное давление",
+                "максимальное рабочее давление",
+                "давление",
+            ],
+        },
+        {
+            "name": "reinforcement",
+            "meaning": "explicit pipe reinforcement type or its explicit absence",
+            "aliases": [
+                "reinforcement",
+                "reinforcement_material",
+                "армирование",
+                "армирована",
+                "армированная",
+                "армированный",
+            ],
+            "closed_values": [
+                {
+                    "value": "glass_fiber",
+                    "aliases": [
+                        "glass_fiber",
+                        "glass fiber",
+                        "стекловолокно",
+                        "стекловолокном",
+                        "PP-FIBER",
+                        "PP FIBER",
+                    ],
+                },
+                {
+                    "value": "aluminium",
+                    "aliases": [
+                        "aluminium",
+                        "aluminum",
+                        "алюминий",
+                        "алюминием",
+                        "фольга",
+                        "фольгой",
+                        "PP-ALUX",
+                        "PP ALUX",
+                    ],
+                },
+                {
+                    "value": "unreinforced",
+                    "aliases": [
+                        "unreinforced",
+                        "без армирования",
+                        "неармированная",
+                        "неармированный",
+                    ],
+                },
+            ],
         },
     ),
     "water_filter": (

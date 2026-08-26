@@ -39,6 +39,26 @@ _COMPOUND_DIMENSION_RE = re.compile(
     r"(?P<secondary>\d+(?:[.,]\d+)?)\s*(?:mm|мм)?\s*$",
     re.IGNORECASE,
 )
+_PIPE_TEMPERATURE_THEN_PRESSURE_RE = re.compile(
+    r"температур\w*[^.!?]{0,55}?"
+    r"(?P<temperature>-?\d{1,3}(?:[.,]\d+)?)\s*(?:°\s*)?[cс]"
+    r"(?![a-zа-яё])[^.!?]{0,55}?"
+    r"(?P<pressure>\d+(?:[.,]\d+)?)\s*(?:бар|bar)\b",
+    re.IGNORECASE,
+)
+_PIPE_PRESSURE_THEN_TEMPERATURE_RE = re.compile(
+    r"давлен\w*[^.!?]{0,55}?"
+    r"(?P<pressure>\d+(?:[.,]\d+)?)\s*(?:бар|bar)\b"
+    r"[^.!?]{0,55}?температур\w*[^.!?]{0,35}?"
+    r"(?P<temperature>-?\d{1,3}(?:[.,]\d+)?)\s*(?:°\s*)?[cс]"
+    r"(?![a-zа-яё])",
+    re.IGNORECASE,
+)
+_PIPE_COLD_WATER_PRESSURE_RE = re.compile(
+    r"(?:транспортиров\w*|для)\s+холодн\w*\s+вод\w*\s*\)?"
+    r"[^.!?]{0,25}?(?P<pressure>\d+(?:[.,]\d+)?)\s*(?:бар|bar)\b",
+    re.IGNORECASE,
+)
 _PARENTHETICAL_PIPE_DIMENSION_RE = re.compile(
     r"^\s*(?P<primary>\d+(?:[.,]\d+)?)\s*\(\s*"
     r"(?P<secondary>\d+(?:[.,]\d+)?)\s*\)\s*(?:mm|мм)?\s*$",
@@ -237,6 +257,31 @@ def _fact(
     )
 
 
+def _single_pipe_operating_point(
+    description: str,
+) -> tuple[float | int, float | int, str] | None:
+    """Return one explicit temperature/pressure rating point, never PN.
+
+    Pipe pressure is temperature-dependent.  Consequently the two values are
+    emitted only when the description binds them in one sentence and contains
+    exactly one such point.  Multiple points are a curve/table fragment rather
+    than a scalar rating and remain unverified for the planner.
+    """
+
+    matches = [
+        *list(_PIPE_TEMPERATURE_THEN_PRESSURE_RE.finditer(description)),
+        *list(_PIPE_PRESSURE_THEN_TEMPERATURE_RE.finditer(description)),
+    ]
+    if len(matches) != 1:
+        return None
+    match = matches[0]
+    return (
+        _parsed_number(match.group("temperature")),
+        _parsed_number(match.group("pressure")),
+        match.group(0),
+    )
+
+
 def _structured_fact(name: str, raw: object, field: str) -> CatalogFact | None:
     unit = {
         "diameter_mm": "mm",
@@ -284,6 +329,60 @@ def normalize_fact_value(name: str, value: object) -> str | int | float | bool:
     if isinstance(value, (int, float, bool)):
         return value
     text = normalize_identity(value)
+    if name == "reinforcement":
+        markers = set()
+        if any(
+            marker in text
+            for marker in (
+                "pp fiber",
+                "glass fiber",
+                "glass fibre",
+                "fiberglass",
+                "стекловолок",
+            )
+        ):
+            markers.add("glass_fiber")
+        if any(
+            marker in text
+            for marker in (
+                "pp alux",
+                "alux",
+                "aluminium",
+                "aluminum",
+                "алюмин",
+                "фольг",
+            )
+        ):
+            markers.add("aluminium")
+        if (
+            text == "unreinforced"
+            or "без армирован" in text
+            or "неармирован" in text
+        ):
+            markers.add("unreinforced")
+        if len(markers) == 1:
+            return next(iter(markers))
+    if name == "material":
+        if any(
+            marker in text
+            for marker in (
+                "ppr",
+                "pp r",
+                "pp fiber",
+                "pp alux",
+                "polypropylene",
+                "полипропилен",
+            )
+        ):
+            return "ppr"
+        if any(marker in text for marker in ("pex", "pe xa", "сшитого полиэтилен")):
+            return "pex"
+        if "алюмин" in text or text == "aluminium":
+            return "aluminium"
+    if name == "pressure_class":
+        match = re.fullmatch(r"(?:pn|пн)\s*(\d{1,3}(?:[.,]\d+)?)", text)
+        if match:
+            return f"pn{match.group(1).replace(',', '.')}"
     if name == "connection_size":
         # G/R/Rp/NPT describe a thread standard; the connection-size fact is
         # only its nominal dimension.  Standards remain separate facts rather
@@ -383,6 +482,27 @@ def normalize_fact_value(name: str, value: object) -> str | int | float | bool:
             return "gas"
         if any(marker in text for marker in ("пар", "steam")):
             return "steam"
+    if name == "pipe_service":
+        services: list[str] = []
+        if any(
+            marker in text
+            for marker in ("cold water", "cold_water", "холодн", "хвс")
+        ):
+            services.append("cold_water")
+        if any(
+            marker in text
+            for marker in ("hot water", "hot_water", "горяч", "гвс", "dhw")
+        ):
+            services.append("hot_water")
+        if any(
+            marker in text
+            for marker in ("heating", "отоплен", "теплоносител")
+        ):
+            services.append("heating")
+        if services:
+            return " ".join(dict.fromkeys(services))
+        if any(marker in text for marker in ("water", "вод")):
+            return "water_unspecified"
     if name == "washable":
         if any(
             marker in text
@@ -592,13 +712,97 @@ def _generic_facts(
         result.append(_fact("sewer_scope", scope, source="name", field="name", raw=name, parser="sewer_scope"))
 
     if "pressure_class" in parsers:
-        match = re.search(r"\bpn\s*(\d{1,3})\b", name, re.I)
+        match = re.search(r"(?<![a-zа-яё])(?:pn|пн)\s*(\d{1,3})\b", name, re.I)
         if match:
-            result.append(_fact("pressure_class", f"PN{match.group(1)}", source="name", field="name", raw=match.group(0), parser="pressure_class"))
+            result.append(_fact("pressure_class", f"pn{match.group(1)}", source="name", field="name", raw=match.group(0), parser="pressure_class"))
 
     if "material_family" in parsers:
-        material = next((canonical for marker, canonical in (("pex", "pex"), ("pe xa", "pex_a"), ("сшитого полиэтилена", "pex"), ("pp fiber", "pp_fiber"), ("pp alux", "pp_alux"), ("pp r", "ppr"), ("биметал", "bimetal"), ("алюмин", "aluminium"), ("стал", "steel")) if marker in f"{name_norm} {description_norm}"), None)
+        material = next((canonical for marker, canonical in (("pex", "pex"), ("pe xa", "pex_a"), ("сшитого полиэтилена", "pex"), ("pp fiber", "ppr"), ("pp alux", "ppr"), ("pp r", "ppr"), ("полипропилен", "ppr"), ("биметал", "bimetal"), ("алюмин", "aluminium"), ("стал", "steel")) if marker in f"{name_norm} {description_norm}"), None)
         result.append(_fact("material", material, source="name", field="name", raw=name, parser="material_family"))
+
+    if "pipe_service" in parsers and kind in {ProductKind.PIPE, ProductKind.PEX_PIPE}:
+        service = normalize_fact_value("pipe_service", description_norm)
+        supported_services = {"cold_water", "hot_water", "heating"}
+        parsed_services = set(str(service).split())
+        if parsed_services and parsed_services <= supported_services:
+            result.append(
+                _fact(
+                    "pipe_service",
+                    service,
+                    source="description",
+                    field="description",
+                    raw=description,
+                    parser="pipe_service",
+                )
+            )
+
+    if "pipe_operating_point" in parsers and kind in {
+        ProductKind.PIPE,
+        ProductKind.PEX_PIPE,
+    }:
+        operating_point = _single_pipe_operating_point(description)
+        if operating_point is not None:
+            temperature, pressure, raw_point = operating_point
+            result.extend(
+                (
+                    _fact(
+                        "operating_temperature_c",
+                        temperature,
+                        source="description",
+                        field="description",
+                        raw=raw_point,
+                        parser="pipe_single_operating_point",
+                        unit="C",
+                    ),
+                    _fact(
+                        "operating_pressure_bar",
+                        pressure,
+                        source="description",
+                        field="description",
+                        raw=raw_point,
+                        parser="pipe_single_operating_point",
+                        unit="bar",
+                    ),
+                )
+            )
+        cold_pressure_matches = list(
+            _PIPE_COLD_WATER_PRESSURE_RE.finditer(description)
+        )
+        if len(cold_pressure_matches) == 1:
+            match = cold_pressure_matches[0]
+            result.append(
+                _fact(
+                    "cold_water_pressure_bar",
+                    _parsed_number(match.group("pressure")),
+                    source="description",
+                    field="description",
+                    raw=match.group(0),
+                    parser="pipe_explicit_cold_water_pressure",
+                    unit="bar",
+                )
+            )
+
+    if "pipe_reinforcement" in parsers and kind in {
+        ProductKind.PIPE,
+        ProductKind.PEX_PIPE,
+    }:
+        for source, field, raw in (
+            ("name", "name", name),
+            ("description", "description", description),
+        ):
+            reinforcement = normalize_fact_value("reinforcement", raw)
+            if reinforcement in {"glass_fiber", "aluminium", "unreinforced"}:
+                result.append(
+                    _fact(
+                        "reinforcement",
+                        reinforcement,
+                        source=source,
+                        field=field,
+                        raw=raw,
+                        parser="pipe_reinforcement",
+                    )
+                )
+                break
 
     if "inch_size" in parsers:
         match = re.search(r"(?<!\d)(\d+(?:\s+\d+/\d+)?|\d+/\d+)\s*[\"″]", name)
@@ -840,10 +1044,26 @@ def normalize_catalog_product(
                         facts.append(parsed)
                     break
         parsers = {parser for definition in contract.fact_definitions for parser in definition.general_parsers}
+        generic_facts = _generic_facts(product, kind, parsers)
+        rating_names = {
+            "operating_temperature_c",
+            "operating_pressure_bar",
+        }
+        has_structured_rating = any(
+            fact.name in rating_names and fact.provenance.source == "attribute"
+            for fact in facts
+        )
+        structured_rating_ambiguous = bool(
+            ambiguous_structured_fact_names & rating_names
+        )
         facts.extend(
             fact
-            for fact in _generic_facts(product, kind, parsers)
+            for fact in generic_facts
             if fact.name not in ambiguous_structured_fact_names
+            and not (
+                fact.provenance.parser == "pipe_single_operating_point"
+                and (has_structured_rating or structured_rating_ambiguous)
+            )
         )
 
     unique: dict[str, CatalogFact] = {}

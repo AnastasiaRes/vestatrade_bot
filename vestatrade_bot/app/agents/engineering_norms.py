@@ -91,6 +91,51 @@ def _sewer_slope_answer(text: str, follow_up: bool = False) -> str | None:
     def ru(value: float) -> str:
         return f"{value:g}".replace(".", ",")
 
+    if follow_up:
+        length = _length_from_text(text)
+        stated_drop = re.search(
+            r"(?<!\d)(\d+(?:[,.]\d+)?)\s*(?:см|сантиметр\w*)",
+            text,
+        )
+        asks_direct_confirmation = bool(
+            any(marker in text for marker in ["можно ли", "да или нет", "без риска"])
+            and length
+            and stated_drop
+        )
+        if asks_direct_confirmation:
+            actual_drop_cm = float(stated_drop.group(1).replace(",", "."))
+            required_drop_cm = normative * length * 100
+            matches = abs(actual_drop_cm - required_drop_cm) <= 0.5
+            direct = "Да" if matches else "Нет"
+            arithmetic = (
+                f"{length:g} м × {ru(normative * 100)} см/м = "
+                f"{ru(required_drop_cm)} см"
+            )
+            return (
+                f"{direct}: по арифметике уклона {arithmetic}; заявленный перепад "
+                f"{ru(actual_drop_cm)} см {'совпадает' if matches else 'не совпадает'} "
+                "с этим значением. Это подтверждает именно геометрию уклона, но не "
+                "гарантирует отсутствие засоров: нужен непрерывный уклон без провисов, "
+                "правильная опора, доступ для прочистки и допустимая отметка входа в септик."
+            )
+        example = (
+            f" Для участка {length:g} м расчётный перепад при 0,02 равен "
+            f"{ru(normative * length * 100)} см."
+            if length
+            else ""
+        )
+        return (
+            f"Сам арифметический расчёт сделать можно: перепад = длина трассы × "
+            f"уклон. Для трубы {diameter} мм берите ориентир {ru(normative)} "
+            f"({ru(normative * 100)} см на метр).{example} Сначала измеряют отметку "
+            "низа выпуска из дома и отметку входа в септик; доступный перепад между "
+            "ними должен покрыть расчётный перепад трубы, при этом по всей трассе "
+            "сохраняются глубина, опора и защита от промерзания. Придумывать глубину "
+            "септика нельзя — это фактический размер конкретного участка. Если отметок "
+            "пока нет, правильный следующий шаг — нивелиром/лазерным уровнем измерить "
+            "обе точки, а не назначать их по примеру из чужого проекта."
+        )
+
     parts = [
         f"Для самотёчной канализации {diameter} мм нормативный уклон — "
         f"{ru(normative)} ({ru(normative * 100)} см на метр), минимально "
@@ -209,8 +254,15 @@ def _steel_to_ppr_answer(text: str, follow_up: bool = False) -> str | None:
     minimal_text = f"{minimal_bore:g}".replace(".", ",")
     if follow_up:
         # Отвечаем на само заблуждение, а не повторяем прежний абзац.
+        direct_choice = (
+            "Да: если ваша цель именно сохранить проходное сечение стальной "
+            f"трубы {inch}\", из названных 20/25/32 нужен PPR {exact}. "
+            if any(marker in text for marker in ["единствен", "сохранить сечение"])
+            else ""
+        )
         return (
-            f"Потому что {dn} мм у стальной {inch}\" — это условный проход DN{dn}, "
+            direct_choice
+            + f"Потому что {dn} мм у стальной {inch}\" — это условный проход DN{dn}, "
             f"внутренний размер. У полипропилена цифра в маркировке — наружный "
             f"диаметр, и внутри остаётся заметно меньше: у PPR 20 PN20 проход "
             f"всего 13,2 мм против {steel_text} мм у стальной. "
@@ -316,10 +368,66 @@ def _is_challenge_follow_up(text: str) -> bool:
     return any(marker in text for marker in _CHALLENGE_MARKERS)
 
 
+def _is_topical_follow_up(key: str, text: str) -> bool:
+    """Continue a norm when the next question adds facts in the same domain."""
+
+    if any(marker in text for marker in _NEW_SUBJECT_MARKERS):
+        return False
+    if key == "sewer_slope":
+        asks_same_calculation = bool(
+            _INTERROGATIVE_RE.match(text)
+            or any(
+                marker in text
+                for marker in [
+                    "какой",
+                    "как ",
+                    "если",
+                    "получится",
+                    "нужно",
+                    "нужен",
+                ]
+            )
+        )
+        return bool(
+            any(
+                marker in text
+                for marker in [
+                    "уклон",
+                    "септик",
+                    "глубин",
+                    "перепад",
+                    "проект",
+                    "в земле",
+                    "посчитать",
+                    "рассчитать",
+                ]
+            )
+            and asks_same_calculation
+        )
+    if key == "steel_to_ppr":
+        return bool(
+            any(marker in text for marker in ["ppr", "ппр", "полипроп", "сечен", "проход"])
+            and any(
+                marker in text
+                for marker in [
+                    "20",
+                    "25",
+                    "32",
+                    "3/4",
+                    "какой",
+                    "почему",
+                    "единствен",
+                ]
+            )
+        )
+    return False
+
+
 def match_engineering_norm(
     message: str,
     *,
     previous_norm: str | None = None,
+    previous_message: str | None = None,
 ) -> NormAnswer | None:
     """Найти отраслевую норму, которая прямо отвечает на вопрос покупателя.
 
@@ -333,11 +441,16 @@ def match_engineering_norm(
 
     # Сомнение в прошлом ответе разбирается первым: у него своя рамка, и
     # вопросительного знака в нём может не быть вовсе («не может быть»).
-    if previous_norm and _is_challenge_follow_up(text):
+    if previous_norm and (
+        _is_challenge_follow_up(text) or _is_topical_follow_up(previous_norm, text)
+    ):
         for norm in NORMS:
             if norm.key != previous_norm:
                 continue
-            answer = norm.build(text, True)
+            context_text = " ".join(
+                part for part in [normalize_text(previous_message or ""), text] if part
+            )
+            answer = norm.build(context_text or text, True)
             if answer:
                 return NormAnswer(key=norm.key, text=answer)
 

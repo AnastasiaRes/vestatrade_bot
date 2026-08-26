@@ -93,6 +93,38 @@ def _fact(
     }
 
 
+def _pipe_required_constraints(*, product: int = 0) -> list[dict[str, object]]:
+    return [
+        _fact("pipe_service", "hot_water", None, product=product),
+        _fact("operating_temperature_c", 70, "C", product=product),
+        _fact("operating_pressure_bar", 6, "bar", product=product),
+    ]
+
+
+def _pipe_catalog_required_facts(
+    provenance: FactProvenance,
+) -> tuple[CatalogFact, ...]:
+    return (
+        CatalogFact(
+            name="pipe_service",
+            value="hot_water",
+            provenance=provenance,
+        ),
+        CatalogFact(
+            name="operating_temperature_c",
+            value=70,
+            unit="C",
+            provenance=provenance,
+        ),
+        CatalogFact(
+            name="operating_pressure_bar",
+            value=10,
+            unit="bar",
+            provenance=provenance,
+        ),
+    )
+
+
 def _semantic(
     products: list[dict[str, object]],
     constraints: list[dict[str, object]] | None = None,
@@ -941,12 +973,20 @@ def test_brand_fact_is_source_preserving_and_required_or_preferred_by_polarity()
                 name="Труба PPR 20 мм",
                 category_path="Трубы",
                 brand="Brand Alpha",
+                description=(
+                    "Для горячего водоснабжения. Давление при температуре "
+                    "воды 70 °C — 10 бар."
+                ),
             ),
             Product(
                 sku="pipe-brand-b",
                 name="Труба PPR 20 мм",
                 category_path="Трубы",
                 brand="Brand Beta",
+                description=(
+                    "Для горячего водоснабжения. Давление при температуре "
+                    "воды 70 °C — 10 бар."
+                ),
             ),
         ]
     )
@@ -959,7 +999,11 @@ def test_brand_fact_is_source_preserving_and_required_or_preferred_by_polarity()
     required = _run(
         _semantic(
             [_product("труба", "pipes")],
-            [_fact("diameter", 20), _fact("brand", "Brand Alpha", None)],
+            [
+                _fact("diameter", 20),
+                *_pipe_required_constraints(),
+                _fact("brand", "Brand Alpha", None),
+            ],
         ),
         snapshot,
     )
@@ -978,6 +1022,7 @@ def test_brand_fact_is_source_preserving_and_required_or_preferred_by_polarity()
             [_product("труба", "pipes")],
             [
                 _fact("diameter", 20),
+                *_pipe_required_constraints(),
                 _fact("manufacturer", "Brand Alpha", None, polarity="preferred"),
             ],
         ),
@@ -1004,6 +1049,10 @@ def test_pex_pipe_resolves_separately_and_never_matches_pex_tool() -> None:
             category_path="Трубы",
             stock_qty=1200,
             attributes_normalized={"тип товара": "Труба"},
+            description=(
+                "Для горячего водоснабжения. Давление при температуре "
+                "воды 70 °C — 10 бар."
+            ),
         ),
         Product(
             sku="PEX-16-tool",
@@ -1024,7 +1073,10 @@ def test_pex_pipe_resolves_separately_and_never_matches_pex_tool() -> None:
     semantic_product["text"] = "труба PEX 16"
     semantic_product["evidence"] = "труба PEX 16"
     outcome = _run(
-        _semantic([semantic_product], [_fact("diameter", 16)]),
+        _semantic(
+            [semantic_product],
+            [_fact("diameter", 16), *_pipe_required_constraints()],
+        ),
         snapshot,
     )
     planning = _planning(outcome)
@@ -1391,12 +1443,17 @@ def test_accessory_tool_and_spare_part_cannot_replace_base_product() -> None:
 def test_soft_constraint_is_relaxed_one_at_a_time_with_difference(catalog) -> None:
     constraints = [
         _fact("diameter", 20),
-        _fact("material", "pp_alux", None, polarity="preferred"),
+        *_pipe_required_constraints(),
+        _fact("reinforcement", "aluminium", None, polarity="preferred"),
     ]
     outcome = _run(_semantic([_product("труба", "pipes")], constraints), catalog)
     plan = _planning(outcome).search_plans[0]
     assert plan.relaxed_skus
-    candidate = next(item for item in plan.candidate_assessments if item.relaxations)
+    candidate = next(
+        item
+        for item in plan.candidate_assessments
+        if item.relaxations and item.relaxations[0].candidate_value is not None
+    )
     assert len(candidate.relaxations) == 1
     assert candidate.relaxations[0].reason_code == "soft_preference_differs"
     assert candidate.relaxations[0].candidate_value is not None
@@ -1408,6 +1465,7 @@ def test_two_products_create_independent_plans_and_solution_without_quantity(cat
             [_product("труба", "pipes"), _product("шаровой кран", "valves")],
             [
                 _fact("diameter", 20, product=0),
+                *_pipe_required_constraints(product=0),
                 _fact("connection_size", "1/2", "inch", product=1),
                 _fact("connection_pattern", "female_female", None, product=1),
             ],
@@ -1530,6 +1588,7 @@ def test_typed_stock_requirement_filters_candidates_without_reading_text() -> No
             unit="mm",
             provenance=provenance,
         ),
+        *_pipe_catalog_required_facts(provenance),
     )
     snapshot = (
         CatalogProductSnapshot(
@@ -1559,6 +1618,7 @@ def test_typed_stock_requirement_filters_candidates_without_reading_text() -> No
             [_product("pipe", "pipes")],
             [
                 _fact("diameter", 25),
+                *_pipe_required_constraints(),
                 _fact("stock_availability", True, None),
             ],
             acts=["select", "check_stock"],
@@ -1600,6 +1660,7 @@ def test_stock_question_keeps_exact_out_of_stock_candidate_with_honest_status() 
                     unit="mm",
                     provenance=provenance,
                 ),
+                *_pipe_catalog_required_facts(provenance),
             ),
         ),
     )
@@ -1607,7 +1668,7 @@ def test_stock_question_keeps_exact_out_of_stock_candidate_with_honest_status() 
     outcome = _run(
         _semantic(
             [_product("pipe", "pipes")],
-            [_fact("diameter", 25)],
+            [_fact("diameter", 25), *_pipe_required_constraints()],
             acts=["select", "check_stock"],
         ),
         snapshot,
@@ -1637,6 +1698,7 @@ def test_stock_requirement_persists_for_related_goal_after_followup() -> None:
             unit="mm",
             provenance=provenance,
         ),
+        *_pipe_catalog_required_facts(provenance),
     )
     snapshot = (
         CatalogProductSnapshot(
@@ -1667,6 +1729,7 @@ def test_stock_requirement_persists_for_related_goal_after_followup() -> None:
             [_product("pipe", "pipes")],
             [
                 _fact("diameter", 25),
+                *_pipe_required_constraints(),
                 _fact("stock_availability", True, None),
             ],
             acts=["select", "check_stock"],
@@ -1723,6 +1786,7 @@ def test_explicit_stock_relaxation_removes_filter_for_same_goal() -> None:
                     unit="mm",
                     provenance=provenance,
                 ),
+                *_pipe_catalog_required_facts(provenance),
             ),
         ),
     )
@@ -1733,6 +1797,7 @@ def test_explicit_stock_relaxation_removes_filter_for_same_goal() -> None:
             [_product("pipe", "pipes")],
             [
                 _fact("diameter", 25),
+                *_pipe_required_constraints(),
                 _fact("stock_availability", True, None),
             ],
             acts=["select", "check_stock"],

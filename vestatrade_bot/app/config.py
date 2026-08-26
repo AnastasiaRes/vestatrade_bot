@@ -40,6 +40,40 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _optional_env(name: str) -> str | None:
+    """Return a non-empty environment value or ``None``.
+
+    Deployment systems often keep a declared secret variable with an empty or
+    whitespace-only value.  Such a value must behave exactly like an absent
+    OpenRouter key so provider resolution remains deterministic.
+    """
+
+    value = os.getenv(name)
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _resolve_llm_provider(
+    requested_provider: str,
+    openrouter_api_key: str | None,
+) -> tuple[str, bool]:
+    """Resolve the effective runtime provider and automatic-fallback flag.
+
+    OpenRouter is an optional hosted transport.  A deployment copied with
+    ``LLM_PROVIDER=openrouter`` but without its secret must remain LLM-enabled
+    when Ollama is available, so the entire application receives ``ollama`` as
+    the effective provider.  Explicit ``ollama`` and ``disabled`` choices are
+    preserved.
+    """
+
+    provider = requested_provider.strip().lower()
+    if provider == "openrouter" and not openrouter_api_key:
+        return "ollama", True
+    return provider, False
+
+
 def _bounded_rollout_percent(name: str) -> int:
     """Parse an internal-canary percentage without broadening traffic.
 
@@ -107,6 +141,10 @@ class Settings(BaseModel):
     dialogue_v2_live_delivery_enabled: bool = False
     dialogue_v2_internal_canary_enabled: bool = False
     dialogue_v2_internal_canary_percent: int = 0
+    # Local demo escape hatch for a reviewed V2_PRIMARY registry cell.  This
+    # remains independent of the production/internal-canary rollout controls
+    # and is fail-closed unless every live gate is explicitly enabled.
+    dialogue_v2_local_preview_enabled: bool = False
     dialogue_v2_migration_registry_path: Path | None = None
     dialogue_v2_legacy_dry_run_compare_enabled: bool = False
     dialogue_v2_force_legacy: bool = False
@@ -134,7 +172,12 @@ class Settings(BaseModel):
 
 @lru_cache
 def get_settings() -> Settings:
-    llm_provider = os.getenv("LLM_PROVIDER", "ollama").strip().lower()
+    requested_llm_provider = os.getenv("LLM_PROVIDER", "ollama")
+    openrouter_api_key = _optional_env("OPENROUTER_API_KEY")
+    llm_provider, openrouter_fallback_to_ollama = _resolve_llm_provider(
+        requested_llm_provider,
+        openrouter_api_key,
+    )
     openrouter_model = os.getenv(
         "OPENROUTER_MODEL",
         "qwen/qwen3-vl-8b-instruct",
@@ -150,7 +193,7 @@ def get_settings() -> Settings:
         ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
         ollama_model=ollama_model,
         ollama_model_strong=os.getenv("OLLAMA_MODEL_STRONG", ollama_model),
-        openrouter_api_key=os.getenv("OPENROUTER_API_KEY"),
+        openrouter_api_key=openrouter_api_key,
         openrouter_model=openrouter_model,
         # Сильная модель для подбора/консультанта. По умолчанию = дешёвой,
         # чтобы без настройки ничего не ломалось; в .env можно указать мощнее.
@@ -228,8 +271,13 @@ def get_settings() -> Settings:
             "app/data/diagnostics/turns.jsonl",
         ),
         semantic_shadow_enabled=_env_bool("SEMANTIC_SHADOW_ENABLED", False),
+        # A provider-specific shadow override copied from an OpenRouter
+        # deployment must not leak into automatic Ollama fallback.  In that
+        # case every runtime agent resolves through OLLAMA_MODEL[_STRONG].
         semantic_shadow_model=(
-            os.getenv("SEMANTIC_SHADOW_MODEL") or None
+            None
+            if openrouter_fallback_to_ollama
+            else _optional_env("SEMANTIC_SHADOW_MODEL")
         ),
         dialogue_state_v2_shadow_enabled=_env_bool(
             "DIALOGUE_STATE_V2_SHADOW_ENABLED",
@@ -301,6 +349,10 @@ def get_settings() -> Settings:
         ),
         dialogue_v2_internal_canary_percent=_bounded_rollout_percent(
             "DIALOGUE_V2_INTERNAL_CANARY_PERCENT"
+        ),
+        dialogue_v2_local_preview_enabled=_env_bool(
+            "DIALOGUE_V2_LOCAL_PREVIEW_ENABLED",
+            False,
         ),
         dialogue_v2_migration_registry_path=_resolve_optional_project_path(
             os.getenv("DIALOGUE_V2_MIGRATION_REGISTRY_PATH")

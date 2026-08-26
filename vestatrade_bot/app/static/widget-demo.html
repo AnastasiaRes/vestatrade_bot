@@ -262,6 +262,13 @@
         background: #ffffff;
       }
 
+      /* ``display: grid`` у карточки перебивает ``display: none``, который
+         браузер вешает на атрибут ``hidden``: без этого правила скрытая
+         карточка осталась бы видимой. */
+      .product-card[hidden] {
+        display: none;
+      }
+
       .product-media {
         display: grid;
         place-items: center;
@@ -290,9 +297,20 @@
         text-transform: uppercase;
       }
 
+      .product-media.is-empty::after {
+        content: "нет фото";
+        color: #97a3b4;
+        font-size: 13px;
+        font-weight: 700;
+      }
+
       .product-title {
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 3;
         min-height: 46px;
         margin: 0;
+        overflow: hidden;
         color: #10202b;
         font-size: 17px;
         line-height: 1.28;
@@ -519,33 +537,14 @@
     <main class="page">
       <aside class="sidebar" aria-label="Категории">
         <h2>Каталог</h2>
-        <div class="filters" id="filters">
-          <button class="filter-button is-active" type="button" data-filter="all">
-            Все <span>99</span>
-          </button>
-          <button class="filter-button" type="button" data-filter="heating">
-            Отопление <span>21</span>
-          </button>
-          <button class="filter-button" type="button" data-filter="water">
-            Водоснабжение <span>34</span>
-          </button>
-          <button class="filter-button" type="button" data-filter="sewer">
-            Канализация <span>18</span>
-          </button>
-          <button class="filter-button" type="button" data-filter="pumps">
-            Насосы <span>12</span>
-          </button>
-          <button class="filter-button" type="button" data-filter="boilers">
-            Котлы <span>8</span>
-          </button>
-        </div>
+        <div class="filters" id="filters"></div>
       </aside>
 
       <section class="catalog" aria-label="Товары">
         <div class="catalog-head">
           <div>
-            <h1>Популярные позиции</h1>
-            <p id="resultCount">Показано 6 товаров</p>
+            <h1>Каталог магазина</h1>
+            <p id="resultCount">Загружаем каталог…</p>
           </div>
           <select class="sort-select" id="sortSelect" aria-label="Сортировка">
             <option value="popular">Сначала популярные</option>
@@ -554,121 +553,7 @@
           </select>
         </div>
 
-        <div class="product-grid" id="productGrid">
-          <article class="product-card" data-category="water" data-name="кран шаровой base стальная рукоятка 1/2 вн вн valtec" data-price="503" data-stock="1">
-            <div class="product-media">
-              <img src="https://www.vestatrade.ru/image/catalog/krani_i_klapani/39.jpg" alt="Кран шаровой BASE" />
-            </div>
-            <div class="product-body">
-              <span class="product-kicker">VT.214.N.04 · VALTEC</span>
-              <h2 class="product-title">Кран шаровой BASE, стальная рукоятка 1/2&quot; вн.-вн.</h2>
-              <div class="meta-row">
-                <span class="tag stock">в наличии</span>
-                <span class="tag">1/2&quot;</span>
-                <span class="tag">вн.-вн.</span>
-              </div>
-            </div>
-            <div class="product-footer">
-              <span class="price">503 ₽</span>
-              <a class="product-link" href="https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-stalnaya-rukoyatka-12-vn-vn/">Открыть</a>
-            </div>
-          </article>
-
-          <article class="product-card" data-category="pumps heating" data-name="насос циркуляционный valtec rs 25 6 180 с гайками" data-price="4186" data-stock="1">
-            <div class="product-media">
-              <img src="https://www.vestatrade.ru/image/catalog/product/valtek/Nasos/VRS.256.18.0/VRS.256.18_0.jpg" alt="Насос циркуляционный VALTEC RS" />
-            </div>
-            <div class="product-body">
-              <span class="product-kicker">VRS.256.18.0 · VALTEC</span>
-              <h2 class="product-title">Насос циркуляционный VALTEC RS 25/6-180 с гайками</h2>
-              <div class="meta-row">
-                <span class="tag stock">в наличии</span>
-                <span class="tag">25/6</span>
-                <span class="tag">180 мм</span>
-              </div>
-            </div>
-            <div class="product-footer">
-              <span class="price">4 186 ₽</span>
-              <a class="product-link" href="https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-256-180-s-gaykami/">Открыть</a>
-            </div>
-          </article>
-
-          <article class="product-card" data-category="boilers heating" data-name="котел электрический arderia e9 9 квт" data-price="35365" data-stock="1">
-            <div class="product-media">
-              <img src="https://www.vestatrade.ru/image/catalog/product/Arderia/ArderiaE.png" alt="Котел электрический Arderia E9" />
-            </div>
-            <div class="product-body">
-              <span class="product-kicker">2202210 · ARDERIA</span>
-              <h2 class="product-title">Котел электрический Arderia E9, 9 кВт</h2>
-              <div class="meta-row">
-                <span class="tag stock">в наличии</span>
-                <span class="tag">9 кВт</span>
-                <span class="tag">электрический</span>
-              </div>
-            </div>
-            <div class="product-footer">
-              <span class="price">35 365 ₽</span>
-              <a class="product-link" href="https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-elektricheskij-arderia-e9-9-kvt/">Открыть</a>
-            </div>
-          </article>
-
-          <article class="product-card" data-category="water" data-name="труба pn 20 25 mm белый valtec" data-price="182" data-stock="1">
-            <div class="product-media">
-              <img src="https://www.vestatrade.ru/image/catalog/product/trubiifitingi/069_medium.jpg" alt="Труба PN 20" />
-            </div>
-            <div class="product-body">
-              <span class="product-kicker">VTp.700.0020.25 · VALTEC</span>
-              <h2 class="product-title">Труба PN 20, 25 MM (белый)</h2>
-              <div class="meta-row">
-                <span class="tag stock">в наличии</span>
-                <span class="tag">25 мм</span>
-                <span class="tag">PN 20</span>
-              </div>
-            </div>
-            <div class="product-footer">
-              <span class="price">182 ₽</span>
-              <a class="product-link" href="https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-belye-valtec/truba-pn-20-25-mm-belyy/">Открыть</a>
-            </div>
-          </article>
-
-          <article class="product-card" data-category="sewer" data-name="труба канализационная htem 50 1500 ostendorf" data-price="304" data-stock="1">
-            <div class="product-media">
-              <img src="https://www.vestatrade.ru/image/catalog/product/kanalizacionnyesistemy/25.jpg" alt="Труба канализационная HTEM" />
-            </div>
-            <div class="product-body">
-              <span class="product-kicker">112050 · OSTENDORF</span>
-              <h2 class="product-title">Труба канализационная, HTEM, 50*1500</h2>
-              <div class="meta-row">
-                <span class="tag stock">в наличии</span>
-                <span class="tag">50 мм</span>
-                <span class="tag">1500 мм</span>
-              </div>
-            </div>
-            <div class="product-footer">
-              <span class="price">304 ₽</span>
-              <a class="product-link" href="https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/truba-kanalizacionnaya-htem-50150010/">Открыть</a>
-            </div>
-          </article>
-
-          <article class="product-card" data-category="heating" data-name="радиатор биметаллический rommer optima bm 500 80 6 секций" data-price="3050" data-stock="0">
-            <div class="product-media">
-              <img src="https://www.vestatrade.ru/image/catalog/product/radiatoryrommer/new/rommeroptimabm500.jpg" alt="Радиатор Rommer Optima BM" />
-            </div>
-            <div class="product-body">
-              <span class="product-kicker">RBM-0210-050006 · ROMMER</span>
-              <h2 class="product-title">Радиатор биметаллический Rommer Optima BM 500 х 80 6 секций</h2>
-              <div class="meta-row">
-                <span class="tag out">нет в наличии</span>
-                <span class="tag">6 секций</span>
-                <span class="tag">500 мм</span>
-              </div>
-            </div>
-            <div class="product-footer">
-              <span class="price">3 050 ₽</span>
-              <a class="product-link" href="https://www.vestatrade.ru/radiatory-otopleniya/radiatory-bimetallicheskie/radiatory-bimetallicheskie-rommer/radiator-bimetallicheskiy-rommer-optima-bm-500-h-80-6-sekciy/">Открыть</a>
-            </div>
-          </article>
-        </div>
+        <div class="product-grid" id="productGrid"></div>
       </section>
 
       <aside class="summary-panel" aria-label="Сводка заказа">
@@ -701,67 +586,214 @@
     </main>
 
     <script>
+      // Витрина собирается из /static/widget-demo-catalog.json — того же фида,
+      // на котором работает бот (см. scripts/build_widget_demo_catalog.py).
+      // Карточки и счётчики разделов поэтому не могут разойтись с каталогом,
+      // по которому консультант отвечает в чате.
+      const CATALOG_URL = "/static/widget-demo-catalog.json";
+
       const grid = document.querySelector("#productGrid");
-      const cards = [...document.querySelectorAll(".product-card")];
-      const filters = [...document.querySelectorAll(".filter-button")];
+      const filtersBox = document.querySelector("#filters");
       const resultCount = document.querySelector("#resultCount");
       const searchForm = document.querySelector("#catalogSearch");
       const searchInput = document.querySelector("#searchInput");
       const sortSelect = document.querySelector("#sortSelect");
+
+      let items = [];
       let activeFilter = "all";
 
       function normalize(value) {
         return String(value || "").toLowerCase().replaceAll("ё", "е");
       }
 
-      function renderCatalog() {
-        const query = normalize(searchInput.value);
-        const sorted = [...cards].sort((a, b) => {
-          if (sortSelect.value === "priceAsc") {
-            return Number(a.dataset.price) - Number(b.dataset.price);
-          }
-          if (sortSelect.value === "stock") {
-            return Number(b.dataset.stock) - Number(a.dataset.stock);
-          }
-          return cards.indexOf(a) - cards.indexOf(b);
-        });
-
-        let visibleCount = 0;
-        sorted.forEach((card) => {
-          const matchesFilter =
-            activeFilter === "all" || card.dataset.category.split(" ").includes(activeFilter);
-          const matchesQuery = !query || normalize(card.dataset.name).includes(query);
-          const visible = matchesFilter && matchesQuery;
-          card.hidden = !visible;
-          if (visible) {
-            visibleCount += 1;
-            grid.appendChild(card);
-          }
-        });
-
-        let empty = grid.querySelector(".empty-state");
-        if (!visibleCount) {
-          if (!empty) {
-            empty = document.createElement("div");
-            empty.className = "empty-state";
-            empty.textContent = "Ничего не найдено";
-            grid.appendChild(empty);
-          }
-        } else if (empty) {
-          empty.remove();
+      function formatPrice(value) {
+        if (typeof value !== "number" || Number.isNaN(value)) {
+          return "цена по запросу";
         }
-
-        resultCount.textContent = `Показано ${visibleCount} товаров`;
+        return `${Math.round(value).toLocaleString("ru-RU")} ₽`;
       }
 
-      filters.forEach((button) => {
-        button.addEventListener("click", () => {
-          filters.forEach((item) => item.classList.remove("is-active"));
-          button.classList.add("is-active");
-          activeFilter = button.dataset.filter;
-          renderCatalog();
+      function createTag(text, modifier) {
+        const tag = document.createElement("span");
+        tag.className = modifier ? `tag ${modifier}` : "tag";
+        tag.textContent = text;
+        return tag;
+      }
+
+      function createCard(product) {
+        const card = document.createElement("article");
+        card.className = "product-card";
+        card.dataset.sku = product.sku;
+        card.dataset.category = product.category;
+
+        const media = document.createElement("div");
+        media.className = "product-media";
+        if (product.image) {
+          const image = document.createElement("img");
+          image.loading = "lazy";
+          image.src = product.image;
+          image.alt = product.name;
+          image.addEventListener("error", () => {
+            image.remove();
+            media.classList.add("is-empty");
+          });
+          media.appendChild(image);
+        } else {
+          media.classList.add("is-empty");
+        }
+
+        const body = document.createElement("div");
+        body.className = "product-body";
+
+        const kicker = document.createElement("span");
+        kicker.className = "product-kicker";
+        kicker.textContent = [product.sku, product.brand].filter(Boolean).join(" · ");
+
+        const title = document.createElement("h2");
+        title.className = "product-title";
+        title.textContent = product.name;
+        title.title = product.name;
+
+        const meta = document.createElement("div");
+        meta.className = "meta-row";
+        meta.appendChild(
+          product.in_stock
+            ? createTag("в наличии", "stock")
+            : createTag("нет в наличии", "out"),
+        );
+        (product.tags || []).forEach((tag) => meta.appendChild(createTag(tag)));
+
+        body.append(kicker, title, meta);
+
+        const footer = document.createElement("div");
+        footer.className = "product-footer";
+
+        const price = document.createElement("span");
+        price.className = "price";
+        price.textContent = formatPrice(product.price);
+
+        const link = document.createElement("a");
+        link.className = "product-link";
+        link.href = product.url || "#";
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = "Открыть";
+
+        footer.append(price, link);
+        card.append(media, body, footer);
+        return card;
+      }
+
+      function renderFilters(catalog) {
+        const sections = [
+          { id: "all", title: "Все", count: catalog.products.length },
+          ...catalog.categories,
+        ];
+        filtersBox.replaceChildren();
+        sections.forEach((section) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className =
+            section.id === activeFilter ? "filter-button is-active" : "filter-button";
+          button.dataset.filter = section.id;
+          button.textContent = section.title;
+          const counter = document.createElement("span");
+          counter.textContent = String(section.count);
+          button.appendChild(counter);
+          button.addEventListener("click", () => {
+            activeFilter = section.id;
+            [...filtersBox.children].forEach((item) =>
+              item.classList.toggle("is-active", item.dataset.filter === activeFilter),
+            );
+            renderCatalog();
+          });
+          filtersBox.appendChild(button);
         });
-      });
+      }
+
+      function compare(left, right) {
+        if (sortSelect.value === "priceAsc") {
+          const leftPrice = typeof left.data.price === "number" ? left.data.price : Infinity;
+          const rightPrice = typeof right.data.price === "number" ? right.data.price : Infinity;
+          if (leftPrice !== rightPrice) {
+            return leftPrice - rightPrice;
+          }
+        }
+        if (sortSelect.value === "stock" && left.data.in_stock !== right.data.in_stock) {
+          return left.data.in_stock ? -1 : 1;
+        }
+        return left.index - right.index;
+      }
+
+      function renderCatalog() {
+        const query = normalize(searchInput.value).trim();
+        const sorted = [...items].sort(compare);
+
+        // В сетку попадают только подходящие карточки.  Прятать лишние
+        // атрибутом ``hidden`` нельзя: у ``.product-card`` задан
+        // ``display: grid``, и авторский стиль перебивает ``display: none``
+        // браузера — отфильтрованные позиции остались бы на экране.
+        const fragment = document.createDocumentFragment();
+        const visible = sorted.filter((item) => {
+          const matchesFilter = activeFilter === "all" || item.data.category === activeFilter;
+          const matchesQuery = !query || item.search.includes(query);
+          return matchesFilter && matchesQuery;
+        });
+        visible.forEach((item) => fragment.appendChild(item.node));
+
+        if (!visible.length) {
+          const empty = document.createElement("div");
+          empty.className = "empty-state";
+          empty.textContent = "Ничего не найдено";
+          fragment.appendChild(empty);
+        }
+        grid.replaceChildren(fragment);
+
+        const inStock = visible.filter((item) => item.data.in_stock).length;
+        resultCount.textContent = `Показано ${visible.length} из ${items.length} товаров · в наличии ${inStock}`;
+      }
+
+      function showCatalogError() {
+        filtersBox.replaceChildren();
+        const empty = document.createElement("div");
+        empty.className = "empty-state";
+        empty.textContent =
+          "Каталог витрины не загрузился. Соберите его: python3 scripts/build_widget_demo_catalog.py";
+        grid.replaceChildren(empty);
+        resultCount.textContent = "Каталог недоступен";
+      }
+
+      async function loadCatalog() {
+        let catalog;
+        try {
+          const response = await fetch(CATALOG_URL, { cache: "no-cache" });
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+          catalog = await response.json();
+        } catch (error) {
+          console.error("widget-demo: не удалось загрузить каталог", error);
+          showCatalogError();
+          return;
+        }
+
+        items = (catalog.products || []).map((product, index) => ({
+          data: product,
+          index,
+          node: createCard(product),
+          search: normalize(
+            [product.name, product.sku, product.brand, product.section].join(" "),
+          ),
+        }));
+
+        if (!items.length) {
+          showCatalogError();
+          return;
+        }
+
+        renderFilters(catalog);
+        renderCatalog();
+      }
 
       searchForm.addEventListener("submit", (event) => {
         event.preventDefault();
@@ -769,6 +801,8 @@
       });
       searchInput.addEventListener("input", renderCatalog);
       sortSelect.addEventListener("change", renderCatalog);
+
+      loadCatalog();
     </script>
 
     <script

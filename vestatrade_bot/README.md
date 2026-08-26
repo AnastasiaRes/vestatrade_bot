@@ -85,7 +85,7 @@ vestatrade_bot/
 │   ├── chat_logger.py           Сохранение переписок в Markdown
 │   ├── agents/                  Логика диалога (см. «Карта модулей»)
 │   ├── data/                    Кэш каталога, бюджет, паспорта, логи чатов
-│   └── static/                  Демо-чат и embeddable-виджет
+│   └── static/                  Демо-чат, демо-витрина и embeddable-виджет
 ├── tests/                       87 файлов регрессионных тестов (1247 тестов)
 ├── scripts/                     Диагностика, live-прогоны, аудиты покрытия
 ├── reports/                     Отчёты QA-прогонов (артефакты, читаются глазами)
@@ -423,6 +423,22 @@ curl -X POST http://127.0.0.1:8000/reload-feed -H "X-Admin-Token: $RELOAD_FEED_T
 > `localStorage` и живёт между визитами. Если нужно, чтобы каждый визит
 > начинался с чистого контекста, ставьте `data-persist-session="false"`.
 
+**Демо-витрина** (`/widget-demo`) — имитация магазина, на которой виджет
+проверяется в «боевой» обстановке: сайдбар с разделами, поиск, сортировка и
+карточки товаров. Витрина собирается из того же фида, что и каталог бота:
+
+```bash
+python3 scripts/build_widget_demo_catalog.py          # пересобрать витрину
+python3 scripts/build_widget_demo_catalog.py --check  # проверить, не устарела ли
+```
+
+Скрипт читает `data/feed_showcase_100_2026-06-14.xml` тем же `FeedLoader`, что и
+сервер, раскладывает позиции по разделам тем же `FeedSearchAgent.canonical_category`,
+что и поиск, и пишет `app/static/widget-demo-catalog.json` — все 100 позиций и
+счётчики разделов. Страница рисует карточки из этого файла, поэтому спросить у
+консультанта можно про любой товар, который виден на витрине. Рубрики фида для
+разделов не годятся: котлы и насосы лежат в нём в «ПРОКАЧИВАЕМ СКИДКИ».
+
 Для продакшена ограничьте источники: `ALLOWED_ORIGINS=https://vestatrade.ru,https://www.vestatrade.ru`.
 
 ---
@@ -436,7 +452,7 @@ curl -X POST http://127.0.0.1:8000/reload-feed -H "X-Admin-Token: $RELOAD_FEED_T
 
 | Переменная | По умолчанию | Назначение |
 |---|---|---|
-| `LLM_PROVIDER` | `ollama` | `ollama`, `openrouter` или любое другое значение = LLM выключена |
+| `LLM_PROVIDER` | `ollama` | `ollama`, `openrouter` или любое другое значение = LLM выключена. `openrouter` без ключа автоматически переключается на Ollama |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Адрес Ollama |
 | `OLLAMA_MODEL` / `OLLAMA_MODEL_STRONG` | `qwen2.5-coder:7b` | Быстрая / сильная модель |
 | `OPENROUTER_API_KEY` | — | Ключ OpenRouter |
@@ -449,6 +465,14 @@ curl -X POST http://127.0.0.1:8000/reload-feed -H "X-Admin-Token: $RELOAD_FEED_T
 | `LLM_INPUT_PRICE_PER_1M_TOKENS_USD` | `0` | Цена входных токенов (для Ollama — 0) |
 | `LLM_OUTPUT_PRICE_PER_1M_TOKENS_USD` | `0` | Цена выходных токенов |
 
+Если `LLM_PROVIDER=openrouter`, но `OPENROUTER_API_KEY` отсутствует, пуст или
+содержит только пробелы, приложение при запуске выбирает Ollama. Все runtime-
+агенты, включая semantic interpreter, audit, консультанта и генератор ответа,
+используют `OLLAMA_MODEL` / `OLLAMA_MODEL_STRONG`; OpenRouter-модели в таком
+режиме не передаются локальному серверу. Это относится к самому боту. Отдельные
+платные live-eval/judge-скрипты остаются намеренно OpenRouter-only и без ключа
+пропускаются либо завершаются до запуска оценки.
+
 `OPENROUTER_*` варианты старых имён (`OPENROUTER_TIMEOUT_SECONDS`,
 `OPENROUTER_MAX_RETRIES`, `OPENROUTER_*_PRICE_*`) поддерживаются для обратной
 совместимости.
@@ -456,8 +480,8 @@ curl -X POST http://127.0.0.1:8000/reload-feed -H "X-Admin-Token: $RELOAD_FEED_T
 Сильная модель (`*_MODEL_STRONG`) используется `ConsultantAgent`; по умолчанию
 равна быстрой, чтобы без настройки ничего не ломалось.
 
-> **Какой провайдер реально работает.** `.env.example` и текущий `.env`
-> выставляют `LLM_PROVIDER=ollama` на удалённый хост. Если этот хост
+> **Какой провайдер реально работает.** `.env.example` использует локальный
+> Ollama по адресу `http://localhost:11434`. Если этот сервер
 > недоступен, `scripts/check_llm.py` покажет `FAILED`, и бот пойдёт полностью
 > детерминированным путём — молча, без ошибок. Живые прогоны с LLM выполняются
 > через `openrouter` (последний прогон эвалуатора — `qwen/qwen3-vl-8b-instruct`).

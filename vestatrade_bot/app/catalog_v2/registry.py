@@ -385,6 +385,24 @@ APPLICATION = _fact(
     comparison=ComparisonMode.EXACT,
     fields=("рабочая среда",),
 )
+PIPE_SERVICE = _fact(
+    "pipe_service",
+    aliases=(
+        "application",
+        "application_type",
+        "water_type",
+        "service_type",
+        "intended_use",
+        "назначение",
+        "применение",
+    ),
+    value_type=FactValueType.TEXT,
+    required=True,
+    decision=True,
+    comparison=ComparisonMode.CONTAINS,
+    parsers=("pipe_service",),
+    learn="identify_pipe_service",
+)
 OPERATING_TEMPERATURE = _fact(
     "operating_temperature_c",
     aliases=(
@@ -420,6 +438,43 @@ OPERATING_PRESSURE = _fact(
         "максимальное давление в системе, бар",
         "давление, бар",
     ),
+)
+PIPE_OPERATING_TEMPERATURE = OPERATING_TEMPERATURE.model_copy(
+    update={
+        "required_for_exact": True,
+        "decision_changing": True,
+        "learn_method_code": "identify_pipe_operating_temperature",
+        "general_parsers": tuple(
+            dict.fromkeys(
+                (*OPERATING_TEMPERATURE.general_parsers, "pipe_operating_point")
+            )
+        ),
+    }
+)
+PIPE_OPERATING_PRESSURE = OPERATING_PRESSURE.model_copy(
+    update={
+        "required_for_exact": True,
+        "decision_changing": True,
+        "learn_method_code": "identify_pipe_operating_pressure",
+        "general_parsers": tuple(
+            dict.fromkeys(
+                (*OPERATING_PRESSURE.general_parsers, "pipe_operating_point")
+            )
+        ),
+    }
+)
+PIPE_REINFORCEMENT = _fact(
+    "reinforcement",
+    aliases=(
+        "reinforcement_type",
+        "pipe_reinforcement",
+        "армирование",
+        "тип_армирования",
+    ),
+    value_type=FactValueType.TEXT,
+    comparison=ComparisonMode.EXACT,
+    fields=("армирование", "тип армирования"),
+    parsers=("pipe_reinforcement",),
 )
 BRAND = _fact(
     "brand",
@@ -614,6 +669,7 @@ DEFAULT_CONTRACTS: tuple[ProductContract, ...] = (
         ),
         BASE,
         (
+            PIPE_SERVICE,
             DIAMETER.model_copy(
                 update={
                     "general_parsers": tuple(
@@ -621,6 +677,9 @@ DEFAULT_CONTRACTS: tuple[ProductContract, ...] = (
                     )
                 }
             ),
+            PIPE_OPERATING_TEMPERATURE,
+            PIPE_OPERATING_PRESSURE,
+            PIPE_REINFORCEMENT,
             MATERIAL,
         ),
         catalog_types=("труба",),
@@ -630,7 +689,16 @@ DEFAULT_CONTRACTS: tuple[ProductContract, ...] = (
     _contract(
         "pipe.ppr.v1", ProductKind.PIPE, "pipes",
         ("pipe", "ppr pipe", "polypropylene pipe", "труба", "полипропиленовая труба"),
-        BASE, (DIAMETER, PRESSURE_CLASS, MATERIAL),
+        BASE,
+        (
+            PIPE_SERVICE,
+            DIAMETER,
+            PIPE_OPERATING_TEMPERATURE,
+            PIPE_OPERATING_PRESSURE,
+            PIPE_REINFORCEMENT,
+            PRESSURE_CLASS,
+            MATERIAL,
+        ),
         catalog_categories=("трубы",), invariants=("diameter_mm",),
     ),
     _contract(

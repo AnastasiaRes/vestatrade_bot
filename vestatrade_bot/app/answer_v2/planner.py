@@ -1089,6 +1089,34 @@ def build_answer_plan(
                     source_turn=dialogue_state.turn_number,
                 )
             )
+            if (
+                readiness is not None
+                and readiness.status == ReadinessStatus.PRELIMINARY_READY
+            ):
+                for fact_name in readiness.missing_decision_facts:
+                    if fact_name not in search_plan.unavailable_constraints:
+                        continue
+                    limitations.append(
+                        LimitationPlan(
+                            limitation_id=_stable_id(
+                                "limit",
+                                search_plan.plan_id,
+                                "customer_fact_missing",
+                                fact_name,
+                            ),
+                            status=LimitationStatus.UNVERIFIED,
+                            reason_code="customer_fact_missing_for_exact_match",
+                            task_id=search_plan.task_id,
+                            goal_id=search_plan.goal_id,
+                            fact_name=fact_name,
+                            source_ref_ids=(plan_ref.source_ref_id,),
+                            allowed_strategy_kinds=(
+                                ResponseStrategyKind.SHOW_PRELIMINARY_OPTIONS,
+                                ResponseStrategyKind.CONTINUE_WITH_CONFIRMED_FACTS,
+                                ResponseStrategyKind.STATE_CAPABILITY_BOUNDARY,
+                            ),
+                        )
+                    )
             allowed_candidate_skus = {
                 *search_plan.eligible_skus,
                 *search_plan.relaxed_skus,

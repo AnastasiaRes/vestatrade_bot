@@ -1,0 +1,1599 @@
+{
+  "source": "data/feed_showcase_100_2026-06-14.xml",
+  "feed_date": "2026-06-14 01:03",
+  "total": 100,
+  "categories": [
+    {
+      "id": "sewer",
+      "title": "Канализация",
+      "count": 20
+    },
+    {
+      "id": "valves",
+      "title": "Водозапорная арматура",
+      "count": 20
+    },
+    {
+      "id": "radiator_fittings",
+      "title": "Арматура для радиаторов",
+      "count": 16
+    },
+    {
+      "id": "pipes",
+      "title": "Трубы",
+      "count": 14
+    },
+    {
+      "id": "pumps",
+      "title": "Насосы",
+      "count": 13
+    },
+    {
+      "id": "boilers",
+      "title": "Котлы",
+      "count": 7
+    },
+    {
+      "id": "fittings",
+      "title": "Фитинги",
+      "count": 6
+    },
+    {
+      "id": "radiators",
+      "title": "Радиаторы",
+      "count": 4
+    }
+  ],
+  "products": [
+    {
+      "sku": "VT.1500.0.0",
+      "name": "Термоголовка диап. регул-ки 6,5 - 28°C жидкостная",
+      "brand": "VALTEC",
+      "category": "radiator_fittings",
+      "section": "Арматура для радиаторов",
+      "price": 1044.0,
+      "url": "https://www.vestatrade.ru/termoreguliruyushchaya-armatura-dlya-radiatorov/klapany-valtec-dlya-radiatorov/klapany-termostaticheskie-valtec-dlya-radiatorov/termogolovka-diap-regul-ki-65-28degc-zhidkostnaya/",
+      "image": "https://www.vestatrade.ru/image/catalog/radiatori_otopleniy/klapanvaltek/10.jpg",
+      "in_stock": true,
+      "qty": 25,
+      "tags": [
+        "Арматура для радиаторов"
+      ]
+    },
+    {
+      "sku": "VT.048.N.04",
+      "name": "Клапан с термостатической головкой для рад. прямой 1/2\"",
+      "brand": "VALTEC",
+      "category": "radiator_fittings",
+      "section": "Арматура для радиаторов",
+      "price": 1404.0,
+      "url": "https://www.vestatrade.ru/termoreguliruyushchaya-armatura-dlya-radiatorov/klapany-valtec-dlya-radiatorov/klapany-termostaticheskie-valtec-dlya-radiatorov/klapan-s-termostaticheskoy-golovkoy-dlya-rad-pryamoy-12/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/Valtek/VT.048.N/VT.048.N_0.jpg",
+      "in_stock": false,
+      "qty": 0,
+      "tags": [
+        "Арматура для радиаторов"
+      ]
+    },
+    {
+      "sku": "VT.046.N.04",
+      "name": "Комплект терморег-го оборуд-я д/рад., прямой 1/2\" (термост-ая головка, термостат-й клапан, запорный",
+      "brand": "VALTEC",
+      "category": "radiator_fittings",
+      "section": "Арматура для радиаторов",
+      "price": 2384.0,
+      "url": "https://www.vestatrade.ru/termoreguliruyushchaya-armatura-dlya-radiatorov/klapany-valtec-dlya-radiatorov/klapany-termostaticheskie-valtec-dlya-radiatorov/komplekt-termoreg-go-oborud-ya-drad-pryamoy-12-termost-aya-golovka-termostat-y-klapan-zapornyy/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/Valtek/VT.046.N/VT.046.N.png",
+      "in_stock": true,
+      "qty": 2,
+      "tags": [
+        "Арматура для радиаторов"
+      ]
+    },
+    {
+      "sku": "VTp.751.0.020",
+      "name": "Угольник 90 PPR 20мм",
+      "brand": "VALTEC",
+      "category": "fittings",
+      "section": "Фитинги",
+      "price": 15.0,
+      "url": "https://www.vestatrade.ru/fitingi/fitingi-polipropilenovye/fitingi-belye-valtec/ugolnik-90-ppr-20mm/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/trubiifitingi/valtec/16.jpg",
+      "in_stock": true,
+      "qty": 1789,
+      "tags": [
+        "Полипропилен",
+        "Под сварку"
+      ]
+    },
+    {
+      "sku": "VTp.751.0.025",
+      "name": "Угольник 90 PPR 25мм",
+      "brand": "VALTEC",
+      "category": "fittings",
+      "section": "Фитинги",
+      "price": 22.0,
+      "url": "https://www.vestatrade.ru/fitingi/fitingi-polipropilenovye/fitingi-belye-valtec/ugolnik-90-ppr-25mm/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/trubiifitingi/valtec/16.jpg",
+      "in_stock": true,
+      "qty": 1444,
+      "tags": [
+        "Полипропилен",
+        "Под сварку"
+      ]
+    },
+    {
+      "sku": "VTp.751.0.032",
+      "name": "Угольник 90 PPR 32мм",
+      "brand": "VALTEC",
+      "category": "fittings",
+      "section": "Фитинги",
+      "price": 38.0,
+      "url": "https://www.vestatrade.ru/fitingi/fitingi-polipropilenovye/fitingi-belye-valtec/ugolnik-90-ppr-32mm/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/trubiifitingi/valtec/16.jpg",
+      "in_stock": true,
+      "qty": 937,
+      "tags": [
+        "Полипропилен",
+        "Под сварку"
+      ]
+    },
+    {
+      "sku": "VTp.753.0.02004",
+      "name": "Угольник PPR с переходом на нар. р. 20х1/2\"",
+      "brand": "VALTEC",
+      "category": "fittings",
+      "section": "Фитинги",
+      "price": 183.0,
+      "url": "https://www.vestatrade.ru/fitingi/fitingi-polipropilenovye/fitingi-belye-valtec/ugolnik-ppr-s-perehodom-na-nar-r-20h12/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/trubiifitingi/valtec/18.jpg",
+      "in_stock": true,
+      "qty": 88,
+      "tags": [
+        "Полипропилен, Латунь",
+        "Под сварку"
+      ]
+    },
+    {
+      "sku": "VT.245.N.05",
+      "name": "Кран шаровой BASE с дренажом и воздухоотводчиком 3/4\" вн.-вн.",
+      "brand": "VALTEC",
+      "category": "valves",
+      "section": "Водозапорная арматура",
+      "price": 1120.0,
+      "url": "https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-s-drenazhom-i-vozduhootvodchikom-34-vn-vn/",
+      "image": "https://www.vestatrade.ru/image/catalog/krani_i_klapani/28.jpg",
+      "in_stock": true,
+      "qty": 1,
+      "tags": [
+        "3/4\"",
+        "DN 20"
+      ]
+    },
+    {
+      "sku": "VT.032.N.04",
+      "name": "Клапан термостатический для рад. прямой 1/2\"",
+      "brand": "VALTEC",
+      "category": "radiator_fittings",
+      "section": "Арматура для радиаторов",
+      "price": 1673.0,
+      "url": "https://www.vestatrade.ru/termoreguliruyushchaya-armatura-dlya-radiatorov/klapany-valtec-dlya-radiatorov/klapany-termostaticheskie-valtec-dlya-radiatorov/klapan-termostaticheskiy-dlya-rad-pryamoy-12/",
+      "image": "https://www.vestatrade.ru/image/catalog/radiatori_otopleniy/klapanvaltek/termap.jpg",
+      "in_stock": true,
+      "qty": 1,
+      "tags": [
+        "Арматура для радиаторов"
+      ]
+    },
+    {
+      "sku": "VT.031.N.04",
+      "name": "Клапан термостатический для рад. угловой 1/2\"",
+      "brand": "VALTEC",
+      "category": "radiator_fittings",
+      "section": "Арматура для радиаторов",
+      "price": 1541.0,
+      "url": "https://www.vestatrade.ru/termoreguliruyushchaya-armatura-dlya-radiatorov/klapany-valtec-dlya-radiatorov/klapany-termostaticheskie-valtec-dlya-radiatorov/klapan-termostaticheskiy-dlya-rad-uglovoy-12/",
+      "image": "https://www.vestatrade.ru/image/catalog/radiatori_otopleniy/klapanvaltek/vt.031.n_0.jpg",
+      "in_stock": true,
+      "qty": 4,
+      "tags": [
+        "Арматура для радиаторов"
+      ]
+    },
+    {
+      "sku": "VT.214.N.07",
+      "name": "Кран шаровой BASE, стальная рукоятка 1 1/4\" вн.-вн.",
+      "brand": "VALTEC",
+      "category": "valves",
+      "section": "Водозапорная арматура",
+      "price": 2059.0,
+      "url": "https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-stalnaya-rukoyatka-1-14-vn-vn/",
+      "image": "https://www.vestatrade.ru/image/catalog/krani_i_klapani/39.jpg",
+      "in_stock": true,
+      "qty": 6,
+      "tags": [
+        "1 1/4\"",
+        "DN 32"
+      ]
+    },
+    {
+      "sku": "VT.214.N.06",
+      "name": "Кран шаровой BASE, стальная рукоятка 1\" вн.-вн.",
+      "brand": "VALTEC",
+      "category": "valves",
+      "section": "Водозапорная арматура",
+      "price": 1263.0,
+      "url": "https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-stalnaya-rukoyatka-1-vn-vn/",
+      "image": "https://www.vestatrade.ru/image/catalog/krani_i_klapani/39.jpg",
+      "in_stock": true,
+      "qty": 1,
+      "tags": [
+        "1\"",
+        "DN 25"
+      ]
+    },
+    {
+      "sku": "VT.217.N.04",
+      "name": "Кран шаровой BASE, рукоятка бабочка 1/2\" вн.-вн.",
+      "brand": "VALTEC",
+      "category": "valves",
+      "section": "Водозапорная арматура",
+      "price": 452.0,
+      "url": "https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/",
+      "image": "https://www.vestatrade.ru/image/catalog/krani_i_klapani/36.jpg",
+      "in_stock": true,
+      "qty": 57,
+      "tags": [
+        "1/2\"",
+        "DN 15"
+      ]
+    },
+    {
+      "sku": "VT.214.N.04",
+      "name": "Кран шаровой BASE, стальная рукоятка 1/2\" вн.-вн.",
+      "brand": "VALTEC",
+      "category": "valves",
+      "section": "Водозапорная арматура",
+      "price": 503.0,
+      "url": "https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-stalnaya-rukoyatka-12-vn-vn/",
+      "image": "https://www.vestatrade.ru/image/catalog/krani_i_klapani/39.jpg",
+      "in_stock": true,
+      "qty": 2,
+      "tags": [
+        "1/2\"",
+        "DN 15"
+      ]
+    },
+    {
+      "sku": "VT.214.N.09",
+      "name": "Кран шаровой BASE, стальная рукоятка 2\" вн.-вн.",
+      "brand": "VALTEC",
+      "category": "valves",
+      "section": "Водозапорная арматура",
+      "price": 4445.0,
+      "url": "https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-stalnaya-rukoyatka-2-vn-vn/",
+      "image": "https://www.vestatrade.ru/image/catalog/krani_i_klapani/39.jpg",
+      "in_stock": false,
+      "qty": 0,
+      "tags": [
+        "2\"",
+        "DN 50"
+      ]
+    },
+    {
+      "sku": "VT.217.N.05",
+      "name": "Кран шаровой BASE, рукоятка бабочка 3/4\" вн.-вн.",
+      "brand": "VALTEC",
+      "category": "valves",
+      "section": "Водозапорная арматура",
+      "price": 687.0,
+      "url": "https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-34-vn-vn/",
+      "image": "https://www.vestatrade.ru/image/catalog/krani_i_klapani/36.jpg",
+      "in_stock": true,
+      "qty": 55,
+      "tags": [
+        "3/4\"",
+        "DN 20"
+      ]
+    },
+    {
+      "sku": "VT.214.N.05",
+      "name": "Кран шаровой BASE, стальная рукоятка 3/4\" вн.-вн.",
+      "brand": "VALTEC",
+      "category": "valves",
+      "section": "Водозапорная арматура",
+      "price": 777.0,
+      "url": "https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-stalnaya-rukoyatka-34-vn-vn/",
+      "image": "https://www.vestatrade.ru/image/catalog/krani_i_klapani/39.jpg",
+      "in_stock": false,
+      "qty": 0,
+      "tags": [
+        "3/4\"",
+        "DN 20"
+      ]
+    },
+    {
+      "sku": "VT.215.N.06",
+      "name": "Кран шаровой BASE, стальная рукоятка 1\" вн.-нар.",
+      "brand": "VALTEC",
+      "category": "valves",
+      "section": "Водозапорная арматура",
+      "price": 1373.0,
+      "url": "https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-stalnaya-rukoyatka-1-vn-nar/",
+      "image": "https://www.vestatrade.ru/image/catalog/krani_i_klapani/40.jpg",
+      "in_stock": false,
+      "qty": 0,
+      "tags": [
+        "1\"",
+        "DN 25"
+      ]
+    },
+    {
+      "sku": "VT.215.N.04",
+      "name": "Кран шаровой BASE, стальная рукоятка 1/2\" вн.-нар.",
+      "brand": "VALTEC",
+      "category": "valves",
+      "section": "Водозапорная арматура",
+      "price": 555.0,
+      "url": "https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-stalnaya-rukoyatka-12-vn-nar/",
+      "image": "https://www.vestatrade.ru/image/catalog/krani_i_klapani/40.jpg",
+      "in_stock": true,
+      "qty": 3,
+      "tags": [
+        "1/2\"",
+        "DN 15"
+      ]
+    },
+    {
+      "sku": "VT.218.N.04",
+      "name": "Кран шаровой BASE, рукоятка бабочка 1/2\" вн.-нар.",
+      "brand": "VALTEC",
+      "category": "valves",
+      "section": "Водозапорная арматура",
+      "price": 482.0,
+      "url": "https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-nar/",
+      "image": "https://www.vestatrade.ru/image/catalog/krani_i_klapani/37.jpg",
+      "in_stock": true,
+      "qty": 174,
+      "tags": [
+        "1/2\"",
+        "DN 15"
+      ]
+    },
+    {
+      "sku": "VT.218.N.05",
+      "name": "Кран шаровой BASE, рукоятка бабочка 3/4\" вн.-нар.",
+      "brand": "VALTEC",
+      "category": "valves",
+      "section": "Водозапорная арматура",
+      "price": 779.0,
+      "url": "https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-34-vn-nar/",
+      "image": "https://www.vestatrade.ru/image/catalog/krani_i_klapani/37.jpg",
+      "in_stock": true,
+      "qty": 105,
+      "tags": [
+        "3/4\"",
+        "DN 20"
+      ]
+    },
+    {
+      "sku": "VT.215.N.05",
+      "name": "Кран шаровой BASE, стальная рукоятка 3/4\" вн.-нар.",
+      "brand": "VALTEC",
+      "category": "valves",
+      "section": "Водозапорная арматура",
+      "price": 830.0,
+      "url": "https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-stalnaya-rukoyatka-34-vn-nar/",
+      "image": "https://www.vestatrade.ru/image/catalog/krani_i_klapani/40.jpg",
+      "in_stock": false,
+      "qty": 0,
+      "tags": [
+        "3/4\"",
+        "DN 20"
+      ]
+    },
+    {
+      "sku": "VT.227.N.06",
+      "name": "Кран шаровой BASE с полусгоном 1\" вн.-нар.",
+      "brand": "VALTEC",
+      "category": "valves",
+      "section": "Водозапорная арматура",
+      "price": 2000.0,
+      "url": "https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-s-polusgonom-1-vn-nar/",
+      "image": "https://www.vestatrade.ru/image/catalog/krani_i_klapani/29.jpg",
+      "in_stock": false,
+      "qty": 0,
+      "tags": [
+        "1\"",
+        "DN 25"
+      ]
+    },
+    {
+      "sku": "VT.227.N.04",
+      "name": "Кран шаровой BASE с полусгоном 1/2\" вн.-нар.",
+      "brand": "VALTEC",
+      "category": "valves",
+      "section": "Водозапорная арматура",
+      "price": 580.0,
+      "url": "https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-s-polusgonom-12-vn-nar/",
+      "image": "https://www.vestatrade.ru/image/catalog/krani_i_klapani/29.jpg",
+      "in_stock": true,
+      "qty": 82,
+      "tags": [
+        "1/2\"",
+        "DN 15"
+      ]
+    },
+    {
+      "sku": "VT.227.N.05",
+      "name": "Кран шаровой BASE с полусгоном 3/4\" вн.-нар.",
+      "brand": "VALTEC",
+      "category": "valves",
+      "section": "Водозапорная арматура",
+      "price": 929.0,
+      "url": "https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-s-polusgonom-34-vn-nar/",
+      "image": "https://www.vestatrade.ru/image/catalog/krani_i_klapani/29.jpg",
+      "in_stock": true,
+      "qty": 40,
+      "tags": [
+        "3/4\"",
+        "DN 20"
+      ]
+    },
+    {
+      "sku": "VT.228.N.06",
+      "name": "Кран шаровой BASE угловой с полусгоном 1\" вн.-нар.",
+      "brand": "VALTEC",
+      "category": "valves",
+      "section": "Водозапорная арматура",
+      "price": 2256.0,
+      "url": "https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-uglovoy-s-polusgonom-1-vn-nar/",
+      "image": "https://www.vestatrade.ru/image/catalog/krani_i_klapani/34.jpg",
+      "in_stock": true,
+      "qty": 4,
+      "tags": [
+        "1\"",
+        "DN 25"
+      ]
+    },
+    {
+      "sku": "VT.228.N.04",
+      "name": "Кран шаровой BASE угловой с полусгоном 1/2\" вн.-нар.",
+      "brand": "VALTEC",
+      "category": "valves",
+      "section": "Водозапорная арматура",
+      "price": 805.0,
+      "url": "https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-uglovoy-s-polusgonom-12-vn-nar/",
+      "image": "https://www.vestatrade.ru/image/catalog/krani_i_klapani/34.jpg",
+      "in_stock": true,
+      "qty": 9,
+      "tags": [
+        "1/2\"",
+        "DN 15"
+      ]
+    },
+    {
+      "sku": "VT.228.N.05",
+      "name": "Кран шаровой BASE угловой с полусгоном 3/4\" вн.-нар.",
+      "brand": "VALTEC",
+      "category": "valves",
+      "section": "Водозапорная арматура",
+      "price": 1309.0,
+      "url": "https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-uglovoy-s-polusgonom-34-vn-nar/",
+      "image": "https://www.vestatrade.ru/image/catalog/krani_i_klapani/34.jpg",
+      "in_stock": true,
+      "qty": 5,
+      "tags": [
+        "3/4\"",
+        "DN 20"
+      ]
+    },
+    {
+      "sku": "VT.5000.0.0",
+      "name": "Термоголовка диап. регул-ки 6,5 - 28°C жидкостная",
+      "brand": "VALTEC",
+      "category": "radiator_fittings",
+      "section": "Арматура для радиаторов",
+      "price": 1953.0,
+      "url": "https://www.vestatrade.ru/termoreguliruyushchaya-armatura-dlya-radiatorov/klapany-valtec-dlya-radiatorov/klapany-termostaticheskie-valtec-dlya-radiatorov/termogolovka-diap-regul-ki-65-28degc-zhidkostnaya-2/",
+      "image": "https://www.vestatrade.ru/image/catalog/radiatori_otopleniy/klapanvaltek/11.jpg",
+      "in_stock": true,
+      "qty": 1,
+      "tags": [
+        "Арматура для радиаторов"
+      ]
+    },
+    {
+      "sku": "VT.047.N.04",
+      "name": "Клапан с термостатической головкой для рад. угловой 1/2\"",
+      "brand": "VALTEC",
+      "category": "radiator_fittings",
+      "section": "Арматура для радиаторов",
+      "price": 1421.0,
+      "url": "https://www.vestatrade.ru/termoreguliruyushchaya-armatura-dlya-radiatorov/klapany-valtec-dlya-radiatorov/klapany-termostaticheskie-valtec-dlya-radiatorov/klapan-s-termostaticheskoy-golovkoy-dlya-rad-uglovoy-12/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/Valtek/VT.047.N/VT.047.N.jpg",
+      "in_stock": false,
+      "qty": 0,
+      "tags": [
+        "Арматура для радиаторов"
+      ]
+    },
+    {
+      "sku": "VT.245.N.04",
+      "name": "Кран шаровой BASE с дренажом и воздухоотводчиком 1/2\" вн.-вн.",
+      "brand": "VALTEC",
+      "category": "valves",
+      "section": "Водозапорная арматура",
+      "price": 753.0,
+      "url": "https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-s-drenazhom-i-vozduhootvodchikom-12-vn-vn/",
+      "image": "https://www.vestatrade.ru/image/catalog/krani_i_klapani/28.jpg",
+      "in_stock": false,
+      "qty": 0,
+      "tags": [
+        "1/2\"",
+        "DN 15"
+      ]
+    },
+    {
+      "sku": "VT.3000.0.0",
+      "name": "Термоголовка диап. регул-ки 6,5 - 27,5°C жидкостная",
+      "brand": "VALTEC",
+      "category": "radiator_fittings",
+      "section": "Арматура для радиаторов",
+      "price": 654.0,
+      "url": "https://www.vestatrade.ru/termoreguliruyushchaya-armatura-dlya-radiatorov/klapany-valtec-dlya-radiatorov/klapany-termostaticheskie-valtec-dlya-radiatorov/termogolovka-diap-regul-ki-65-275degc-zhidkostnaya/",
+      "image": "https://www.vestatrade.ru/image/catalog/radiatori_otopleniy/klapanvaltek/8.jpg",
+      "in_stock": true,
+      "qty": 24,
+      "tags": [
+        "Арматура для радиаторов"
+      ]
+    },
+    {
+      "sku": "VT.034.N.04",
+      "name": "Клапан термост-ий повышенной пропускной спос-ти прям., 1/2\"",
+      "brand": "VALTEC",
+      "category": "radiator_fittings",
+      "section": "Арматура для радиаторов",
+      "price": 1192.0,
+      "url": "https://www.vestatrade.ru/termoreguliruyushchaya-armatura-dlya-radiatorov/klapany-valtec-dlya-radiatorov/klapany-termostaticheskie-valtec-dlya-radiatorov/klapan-termost-iy-povyshennoy-propusknoy-spos-ti-pryam-12/",
+      "image": "https://www.vestatrade.ru/image/catalog/radiatori_otopleniy/klapanvaltek/vt.034.n_0.jpg",
+      "in_stock": true,
+      "qty": 7,
+      "tags": [
+        "Арматура для радиаторов"
+      ]
+    },
+    {
+      "sku": "VT.034.N.05",
+      "name": "Клапан термост-ий повышенной пропускной спос-ти прям., 3/4\"",
+      "brand": "VALTEC",
+      "category": "radiator_fittings",
+      "section": "Арматура для радиаторов",
+      "price": 1974.0,
+      "url": "https://www.vestatrade.ru/termoreguliruyushchaya-armatura-dlya-radiatorov/klapany-valtec-dlya-radiatorov/klapany-termostaticheskie-valtec-dlya-radiatorov/klapan-termost-iy-povyshennoy-propusknoy-spos-ti-pryam-34/",
+      "image": "https://www.vestatrade.ru/image/catalog/radiatori_otopleniy/klapanvaltek/vt.034.n_0.jpg",
+      "in_stock": true,
+      "qty": 12,
+      "tags": [
+        "Арматура для радиаторов"
+      ]
+    },
+    {
+      "sku": "VT.033.N.04",
+      "name": "Клапан термост-ий повышенной пропускной спос-ти угл., 1/2\"",
+      "brand": "VALTEC",
+      "category": "radiator_fittings",
+      "section": "Арматура для радиаторов",
+      "price": 1116.0,
+      "url": "https://www.vestatrade.ru/termoreguliruyushchaya-armatura-dlya-radiatorov/klapany-valtec-dlya-radiatorov/klapany-termostaticheskie-valtec-dlya-radiatorov/klapan-termost-iy-povyshennoy-propusknoy-spos-ti-ugl-12/",
+      "image": "https://www.vestatrade.ru/image/catalog/radiatori_otopleniy/klapanvaltek/vt.033.n_0.jpg",
+      "in_stock": false,
+      "qty": 0,
+      "tags": [
+        "Арматура для радиаторов"
+      ]
+    },
+    {
+      "sku": "VT.033.N.05",
+      "name": "Клапан термост-ий повышенной пропускной спос-ти угл., 3/4\"",
+      "brand": "VALTEC",
+      "category": "radiator_fittings",
+      "section": "Арматура для радиаторов",
+      "price": 1751.0,
+      "url": "https://www.vestatrade.ru/termoreguliruyushchaya-armatura-dlya-radiatorov/klapany-valtec-dlya-radiatorov/klapany-termostaticheskie-valtec-dlya-radiatorov/klapan-termost-iy-povyshennoy-propusknoy-spos-ti-ugl-34/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/valtek/new/kran/VT.033.N.05.jpg",
+      "in_stock": false,
+      "qty": 0,
+      "tags": [
+        "Арматура для радиаторов"
+      ]
+    },
+    {
+      "sku": "VTp.704.0.040025",
+      "name": "Муфта переходная PPR 40-25мм, вн-нар",
+      "brand": "VALTEC",
+      "category": "fittings",
+      "section": "Фитинги",
+      "price": 25.0,
+      "url": "https://www.vestatrade.ru/fitingi/fitingi-polipropilenovye/fitingi-belye-valtec/mufta-perehodnaya-ppr-40-25mm-vn-nar/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/trubiifitingi/valtec/muf_per.jpg",
+      "in_stock": true,
+      "qty": 26,
+      "tags": [
+        "Полипропилен",
+        "Под сварку"
+      ]
+    },
+    {
+      "sku": "VTp.704.0.050032",
+      "name": "Муфта переходная PPR 50-32мм, вн-нар",
+      "brand": "VALTEC",
+      "category": "fittings",
+      "section": "Фитинги",
+      "price": 44.0,
+      "url": "https://www.vestatrade.ru/fitingi/fitingi-polipropilenovye/fitingi-belye-valtec/mufta-perehodnaya-ppr-50-32mm-vn-nar/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/trubiifitingi/valtec/muf_per.jpg",
+      "in_stock": true,
+      "qty": 4,
+      "tags": [
+        "Полипропилен",
+        "Под сварку"
+      ]
+    },
+    {
+      "sku": "VTp.700.FB25.50",
+      "name": "Труба PP-FIBER арм. стекл., PN 25, 50 MM (белый)",
+      "brand": "VALTEC",
+      "category": "pipes",
+      "section": "Трубы",
+      "price": 810.0,
+      "url": "https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-belye-valtec/truba-pp-fiber-arm-stekl-pn-25-50-mm-belyy/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/trubiifitingi/vtp.700.fb20_0.jpg",
+      "in_stock": true,
+      "qty": 22,
+      "tags": [
+        "Трубы"
+      ]
+    },
+    {
+      "sku": "VRS.254.18.0",
+      "name": "Насос циркуляционный VALTEC RS 25/4-180 с гайками",
+      "brand": "VALTEC",
+      "category": "pumps",
+      "section": "Насосное оборудование",
+      "price": 3989.0,
+      "url": "https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-254-180-s-gaykami/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/valtek/Nasos/VRS.254.18.0/VRS.254.18_0.jpg",
+      "in_stock": true,
+      "qty": 13,
+      "tags": [
+        "72 Вт",
+        "Чугун"
+      ]
+    },
+    {
+      "sku": "VRS.256.13.0",
+      "name": "Насос циркуляционный VALTEC RS 25/6-130 с гайками",
+      "brand": "VALTEC",
+      "category": "pumps",
+      "section": "Насосное оборудование",
+      "price": 4311.0,
+      "url": "https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-256-130-s-gaykami/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/valtek/Nasos/vrs130/VRS.256.13_0.jpg",
+      "in_stock": true,
+      "qty": 14,
+      "tags": [
+        "93 Вт",
+        "Чугун"
+      ]
+    },
+    {
+      "sku": "VRS.256.18.0",
+      "name": "Насос циркуляционный VALTEC RS 25/6-180 с гайками",
+      "brand": "VALTEC",
+      "category": "pumps",
+      "section": "Насосное оборудование",
+      "price": 4186.0,
+      "url": "https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-256-180-s-gaykami/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/valtek/Nasos/VRS.256.18.0/VRS.256.18_0.jpg",
+      "in_stock": true,
+      "qty": 16,
+      "tags": [
+        "93 Вт",
+        "Чугун"
+      ]
+    },
+    {
+      "sku": "VRS.258.18.0",
+      "name": "Насос циркуляционный VALTEC RS 25/8-180 с гайками",
+      "brand": "VALTEC",
+      "category": "pumps",
+      "section": "Насосное оборудование",
+      "price": 8077.0,
+      "url": "https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-258-180-s-gaykami/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/valtek/Nasos/VRS.258.18.0/VRS.258.18_0.jpg",
+      "in_stock": true,
+      "qty": 7,
+      "tags": [
+        "182 Вт",
+        "Чугун"
+      ]
+    },
+    {
+      "sku": "VRS.324.18.0",
+      "name": "Насос циркуляционный VALTEC RS 32/4-180 с гайками",
+      "brand": "VALTEC",
+      "category": "pumps",
+      "section": "Насосное оборудование",
+      "price": 4301.0,
+      "url": "https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-324-180-s-gaykami/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/valtek/Nasos/VRS.324.18.0/VRS.324.18_0.jpg",
+      "in_stock": true,
+      "qty": 1,
+      "tags": [
+        "72 Вт",
+        "Чугун"
+      ]
+    },
+    {
+      "sku": "VT.045.N.04",
+      "name": "Комплект терморег-го оборуд-я д/рад., угловой 1/2\" (термост-ая головка, термостат-й клапан, запорный",
+      "brand": "VALTEC",
+      "category": "radiator_fittings",
+      "section": "Арматура для радиаторов",
+      "price": 2194.0,
+      "url": "https://www.vestatrade.ru/termoreguliruyushchaya-armatura-dlya-radiatorov/klapany-valtec-dlya-radiatorov/klapany-termostaticheskie-valtec-dlya-radiatorov/komplekt-termoreg-go-oborud-ya-drad-uglovoy-12-termost-aya-golovka-termostat-y-klapan-zapornyy/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/Valtek/VT.045.N/VT.045.N.04.jpg",
+      "in_stock": true,
+      "qty": 1,
+      "tags": [
+        "Арматура для радиаторов"
+      ]
+    },
+    {
+      "sku": "VSB.004.15.0",
+      "name": "Насос цирк. для ГВС VALTEC VSB 04-15",
+      "brand": "VALTEC",
+      "category": "pumps",
+      "section": "Насосное оборудование",
+      "price": 5712.0,
+      "url": "https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirk-dlya-gvs-valtec-vsb-04-15/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/predohranitelna_armatura/1234/24.jpg",
+      "in_stock": true,
+      "qty": 8,
+      "tags": [
+        "25 Вт",
+        "Нержавеющая сталь"
+      ]
+    },
+    {
+      "sku": "VTp.700.0020.40",
+      "name": "Труба PN 20, 40 MM (белый)",
+      "brand": "VALTEC",
+      "category": "pipes",
+      "section": "Трубы",
+      "price": 452.0,
+      "url": "https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-belye-valtec/truba-pn-20-40-mm-belyy/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/trubiifitingi/069_medium.jpg",
+      "in_stock": true,
+      "qty": 3,
+      "tags": [
+        "Трубы"
+      ]
+    },
+    {
+      "sku": "VTp.700.0020.20",
+      "name": "Труба PN 20, 20 MM (белый)",
+      "brand": "VALTEC",
+      "category": "pipes",
+      "section": "Трубы",
+      "price": 117.0,
+      "url": "https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-belye-valtec/truba-pn-20-20-mm-belyy/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/trubiifitingi/069_medium.jpg",
+      "in_stock": true,
+      "qty": 40,
+      "tags": [
+        "Трубы"
+      ]
+    },
+    {
+      "sku": "VTp.700.0020.25",
+      "name": "Труба PN 20, 25 MM (белый)",
+      "brand": "VALTEC",
+      "category": "pipes",
+      "section": "Трубы",
+      "price": 182.0,
+      "url": "https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-belye-valtec/truba-pn-20-25-mm-belyy/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/trubiifitingi/069_medium.jpg",
+      "in_stock": true,
+      "qty": 189,
+      "tags": [
+        "Трубы"
+      ]
+    },
+    {
+      "sku": "VTp.700.0020.32",
+      "name": "Труба PN 20, 32 MM (белый)",
+      "brand": "VALTEC",
+      "category": "pipes",
+      "section": "Трубы",
+      "price": 298.0,
+      "url": "https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-belye-valtec/truba-pn-20-32-mm-belyy/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/trubiifitingi/069_medium.jpg",
+      "in_stock": true,
+      "qty": 150,
+      "tags": [
+        "Трубы"
+      ]
+    },
+    {
+      "sku": "VTp.700.0020.50",
+      "name": "Труба PN 20, 50 MM (белый)",
+      "brand": "VALTEC",
+      "category": "pipes",
+      "section": "Трубы",
+      "price": 774.0,
+      "url": "https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-belye-valtec/truba-pn-20-50-mm-belyy/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/trubiifitingi/069_medium.jpg",
+      "in_stock": true,
+      "qty": 26,
+      "tags": [
+        "Трубы"
+      ]
+    },
+    {
+      "sku": "VTp.700.AL25.20",
+      "name": "Труба PP-ALUX, арм. алюминием, PN 25, 20 MM (белый)",
+      "brand": "VALTEC",
+      "category": "pipes",
+      "section": "Трубы",
+      "price": 181.0,
+      "url": "https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-belye-valtec/truba-pp-alux-arm-alyuminiem-pn-25-20-mm-belyy/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/trubiifitingi/vtp.700.al25_0.jpg",
+      "in_stock": true,
+      "qty": 1166,
+      "tags": [
+        "Трубы"
+      ]
+    },
+    {
+      "sku": "VTp.700.AL25.25",
+      "name": "Труба PP-ALUX, арм. алюминием, PN 25, 25 MM (белый)",
+      "brand": "VALTEC",
+      "category": "pipes",
+      "section": "Трубы",
+      "price": 261.0,
+      "url": "https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-belye-valtec/truba-pp-alux-arm-alyuminiem-pn-25-25-mm-belyy/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/trubiifitingi/vtp.700.al25_0.jpg",
+      "in_stock": true,
+      "qty": 888,
+      "tags": [
+        "Трубы"
+      ]
+    },
+    {
+      "sku": "VTp.700.AL25.32",
+      "name": "Труба PP-ALUX, арм. алюминием, PN 25, 32 MM (белый)",
+      "brand": "VALTEC",
+      "category": "pipes",
+      "section": "Трубы",
+      "price": 419.0,
+      "url": "https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-belye-valtec/truba-pp-alux-arm-alyuminiem-pn-25-32-mm-belyy/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/trubiifitingi/vtp.700.al25_0.jpg",
+      "in_stock": true,
+      "qty": 685,
+      "tags": [
+        "Трубы"
+      ]
+    },
+    {
+      "sku": "VTp.700.AL25.40",
+      "name": "Труба PP-ALUX, арм. алюминием, PN 25, 40 MM (белый)",
+      "brand": "VALTEC",
+      "category": "pipes",
+      "section": "Трубы",
+      "price": 744.0,
+      "url": "https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-belye-valtec/truba-pp-alux-arm-alyuminiem-pn-25-40-mm-belyy/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/trubiifitingi/vtp.700.al25_0.jpg",
+      "in_stock": true,
+      "qty": 99,
+      "tags": [
+        "Трубы"
+      ]
+    },
+    {
+      "sku": "VTp.700.FB20.25",
+      "name": "Труба PP-FIBER арм. стекл., PN 20, 25 MM (белый)",
+      "brand": "VALTEC",
+      "category": "pipes",
+      "section": "Трубы",
+      "price": 168.0,
+      "url": "https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-belye-valtec/truba-pp-fiber-arm-stekl-pn-20-25-mm-belyy/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/trubiifitingi/vtp.700.fb20_0.jpg",
+      "in_stock": true,
+      "qty": 1043,
+      "tags": [
+        "Трубы"
+      ]
+    },
+    {
+      "sku": "VTp.700.FB20.20",
+      "name": "Труба PP-FIBER арм. стекл., PN 20, 20 MM (белый)",
+      "brand": "VALTEC",
+      "category": "pipes",
+      "section": "Трубы",
+      "price": 114.0,
+      "url": "https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-belye-valtec/truba-pp-fiber-arm-stekl-pn-20-20-mm-belyy/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/trubiifitingi/vtp.700.fb20_0.jpg",
+      "in_stock": true,
+      "qty": 1178,
+      "tags": [
+        "Трубы"
+      ]
+    },
+    {
+      "sku": "VTp.700.FB20.32",
+      "name": "Труба PP-FIBER арм. стекл., PN 20, 32 MM (белый)",
+      "brand": "VALTEC",
+      "category": "pipes",
+      "section": "Трубы",
+      "price": 280.0,
+      "url": "https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-belye-valtec/truba-pp-fiber-arm-stekl-pn-20-32-mm-belyy/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/trubiifitingi/vtp.700.fb20_0.jpg",
+      "in_stock": true,
+      "qty": 781,
+      "tags": [
+        "Трубы"
+      ]
+    },
+    {
+      "sku": "VTp.700.FB20.40",
+      "name": "Труба PP-FIBER арм. стекл., PN 20, 40 MM (белый)",
+      "brand": "VALTEC",
+      "category": "pipes",
+      "section": "Трубы",
+      "price": 460.0,
+      "url": "https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-belye-valtec/truba-pp-fiber-arm-stekl-pn-20-40-mm-belyy/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/trubiifitingi/vtp.700.fb20_0.jpg",
+      "in_stock": true,
+      "qty": 159,
+      "tags": [
+        "Трубы"
+      ]
+    },
+    {
+      "sku": "11677",
+      "name": "Винтовой скважинный насос Unipump 3\" ECO VINT 2 (550 Вт, кабель-20м)",
+      "brand": "UNIPUMP",
+      "category": "pumps",
+      "section": "Насосное оборудование",
+      "price": 9528.0,
+      "url": "https://www.vestatrade.ru/nasosnoe-oborudovanie/nasosy-skvazhinnye/nasosy-skvazhinnye-unipump/vintovoy-skvazhinnyy-nasos-unipump-3-eco-vint-2-550-vt-kabel-20m/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/predohranitelna_armatura/1234/123/56.jpg",
+      "in_stock": false,
+      "qty": 0,
+      "tags": [
+        "550 Вт",
+        "Нержавеющая сталь"
+      ]
+    },
+    {
+      "sku": "110100",
+      "name": "Отвод 15°, HTB, 32",
+      "brand": "OSTENDORF",
+      "category": "sewer",
+      "section": "Канализационные системы",
+      "price": 63.0,
+      "url": "https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/otvod-15deg-htb-3220/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/kanalizacionnyesistemy/36.jpg",
+      "in_stock": true,
+      "qty": 20,
+      "tags": [
+        "Отвод"
+      ]
+    },
+    {
+      "sku": "110130",
+      "name": "Отвод 67°, HTB, 32",
+      "brand": "OSTENDORF",
+      "category": "sewer",
+      "section": "Канализационные системы",
+      "price": 75.0,
+      "url": "https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/otvod-67deg-htb-3220/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/kanalizacionnyesistemy/33.jpg",
+      "in_stock": false,
+      "qty": 0,
+      "tags": [
+        "Отвод"
+      ]
+    },
+    {
+      "sku": "112030",
+      "name": "Труба канализационная, HTEM, 50*750",
+      "brand": "OSTENDORF",
+      "category": "sewer",
+      "section": "Канализационные системы",
+      "price": 163.0,
+      "url": "https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/truba-kanalizacionnaya-htem-5075010/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/kanalizacionnyesistemy/25.jpg",
+      "in_stock": false,
+      "qty": 0,
+      "tags": [
+        "Труба"
+      ]
+    },
+    {
+      "sku": "112050",
+      "name": "Труба канализационная, HTEM, 50*1500",
+      "brand": "OSTENDORF",
+      "category": "sewer",
+      "section": "Канализационные системы",
+      "price": 286.0,
+      "url": "https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/truba-kanalizacionnaya-htem-50150010/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/kanalizacionnyesistemy/25.jpg",
+      "in_stock": true,
+      "qty": 60,
+      "tags": [
+        "Труба"
+      ]
+    },
+    {
+      "sku": "112060",
+      "name": "Труба канализационная, HTEM, 50*2000",
+      "brand": "OSTENDORF",
+      "category": "sewer",
+      "section": "Канализационные системы",
+      "price": 355.0,
+      "url": "https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/truba-kanalizacionnaya-htem-50200010/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/kanalizacionnyesistemy/25.jpg",
+      "in_stock": true,
+      "qty": 136,
+      "tags": [
+        "Труба"
+      ]
+    },
+    {
+      "sku": "115020",
+      "name": "Труба канализационная, HTEM, 110*500",
+      "brand": "OSTENDORF",
+      "category": "sewer",
+      "section": "Канализационные системы",
+      "price": 379.0,
+      "url": "https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/truba-kanalizacionnaya-htem-11050010/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/kanalizacionnyesistemy/25.jpg",
+      "in_stock": true,
+      "qty": 130,
+      "tags": [
+        "Труба"
+      ]
+    },
+    {
+      "sku": "115030",
+      "name": "Труба канализационная, HTEM, 110*750",
+      "brand": "OSTENDORF",
+      "category": "sewer",
+      "section": "Канализационные системы",
+      "price": 481.0,
+      "url": "https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/truba-kanalizacionnaya-htem-1107504/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/kanalizacionnyesistemy/25.jpg",
+      "in_stock": false,
+      "qty": 0,
+      "tags": [
+        "Труба"
+      ]
+    },
+    {
+      "sku": "115050",
+      "name": "Труба канализационная, HTEM, 110*1500",
+      "brand": "OSTENDORF",
+      "category": "sewer",
+      "section": "Канализационные системы",
+      "price": 806.0,
+      "url": "https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/truba-kanalizacionnaya-htem-11015004/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/kanalizacionnyesistemy/25.jpg",
+      "in_stock": true,
+      "qty": 38,
+      "tags": [
+        "Труба"
+      ]
+    },
+    {
+      "sku": "115110",
+      "name": "Отвод 30°, HTB, 110",
+      "brand": "OSTENDORF",
+      "category": "sewer",
+      "section": "Канализационные системы",
+      "price": 156.0,
+      "url": "https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/otvod-30deg-htb-11020/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/kanalizacionnyesistemy/35.jpg",
+      "in_stock": true,
+      "qty": 55,
+      "tags": [
+        "Отвод"
+      ]
+    },
+    {
+      "sku": "115130",
+      "name": "Отвод 67°, HTB, 110",
+      "brand": "OSTENDORF",
+      "category": "sewer",
+      "section": "Канализационные системы",
+      "price": 187.0,
+      "url": "https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/otvod-67deg-htb-11020/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/kanalizacionnyesistemy/33.jpg",
+      "in_stock": true,
+      "qty": 15,
+      "tags": [
+        "Отвод"
+      ]
+    },
+    {
+      "sku": "112140",
+      "name": "Отвод 87°, HTB, 50",
+      "brand": "OSTENDORF",
+      "category": "sewer",
+      "section": "Канализационные системы",
+      "price": 50.0,
+      "url": "https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/otvod-87deg-htb-5020/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/kanalizacionnyesistemy/32.jpg",
+      "in_stock": true,
+      "qty": 437,
+      "tags": [
+        "Отвод"
+      ]
+    },
+    {
+      "sku": "112210",
+      "name": "Тройник двухраструбный 45°, HTEA, 50*40",
+      "brand": "OSTENDORF",
+      "category": "sewer",
+      "section": "Канализационные системы",
+      "price": 138.0,
+      "url": "https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/troynik-dvuhrastrubnyy-45deg-htea-504020/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/kanalizacionnyesistemy/26.jpg",
+      "in_stock": true,
+      "qty": 34,
+      "tags": [
+        "Тройник"
+      ]
+    },
+    {
+      "sku": "115220",
+      "name": "Тройник двухраструбный 45°, HTEA, 110*50",
+      "brand": "OSTENDORF",
+      "category": "sewer",
+      "section": "Канализационные системы",
+      "price": 187.0,
+      "url": "https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/troynik-dvuhrastrubnyy-45deg-htea-1105020/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/kanalizacionnyesistemy/26.jpg",
+      "in_stock": true,
+      "qty": 84,
+      "tags": [
+        "Тройник"
+      ]
+    },
+    {
+      "sku": "111300",
+      "name": "Тройник двухраструбный 67°, HTEA, 40",
+      "brand": "OSTENDORF",
+      "category": "sewer",
+      "section": "АКЦИОННЫЕ ТОВАРЫ",
+      "price": 40.0,
+      "url": "https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/troynik-dvuhrastrubnyy-67deg-htea-4020/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/kanalizacionnyesistemy/26.jpg",
+      "in_stock": true,
+      "qty": 12,
+      "tags": [
+        "Тройник"
+      ]
+    },
+    {
+      "sku": "115320",
+      "name": "Тройник двухраструбный 67°, HTEA, 110*50",
+      "brand": "OSTENDORF",
+      "category": "sewer",
+      "section": "Канализационные системы",
+      "price": 295.0,
+      "url": "https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/troynik-dvuhrastrubnyy-67deg-htea-1105020/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/kanalizacionnyesistemy/26.jpg",
+      "in_stock": false,
+      "qty": 0,
+      "tags": [
+        "Тройник"
+      ]
+    },
+    {
+      "sku": "115420",
+      "name": "Тройник двухраструбный 87°, HTEA, 110*50",
+      "brand": "OSTENDORF",
+      "category": "sewer",
+      "section": "Канализационные системы",
+      "price": 194.0,
+      "url": "https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/troynik-dvuhrastrubnyy-87deg-htea-1105020/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/kanalizacionnyesistemy/26.jpg",
+      "in_stock": true,
+      "qty": 78,
+      "tags": [
+        "Тройник"
+      ]
+    },
+    {
+      "sku": "112500",
+      "name": "Муфта надвижная(ремонтная), HTU, 50",
+      "brand": "OSTENDORF",
+      "category": "sewer",
+      "section": "Канализационные системы",
+      "price": 78.0,
+      "url": "https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/mufta-nadvizhnayaremontnaya-htu-5020/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/kanalizacionnyesistemy/41.jpg",
+      "in_stock": true,
+      "qty": 21,
+      "tags": [
+        "Муфта"
+      ]
+    },
+    {
+      "sku": "115500",
+      "name": "Муфта надвижная(ремонтная), HTU, 110",
+      "brand": "OSTENDORF",
+      "category": "sewer",
+      "section": "Канализационные системы",
+      "price": 162.0,
+      "url": "https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-vnutrennyaya/kanalizaciya-vnutrennyaya-ostendorf/mufta-nadvizhnayaremontnaya-htu-11020/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/kanalizacionnyesistemy/41.jpg",
+      "in_stock": true,
+      "qty": 19,
+      "tags": [
+        "Муфта"
+      ]
+    },
+    {
+      "sku": "220010",
+      "name": "Труба канализационная наружная (3,2мм), KGEM 110*1000",
+      "brand": "OSTENDORF",
+      "category": "sewer",
+      "section": "Канализационные системы",
+      "price": 585.0,
+      "url": "https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-naruzhnaya/kanalizaciya-naruzhnaya-ostendorf/truba-kanalizacionnaya-naruzhnaya-32mm-kgem-1101000/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/kanalizacionnyesistemy/123/37.jpg",
+      "in_stock": true,
+      "qty": 30,
+      "tags": [
+        "Труба"
+      ]
+    },
+    {
+      "sku": "RRS-2020-115140",
+      "name": "Радиатор 11/500/1400 стальной панельный нижнее подключение Ventil ROMMER",
+      "brand": "ROMMER",
+      "category": "radiators",
+      "section": "Радиаторы отопления",
+      "price": 8782.0,
+      "url": "https://www.vestatrade.ru/radiatory-otopleniya/radiatory-stalnye-s-nizhnim/radiatory-rommer-ventil-nizhnee-podklyuchenie/rommer-ventil-tip-11/rommer-115001400-radiator-stalnoy-panelnyy-nizhnee-podklyuchenie-ventil/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/radiatoryrommer/33.300.1000.jpg",
+      "in_stock": false,
+      "qty": 0,
+      "tags": [
+        "1/2\"",
+        "Сталь"
+      ]
+    },
+    {
+      "sku": "RRS-2020-223100",
+      "name": "Радиатор 22/300/1000 стальной панельный нижнее подключение Ventil ROMMER",
+      "brand": "ROMMER",
+      "category": "radiators",
+      "section": "Радиаторы отопления",
+      "price": 7941.0,
+      "url": "https://www.vestatrade.ru/radiatory-otopleniya/radiatory-stalnye-s-nizhnim/radiatory-rommer-ventil-nizhnee-podklyuchenie/rommer-ventil-tip-22/rommer-223001000-radiator-stalnoy-panelnyy-nizhnee-podklyuchenie-ventil/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/radiatoryrommer/rommer_compact_11_stalnoy_panelnyy_radiator_s_bokovym_podklyucheniem_4.jpg",
+      "in_stock": false,
+      "qty": 0,
+      "tags": [
+        "1/2\"",
+        "Сталь"
+      ]
+    },
+    {
+      "sku": "53843",
+      "name": "Насос циркуляц. (отопл.) UPС 25-40 180",
+      "brand": "UNIPUMP",
+      "category": "pumps",
+      "section": "ПРОКАЧИВАЕМ СКИДКИ",
+      "price": 3844.0,
+      "url": "https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/cirkulyacionnye-nasosy-unipump/nasos-cirkulyac-otopl-ups-25-40-180/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/nasosnoeoborydovanie/unipump/UNIPUMPUPC.jpg",
+      "in_stock": true,
+      "qty": 2,
+      "tags": [
+        "72 Вт",
+        "Чугун"
+      ]
+    },
+    {
+      "sku": "RBM-0210-050006",
+      "name": "Радиатор биметаллический Rommer Optima BM 500 х 80 6 секций",
+      "brand": "ROMMER",
+      "category": "radiators",
+      "section": "Радиаторы отопления",
+      "price": 3050.0,
+      "url": "https://www.vestatrade.ru/radiatory-otopleniya/radiatory-bimetallicheskie/radiatory-bimetallicheskie-rommer/radiator-bimetallicheskiy-rommer-optima-bm-500-h-80-6-sekciy/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/radiatoryrommer/new/rommeroptimabm500.jpg",
+      "in_stock": false,
+      "qty": 0,
+      "tags": [
+        "1\"",
+        "Биметалл"
+      ]
+    },
+    {
+      "sku": "RAL-1210-050006",
+      "name": "Радиатор алюминиевый Rommer Profi 500 х 80 6 секций",
+      "brand": "ROMMER",
+      "category": "radiators",
+      "section": "Радиаторы отопления",
+      "price": 3462.0,
+      "url": "https://www.vestatrade.ru/radiatory-otopleniya/radiatory-alyuminievye/radiatory-alyuminievye-rommer/radiator-alyuminievyy-rommer-profi-500-h-80-6-sekciy/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/radiatoryrommer/new/rommerprofi500.jpg",
+      "in_stock": false,
+      "qty": 0,
+      "tags": [
+        "1\"",
+        "Алюминий"
+      ]
+    },
+    {
+      "sku": "3301679",
+      "name": "Котел газовый настенный одноконтурный Ariston CLAS XC SYSTEM 24 FF NG (закр.камера, 3х-ход.клапан)",
+      "brand": "ARISTON",
+      "category": "boilers",
+      "section": "ПРОКАЧИВАЕМ СКИДКИ",
+      "price": 78571.0,
+      "url": "https://www.vestatrade.ru/kotelnoe-oborudovanie/kotly-gazovye-nastennye/kotly-gazovye-nastennye-ariston/kotel-gazovyy-nastennyy-odnokonturnyy-ariston-clas-xc-system-24-ff-ng-zakrkamera-3h-hodklapan/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/Ariston/Kotli/CLASXCSYSTEM.png",
+      "in_stock": false,
+      "qty": 0,
+      "tags": [
+        "24 кВт",
+        "до 240 м²"
+      ]
+    },
+    {
+      "sku": "2201376",
+      "name": "Котел газовый настенный Arderia SB28 (28 кВт, закр.камера, одноконтурный, 3х-ход.клапан)",
+      "brand": "Arderia",
+      "category": "boilers",
+      "section": "ПРОКАЧИВАЕМ СКИДКИ",
+      "price": 38535.0,
+      "url": "https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-gazovyj-nastennyj-arderia-sb28-28-kvt-zakr-kamera-odnokonturnyj-3h-hod-klapan/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/Arderia/AdrediaSB.jpg",
+      "in_stock": true,
+      "qty": 2,
+      "tags": [
+        "28 кВт",
+        "до 280 м²"
+      ]
+    },
+    {
+      "sku": "2201377",
+      "name": "Котел газовый настенный Arderia SB32 (32 кВт, закрытая камера, одноконтурный, 3х-ход.клапан)",
+      "brand": "Arderia",
+      "category": "boilers",
+      "section": "ПРОКАЧИВАЕМ СКИДКИ",
+      "price": 38535.0,
+      "url": "https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-gazovyj-nastennyj-arderia-sb32-32-kvt-zakr-kamera-odnokonturnyj-3h-hod-klapan/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/Arderia/AdrediaSB.jpg",
+      "in_stock": true,
+      "qty": 2,
+      "tags": [
+        "32 кВт",
+        "до 320 м²"
+      ]
+    },
+    {
+      "sku": "9168934",
+      "name": "Насос циркуляционный Wilo Star RS 25/6-130-RK",
+      "brand": "Wilo",
+      "category": "pumps",
+      "section": "ПРОКАЧИВАЕМ СКИДКИ",
+      "price": 7148.0,
+      "url": "https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-wilo-star-rs-25-6-130-rk/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/nasosnoeoborydovanie/wilo/25-6-rk.png",
+      "in_stock": true,
+      "qty": 9,
+      "tags": [
+        "43 Вт",
+        "Чугун"
+      ]
+    },
+    {
+      "sku": "2459900",
+      "name": "Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK",
+      "brand": "Wilo",
+      "category": "pumps",
+      "section": "ПРОКАЧИВАЕМ СКИДКИ",
+      "price": 10521.0,
+      "url": "https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-s-montazhnymi-adapterami-i-gajkami-wilo-star-rs-25-6-130-180-rk/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/nasosnoeoborydovanie/wilo/25-6-rk.png",
+      "in_stock": true,
+      "qty": 10,
+      "tags": [
+        "43 Вт",
+        "Чугун"
+      ]
+    },
+    {
+      "sku": "8216262000",
+      "name": "Котел электрический E.C.A. Arceus ST - 6 кВт, 1 контур, 3х-ход. клапан с мотором, датчик бойлера",
+      "brand": "E.C.A",
+      "category": "boilers",
+      "section": "ПРОКАЧИВАЕМ СКИДКИ",
+      "price": 38010.0,
+      "url": "https://www.vestatrade.ru/kotelnoe-oborudovanie/kotel-elektricheskij/kotly-elektricheskie-e-c-a/kotel-elektricheskij-e-c-a-arceus-st-6-kvt-1-kontur/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/E.C.A./Arceus/Arceus.jpg",
+      "in_stock": true,
+      "qty": 1,
+      "tags": [
+        "6 кВт",
+        "до 60 м²"
+      ]
+    },
+    {
+      "sku": "1491056",
+      "name": "Труба наруж. ПВХ 110*1000 SN4 ХЕМКОР",
+      "brand": "ХЕМКОР",
+      "category": "sewer",
+      "section": "Канализационные системы",
+      "price": 436.0,
+      "url": "https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-naruzhnaya/kanalizacija-naruzhnaja-hemkor/truba-naruzh-pvh-1101000-sn4-hemkor/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/Hemkor/1491056.jpeg",
+      "in_stock": false,
+      "qty": 0,
+      "tags": [
+        "Труба"
+      ]
+    },
+    {
+      "sku": "3636151",
+      "name": "Котел газовый настенный двухконтурный Ariston ARGIS C 24 FF NG (закр.камера)",
+      "brand": "ARISTON",
+      "category": "boilers",
+      "section": "Котельное оборудование",
+      "price": 55215.0,
+      "url": "https://www.vestatrade.ru/kotelnoe-oborudovanie/kotly-gazovye-nastennye/kotly-gazovye-nastennye-ariston/kotel-gazovyj-nastennyj-dvuhkonturnyj-ariston-argis-c-24-ff-ng-zakrkamera/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/Ariston/Kotli/ARGIS_C/ARGISC.jpg",
+      "in_stock": false,
+      "qty": 0,
+      "tags": [
+        "24 кВт",
+        "до 240 м²"
+      ]
+    },
+    {
+      "sku": "68/2/8",
+      "name": "Дренажный насос Вихрь ДН-350",
+      "brand": "Вихрь",
+      "category": "pumps",
+      "section": "Насосное оборудование",
+      "price": 2876.0,
+      "url": "https://www.vestatrade.ru/akcionnye-tovary-msk/drenazhnyj-nasos-vihr-dn-350/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/Vihr/Drenag/DN-350/DN-350.png",
+      "in_stock": true,
+      "qty": 7,
+      "tags": [
+        "350 Вт",
+        "Пластик"
+      ]
+    },
+    {
+      "sku": "68/2/2",
+      "name": "Дренажный насос Вихрь ДН-750",
+      "brand": "Вихрь",
+      "category": "pumps",
+      "section": "ПРОКАЧИВАЕМ СКИДКИ",
+      "price": 3652.0,
+      "url": "https://www.vestatrade.ru/akcionnye-tovary-spb/drenazhnyj-nasos-vihr-dn-750/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/Vihr/Drenag/DN-750/DN-750.png",
+      "in_stock": true,
+      "qty": 8,
+      "tags": [
+        "750 Вт",
+        "Пластик"
+      ]
+    },
+    {
+      "sku": "VT.3510.0.0",
+      "name": "Термостатическая головка с выносным настенным датчиком 6-28*С",
+      "brand": "VALTEC",
+      "category": "radiator_fittings",
+      "section": "Арматура для радиаторов",
+      "price": 1340.0,
+      "url": "https://www.vestatrade.ru/termoreguliruyushchaya-armatura-dlya-radiatorov/klapany-valtec-dlya-radiatorov/klapany-termostaticheskie-valtec-dlya-radiatorov/termostaticheskaja-golovka-s-vynosnym-nastennym-datchikom-6-28s/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/Valtek/VT.3500-3511/VT.3510.0_0.jpg",
+      "in_stock": false,
+      "qty": 0,
+      "tags": [
+        "Арматура для радиаторов"
+      ]
+    },
+    {
+      "sku": "VT.037.NRC.04",
+      "name": "Клапан радиаторный угловой с преднастройкой 1/2 \"",
+      "brand": "VALTEC",
+      "category": "radiator_fittings",
+      "section": "Арматура для радиаторов",
+      "price": 772.0,
+      "url": "https://www.vestatrade.ru/termoreguliruyushchaya-armatura-dlya-radiatorov/klapany-valtec-dlya-radiatorov/klapany-termostaticheskie-valtec-dlya-radiatorov/klapan-radiatornyj-uglovoj-s-prednastrojkoj-12/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/Valtek/VT.037.NRC/VT.037.NRC_0.jpg",
+      "in_stock": false,
+      "qty": 0,
+      "tags": [
+        "Арматура для радиаторов"
+      ]
+    },
+    {
+      "sku": "VT.038.NRC.04",
+      "name": "Клапан радиаторный прямой с преднастройкой 1/2 \"",
+      "brand": "VALTEC",
+      "category": "radiator_fittings",
+      "section": "Арматура для радиаторов",
+      "price": 889.0,
+      "url": "https://www.vestatrade.ru/termoreguliruyushchaya-armatura-dlya-radiatorov/klapany-valtec-dlya-radiatorov/klapany-termostaticheskie-valtec-dlya-radiatorov/klapan-radiatornyj-prjamoj-s-prednastrojkoj-12/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/Valtek/VT.038.NRC/VT.038.NRC_0.jpg",
+      "in_stock": false,
+      "qty": 0,
+      "tags": [
+        "Арматура для радиаторов"
+      ]
+    },
+    {
+      "sku": "2201375",
+      "name": "Котел газовый настенный Arderia SB24 (24 кВт, закр.камера, одноконтурный, 3х-ход.клапан)",
+      "brand": "Arderia",
+      "category": "boilers",
+      "section": "ПРОКАЧИВАЕМ СКИДКИ",
+      "price": 35869.0,
+      "url": "https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-gazovyj-nastennyj-arderia-sb24-24-kvt-zakrkamera-odnokonturnyj-3h-hodklapan/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/Arderia/AdrediaSB.jpg",
+      "in_stock": true,
+      "qty": 4,
+      "tags": [
+        "24 кВт",
+        "до 240 м²"
+      ]
+    },
+    {
+      "sku": "2202210",
+      "name": "Котел электрический Arderia E9, 9 кВт",
+      "brand": "Arderia",
+      "category": "boilers",
+      "section": "ПРОКАЧИВАЕМ СКИДКИ",
+      "price": 35365.0,
+      "url": "https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-elektricheskij-arderia-e9-9-kvt/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/Arderia/ArderiaE.png",
+      "in_stock": true,
+      "qty": 2,
+      "tags": [
+        "9 кВт",
+        "до 90 м²"
+      ]
+    },
+    {
+      "sku": "800019",
+      "name": "Насосная станция THERMEX Mark",
+      "brand": "Thermex",
+      "category": "pumps",
+      "section": "Насосное оборудование",
+      "price": 11224.0,
+      "url": "https://www.vestatrade.ru/nasosnoe-oborudovanie/nasosnye-stancii/nasosnoe-oborudovanie-thermex/nasosnaja-stancija-thermex-mark/",
+      "image": "https://www.vestatrade.ru/image/catalog/product/Thermex/Mark/Mark-1.png",
+      "in_stock": true,
+      "qty": 3,
+      "tags": [
+        "750 Вт",
+        "Насосная станция"
+      ]
+    }
+  ]
+}

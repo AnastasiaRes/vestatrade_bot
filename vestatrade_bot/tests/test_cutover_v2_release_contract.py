@@ -42,6 +42,18 @@ def test_policy_bounded_canary_percent_is_preserved(monkeypatch, raw: str) -> No
         get_settings.cache_clear()
 
 
+def test_local_preview_flag_is_opt_in_and_defaults_off(monkeypatch) -> None:
+    get_settings.cache_clear()
+    monkeypatch.delenv("DIALOGUE_V2_LOCAL_PREVIEW_ENABLED", raising=False)
+    try:
+        assert get_settings().dialogue_v2_local_preview_enabled is False
+        get_settings.cache_clear()
+        monkeypatch.setenv("DIALOGUE_V2_LOCAL_PREVIEW_ENABLED", "true")
+        assert get_settings().dialogue_v2_local_preview_enabled is True
+    finally:
+        get_settings.cache_clear()
+
+
 def test_release_manifest_is_reproducible_and_filters_secrets(tmp_path) -> None:
     catalog = tmp_path / "catalog.json"
     feed = tmp_path / "feed.xml"

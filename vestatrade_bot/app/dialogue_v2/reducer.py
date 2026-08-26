@@ -103,6 +103,9 @@ from .contracts import (
     ReductionResult,
     RejectedProposal,
     RequestedInformationOutput,
+    SelectionControlKind,
+    SelectionControlRegistered,
+    SelectionControlSignal,
     TaskAct,
     TaskAddressed,
     TaskCompleted,
@@ -757,6 +760,51 @@ def _task_for_information_request(
     return min(candidates, key=lambda task: (task.priority, task.task_id))
 
 
+def _task_for_selection_control(
+    tasks: list[CustomerTask],
+    addressed_tasks: list[CustomerTask],
+    *,
+    preferred_active_task: str | None,
+    active_goal_id: str | None,
+) -> CustomerTask | None:
+    """Bind a strategy control to one existing discovery task only."""
+
+    eligible_statuses = {
+        TaskStatus.PENDING,
+        TaskStatus.IN_PROGRESS,
+        TaskStatus.BLOCKED,
+    }
+    addressed = [
+        task
+        for task in addressed_tasks
+        if task.act in _DISCOVERY_ACTS and task.status in eligible_statuses
+    ]
+    if addressed:
+        return min(addressed, key=lambda task: (task.priority, task.task_id))
+    preferred = next(
+        (
+            task
+            for task in tasks
+            if task.task_id == preferred_active_task
+            and task.act in _DISCOVERY_ACTS
+            and task.status in eligible_statuses
+        ),
+        None,
+    )
+    if preferred is not None:
+        return preferred
+    candidates = [
+        task
+        for task in tasks
+        if task.act in _DISCOVERY_ACTS
+        and task.status in eligible_statuses
+        and task.target_goal_id == active_goal_id
+    ]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda task: (task.priority, task.task_id))
+
+
 def _task_goal_ids(
     *,
     act: TaskAct,
@@ -801,6 +849,7 @@ def _progress(changes: Iterable[ProgressKind], turn_number: int) -> ProgressStat
         ProgressKind.TASK_SWITCHED: 90,
         ProgressKind.DIRECT_QUESTION_REGISTERED: 80,
         ProgressKind.INFORMATION_REQUEST_REGISTERED: 80,
+        ProgressKind.SELECTION_STRATEGY_CHANGED: 75,
         ProgressKind.CONSTRAINT_CORRECTED: 70,
         ProgressKind.UNKNOWN_REGISTERED: 65,
         ProgressKind.CONSTRAINT_ADDED: 60,
@@ -976,6 +1025,7 @@ def reduce_dialogue_state(
     constraints = list(previous.constraints)
     commerce_sensitive_values = list(previous.commerce_sensitive_values)
     commerce_controls = list(previous.commerce_controls)
+    selection_controls = list(previous.selection_controls)
     questions = list(previous.direct_questions)
     information_requests = list(previous.information_requests)
     ambiguities = list(previous.ambiguities)
@@ -1597,6 +1647,93 @@ def reduce_dialogue_state(
             for created in created_tasks
         ]
 
+    for control_index, semantic_control in enumerate(
+        turn_understanding.selection_controls
+    ):
+        task = _task_for_selection_control(
+            tasks,
+            addressed_tasks,
+            preferred_active_task=preferred_active_task,
+            active_goal_id=active_goal_id,
+        )
+        if task is None:
+            rejected.append(
+                RejectedProposal(
+                    proposal_type="selection_control",
+                    reason_code="selection_control_has_no_active_discovery_task",
+                    evidence=_short_evidence(semantic_control.evidence),
+                )
+            )
+            continue
+        if not task.was_addressed_on(turn_number):
+            task = task.model_copy(
+                update={
+                    "status": TaskStatus.IN_PROGRESS,
+                    "source_turn": turn_number,
+                    "created_turn": task.origin_turn,
+                    "last_addressed_turn": turn_number,
+                    "blocking_reason": None,
+                }
+            )
+            _replace_task(tasks, task)
+            preferred_active_task = task.task_id
+            events.append(
+                TaskAddressed(
+                    turn_id=turn_metadata.turn_id,
+                    turn_number=turn_number,
+                    task_id=task.task_id,
+                    act=task.act,
+                    goal_id=task.target_goal_id,
+                )
+            )
+        kind = SelectionControlKind(semantic_control.kind.value)
+        existing_control = next(
+            (
+                item
+                for item in reversed(selection_controls)
+                if item.task_id == task.task_id and item.kind == kind
+            ),
+            None,
+        )
+        if existing_control is not None:
+            rejected.append(
+                RejectedProposal(
+                    proposal_type="selection_control",
+                    reason_code="selection_control_already_active",
+                    evidence=_short_evidence(semantic_control.evidence),
+                    details={"control_id": existing_control.control_id},
+                )
+            )
+            continue
+        control_id = _stable_id(
+            "selection_control",
+            turn_metadata.turn_id,
+            control_index,
+            task.task_id,
+            kind.value,
+        )
+        signal = SelectionControlSignal(
+            control_id=control_id,
+            kind=kind,
+            task_id=task.task_id,
+            goal_id=task.target_goal_id,
+            evidence=_short_evidence(semantic_control.evidence),
+            source=turn_metadata.source,
+            source_turn=turn_number,
+        )
+        selection_controls.append(signal)
+        events.append(
+            SelectionControlRegistered(
+                turn_id=turn_metadata.turn_id,
+                turn_number=turn_number,
+                control_id=control_id,
+                control_kind=kind,
+                task_id=task.task_id,
+                goal_id=task.target_goal_id,
+            )
+        )
+        progress_changes.append(ProgressKind.SELECTION_STRATEGY_CHANGED)
+
     for request_index, semantic_request in enumerate(
         turn_understanding.information_requests
     ):
@@ -2109,6 +2246,7 @@ def reduce_dialogue_state(
         information_requests=tuple(information_requests),
         direct_questions=tuple(questions),
         ambiguities=tuple(ambiguities),
+        selection_controls=tuple(selection_controls[-100:]),
         progress=progress,
         last_policy=previous.last_policy,
         catalog_planning=previous.catalog_planning,

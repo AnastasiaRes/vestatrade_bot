@@ -86,12 +86,14 @@ _FACT_LABELS = {
     "minimum_power_kw": "минимальная мощность",
     "operating_pressure_bar": "рабочее давление",
     "operating_temperature_c": "рабочая температура",
+    "pipe_service": "назначение трубы",
     "port_count": "количество присоединений",
     "power_kw": "мощность",
     "pressure_class": "класс давления",
     "product_selection": "выбранный товар",
     "pump_type": "тип насоса",
     "quantity": "запрошенное количество",
+    "reinforcement": "тип армирования",
     "required_flow_m3_h": "требуемый расход",
     "requested_quantity_m": "требуемое количество",
     "secondary_diameter_mm": "второй диаметр",
@@ -137,6 +139,18 @@ _LEARN_METHOD_INSTRUCTIONS = {
     "identify_pump_application": (
         "Опишите работу насоса: циркуляция отопления или ГВС, повышение давления, "
         "подача чистой воды из колодца или скважины, дренаж либо сточные воды."
+    ),
+    "identify_pipe_service": (
+        "Укажите участок: холодное или горячее водоснабжение либо отопление; "
+        "для канализации нужен отдельный тип трубы."
+    ),
+    "identify_pipe_operating_temperature": (
+        "Укажите максимальную температуру воды или теплоносителя. Её можно взять "
+        "из настроек источника тепла, проекта системы или паспорта оборудования."
+    ),
+    "identify_pipe_operating_pressure": (
+        "Укажите максимальное рабочее давление системы. Проверьте его в проекте, "
+        "на настройке автоматики или по показанию исправного манометра."
     ),
     "identify_required_water_treatment": (
         "Возьмите результаты анализа воды и укажите проблему, которую нужно "
@@ -305,6 +319,16 @@ _VALUE_LABELS = {
     "ВР-НР": "внутренняя/наружная резьба",
     "propylene_glycol": "пропиленгликоль",
     "ethylene_glycol": "этиленгликоль",
+    "cold_water": "холодная вода",
+    "hot_water": "горячая вода",
+    "heating": "отопление",
+    "cold_water hot_water": "холодная и горячая вода",
+    "cold_water heating": "холодная вода и отопление",
+    "hot_water heating": "горячая вода и отопление",
+    "cold_water hot_water heating": "холодная и горячая вода, отопление",
+    "glass_fiber": "стекловолокно",
+    "aluminium": "алюминий",
+    "unreinforced": "без армирования",
 }
 
 _CANONICAL_VALUE_PREDICATES = frozenset(
@@ -319,7 +343,9 @@ _CANONICAL_VALUE_PREDICATES = frozenset(
         "coolant_type",
         "filter_method",
         "material",
+        "pipe_service",
         "pump_type",
+        "reinforcement",
         "sewer_scope",
         "stock_status",
         "valve_shape",
@@ -794,6 +820,11 @@ def deterministic_render(answer_plan: AnswerPlan) -> RenderedAnswer:
             limitation_text = (
                 "Проверенную ссылку пока нельзя привязать к конкретному товару. "
                 "После подбора она будет взята из карточки выбранной модели."
+            )
+        elif limitation.reason_code == "customer_fact_missing_for_exact_match":
+            limitation_text = (
+                f"Параметр{fact} пока не указан. Поэтому варианты "
+                "предварительные: перед покупкой этот параметр нужно уточнить."
             )
         elif limitation.reason_code in {
             "commerce_blocked",

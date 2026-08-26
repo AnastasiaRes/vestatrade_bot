@@ -10,6 +10,7 @@ from app.dialogue_v2.contracts import (
     ConstraintStrength,
     CustomerTask,
     DialogueStateV2,
+    SelectionControlKind,
 )
 
 from .contracts import (
@@ -352,20 +353,47 @@ def assess_task_readiness(
             missing.append(definition.name)
 
     unavailable = tuple(dict.fromkeys((*unknown, *refused, *deferred)))
+    continue_with_confirmed_facts = any(
+        item.task_id == customer_task.task_id
+        and item.kind == SelectionControlKind.CONTINUE_WITH_CONFIRMED_FACTS
+        for item in dialogue_state.selection_controls
+    )
     if conflicts:
         status = ReadinessStatus.BLOCKED
         question = None
         reasons = ("conflicting_contract_facts",)
     elif missing:
-        status = ReadinessStatus.NEEDS_DECISION_FACT
-        question = next(
-            (
-                item.name for item in required
-                if item.name in missing and item.decision_changing
-            ),
-            None,
-        )
-        reasons = ("decision_changing_fact_missing",)
+        if continue_with_confirmed_facts:
+            unresolved = tuple(dict.fromkeys((*missing, *unavailable)))
+            can_preview = all(
+                definition_by_name[name].preliminary_allowed_without
+                for name in unresolved
+                if name in definition_by_name
+            )
+            status = (
+                ReadinessStatus.PRELIMINARY_READY
+                if can_preview
+                else ReadinessStatus.BLOCKED
+            )
+            question = None
+            reasons = (
+                "customer_requested_confirmed_facts_only",
+                (
+                    "preliminary_path_allowed"
+                    if can_preview
+                    else "honest_boundary_required"
+                ),
+            )
+        else:
+            status = ReadinessStatus.NEEDS_DECISION_FACT
+            question = next(
+                (
+                    item.name for item in required
+                    if item.name in missing and item.decision_changing
+                ),
+                None,
+            )
+            reasons = ("decision_changing_fact_missing",)
     elif unavailable:
         can_preview = all(
             definition_by_name[name].preliminary_allowed_without
