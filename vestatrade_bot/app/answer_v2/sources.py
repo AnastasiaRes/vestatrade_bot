@@ -23,6 +23,32 @@ from .contracts import (
 )
 
 
+def build_verified_business_capability_facts(
+    business_facts: object | None,
+) -> tuple[VerifiedCapabilityFact, ...]:
+    """Expose only stable, explicitly configured public verification channels."""
+
+    if business_facts is None:
+        return ()
+    site_url = str(getattr(business_facts, "site_url", "") or "").strip()
+    if not site_url.startswith(("https://", "http://")):
+        return ()
+    revision = str(
+        getattr(business_facts, "facts_verified_on", "")
+        or "business_config_unversioned"
+    )
+    return (
+        VerifiedCapabilityFact(
+            fact_id="business_site_url",
+            name="site_url",
+            value=site_url,
+            source="data/business_config.json",
+            source_revision=revision,
+            confirmed=True,
+        ),
+    )
+
+
 def build_answer_source_snapshot(
     products: Iterable[Product],
     catalog_snapshot: Iterable[CatalogProductSnapshot],
@@ -53,6 +79,7 @@ def build_answer_source_snapshot(
                 image_url=product.image_url or None,
                 updated_at=product.updated_at,
                 facts=identity.facts,
+                fact_issues=identity.fact_issues,
             )
         )
         revision_material.append(
@@ -67,13 +94,27 @@ def build_answer_source_snapshot(
                 )
             )
         )
+    verified_capabilities = tuple(capability_facts)
+    revision_material.extend(
+        "\x1f".join(
+            (
+                item.fact_id,
+                item.name,
+                str(item.value),
+                item.source,
+                item.source_revision,
+                str(item.confirmed),
+            )
+        )
+        for item in verified_capabilities
+    )
     digest = hashlib.sha256(
         "\x1e".join(revision_material).encode("utf-8")
     ).hexdigest()
     return AnswerSourceSnapshot(
         source_revision=digest,
         products=tuple(records),
-        capability_facts=tuple(capability_facts),
+        capability_facts=verified_capabilities,
     )
 
 
@@ -94,7 +135,11 @@ def attach_turn_source_evidence(
             product_kind=candidate.product_kind,
             role=candidate.role,
             status=candidate.status,
+            required_hard_facts=tuple(
+                constraint.name for constraint in search.hard_constraints
+            ),
             matched_hard_facts=candidate.matched_hard_facts,
+            mismatched_hard_facts=candidate.mismatched_hard_facts,
             missing_hard_facts=candidate.missing_hard_facts,
             matched_soft_facts=candidate.matched_soft_facts,
             mismatched_soft_facts=candidate.mismatched_soft_facts,

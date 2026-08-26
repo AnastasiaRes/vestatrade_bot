@@ -68,6 +68,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from app.agents.orchestrator import ChatOrchestrator  # noqa: E402
 from app.agents.utils import normalize_text  # noqa: E402
+from app.diagnostic_telemetry import safe_session_fingerprint  # noqa: E402
 from app.openrouter_client import OpenRouterClient  # noqa: E402
 
 DEFAULT_TESTSET = PROJECT_ROOT / "data" / "live_dialogue_testset.json"
@@ -119,11 +120,28 @@ class Turn:
     n: int
     user: str
     bot: str
-    products: list[str]
+    products: list[dict[str, Any]]
     source: str
     latency_sec: float
     intent: str | None = None
     category: str | None = None
+
+
+def _public_product_payload(card: Any) -> dict[str, Any]:
+    """Persist exactly the public card facts needed for offline evaluation."""
+
+    return {
+        "sku": str(getattr(card, "sku", "") or ""),
+        "name": str(getattr(card, "name", "") or ""),
+        "brand": getattr(card, "brand", None),
+        "price": getattr(card, "price", None),
+        "currency": getattr(card, "currency", None),
+        "stock_status": getattr(card, "stock_status", None),
+        "stock_qty": getattr(card, "stock_qty", None),
+        "url": getattr(card, "url", None),
+        "image_url": getattr(card, "image_url", None),
+        "characteristics": dict(getattr(card, "characteristics", None) or {}),
+    }
 
 
 @dataclass
@@ -336,7 +354,9 @@ def run_replay(
                 n=n,
                 user=user_message,
                 bot=response.answer,
-                products=[card.sku for card in (response.products or [])],
+                products=[
+                    _public_product_payload(card) for card in (response.products or [])
+                ],
                 source=str(debug.get("final_answer_source") or "?"),
                 latency_sec=round(time.monotonic() - started, 3),
                 intent=debug.get("intent"),
@@ -372,6 +392,10 @@ _BUYER_SYSTEM = """Ты — покупатель, который пришёл в
 Если консультант спросит — отвечай правдоподобно и держись одних и тех же
 данных весь разговор. Ничего не выдумывай про ассортимент магазина: наличие,
 цены и адреса знает только он.
+Если в роли или цели дана марка/модель товара, считай известным только само
+название и прямо перечисленные факты. Не придумывай тип, топливо, мощность,
+размеры или другие свойства этой модели; если их нет, честно скажи, что не
+знаешь, и попроси консультанта проверить карточку.
 
 Сдавайся не раньше, чем консультант трижды не ответил по существу: живой
 человек обычно переспрашивает и пробует другую формулировку.
@@ -396,6 +420,8 @@ _EXPLORATORY_BUYER_SYSTEM = """Ты — обычный покупатель в �
 где это посмотреть, или описывай наблюдаемый симптом своими словами. Простые
 бытовые факты о своей ситуации можешь выбрать правдоподобно при первом вопросе,
 но затем не меняй их.
+Если в исходной ситуации упомянута конкретная модель, не приписывай ей тип,
+топливо, мощность и другие свойства, которых там прямо нет.
 
 Не требуй карточки любой ценой. Ты можешь остаться доволен понятным следующим
 шагом, уместным уточнением, честным ограничением или безопасным направлением к
@@ -544,8 +570,9 @@ def run_live(
     catalog_skus: set[str],
     *,
     max_turns: int = 45,
+    session_id: str | None = None,
 ) -> DialogueRun:
-    session_id = f"live-{scenario['id']}-{uuid.uuid4().hex[:8]}"
+    session_id = session_id or f"live-{scenario['id']}-{uuid.uuid4().hex[:8]}"
     run = DialogueRun(scenario=scenario, session_id=session_id)
     recorded_turns = scenario.get("recorded_user_turns") or []
     opening_message = str(recorded_turns[0] if recorded_turns else "").strip()
@@ -603,7 +630,7 @@ def run_live(
                 n=n,
                 user=message,
                 bot=answer,
-                products=[card.sku for card in products],
+                products=[_public_product_payload(card) for card in products],
                 source=str(debug.get("final_answer_source") or "?"),
                 latency_sec=latency,
                 intent=debug.get("intent"),
@@ -635,6 +662,43 @@ def run_live(
 
 def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _session_fingerprint(session_id: str) -> str:
+    """Match diagnostic telemetry without publishing the raw session id."""
+
+    return safe_session_fingerprint(session_id) if session_id else ""
+
+
+def _eligible_canary_session_id(
+    scenario_id: str,
+    registry_revision: str,
+    canary_percent: int,
+) -> str:
+    """Choose a deterministic test session inside the configured cohort.
+
+    This helper changes only the live-test session identifier.  It cannot
+    enable routing or increase production traffic and therefore remains
+    harmless unless the normal Stage 6 flags and a reviewed registry are
+    already active for the test process.
+    """
+
+    if not registry_revision:
+        raise ValueError("canary registry revision is required")
+    if not 1 <= canary_percent <= 5:
+        raise ValueError("internal canary percent must be between 1 and 5")
+    for index in range(100_000):
+        session_id = f"live-v2-canary-{scenario_id}-{index}"
+        fingerprint = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+        cohort = int(
+            hashlib.sha256(
+                f"{fingerprint}:{registry_revision}".encode("utf-8")
+            ).hexdigest()[:8],
+            16,
+        ) % 100
+        if cohort < canary_percent:
+            return session_id
+    raise RuntimeError("could not allocate an eligible V2 canary session")
 
 
 def _sha256_file(path: Path) -> str:
@@ -763,6 +827,8 @@ def build_manifest(
         llm = {
             "provider": settings.llm_provider,
             "model": settings.llm_model,
+            "bot_model": settings.llm_model,
+            "buyer_model": settings.llm_model,
             "strong_model": settings.llm_model_strong,
             "timeout_seconds": settings.llm_timeout_seconds,
             "request_timeout_seconds": settings.llm_request_timeout_seconds,
@@ -792,11 +858,31 @@ def build_manifest(
             "max_turns": args.max_turns,
             "limit": args.limit,
             "only": args.only,
+            "forced_v2_canary_cohort": bool(
+                getattr(args, "force_v2_canary_cohort", False)
+            ),
         },
         "runtime": {
             "python": platform.python_version(),
             "implementation": platform.python_implementation(),
             "platform": platform.platform(),
+        },
+    }
+
+
+def bind_transcript_artifact(
+    manifest: dict[str, Any],
+    transcripts_payload: bytes,
+) -> dict[str, Any]:
+    """Return a copy that binds the exact transcript bytes published later."""
+
+    if not isinstance(transcripts_payload, bytes):
+        raise TypeError("transcripts payload must be bytes")
+    return {
+        **manifest,
+        "artifacts": {
+            **(manifest.get("artifacts") or {}),
+            "transcripts_sha256": _sha256_bytes(transcripts_payload),
         },
     }
 
@@ -955,6 +1041,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--max-turns", type=int, default=45, help="лимит ходов покупателя в режиме live"
     )
+    parser.add_argument(
+        "--force-v2-canary-cohort",
+        action="store_true",
+        help=(
+            "для opt-in проверки выбрать тестовые session id внутри уже "
+            "настроенного 1–5%% internal canary"
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -997,11 +1091,38 @@ def main(argv: list[str]) -> int:
         # сериализует только ходы одной. Последовательный прогон ста диалогов
         # с двумя вызовами модели на ход занимает часы.
         client = OpenRouterClient()
+        forced_sessions: dict[str, str] = {}
+        if args.force_v2_canary_cohort:
+            settings = bot.settings
+            if not (
+                settings.dialogue_v2_routing_enabled
+                and settings.dialogue_v2_live_delivery_enabled
+                and settings.dialogue_v2_internal_canary_enabled
+                and 1 <= settings.dialogue_v2_internal_canary_percent <= 5
+                and bot.cutover_registry_v2.valid
+            ):
+                raise RuntimeError(
+                    "forced V2 cohort requires enabled bounded internal canary"
+                )
+            forced_sessions = {
+                str(scenario["id"]): _eligible_canary_session_id(
+                    str(scenario["id"]),
+                    bot.cutover_registry_v2.revision,
+                    settings.dialogue_v2_internal_canary_percent,
+                )
+                for scenario in scenarios
+            }
         done = 0
         with ThreadPoolExecutor(max_workers=args.workers) as pool:
             futures = {
                 pool.submit(
-                    run_live, bot, client, scenario, catalog_skus, max_turns=args.max_turns
+                    run_live,
+                    bot,
+                    client,
+                    scenario,
+                    catalog_skus,
+                    max_turns=args.max_turns,
+                    session_id=forced_sessions.get(str(scenario["id"])),
                 ): scenario
                 for scenario in scenarios
             }
@@ -1027,6 +1148,23 @@ def main(argv: list[str]) -> int:
         runs.sort(key=lambda item: item.id)
     elapsed = time.monotonic() - started
 
+    transcripts_payload = "".join(
+        json.dumps(
+            {
+                "id": run.id,
+                "session_fingerprint": _session_fingerprint(run.session_id),
+                "execution_status": run.execution_status,
+                "failure_stage": run.failure_stage,
+                "failure_reason": run.failure_reason,
+                "outcome": run.outcome,
+                "turns": [turn.__dict__ for turn in run.turns],
+            },
+            ensure_ascii=False,
+        )
+        + "\n"
+        for run in runs
+    ).encode("utf-8")
+    manifest = bind_transcript_artifact(manifest, transcripts_payload)
     report = build_report(runs, args.mode, elapsed, manifest)
     output_dir = args.output_dir or (
         PROJECT_ROOT / "reports" / f"replay_{datetime.now().strftime('%Y-%m-%d_%H%M')}"
@@ -1035,27 +1173,12 @@ def main(argv: list[str]) -> int:
     (output_dir / "report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
+    (output_dir / "report.md").write_text(render_markdown(report), encoding="utf-8")
+    (output_dir / "transcripts.jsonl").write_bytes(transcripts_payload)
+    # Publish the manifest last so a consumer never sees a provenance claim
+    # before the exact transcript bytes it binds are present.
     (output_dir / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
-    (output_dir / "report.md").write_text(render_markdown(report), encoding="utf-8")
-    (output_dir / "transcripts.jsonl").write_text(
-        "".join(
-            json.dumps(
-                {
-                    "id": run.id,
-                    "execution_status": run.execution_status,
-                    "failure_stage": run.failure_stage,
-                    "failure_reason": run.failure_reason,
-                    "outcome": run.outcome,
-                    "turns": [turn.__dict__ for turn in run.turns],
-                },
-                ensure_ascii=False,
-            )
-            + "\n"
-            for run in runs
-        ),
-        encoding="utf-8",
     )
 
     print(f"\nОтчёт: {output_dir}", file=sys.stderr)

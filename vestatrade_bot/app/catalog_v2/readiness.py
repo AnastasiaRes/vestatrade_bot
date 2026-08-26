@@ -23,17 +23,63 @@ from .contracts import (
     ReadinessStatus,
     TaskReadinessAssessment,
 )
-from .normalization import normalize_fact_value
+from .normalization import (
+    format_numeric_choice_value,
+    format_numeric_range_value,
+    normalize_fact_value,
+    normalize_unit_label,
+    parse_numeric_choice_value,
+    parse_numeric_range_value,
+)
 
 
-def canonical_fact_name(contract: ProductContract, name: str) -> str | None:
-    normalized = " ".join(str(name or "").casefold().replace("ё", "е").replace("-", "_").split())
+def _normalized_fact_token(value: object) -> str:
+    return " ".join(
+        str(value or "").casefold().replace("ё", "е").replace("-", "_").split()
+    )
+
+
+def canonical_fact_name(
+    contract: ProductContract,
+    name: str,
+    unit: str | None = None,
+) -> str | None:
+    """Resolve a contract-scoped alias without crossing unit semantics.
+
+    A semantic model may use ``pressure`` for metres of pump head.  That is a
+    valid alias only when the model also supplies a length/head unit.  Pressure
+    in bar or kPa is deliberately left unresolved because converting it would
+    require a physical calculation that does not belong in the reducer or
+    catalogue planner.
+    """
+
+    normalized = _normalized_fact_token(name)
     for definition in contract.fact_definitions:
         accepted = (definition.name, *definition.aliases)
         if normalized in {
-            " ".join(item.casefold().replace("ё", "е").replace("-", "_").split())
+            _normalized_fact_token(item)
             for item in accepted
         }:
+            pressure_aliases = {
+                "pressure",
+                "required_pressure",
+                "pressure_head",
+                "system_head",
+            }
+            if definition.name == "max_head_m" and normalized in pressure_aliases:
+                normalized_unit = _normalized_fact_token(unit).replace(" ", "")
+                if normalized_unit not in {
+                    "m",
+                    "м",
+                    "meter",
+                    "meters",
+                    "метр",
+                    "метра",
+                    "метров",
+                    "cm",
+                    "см",
+                }:
+                    return None
             return definition.name
     return None
 
@@ -47,35 +93,104 @@ def _applicable_facts(
     for fact in state.constraints:
         if not fact.active:
             continue
-        if fact.task_id not in {None, task.task_id}:
+        if task.target_goal_id:
+            if fact.goal_id not in {None, task.target_goal_id}:
+                continue
+            # A fact explicitly scoped to the same product goal remains true
+            # when a compatible task for that goal is resumed or re-addressed.
+            # Goal-less facts retain the narrower task boundary.
+            if fact.goal_id is None and fact.task_id not in {None, task.task_id}:
+                continue
+        elif fact.task_id not in {None, task.task_id}:
             continue
-        if task.target_goal_id and fact.goal_id not in {None, task.target_goal_id}:
-            continue
-        canonical = canonical_fact_name(contract, fact.name)
+        canonical = canonical_fact_name(contract, fact.name, fact.unit)
         if canonical is not None:
             selected[canonical] = fact
     return selected
 
 
+_EXPLICIT_UNIT_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("l/min", r"(?:l/min|л/мин)(?![a-zа-я])"),
+    ("m3/h", r"(?:m3/h|м3/ч)(?![a-zа-я])"),
+    ("l/h", r"(?:l/h|л/ч)(?![a-zа-я])"),
+    ("mm", r"(?:mm|мм)(?![a-zа-я])"),
+    ("cm", r"(?:cm|см)(?![a-zа-я])"),
+    ("kw", r"(?:kw|квт)(?![a-zа-я])"),
+    ("w", r"(?<![a-zа-я])(?:w|вт)(?![a-zа-я])"),
+    ("um", r"(?:um|мкм)(?![a-zа-я])"),
+    ("%", r"%"),
+    ("bar", r"(?:bar|бар)(?![a-zа-я])"),
+    ("mpa", r"(?:mpa|мпа)(?![a-zа-я])"),
+    ("kpa", r"(?:kpa|кпа)(?![a-zа-я])"),
+    ("pa", r"(?<![a-zа-я])(?:pa|па)(?![a-zа-я])"),
+    ("atm", r"(?:atm|атм)(?![a-zа-я])"),
+    ("c", r"(?:°\s*c|°\s*с|℃)(?![a-zа-я])"),
+    ("m", r"(?<![a-zа-я])(?:m|м)(?![a-zа-я0-9/])"),
+)
+
+
+def _explicit_unit_from_text(value: object) -> str:
+    text = str(value or "").casefold().replace("³", "3")
+    return next(
+        (
+            canonical
+            for canonical, pattern in _EXPLICIT_UNIT_PATTERNS
+            if re.search(pattern, text, re.I)
+        ),
+        "",
+    )
+
+
 def _canonical_value(definition, fact: ConstraintFactV2):
-    value = normalize_fact_value(definition.name, fact.value)
-    if definition.value_type == FactValueType.NUMBER and isinstance(value, str):
-        match = re.search(r"[-+]?\d+(?:[.,]\d+)?", value)
-        if match:
-            parsed = float(match.group(0).replace(",", "."))
+    numeric_range = (
+        parse_numeric_range_value(fact.value)
+        if definition.value_type == FactValueType.NUMBER
+        else None
+    )
+    numeric_choice = (
+        parse_numeric_choice_value(fact.value)
+        if definition.value_type == FactValueType.NUMBER
+        else None
+    )
+    value = (
+        format_numeric_range_value(*numeric_range)
+        if numeric_range is not None
+        else format_numeric_choice_value(numeric_choice)
+        if numeric_choice is not None
+        else normalize_fact_value(definition.name, fact.value)
+    )
+    if (
+        definition.value_type == FactValueType.NUMBER
+        and isinstance(value, str)
+        and numeric_range is None
+        and numeric_choice is None
+    ):
+        matches = re.findall(r"[-+]?\d+(?:[.,]\d+)?", value)
+        if len(matches) == 1:
+            parsed = float(matches[0].replace(",", "."))
             value = int(parsed) if parsed.is_integer() else parsed
-    raw_unit = fact.unit or ""
-    if not raw_unit and isinstance(fact.value, str):
-        normalized_value = fact.value.casefold().replace("³", "3")
-        raw_unit = next(
-            (
-                unit for unit in ("l/min", "л/мин", "m3/h", "м3/ч", "l/h", "л/ч", "mm", "мм", "cm", "см", "kw", "квт", "w", "вт", "m", "м")
-                if unit in normalized_value
-            ),
-            "",
-        )
-    unit = str(raw_unit).casefold().replace("³", "3").replace(" ", "")
-    unit = {"мм": "mm", "см": "cm", "м": "m"}.get(unit, unit)
+    raw_unit = (
+        fact.unit
+        or _explicit_unit_from_text(fact.value)
+        or _explicit_unit_from_text(fact.evidence)
+    )
+    unit = normalize_unit_label(str(raw_unit)) or ""
+    if definition.unit_conversions and numeric_range is not None and unit:
+        factor = definition.unit_conversions.get(unit)
+        if factor is not None:
+            converted = tuple(float(item) * factor for item in numeric_range)
+            normalized = tuple(
+                int(item) if item.is_integer() else item for item in converted
+            )
+            return format_numeric_range_value(*normalized)
+    if definition.unit_conversions and numeric_choice is not None and unit:
+        factor = definition.unit_conversions.get(unit)
+        if factor is not None:
+            converted = tuple(float(item) * factor for item in numeric_choice)
+            normalized = tuple(
+                int(item) if item.is_integer() else item for item in converted
+            )
+            return format_numeric_choice_value(normalized)
     if definition.unit_conversions and isinstance(value, (int, float)) and unit:
         factor = definition.unit_conversions.get(unit)
         if factor is not None:
@@ -93,6 +208,10 @@ def _canonical_unit(definition, fact: ConstraintFactV2) -> str | None:
         "power_kw": "kW",
         "power_w": "W",
         "flow": "l/h",
+        "percent": "%",
+        "micron": "um",
+        "temperature_c": "C",
+        "pressure_bar": "bar",
     }.get(definition.unit_family, fact.unit)
 
 
@@ -128,14 +247,31 @@ def assess_task_readiness(
     refused: list[str] = []
     deferred: list[str] = []
     conflicts: list[str] = []
+    catalog_unverifiable: list[str] = []
     definition_by_name = {
         item.name: item for item in product_contract.fact_definitions
     }
 
     for name, fact in selected.items():
         definition = definition_by_name[name]
+        fact_unit = normalize_unit_label(
+            fact.unit
+            or _explicit_unit_from_text(fact.value)
+            or _explicit_unit_from_text(fact.evidence)
+        )
+        if (
+            definition.value_type == FactValueType.NUMBER
+            and definition.unit_conversions
+            and fact_unit is not None
+            and fact_unit not in definition.unit_conversions
+        ):
+            conflicts.append(f"{name}:unsupported_unit:{fact_unit}")
+        explicit_preference = fact.polarity.value == "preferred"
+        immutable_analog_fact = name in product_contract.analog_invariants
         effective_strength = (
-            FactStrength.HARD
+            FactStrength.SOFT
+            if explicit_preference and not immutable_analog_fact
+            else FactStrength.HARD
             if definition.strength == FactStrength.HARD
             or fact.strength == ConstraintStrength.HARD
             else FactStrength.SOFT
@@ -153,6 +289,8 @@ def assess_task_readiness(
             polarity=fact.polarity.value,
         )
         (hard if effective_strength == FactStrength.HARD else soft).append(readiness_fact)
+        if fact.status == ConstraintStatus.KNOWN and not definition.catalog_verifiable:
+            catalog_unverifiable.append(name)
         if fact.status == ConstraintStatus.UNKNOWN:
             unknown.append(name)
         elif fact.status == ConstraintStatus.REFUSED:
@@ -202,10 +340,15 @@ def assess_task_readiness(
     terminal_names = {
         item.name for item in (*hard, *soft)
     }
+    required_alternatives = dict(product_contract.required_fact_alternatives)
     if "sku" in known_names:
         required = []
     for definition in required:
-        if definition.name not in terminal_names:
+        alternatives = required_alternatives.get(definition.name, ())
+        if (
+            definition.name not in terminal_names
+            and not any(name in terminal_names for name in alternatives)
+        ):
             missing.append(definition.name)
 
     unavailable = tuple(dict.fromkeys((*unknown, *refused, *deferred)))
@@ -239,6 +382,13 @@ def assess_task_readiness(
             "unavailable_fact_not_reasked",
             "preliminary_path_allowed" if can_preview else "honest_boundary_required",
         )
+    elif catalog_unverifiable:
+        status = ReadinessStatus.PRELIMINARY_READY
+        question = None
+        reasons = (
+            "confirmed_fact_not_verifiable_from_catalogue",
+            "preliminary_path_allowed",
+        )
     else:
         status = ReadinessStatus.EXACT_READY
         question = None
@@ -262,6 +412,7 @@ def assess_task_readiness(
         refused_facts=tuple(refused),
         deferred_facts=tuple(deferred),
         conflicting_facts=tuple(conflicts),
+        catalog_unverifiable_facts=tuple(catalog_unverifiable),
         recommended_question_fact=question,
         learn_method_code=learn,
         reason_codes=reasons,

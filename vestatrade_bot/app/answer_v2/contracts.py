@@ -10,12 +10,18 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.catalog_v2.contracts import (
     CandidateStatus,
     CatalogFact,
+    CatalogFactIssue,
     CatalogProductRole,
     CatalogRelaxation,
     ProductKind,
 )
 from app.dialogue_v2.contracts import (
+    InformationOutputRelation,
+    InformationPurpose,
+    InformationSourceKind,
+    InformationSubjectScope,
     NextActionKind,
+    RequestedInformationOutput,
     ResponseStrategyKind,
 )
 
@@ -90,6 +96,17 @@ class ProductPresentationStatus(str, Enum):
     UNVERIFIED = "unverified"
 
 
+class ProductRecommendationRole(str, Enum):
+    PRIMARY = "primary"
+    ALTERNATIVE = "alternative"
+
+
+class RecommendationCriterion(str, Enum):
+    ONLY_EXACT_ELIGIBLE = "only_exact_eligible"
+    LOWEST_CONFIRMED_PRICE = "lowest_confirmed_price"
+    STABLE_SKU_TIEBREAK = "stable_sku_tiebreak"
+
+
 class LimitationStatus(str, Enum):
     UNKNOWN = "unknown"
     REFUSED = "refused"
@@ -116,11 +133,19 @@ class NextStepKind(str, Enum):
     ASK_DECISION_FACT = "ask_decision_fact"
     EXPLAIN_HOW_TO_FIND_FACT = "explain_how_to_find_fact"
     SHOW_PRELIMINARY_OPTIONS = "show_preliminary_options"
+    RECOMMEND_ONE = "recommend_one"
     CONTINUE_WITH_CONFIRMED_FACTS = "continue_with_confirmed_facts"
     COMPARE_CANDIDATES = "compare_candidates"
     PRESENT_ANALOG_DIFFERENCES = "present_analog_differences"
     OFFER_VERIFIABLE_EXTERNAL_STEP = "offer_verifiable_external_step"
     STATE_CAPABILITY_BOUNDARY = "state_capability_boundary"
+    EXPLAIN_DECISION_RELEVANCE = "explain_decision_relevance"
+    STATE_COMPATIBILITY_BOUNDARY = "state_compatibility_boundary"
+    STATE_INFORMATION_SOURCE_BOUNDARY = "state_information_source_boundary"
+    STATE_INFORMATION_MEANING_BOUNDARY = "state_information_meaning_boundary"
+    STATE_DETERMINATION_METHOD_BOUNDARY = "state_determination_method_boundary"
+    STATE_INFORMATION_VALUE_BOUNDARY = "state_information_value_boundary"
+    REPORT_CANDIDATE_FACTS = "report_candidate_facts"
     CLOSE_TASK = "close_task"
     WAIT_FOR_CUSTOMER = "wait_for_customer"
 
@@ -190,6 +215,44 @@ class ProductPresentationPlan(FrozenModel):
     difference_ids: tuple[str, ...] = ()
     source_ref_ids: tuple[str, ...] = ()
     reason_codes: tuple[str, ...] = ()
+    recommendation_role: ProductRecommendationRole | None = None
+    recommendation_rank: int | None = Field(default=None, ge=1, le=3)
+    recommendation_criterion: RecommendationCriterion | None = None
+    recommendation_reason_codes: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def recommendation_metadata_is_exact_and_coherent(
+        self,
+    ) -> "ProductPresentationPlan":
+        if self.recommendation_role is None:
+            if any(
+                (
+                    self.recommendation_rank is not None,
+                    self.recommendation_criterion is not None,
+                    bool(self.recommendation_reason_codes),
+                )
+            ):
+                raise ValueError("recommendation metadata requires a role")
+            return self
+        if self.status != ProductPresentationStatus.EXACT:
+            raise ValueError("only exact products may be recommended")
+        if (
+            self.recommendation_rank is None
+            or self.recommendation_criterion is None
+            or not self.recommendation_reason_codes
+        ):
+            raise ValueError("recommendation metadata must be complete")
+        if (
+            self.recommendation_role == ProductRecommendationRole.PRIMARY
+            and self.recommendation_rank != 1
+        ):
+            raise ValueError("primary recommendation must have rank one")
+        if (
+            self.recommendation_role == ProductRecommendationRole.ALTERNATIVE
+            and self.recommendation_rank not in {2, 3}
+        ):
+            raise ValueError("recommendation alternative rank must be two or three")
+        return self
 
 
 class LimitationPlan(FrozenModel):
@@ -210,7 +273,47 @@ class QuestionPlan(FrozenModel):
     decision_impact_code: str
     contract_allows_question: bool = True
     learn_method_code: str | None = None
+    expected_unit: str | None = None
     source_ref_ids: tuple[str, ...] = ()
+    reason_codes: tuple[str, ...] = ()
+
+
+class CandidateFactStatus(str, Enum):
+    CONFIRMED = "confirmed"
+    MISSING = "missing"
+    AMBIGUOUS = "ambiguous"
+
+
+class CandidateFactReportItem(FrozenModel):
+    item_id: str
+    sku: str
+    name: str
+    fact_name: str
+    status: CandidateFactStatus
+    value: Scalar | None = None
+    unit: str | None = None
+    source_ref_ids: tuple[str, ...] = ()
+    reason_codes: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def confirmed_values_are_grounded(self) -> "CandidateFactReportItem":
+        if self.status == CandidateFactStatus.CONFIRMED:
+            if self.value is None:
+                raise ValueError("confirmed candidate fact requires a value")
+            if not self.source_ref_ids:
+                raise ValueError("confirmed candidate fact requires provenance")
+        elif self.value is not None or self.unit is not None:
+            raise ValueError("missing/ambiguous candidate fact cannot contain a value")
+        return self
+
+
+class CandidateFactReport(FrozenModel):
+    report_id: str
+    information_request_id: str
+    task_id: str
+    goal_id: str | None = None
+    fact_name: str
+    items: tuple[CandidateFactReportItem, ...] = Field(min_length=1, max_length=12)
     reason_codes: tuple[str, ...] = ()
 
 
@@ -219,8 +322,31 @@ class NextStepPlan(FrozenModel):
     kind: NextStepKind
     task_id: str | None = None
     fact_name: str | None = None
+    learn_method_code: str | None = None
+    expected_unit: str | None = None
     capability_ref_id: str | None = None
+    information_request_id: str | None = None
+    information_purpose: InformationPurpose | None = None
+    requested_outputs: tuple[RequestedInformationOutput, ...] = ()
+    output_relation: InformationOutputRelation | None = None
+    source_kind: InformationSourceKind | None = None
+    information_subject_scope: InformationSubjectScope = (
+        InformationSubjectScope.CUSTOMER_GOAL
+    )
+    candidate_fact_report: CandidateFactReport | None = None
+    contract_fact_recognized: bool = False
+    fact_decision_changing: bool = False
+    fact_required_for_exact: bool = False
     reason_codes: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def candidate_report_matches_kind(self) -> "NextStepPlan":
+        has_report = self.candidate_fact_report is not None
+        if has_report != (self.kind == NextStepKind.REPORT_CANDIDATE_FACTS):
+            raise ValueError("candidate fact report must match next-step kind")
+        if has_report and self.information_subject_scope != InformationSubjectScope.PRESENTED_CANDIDATES:
+            raise ValueError("candidate fact report requires presented-candidates scope")
+        return self
 
 
 class AnswerSection(FrozenModel):
@@ -293,6 +419,7 @@ class CatalogAnswerProduct(FrozenModel):
     image_url: str | None = None
     updated_at: str | None = None
     facts: tuple[CatalogFact, ...] = ()
+    fact_issues: tuple[CatalogFactIssue, ...] = ()
 
 
 class ConstraintAnswerEvidence(FrozenModel):
@@ -322,7 +449,9 @@ class CatalogCandidateEvidence(FrozenModel):
     product_kind: ProductKind
     role: CatalogProductRole
     status: CandidateStatus
+    required_hard_facts: tuple[str, ...] = ()
     matched_hard_facts: tuple[str, ...] = ()
+    mismatched_hard_facts: tuple[str, ...] = ()
     missing_hard_facts: tuple[str, ...] = ()
     matched_soft_facts: tuple[str, ...] = ()
     mismatched_soft_facts: tuple[str, ...] = ()

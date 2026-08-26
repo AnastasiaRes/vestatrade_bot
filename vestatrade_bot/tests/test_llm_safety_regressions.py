@@ -187,6 +187,30 @@ def test_json_transport_success_is_not_reported_as_accepted_on_parse_failure() -
     assert valid.last_json_output_accepted is True
 
 
+def test_malformed_json_log_never_echoes_provider_payload(caplog) -> None:
+    secret_payload = "not-json phone +7 999 123-45-67"
+    client = _JSONReplyClient(secret_payload)
+
+    client.complete_json("privacy-test", [], {"kind": "fallback"})
+
+    assert secret_payload not in caplog.text
+    assert "+7 999 123-45-67" not in caplog.text
+    assert "sha256=" in caplog.text
+
+
+def test_malformed_json_with_unpaired_surrogate_returns_safe_fallback(caplog) -> None:
+    client = _JSONReplyClient("not-json\ud800private")
+    fallback = {"kind": "fallback"}
+
+    parsed, transport_used = client.complete_json("surrogate-test", [], fallback)
+
+    assert parsed == fallback
+    assert transport_used is True
+    assert client.last_json_output_accepted is False
+    assert "private" not in caplog.text
+    assert "sha256=" in caplog.text
+
+
 def test_intent_cache_is_history_and_session_scoped() -> None:
     client = _HistoryAwareIntentClient()
     router = IntentRouterAgent(client)

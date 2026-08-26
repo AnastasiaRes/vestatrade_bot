@@ -21,6 +21,7 @@ class FrozenModel(BaseModel):
 
 class ProductKind(str, Enum):
     PIPE = "pipe"
+    PEX_PIPE = "pex_pipe"
     SEWER_PIPE = "sewer_pipe"
     ELBOW = "elbow"
     SEWER_ELBOW = "sewer_elbow"
@@ -80,6 +81,7 @@ class FactStrength(str, Enum):
 class ComparisonMode(str, Enum):
     EXACT = "exact"
     NUMERIC = "numeric"
+    MINIMUM_RATING = "minimum_rating"
     BOOLEAN = "boolean"
     CONTAINS = "contains"
 
@@ -103,6 +105,7 @@ class ContractFactDefinition(FrozenModel):
     catalog_fields: tuple[str, ...] = ()
     general_parsers: tuple[str, ...] = ()
     learn_method_code: str | None = None
+    catalog_verifiable: bool = True
     missing_catalog_behavior: MissingCatalogBehavior = (
         MissingCatalogBehavior.UNVERIFIED
     )
@@ -123,6 +126,7 @@ class ProductContract(FrozenModel):
     incompatible_kinds: tuple[ProductKind, ...] = ()
     candidate_kinds: tuple[ProductKind, ...] = ()
     alternative_kinds: tuple[ProductKind, ...] = ()
+    required_fact_alternatives: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
 
 class ContractResolutionStatus(str, Enum):
@@ -154,13 +158,28 @@ class CatalogFact(FrozenModel):
     provenance: FactProvenance
 
 
+class CatalogFactIssue(FrozenModel):
+    """Source-preserving reason why a catalogue field is not a scalar fact."""
+
+    name: str
+    status: Literal["ambiguous"] = "ambiguous"
+    provenance: FactProvenance
+
+
 class CatalogProductSnapshot(FrozenModel):
     sku: str
     name: str
     category: str
     product_kind: ProductKind
     role: CatalogProductRole
+    # Availability is catalogue evidence, not a technical compatibility fact.
+    # Keep it alongside normalized facts so the pure planner can answer a
+    # typed CHECK_STOCK query and honour a separate product-scoped stock
+    # requirement without consulting the legacy Product object.
+    stock_status: str | None = None
+    stock_qty: int | None = None
     facts: tuple[CatalogFact, ...] = ()
+    fact_issues: tuple[CatalogFactIssue, ...] = ()
     unsupported_reason: str | None = None
 
 
@@ -216,6 +235,12 @@ class CandidateStatus(str, Enum):
     UNVERIFIED = "unverified"
 
 
+class CatalogAvailabilityStatus(str, Enum):
+    IN_STOCK = "in_stock"
+    OUT_OF_STOCK = "out_of_stock"
+    UNKNOWN = "unknown"
+
+
 class SearchConstraint(FrozenModel):
     name: str
     value: str | int | float | bool
@@ -236,6 +261,7 @@ class CandidateAssessment(FrozenModel):
     product_kind: ProductKind
     role: CatalogProductRole
     status: CandidateStatus
+    availability_status: CatalogAvailabilityStatus = CatalogAvailabilityStatus.UNKNOWN
     matched_hard_facts: tuple[str, ...] = ()
     mismatched_hard_facts: tuple[str, ...] = ()
     missing_hard_facts: tuple[str, ...] = ()
@@ -254,6 +280,7 @@ class CatalogSearchPlan(FrozenModel):
     product_kind: ProductKind
     requested_role: CatalogProductRole
     stages: tuple[CatalogSearchStage, ...]
+    in_stock_required: bool = False
     hard_constraints: tuple[SearchConstraint, ...] = ()
     soft_constraints: tuple[SearchConstraint, ...] = ()
     unavailable_constraints: tuple[str, ...] = ()

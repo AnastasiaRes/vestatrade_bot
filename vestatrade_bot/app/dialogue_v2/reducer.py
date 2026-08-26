@@ -5,13 +5,25 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Iterable
 
+from app.agents.domain_ontology import (
+    CONSTRAINT_FACT_ONTOLOGY,
+    PRODUCT_TYPE_ONTOLOGY,
+    RANGE_CAPABLE_CONSTRAINT_FACTS,
+)
+from app.agents.engineering_requirements import EngineeringRequirementsAgent
 from app.agents.semantic_interpreter import TurnUnderstanding
 from app.answer_v2.contracts import (
     AnswerPlanningResult,
     AnswerValidationResult,
+    NextStepKind,
     TaskProgressAssessment,
 )
 from app.catalog_v2.contracts import CandidateStatus, CatalogPlanningResult
+from app.catalog_v2.normalization import (
+    normalize_unit_label,
+    parse_numeric_choice_value,
+    parse_numeric_range_value,
+)
 from app.commerce_v2.contracts import (
     CapabilityMode,
     CommerceExecutionResult,
@@ -68,8 +80,18 @@ from .contracts import (
     DialogueStateV2,
     DirectQuestion,
     DirectQuestionRegistered,
+    InformationOutputRelation,
+    InformationPurpose,
+    InformationRequestRegistered,
+    InformationRequestResolved,
+    InformationRequestStatus,
+    InformationRequestUnavailable,
+    InformationRequestV2,
+    InformationSourceKind,
+    InformationSubjectScope,
     NextActionPlan,
     PolicyDecisionRecorded,
+    PresentedCandidateSummary,
     ProductContractResolved,
     ProductCategory,
     ProductGoal,
@@ -80,7 +102,9 @@ from .contracts import (
     ProgressState,
     ReductionResult,
     RejectedProposal,
+    RequestedInformationOutput,
     TaskAct,
+    TaskAddressed,
     TaskCompleted,
     TaskCreated,
     TaskResumed,
@@ -117,6 +141,188 @@ _DIRECT_ACTS = {
     TaskAct.WARRANTY,
     TaskAct.COMPLAINT,
     TaskAct.CONTACT_STORE,
+}
+
+
+# These acts operate on catalogue products and therefore need an explicit
+# task-to-goal association.  Semantic interpretation can legitimately encode
+# the product being replaced as ``existing``, ``context`` or ``alternative``
+# rather than inventing a second ``target`` mention.  The reducer resolves that
+# typed relationship; it never inspects the raw customer message.
+_PRODUCT_SCOPED_ACTS = {
+    TaskAct.FIND,
+    TaskAct.SELECT,
+    TaskAct.COMPARE,
+    TaskAct.CHECK_PRICE,
+    TaskAct.CHECK_STOCK,
+    TaskAct.GET_LINK,
+}
+
+_REPLACEMENT_ROLES = {
+    ProductRole.EXISTING,
+    ProductRole.ALTERNATIVE,
+}
+
+_DISCOVERY_ACTS = {TaskAct.FIND, TaskAct.SELECT}
+
+_NON_TERMINAL_TASK_STATUSES = {
+    TaskStatus.PENDING,
+    TaskStatus.IN_PROGRESS,
+    TaskStatus.BLOCKED,
+    TaskStatus.SUSPENDED,
+}
+
+
+def _constraint_numeric_interval(
+    value: object,
+) -> tuple[float, float] | None:
+    """Return an explicit scalar/range as a closed numeric interval.
+
+    The reducer uses this only to decide whether an already confirmed fact is
+    being safely refined. It does not infer, convert or calculate values.
+    """
+
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+        return numeric, numeric
+    parsed = parse_numeric_range_value(value)
+    if parsed is None:
+        return None
+    return float(parsed[0]), float(parsed[1])
+
+
+def _normalized_constraint_unit(unit: str | None) -> str | None:
+    return normalize_unit_label(unit)
+
+
+def _is_safe_known_fact_refinement(
+    existing: ConstraintFactV2,
+    *,
+    proposed_value: object,
+    proposed_unit: str | None,
+    proposed_polarity: ConstraintPolarity,
+) -> bool:
+    """Allow only monotonic refinements of a confirmed typed fact.
+
+    A normal ``refine`` turn may strengthen/soften the same value or replace a
+    scalar with an explicitly stated range that still contains it (and the
+    inverse narrowing operation). Disjoint values still require an explicit
+    semantic correction, preserving the reducer's fail-closed contract.
+    """
+
+    if _normalized_constraint_unit(existing.unit) != _normalized_constraint_unit(
+        proposed_unit
+    ):
+        return False
+    if existing.value == proposed_value:
+        return existing.polarity != proposed_polarity
+
+    # Numeric containment is meaningful only for continuous engineering
+    # magnitudes declared by the shared ontology.  Discrete cardinalities
+    # (for example boiler circuits or collector ports) must still arrive as
+    # an explicit correction instead of being silently widened/narrowed.
+    if existing.name not in RANGE_CAPABLE_CONSTRAINT_FACTS:
+        return False
+
+    existing_choices = parse_numeric_choice_value(existing.value)
+    proposed_choices = parse_numeric_choice_value(proposed_value)
+    existing_values = (
+        {float(item) for item in existing_choices}
+        if existing_choices is not None
+        else (
+            {float(existing.value)}
+            if isinstance(existing.value, (int, float))
+            and not isinstance(existing.value, bool)
+            else None
+        )
+    )
+    proposed_values = (
+        {float(item) for item in proposed_choices}
+        if proposed_choices is not None
+        else (
+            {float(proposed_value)}
+            if isinstance(proposed_value, (int, float))
+            and not isinstance(proposed_value, bool)
+            else None
+        )
+    )
+    if existing_values is not None and proposed_values is not None:
+        return bool(
+            existing_values.issubset(proposed_values)
+            or proposed_values.issubset(existing_values)
+        )
+
+    existing_interval = _constraint_numeric_interval(existing.value)
+    proposed_interval = _constraint_numeric_interval(proposed_value)
+    if existing_interval is None or proposed_interval is None:
+        return False
+
+    existing_inside_proposed = (
+        proposed_interval[0] <= existing_interval[0]
+        and existing_interval[1] <= proposed_interval[1]
+    )
+    proposed_inside_existing = (
+        existing_interval[0] <= proposed_interval[0]
+        and proposed_interval[1] <= existing_interval[1]
+    )
+    return existing_inside_proposed or proposed_inside_existing
+
+_PRODUCT_ROLE_PRIORITY = {
+    ProductRole.TARGET: 30,
+    ProductRole.EXISTING: 20,
+    ProductRole.ALTERNATIVE: 20,
+    ProductRole.ACCESSORY: 15,
+    ProductRole.CONTEXT: 10,
+    ProductRole.UNKNOWN: 0,
+}
+
+# Applicability comes from the existing typed engineering memory schema, not
+# from words in the current message.  A fact is rejected only when that schema
+# positively assigns it to other product categories.  Unknown/new fact names
+# remain unbound-compatible so an incomplete ontology cannot silently discard
+# customer data.
+_FACT_OWNER_CATEGORIES: dict[str, frozenset[str]] = {}
+for _category_name, _category_fact_names in (
+    EngineeringRequirementsAgent.CATEGORY_KEYS.items()
+):
+    for _fact_name in _category_fact_names:
+        _FACT_OWNER_CATEGORIES[_fact_name] = frozenset(
+            {
+                *_FACT_OWNER_CATEGORIES.get(_fact_name, frozenset()),
+                _category_name,
+            }
+        )
+
+_CROSS_PRODUCT_FACT_NAMES = frozenset(
+    {
+        *EngineeringRequirementsAgent.SHARED_KEYS,
+        *EngineeringRequirementsAgent.COMMERCIAL_KEYS,
+    }
+)
+
+_ONTOLOGY_CATEGORY_BY_PRODUCT_TYPE = {
+    str(item["canonical_type"]): str(item["category"])
+    for item in PRODUCT_TYPE_ONTOLOGY
+}
+
+_ONTOLOGY_FACT_NAMES_BY_PRODUCT_TYPE = {
+    product_type: frozenset(
+        str(definition["name"])
+        for definition in definitions
+        if definition.get("name")
+    )
+    for product_type, definitions in CONSTRAINT_FACT_ONTOLOGY.items()
+}
+
+_GENERIC_PRODUCT_TYPES_BY_CATEGORY = {
+    ProductCategory.PUMPS: {"pump", "насос"},
+    ProductCategory.PIPES: {"pipe", "труба"},
+    ProductCategory.BOILERS: {"boiler", "котел", "котёл"},
+    ProductCategory.FILTERS: {"filter", "фильтр"},
+    ProductCategory.VALVES: {"valve", "клапан", "кран"},
+    ProductCategory.RADIATORS: {"radiator", "радиатор"},
 }
 
 
@@ -167,14 +373,93 @@ def _constraint_polarity(value: object) -> ConstraintPolarity:
     return ConstraintPolarity(str(raw))
 
 
+def _fact_applicability(
+    fact_name: str,
+    goal: ProductGoal | None,
+) -> tuple[bool, tuple[str, ...]]:
+    """Check a canonical fact against typed product/category ownership.
+
+    The guard is deliberately conservative: it rejects only a fact already
+    owned by one or more *other* engineering categories.  A name absent from
+    the ontology is allowed because absence is not proof of incompatibility.
+    Product-kind facts supplement the older category schema where it is less
+    precise (for example a water filter's connection size).
+    """
+
+    if goal is None or fact_name in _CROSS_PRODUCT_FACT_NAMES:
+        return True, ()
+
+    owner_categories = _FACT_OWNER_CATEGORIES.get(fact_name, frozenset())
+    if not owner_categories:
+        return True, ()
+
+    canonical_type = str(goal.canonical_type or "")
+    goal_categories = {goal.category.value}
+    ontology_category = _ONTOLOGY_CATEGORY_BY_PRODUCT_TYPE.get(canonical_type)
+    if ontology_category:
+        goal_categories.add(ontology_category)
+    if goal_categories & owner_categories:
+        return True, tuple(sorted(owner_categories))
+
+    kind_fact_names = _ONTOLOGY_FACT_NAMES_BY_PRODUCT_TYPE.get(
+        canonical_type,
+        frozenset(),
+    )
+    if fact_name in kind_fact_names:
+        return True, tuple(sorted(owner_categories))
+    return False, tuple(sorted(owner_categories))
+
+
 def _same_goal(goal: ProductGoal, canonical_type: str | None, category: ProductCategory) -> bool:
     if canonical_type and goal.canonical_type:
         return canonical_type.casefold() == goal.canonical_type.casefold()
     return category != ProductCategory.OTHER and category == goal.category
 
 
+def _generic_target_refines_active_goal(
+    goal: ProductGoal,
+    canonical_type: str | None,
+    category: ProductCategory,
+) -> bool:
+    """Keep a more specific type when a follow-up names only its family."""
+
+    if not canonical_type or category == ProductCategory.OTHER:
+        return False
+    if goal.category != category or not goal.canonical_type:
+        return False
+    generic = {
+        item.casefold()
+        for item in _GENERIC_PRODUCT_TYPES_BY_CATEGORY.get(category, set())
+    }
+    return (
+        canonical_type.casefold() in generic
+        and goal.canonical_type.casefold() not in generic
+    )
+
+
 def _goal_by_id(goals: list[ProductGoal], goal_id: str | None) -> ProductGoal | None:
     return next((goal for goal in goals if goal.goal_id == goal_id), None)
+
+
+def _matching_goal(
+    goals: list[ProductGoal],
+    active_goal_id: str | None,
+    canonical_type: str | None,
+    category: ProductCategory,
+) -> ProductGoal | None:
+    """Prefer the active compatible goal, then the most recent compatible one."""
+
+    active = _goal_by_id(goals, active_goal_id)
+    if active is not None and _same_goal(active, canonical_type, category):
+        return active
+    return next(
+        (
+            goal
+            for goal in reversed(goals)
+            if _same_goal(goal, canonical_type, category)
+        ),
+        None,
+    )
 
 
 def _replace_goal(goals: list[ProductGoal], replacement: ProductGoal) -> None:
@@ -193,6 +478,315 @@ def _replace_task(tasks: list[CustomerTask], replacement: CustomerTask) -> None:
     tasks.append(replacement)
 
 
+def _unique_goal_ids(values: Iterable[str | None]) -> list[str]:
+    """Return stable, non-null goal ids without changing semantic order."""
+
+    return list(dict.fromkeys(value for value in values if value is not None))
+
+
+def _task_acts_share_identity(existing: TaskAct, requested: TaskAct) -> bool:
+    """Whether two typed acts address one continuing customer task.
+
+    Product discovery has the intentional ``find`` -> ``select`` refinement.
+    Every other act keeps its exact identity.  Goal identity and terminal-state
+    guards are applied separately by :func:`_find_reusable_task`, so this
+    cannot merge price with stock, cross two products, or reopen completed
+    work.  No reply text is involved.
+    """
+
+    if existing in _DISCOVERY_ACTS and requested in _DISCOVERY_ACTS:
+        return True
+    return existing == requested
+
+
+def _find_reusable_task(
+    tasks: list[CustomerTask],
+    *,
+    act: TaskAct,
+    goal_id: str | None,
+    turn_number: int,
+    preferred_task_id: str | None,
+) -> CustomerTask | None:
+    exact_candidates = [
+        task
+        for task in tasks
+        if task.target_goal_id == goal_id
+        and task.status in _NON_TERMINAL_TASK_STATUSES
+        and _task_acts_share_identity(task.act, act)
+        and (
+            not task.was_addressed_on(turn_number)
+            or (
+                task.act in _DISCOVERY_ACTS
+                and act in _DISCOVERY_ACTS
+            )
+        )
+    ]
+    exact = next(
+        (
+            task
+            for task in exact_candidates
+            if task.task_id == preferred_task_id
+        ),
+        None,
+    )
+    if exact is None and exact_candidates:
+        exact = max(
+            exact_candidates,
+            key=lambda task: (
+                task.last_addressed_turn or task.origin_turn,
+                task.origin_turn,
+                task.task_id,
+            ),
+        )
+    if exact is not None:
+        return exact
+    if goal_id is None or act not in _DISCOVERY_ACTS:
+        return None
+    # A goal-less discovery task represents an earlier request whose product
+    # had not yet been identified (for example, a typed photo description).
+    # Bind that stable task to the newly confirmed goal instead of creating a
+    # second selection task.
+    return next(
+        (
+            task
+            for task in tasks
+            if task.target_goal_id is None
+            and task.status in _NON_TERMINAL_TASK_STATUSES
+            and task.act in _DISCOVERY_ACTS
+        ),
+        None,
+    )
+
+
+def _discovery_act(existing: TaskAct, requested: TaskAct) -> TaskAct:
+    if TaskAct.SELECT in {existing, requested}:
+        return TaskAct.SELECT
+    return TaskAct.FIND
+
+
+def _suspend_unscoped_discovery_tasks(
+    tasks: list[CustomerTask],
+    *,
+    except_task_id: str,
+    metadata: TurnMetadata,
+    turn_number: int,
+    events: list[object],
+) -> None:
+    for task in tuple(tasks):
+        if (
+            task.task_id == except_task_id
+            or task.target_goal_id is not None
+            or task.act not in _DISCOVERY_ACTS
+            or task.status not in {
+                TaskStatus.PENDING,
+                TaskStatus.IN_PROGRESS,
+                TaskStatus.BLOCKED,
+            }
+        ):
+            continue
+        _replace_task(
+            tasks,
+            task.model_copy(
+                update={
+                    "status": TaskStatus.SUSPENDED,
+                    "blocking_reason": "typed_product_goal_established",
+                }
+            ),
+        )
+        events.append(
+            TaskSuspended(
+                turn_id=metadata.turn_id,
+                turn_number=turn_number,
+                task_id=task.task_id,
+                reason_code="typed_product_goal_established",
+            )
+        )
+
+
+def _compatible_task_for_fact(
+    tasks: list[CustomerTask],
+    addressed_tasks: list[CustomerTask],
+    *,
+    goal_id: str | None,
+    preferred_active_task: str | None,
+) -> str | None:
+    """Bind a fact only to a task with the same goal (or both unscoped)."""
+
+    addressed = next(
+        (
+            task
+            for task in reversed(addressed_tasks)
+            if task.target_goal_id == goal_id
+            and task.status not in {TaskStatus.SATISFIED, TaskStatus.CANCELLED}
+        ),
+        None,
+    )
+    if addressed is not None:
+        return addressed.task_id
+    preferred = next(
+        (
+            task
+            for task in tasks
+            if task.task_id == preferred_active_task
+            and task.target_goal_id == goal_id
+            and task.status not in {TaskStatus.SATISFIED, TaskStatus.CANCELLED}
+        ),
+        None,
+    )
+    if preferred is not None:
+        return preferred.task_id
+    compatible = next(
+        (
+            task
+            for task in tasks
+            if task.target_goal_id == goal_id
+            and task.status
+            not in {
+                TaskStatus.SATISFIED,
+                TaskStatus.CANCELLED,
+                TaskStatus.SUSPENDED,
+            }
+        ),
+        None,
+    )
+    return compatible.task_id if compatible is not None else None
+
+
+def _pending_question_task_for_fact(
+    previous: DialogueStateV2,
+    tasks: list[CustomerTask],
+    *,
+    fact_name: str,
+    goal_id: str | None,
+) -> CustomerTask | None:
+    """Resolve a typed answer back to the task that asked for the fact.
+
+    A semantic answer turn may legitimately have no discovery act (and a
+    noisy interpreter may additionally emit an unrelated act).  The previous
+    policy decision is the authoritative typed record of which task asked for
+    which fact, so it must win over a newly created same-goal task when the
+    turn is explicitly marked as an answer to the pending question.
+    """
+
+    if previous.last_policy is None:
+        return None
+    by_id = {task.task_id: task for task in tasks}
+    for action in (previous.last_policy.primary, previous.last_policy.secondary):
+        if (
+            action is None
+            or action.fact_name != fact_name
+            or action.task_id is None
+        ):
+            continue
+        task = by_id.get(action.task_id)
+        if (
+            task is None
+            or task.status not in _NON_TERMINAL_TASK_STATUSES
+            or task.target_goal_id != goal_id
+        ):
+            continue
+        return task
+    return None
+
+
+def _delivered_question_task_for_fact(
+    previous: DialogueStateV2,
+    tasks: list[CustomerTask],
+    *,
+    fact_name: str,
+) -> CustomerTask | None:
+    """Resolve an unscoped fact through the one question actually delivered.
+
+    ``last_policy`` and a shadow answer candidate are not proof that the
+    customer saw a question.  The committed, accepted AnswerPlan summary is
+    the authoritative continuation edge.  Its task and goal identity makes
+    this binding deterministic even when semantic interpretation does not set
+    ``answers_pending_question``.
+    """
+
+    summary = previous.answer_plan_summary
+    if (
+        summary is None
+        or summary.delivery_status != ShadowDeliveryStatus.COMMITTED_TO_SESSION
+        or summary.validation_status != "accepted"
+        or summary.question_fact != fact_name
+        or summary.question_id is None
+        or summary.question_task_id is None
+    ):
+        return None
+    task = next(
+        (item for item in tasks if item.task_id == summary.question_task_id),
+        None,
+    )
+    if (
+        task is None
+        # A delivered question is a continuation edge only while its task is
+        # still conversationally foregroundable.  An explicit switch
+        # suspends the old task and invalidates that edge; otherwise an
+        # unscoped value for the new product could leak back into the old one.
+        or task.status
+        not in {
+            TaskStatus.PENDING,
+            TaskStatus.IN_PROGRESS,
+            TaskStatus.BLOCKED,
+        }
+        or task.target_goal_id != summary.question_goal_id
+    ):
+        return None
+    return task
+
+
+def _task_for_information_request(
+    addressed_tasks: list[CustomerTask],
+    *,
+    act: TaskAct,
+    goal_id: str | None,
+) -> CustomerTask | None:
+    """Bind an information deliverable only to its exact typed act and goal."""
+
+    candidates = [
+        task
+        for task in addressed_tasks
+        if task.act == act
+        and task.target_goal_id == goal_id
+        and task.status
+        not in {TaskStatus.SATISFIED, TaskStatus.CANCELLED, TaskStatus.SUSPENDED}
+    ]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda task: (task.priority, task.task_id))
+
+
+def _task_goal_ids(
+    *,
+    act: TaskAct,
+    explicit_target_goal_ids: list[str],
+    reference_goal_ids: list[str],
+    active_goal_id: str | None,
+    replacement_scope_selected: bool,
+) -> list[str | None]:
+    """Resolve the product goals addressed by one typed customer act.
+
+    Explicit targets always win.  A replacement-style reference is used when
+    no target was emitted and there is no continuing active goal, or when the
+    semantic operation explicitly starts/switches the task.  On an ordinary
+    continuation the active goal wins over a contextual mention, preserving
+    the target/context invariant.
+    """
+
+    if explicit_target_goal_ids:
+        return list(explicit_target_goal_ids)
+    if act not in _PRODUCT_SCOPED_ACTS:
+        return [active_goal_id]
+    if reference_goal_ids and replacement_scope_selected:
+        return list(reference_goal_ids)
+    if active_goal_id is not None:
+        return [active_goal_id]
+    if reference_goal_ids:
+        return list(reference_goal_ids)
+    return [None]
+
+
 def _progress(changes: Iterable[ProgressKind], turn_number: int) -> ProgressState:
     unique = tuple(dict.fromkeys(changes))
     if not unique:
@@ -206,6 +800,7 @@ def _progress(changes: Iterable[ProgressKind], turn_number: int) -> ProgressStat
         ProgressKind.TASK_RETURNED: 100,
         ProgressKind.TASK_SWITCHED: 90,
         ProgressKind.DIRECT_QUESTION_REGISTERED: 80,
+        ProgressKind.INFORMATION_REQUEST_REGISTERED: 80,
         ProgressKind.CONSTRAINT_CORRECTED: 70,
         ProgressKind.UNKNOWN_REGISTERED: 65,
         ProgressKind.CONSTRAINT_ADDED: 60,
@@ -382,6 +977,7 @@ def reduce_dialogue_state(
     commerce_sensitive_values = list(previous.commerce_sensitive_values)
     commerce_controls = list(previous.commerce_controls)
     questions = list(previous.direct_questions)
+    information_requests = list(previous.information_requests)
     ambiguities = list(previous.ambiguities)
     events: list[object] = []
     rejected: list[RejectedProposal] = []
@@ -486,6 +1082,20 @@ def reduce_dialogue_state(
         if mention_index in mention_goal_ids:
             continue
 
+        if (
+            role == ProductRole.CONTEXT
+            and canonical_type is None
+            and category == ProductCategory.OTHER
+        ):
+            rejected.append(
+                RejectedProposal(
+                    proposal_type="product_goal",
+                    reason_code="untyped_context_goal_ignored",
+                    evidence=_short_evidence(mention.evidence),
+                )
+            )
+            continue
+
         active_goal = _goal_by_id(goals, active_goal_id)
         if role == ProductRole.TARGET and operation == "correct" and active_goal:
             changed: list[str] = []
@@ -496,12 +1106,20 @@ def reduce_dialogue_state(
                 "confidence": turn_understanding.confidence,
                 "confirmed_turn": turn_number,
             }
+            if active_goal.role != ProductRole.TARGET:
+                changed.append("role")
             if canonical_type and canonical_type != active_goal.canonical_type:
                 update.update({"canonical_type": canonical_type, "type_locked": True})
                 changed.append("canonical_type")
+            elif canonical_type and not active_goal.type_locked:
+                update["type_locked"] = True
+                changed.append("type_locked")
             if category != ProductCategory.OTHER and category != active_goal.category:
                 update.update({"category": category, "category_locked": True})
                 changed.append("category")
+            elif category != ProductCategory.OTHER and not active_goal.category_locked:
+                update["category_locked"] = True
+                changed.append("category_locked")
             corrected = active_goal.model_copy(update=update)
             _replace_goal(goals, corrected)
             mention_goal_ids[mention_index] = corrected.goal_id
@@ -521,6 +1139,41 @@ def reduce_dialogue_state(
             mention_goal_ids[mention_index] = return_goal.goal_id
             continue
 
+        if (
+            role == ProductRole.TARGET
+            and active_goal
+            and operation in {"continue", "refine"}
+            and _generic_target_refines_active_goal(
+                active_goal,
+                canonical_type,
+                category,
+            )
+        ):
+            updates: dict[str, object] = {
+                "evidence": _short_evidence(mention.evidence),
+                "source": turn_metadata.source,
+                "confidence": turn_understanding.confidence,
+                "confirmed_turn": turn_number,
+            }
+            changed: list[str] = []
+            if active_goal.role != ProductRole.TARGET:
+                updates["role"] = ProductRole.TARGET
+                changed.append("role")
+            refined = active_goal.model_copy(update=updates)
+            _replace_goal(goals, refined)
+            mention_goal_ids[mention_index] = refined.goal_id
+            if changed:
+                events.append(
+                    ProductGoalCorrected(
+                        turn_id=turn_metadata.turn_id,
+                        turn_number=turn_number,
+                        goal_id=refined.goal_id,
+                        changed_fields=tuple(changed),
+                    )
+                )
+            progress_changes.append(ProgressKind.GOAL_REFINED)
+            continue
+
         if role == ProductRole.TARGET and active_goal and _same_goal(
             active_goal,
             canonical_type,
@@ -528,12 +1181,21 @@ def reduce_dialogue_state(
         ):
             updates: dict[str, object] = {}
             changed: list[str] = []
+            if active_goal.role != ProductRole.TARGET:
+                updates["role"] = ProductRole.TARGET
+                changed.append("role")
             if canonical_type and not active_goal.canonical_type:
-                updates.update({"canonical_type": canonical_type, "type_locked": True})
+                updates["canonical_type"] = canonical_type
                 changed.append("canonical_type")
+            if canonical_type and not active_goal.type_locked:
+                updates["type_locked"] = True
+                changed.append("type_locked")
             if category != ProductCategory.OTHER and active_goal.category == ProductCategory.OTHER:
-                updates.update({"category": category, "category_locked": True})
+                updates["category"] = category
                 changed.append("category")
+            if category != ProductCategory.OTHER and not active_goal.category_locked:
+                updates["category_locked"] = True
+                changed.append("category_locked")
             if updates:
                 updates.update(
                     {
@@ -556,6 +1218,54 @@ def reduce_dialogue_state(
                 progress_changes.append(ProgressKind.GOAL_REFINED)
             mention_goal_ids[mention_index] = active_goal.goal_id
             continue
+
+        if role != ProductRole.TARGET:
+            matching_goal = _matching_goal(
+                goals,
+                active_goal_id,
+                canonical_type,
+                category,
+            )
+            if matching_goal is not None:
+                updates: dict[str, object] = {}
+                changed: list[str] = []
+                if (
+                    _PRODUCT_ROLE_PRIORITY[role]
+                    > _PRODUCT_ROLE_PRIORITY[matching_goal.role]
+                ):
+                    updates["role"] = role
+                    changed.append("role")
+                if canonical_type and not matching_goal.canonical_type:
+                    updates["canonical_type"] = canonical_type
+                    changed.append("canonical_type")
+                if (
+                    category != ProductCategory.OTHER
+                    and matching_goal.category == ProductCategory.OTHER
+                ):
+                    updates["category"] = category
+                    changed.append("category")
+                if updates:
+                    updates.update(
+                        {
+                            "evidence": _short_evidence(mention.evidence),
+                            "source": turn_metadata.source,
+                            "confidence": turn_understanding.confidence,
+                            "confirmed_turn": turn_number,
+                        }
+                    )
+                    matching_goal = matching_goal.model_copy(update=updates)
+                    _replace_goal(goals, matching_goal)
+                    events.append(
+                        ProductGoalCorrected(
+                            turn_id=turn_metadata.turn_id,
+                            turn_number=turn_number,
+                            goal_id=matching_goal.goal_id,
+                            changed_fields=tuple(changed),
+                        )
+                    )
+                    progress_changes.append(ProgressKind.GOAL_REFINED)
+                mention_goal_ids[mention_index] = matching_goal.goal_id
+                continue
 
         goal_id = _stable_id("goal", turn_metadata.turn_id, mention_index)
         goal = ProductGoal(
@@ -630,44 +1340,168 @@ def reduce_dialogue_state(
             )
         )
 
-    target_goal_ids = [
+    target_goal_ids = _unique_goal_ids(
         mention_goal_ids[index]
         for index, mention in enumerate(turn_understanding.products)
         if _product_role(mention.role) == ProductRole.TARGET
         and index in mention_goal_ids
-    ]
-    target_goal_ids = list(dict.fromkeys(target_goal_ids))
-    if not target_goal_ids and active_goal_id:
-        target_goal_ids = [active_goal_id]
+    )
+    replacement_goal_ids = _unique_goal_ids(
+        mention_goal_ids[index]
+        for index, mention in enumerate(turn_understanding.products)
+        if _product_role(mention.role) in _REPLACEMENT_ROLES
+        and index in mention_goal_ids
+    )
+    context_goal_ids = _unique_goal_ids(
+        mention_goal_ids[index]
+        for index, mention in enumerate(turn_understanding.products)
+        if _product_role(mention.role) == ProductRole.CONTEXT
+        and index in mention_goal_ids
+    )
+    reference_goal_ids = replacement_goal_ids or context_goal_ids
+
+    # A replacement request may contain only the already installed/compared
+    # products.  Give the task a deterministic active scope so later unscoped
+    # follow-ups and constraints inherit the same goal.  This does not change
+    # the ProductGoal role and therefore cannot turn ordinary context into a
+    # confirmed target.  Explicit targets retain absolute priority.
+    replacement_scope_selected = bool(
+        not target_goal_ids
+        and reference_goal_ids
+        and (active_goal_id is None or operation in {"new", "switch"})
+    )
+    if replacement_scope_selected:
+        replacement_active_goal_id = reference_goal_ids[0]
+        if active_goal_id and active_goal_id != replacement_active_goal_id:
+            _suspend_goal_tasks(
+                tasks,
+                active_goal_id,
+                metadata=turn_metadata,
+                turn_number=turn_number,
+                events=events,
+                reason_code="explicit_replacement_task_switch",
+            )
+            progress_changes.append(ProgressKind.TASK_SWITCHED)
+            preferred_active_task = None
+        elif active_goal_id is None:
+            progress_changes.append(ProgressKind.GOAL_REFINED)
+        active_goal_id = replacement_active_goal_id
+
+    # In a compound replacement request the installed/alternative products
+    # are separate retained goals.  When a later turn explicitly names one of
+    # those retained products, that reference is the requested focus even if
+    # the semantic model correctly keeps its role as ``existing`` or
+    # ``alternative`` rather than relabelling it as a new target.  Context-only
+    # mentions do not enter this branch and therefore still cannot replace the
+    # active goal.
+    referenced_focus_goal_id: str | None = None
+    if (
+        not target_goal_ids
+        and replacement_goal_ids
+        and operation in {"continue", "refine"}
+        and any(
+            _task_act(item) in _PRODUCT_SCOPED_ACTS
+            for item in turn_understanding.acts
+        )
+    ):
+        referenced_focus_goal_id = replacement_goal_ids[0]
+        if active_goal_id != referenced_focus_goal_id:
+            progress_changes.append(ProgressKind.TASK_SWITCHED)
+        active_goal_id = referenced_focus_goal_id
+        preferred_active_task = next(
+            (
+                task.task_id
+                for task in tasks
+                if task.target_goal_id == referenced_focus_goal_id
+                and task.status in _NON_TERMINAL_TASK_STATUSES
+            ),
+            preferred_active_task,
+        )
 
     created_tasks: list[CustomerTask] = []
+    addressed_tasks: list[CustomerTask] = []
     for act_index, semantic_act in enumerate(turn_understanding.acts):
         act = _task_act(semantic_act)
-        task_goal_ids: list[str | None] = target_goal_ids or [None]
+        task_goal_ids = _task_goal_ids(
+            act=act,
+            explicit_target_goal_ids=target_goal_ids,
+            reference_goal_ids=reference_goal_ids,
+            active_goal_id=active_goal_id,
+            replacement_scope_selected=replacement_scope_selected,
+        )
         for goal_position, goal_id in enumerate(task_goal_ids):
-            existing_task = next(
-                (
-                    task
-                    for task in tasks
-                    if task.act == act
-                    and task.target_goal_id == goal_id
-                    and task.status
-                    not in {TaskStatus.SATISFIED, TaskStatus.CANCELLED}
-                ),
-                None,
+            existing_task = _find_reusable_task(
+                tasks,
+                act=act,
+                goal_id=goal_id,
+                turn_number=turn_number,
+                preferred_task_id=preferred_active_task,
             )
-            if (
-                existing_task is not None
-                and act in {TaskAct.FIND, TaskAct.SELECT}
-                and operation in {"continue", "refine", "correct", "return"}
-            ):
+            if existing_task is not None:
+                rebound_to_goal = (
+                    existing_task.target_goal_id is None and goal_id is not None
+                )
+                addressed_act = (
+                    _discovery_act(existing_task.act, act)
+                    if existing_task.act in _DISCOVERY_ACTS
+                    and act in _DISCOVERY_ACTS
+                    else existing_task.act
+                )
+                addressed_task = existing_task.model_copy(
+                    update={
+                        "act": addressed_act,
+                        "target_goal_id": goal_id,
+                        "status": (
+                            TaskStatus.IN_PROGRESS
+                            if rebound_to_goal
+                            or existing_task.task_id == preferred_active_task
+                            else existing_task.status
+                        ),
+                        "source_turn": turn_number,
+                        "created_turn": existing_task.origin_turn,
+                        "last_addressed_turn": turn_number,
+                        "blocking_reason": (
+                            None
+                            if rebound_to_goal
+                            else existing_task.blocking_reason
+                        ),
+                    }
+                )
+                _replace_task(tasks, addressed_task)
+                if rebound_to_goal:
+                    _suspend_unscoped_discovery_tasks(
+                        tasks,
+                        except_task_id=addressed_task.task_id,
+                        metadata=turn_metadata,
+                        turn_number=turn_number,
+                        events=events,
+                    )
+                    preferred_active_task = addressed_task.task_id
                 rejected.append(
                     RejectedProposal(
                         proposal_type="task",
-                        reason_code="existing_selection_task_reused",
+                        reason_code=(
+                            "existing_selection_task_reused"
+                            if act in {TaskAct.FIND, TaskAct.SELECT}
+                            else (
+                                "existing_product_task_reused"
+                                if act in _PRODUCT_SCOPED_ACTS
+                                else "existing_task_readdressed"
+                            )
+                        ),
                         details={"existing_task_id": existing_task.task_id},
                     )
                 )
+                events.append(
+                    TaskAddressed(
+                        turn_id=turn_metadata.turn_id,
+                        turn_number=turn_number,
+                        task_id=addressed_task.task_id,
+                        act=act,
+                        goal_id=addressed_task.target_goal_id,
+                    )
+                )
+                addressed_tasks.append(addressed_task)
                 continue
             task_id = _stable_id(
                 "task",
@@ -676,9 +1510,26 @@ def reduce_dialogue_state(
                 goal_position,
                 goal_id,
             )
+            preferred_task = next(
+                (
+                    task
+                    for task in tasks
+                    if task.task_id == preferred_active_task
+                ),
+                None,
+            )
+            focus_typed_task = bool(
+                goal_id is not None
+                and preferred_task is not None
+                and preferred_task.target_goal_id is None
+                and preferred_task.act in _DISCOVERY_ACTS
+            )
             status = (
                 TaskStatus.IN_PROGRESS
-                if preferred_active_task is None and not created_tasks
+                if (
+                    (preferred_active_task is None and not created_tasks)
+                    or focus_typed_task
+                )
                 else TaskStatus.PENDING
             )
             task = CustomerTask(
@@ -689,9 +1540,12 @@ def reduce_dialogue_state(
                 status=status,
                 source=turn_metadata.source,
                 source_turn=turn_number,
+                created_turn=turn_number,
+                last_addressed_turn=turn_number,
             )
             tasks.append(task)
             created_tasks.append(task)
+            addressed_tasks.append(task)
             events.append(
                 TaskCreated(
                     turn_id=turn_metadata.turn_id,
@@ -703,15 +1557,37 @@ def reduce_dialogue_state(
             )
             progress_changes.append(ProgressKind.NEW_TASK_CREATED)
             if status == TaskStatus.IN_PROGRESS:
+                if focus_typed_task:
+                    _suspend_unscoped_discovery_tasks(
+                        tasks,
+                        except_task_id=task.task_id,
+                        metadata=turn_metadata,
+                        turn_number=turn_number,
+                        events=events,
+                    )
                 preferred_active_task = task_id
 
-    if len(created_tasks) > 1:
-        related_ids = tuple(task.task_id for task in created_tasks)
-        for task in created_tasks:
+    addressed_ids = tuple(dict.fromkeys(task.task_id for task in addressed_tasks))
+    addressed_tasks = [
+        next(task for task in tasks if task.task_id == task_id)
+        for task_id in addressed_ids
+    ]
+    if len(addressed_tasks) > 1:
+        related_ids = tuple(task.task_id for task in addressed_tasks)
+        for task in addressed_tasks:
             replacement = task.model_copy(
                 update={
                     "related_task_ids": tuple(
-                        task_id for task_id in related_ids if task_id != task.task_id
+                        dict.fromkeys(
+                            (
+                                *task.related_task_ids,
+                                *(
+                                    task_id
+                                    for task_id in related_ids
+                                    if task_id != task.task_id
+                                ),
+                            )
+                        )
                     )
                 }
             )
@@ -720,6 +1596,87 @@ def reduce_dialogue_state(
             next(task for task in tasks if task.task_id == created.task_id)
             for created in created_tasks
         ]
+
+    for request_index, semantic_request in enumerate(
+        turn_understanding.information_requests
+    ):
+        goal_id = (
+            mention_goal_ids.get(semantic_request.applies_to_product)
+            if semantic_request.applies_to_product is not None
+            else active_goal_id
+        )
+        request_act = _task_act(semantic_request.act)
+        task = _task_for_information_request(
+            addressed_tasks,
+            act=request_act,
+            goal_id=goal_id,
+        )
+        if task is None:
+            rejected.append(
+                RejectedProposal(
+                    proposal_type="information_request",
+                    reason_code="information_request_exact_task_scope_unresolved",
+                    details={
+                        "request_index": request_index,
+                        "act": request_act.value,
+                        "goal_id": goal_id,
+                    },
+                )
+            )
+            continue
+        purpose = InformationPurpose(semantic_request.purpose.value)
+        requested_outputs = tuple(
+            RequestedInformationOutput(item.value)
+            for item in semantic_request.requested_outputs
+        )
+        output_relation = InformationOutputRelation(
+            semantic_request.output_relation.value
+        )
+        source_kind = (
+            InformationSourceKind(semantic_request.source_kind.value)
+            if semantic_request.source_kind is not None
+            else None
+        )
+        subject_scope = InformationSubjectScope(
+            semantic_request.subject_scope.value
+        )
+        request_id = _stable_id(
+            "information_request",
+            turn_metadata.turn_id,
+            request_index,
+            task.task_id,
+            goal_id,
+            semantic_request.fact_name,
+            purpose.value,
+            *(item.value for item in requested_outputs),
+            output_relation.value,
+            source_kind.value if source_kind is not None else None,
+            subject_scope.value,
+        )
+        information_request = InformationRequestV2(
+            request_id=request_id,
+            task_id=task.task_id,
+            goal_id=goal_id,
+            fact_name=semantic_request.fact_name,
+            purpose=purpose,
+            requested_outputs=requested_outputs,
+            output_relation=output_relation,
+            source_kind=source_kind,
+            subject_scope=subject_scope,
+            source_turn=turn_number,
+        )
+        information_requests.append(information_request)
+        events.append(
+            InformationRequestRegistered(
+                turn_id=turn_metadata.turn_id,
+                turn_number=turn_number,
+                request_id=request_id,
+                task_id=task.task_id,
+                goal_id=goal_id,
+                purpose=purpose,
+            )
+        )
+        progress_changes.append(ProgressKind.INFORMATION_REQUEST_REGISTERED)
 
     for task in created_tasks:
         if task.act not in _DIRECT_ACTS:
@@ -765,6 +1722,123 @@ def reduce_dialogue_state(
             )
         )
 
+    # Resolve every fact's typed scope once.  The same accepted semantic frame
+    # can contain a grounded known value and an LLM-produced missing-status
+    # duplicate for that value.  Resolve that conflict before mutating the
+    # working copy so the outcome cannot depend on array order: an explicit
+    # current-turn value wins; a genuine unknown/refused/deferred remains
+    # authoritative when no known value exists in the same goal/task scope.
+    constraint_bindings: list[tuple[str | None, str | None]] = []
+    pending_answer_task_ids: set[str] = set()
+    delivered_answer_constraint_indexes: set[int] = set()
+    known_constraint_indexes: dict[
+        tuple[str, str | None, str | None],
+        list[int],
+    ] = {}
+    for constraint_index, semantic_fact in enumerate(
+        turn_understanding.constraints
+    ):
+        delivered_question_task = (
+            _delivered_question_task_for_fact(
+                previous,
+                tasks,
+                fact_name=semantic_fact.name,
+            )
+            if semantic_fact.applies_to_product is None
+            else None
+        )
+        if delivered_question_task is not None:
+            goal_id = delivered_question_task.target_goal_id
+            pending_task = delivered_question_task
+            delivered_answer_constraint_indexes.add(constraint_index)
+        else:
+            goal_id = (
+                mention_goal_ids.get(semantic_fact.applies_to_product)
+                if semantic_fact.applies_to_product is not None
+                else active_goal_id
+            )
+            pending_task = (
+                _pending_question_task_for_fact(
+                    previous,
+                    tasks,
+                    fact_name=semantic_fact.name,
+                    goal_id=goal_id,
+                )
+                if turn_understanding.answers_pending_question
+                else None
+            )
+        if pending_task is not None:
+            task_id = pending_task.task_id
+            if (
+                pending_task.task_id not in pending_answer_task_ids
+                and not pending_task.was_addressed_on(turn_number)
+            ):
+                addressed_task = pending_task.model_copy(
+                    update={
+                        "source_turn": turn_number,
+                        "created_turn": pending_task.origin_turn,
+                        "last_addressed_turn": turn_number,
+                        "blocking_reason": None,
+                    }
+                )
+                _replace_task(tasks, addressed_task)
+                addressed_tasks.append(addressed_task)
+                events.append(
+                    TaskAddressed(
+                        turn_id=turn_metadata.turn_id,
+                        turn_number=turn_number,
+                        task_id=addressed_task.task_id,
+                        act=addressed_task.act,
+                        goal_id=addressed_task.target_goal_id,
+                    )
+                )
+                rejected.append(
+                    RejectedProposal(
+                        proposal_type="constraint_task_binding",
+                        reason_code=(
+                            "delivered_question_task_readdressed"
+                            if constraint_index in delivered_answer_constraint_indexes
+                            else "pending_question_task_readdressed"
+                        ),
+                        evidence=_short_evidence(semantic_fact.evidence),
+                        details={"task_id": addressed_task.task_id},
+                    )
+                )
+            pending_answer_task_ids.add(pending_task.task_id)
+        else:
+            task_id = _compatible_task_for_fact(
+                tasks,
+                addressed_tasks,
+                goal_id=goal_id,
+                preferred_active_task=preferred_active_task,
+            )
+        constraint_bindings.append((goal_id, task_id))
+        if _constraint_status(semantic_fact.status) == ConstraintStatus.KNOWN:
+            scope = (semantic_fact.name, goal_id, task_id)
+            known_constraint_indexes.setdefault(scope, []).append(
+                constraint_index
+            )
+
+    suppressed_missing_status_indexes: dict[int, int] = {}
+    for constraint_index, semantic_fact in enumerate(
+        turn_understanding.constraints
+    ):
+        if _constraint_status(semantic_fact.status) == ConstraintStatus.KNOWN:
+            continue
+        goal_id, task_id = constraint_bindings[constraint_index]
+        scope = (semantic_fact.name, goal_id, task_id)
+        known_indexes = known_constraint_indexes.get(scope)
+        if not known_indexes:
+            continue
+        # Under an explicit correction the last known value retains normal
+        # reducer ordering semantics.  Otherwise the first known value is the
+        # fail-closed winner and any conflicting known duplicate is diagnosed
+        # by the existing confirmed-fact rule below.
+        winner_index = (
+            known_indexes[-1] if operation == "correct" else known_indexes[0]
+        )
+        suppressed_missing_status_indexes[constraint_index] = winner_index
+
     for constraint_index, semantic_fact in enumerate(turn_understanding.constraints):
         status = _constraint_status(semantic_fact.status)
         polarity = _constraint_polarity(semantic_fact.polarity)
@@ -773,19 +1847,67 @@ def reduce_dialogue_state(
             if polarity == ConstraintPolarity.PREFERRED
             else ConstraintStrength.HARD
         )
-        goal_id = (
-            mention_goal_ids.get(semantic_fact.applies_to_product)
-            if semantic_fact.applies_to_product is not None
-            else active_goal_id
+        goal_id, task_id = constraint_bindings[constraint_index]
+        preferred_known_index = suppressed_missing_status_indexes.get(
+            constraint_index
         )
-        task_id = next(
-            (
-                task.task_id
-                for task in created_tasks
-                if task.target_goal_id == goal_id
-            ),
-            preferred_active_task,
+        if preferred_known_index is not None:
+            preferred_known = turn_understanding.constraints[
+                preferred_known_index
+            ]
+            rejected.append(
+                RejectedProposal(
+                    proposal_type="constraint",
+                    reason_code=(
+                        "current_known_fact_preferred_over_missing_status_duplicate"
+                    ),
+                    evidence=_short_evidence(semantic_fact.evidence),
+                    details={
+                        "fact_name": semantic_fact.name,
+                        "discarded_status": status.value,
+                        "preferred_constraint_index": preferred_known_index,
+                        "preferred_status": _constraint_status(
+                            preferred_known.status
+                        ).value,
+                    },
+                )
+            )
+            continue
+
+        goal = _goal_by_id(goals, goal_id)
+        fact_is_applicable, owner_categories = _fact_applicability(
+            semantic_fact.name,
+            goal,
         )
+        if not fact_is_applicable:
+            rejected.append(
+                RejectedProposal(
+                    proposal_type="constraint",
+                    reason_code="constraint_incompatible_with_product_goal",
+                    evidence=_short_evidence(semantic_fact.evidence),
+                    details={
+                        "fact_name": semantic_fact.name,
+                        "goal_id": goal_id,
+                        "goal_product_type": (
+                            goal.canonical_type if goal is not None else None
+                        ),
+                        "goal_category": (
+                            goal.category.value if goal is not None else None
+                        ),
+                        "owner_categories": list(owner_categories),
+                    },
+                )
+            )
+            conflicts.append(
+                DiagnosticConflict(
+                    conflict_type="constraint_applicability",
+                    reason_code="constraint_incompatible_with_product_goal",
+                    existing_id=goal_id,
+                    proposed_value=semantic_fact.name,
+                )
+            )
+            continue
+
         canonical_field = canonical_commerce_field_name(semantic_fact.name)
         sensitive_kind = sensitive_value_kind(canonical_field)
         if sensitive_kind is not None:
@@ -886,6 +2008,15 @@ def reduce_dialogue_state(
             and existing.status == ConstraintStatus.KNOWN
             and status == ConstraintStatus.KNOWN
             and operation != "correct"
+            and not (
+                operation in {"continue", "refine"}
+                and _is_safe_known_fact_refinement(
+                    existing,
+                    proposed_value=semantic_fact.value,
+                    proposed_unit=semantic_fact.unit,
+                    proposed_polarity=polarity,
+                )
+            )
         ):
             rejected.append(
                 RejectedProposal(
@@ -918,9 +2049,13 @@ def reduce_dialogue_state(
             strength=strength,
             evidence=_short_evidence(semantic_fact.evidence),
             source=(
-                "pending_question_answer"
-                if turn_understanding.answers_pending_question
-                else turn_metadata.source
+                "delivered_question_answer"
+                if constraint_index in delivered_answer_constraint_indexes
+                else (
+                    "pending_question_answer"
+                    if turn_understanding.answers_pending_question
+                    else turn_metadata.source
+                )
             ),
             confidence=turn_understanding.confidence,
             goal_id=goal_id,
@@ -971,6 +2106,7 @@ def reduce_dialogue_state(
         product_goals=tuple(goals),
         active_goal_id=active_goal_id,
         constraints=tuple(constraints),
+        information_requests=tuple(information_requests),
         direct_questions=tuple(questions),
         ambiguities=tuple(ambiguities),
         progress=progress,
@@ -1001,7 +2137,9 @@ def record_policy_decision(
 ) -> ReductionResult:
     """Record a policy choice through the reducer's only mutation boundary."""
 
-    state = reduction.state.model_copy(update={"last_policy": plan})
+    state = reduction.state.model_copy(
+        update={"last_policy": plan}
+    )
     event = PolicyDecisionRecorded(
         turn_id=turn_metadata.turn_id,
         turn_number=state.turn_number,
@@ -1339,6 +2477,83 @@ _ACTION_STRATEGIES = {
 }
 
 
+_FULFILLED_INFORMATION_OUTPUT_BY_NEXT_STEP = {
+    NextStepKind.PROVIDE_DIRECT_ANSWER: RequestedInformationOutput.EXPLANATION,
+    NextStepKind.EXPLAIN_HOW_TO_FIND_FACT: RequestedInformationOutput.INSTRUCTION,
+    NextStepKind.EXPLAIN_DECISION_RELEVANCE: RequestedInformationOutput.EXPLANATION,
+    NextStepKind.REPORT_CANDIDATE_FACTS: RequestedInformationOutput.EXPLANATION,
+}
+
+_UNAVAILABLE_INFORMATION_OUTPUT_BY_NEXT_STEP = {
+    NextStepKind.STATE_INFORMATION_SOURCE_BOUNDARY: (
+        RequestedInformationOutput.VERIFIED_LINK
+    ),
+    NextStepKind.STATE_INFORMATION_MEANING_BOUNDARY: (
+        RequestedInformationOutput.EXPLANATION
+    ),
+    NextStepKind.STATE_DETERMINATION_METHOD_BOUNDARY: (
+        RequestedInformationOutput.INSTRUCTION
+    ),
+    NextStepKind.STATE_INFORMATION_VALUE_BOUNDARY: (
+        RequestedInformationOutput.EXPLANATION
+    ),
+    NextStepKind.STATE_COMPATIBILITY_BOUNDARY: (
+        RequestedInformationOutput.EXPLANATION
+    ),
+}
+
+
+def _information_output_projection(
+    planning: AnswerPlanningResult | None,
+) -> tuple[
+    str | None,
+    tuple[RequestedInformationOutput, ...],
+    InformationOutputRelation | None,
+    tuple[RequestedInformationOutput, ...],
+    tuple[RequestedInformationOutput, ...],
+    tuple[str, ...],
+]:
+    """Describe only the typed output represented by the plan's sole next step.
+
+    This is deliberately a projection, not a lifecycle transition.  A shadow
+    plan may be rejected or never delivered.  ``record_response_delivery`` is
+    the only place that can apply the projected result to an information
+    request after the exact plan has been validated and committed.
+    """
+
+    if planning is None or planning.answer_plan is None:
+        return None, (), None, (), (), ()
+    next_step = planning.answer_plan.next_step
+    if next_step.information_request_id is None:
+        return None, (), None, (), (), ()
+    requested = tuple(next_step.requested_outputs)
+    requested_set = set(requested)
+    fulfilled_output = _FULFILLED_INFORMATION_OUTPUT_BY_NEXT_STEP.get(
+        next_step.kind
+    )
+    unavailable_output = _UNAVAILABLE_INFORMATION_OUTPUT_BY_NEXT_STEP.get(
+        next_step.kind
+    )
+    fulfilled = (
+        (fulfilled_output,)
+        if fulfilled_output is not None and fulfilled_output in requested_set
+        else ()
+    )
+    unavailable = (
+        (unavailable_output,)
+        if unavailable_output is not None and unavailable_output in requested_set
+        else ()
+    )
+    return (
+        next_step.information_request_id,
+        requested,
+        next_step.output_relation,
+        fulfilled,
+        unavailable,
+        tuple(next_step.reason_codes),
+    )
+
+
 def record_answer_shadow(
     reduction: ReductionResult,
     planning: AnswerPlanningResult | None,
@@ -1434,11 +2649,54 @@ def record_answer_shadow(
     summary = reduction.state.answer_plan_summary
     if planning is not None and planning.answer_plan is not None:
         plan = planning.answer_plan
+        question_task = (
+            next(
+                (
+                    task
+                    for task in reduction.state.tasks
+                    if plan.question is not None
+                    and task.task_id == plan.question.task_id
+                ),
+                None,
+            )
+            if plan.question is not None
+            else None
+        )
+        (
+            information_request_id,
+            information_requested_outputs,
+            information_output_relation,
+            information_fulfilled_outputs,
+            information_unavailable_outputs,
+            information_reason_codes,
+        ) = _information_output_projection(planning)
         validation_status = validation.status if validation else "not_run"
         delivery = (
             ShadowDeliveryStatus.REJECTED
             if validation_status == "rejected"
             else ShadowDeliveryStatus.SHADOW_NOT_DELIVERED
+        )
+        current_plan_goal_ids = {
+            task.target_goal_id
+            for task in reduction.state.tasks
+            if task.task_id in plan.task_ids and task.target_goal_id is not None
+        }
+        previous_presented_candidates = (
+            tuple(
+                candidate
+                for candidate in (
+                    reduction.state.answer_plan_summary.presented_candidates
+                    if reduction.state.answer_plan_summary is not None
+                    and reduction.state.answer_plan_summary.delivery_status
+                    == ShadowDeliveryStatus.COMMITTED_TO_SESSION
+                    else ()
+                )
+                if candidate.task_id in plan.task_ids
+                or (
+                    candidate.goal_id is not None
+                    and candidate.goal_id in current_plan_goal_ids
+                )
+            )
         )
         summary = AnswerPlanSummary(
             plan_id=plan.plan_id,
@@ -1446,9 +2704,37 @@ def record_answer_shadow(
             task_ids=plan.task_ids,
             primary_action=plan.primary_action,
             question_fact=(plan.question.fact_name if plan.question else None),
+            question_id=(plan.question.question_id if plan.question else None),
+            question_task_id=(plan.question.task_id if plan.question else None),
+            question_goal_id=(
+                question_task.target_goal_id if question_task is not None else None
+            ),
             next_step_kind=plan.next_step.kind.value,
             validation_status=validation_status,
             delivery_status=delivery,
+            information_request_id=information_request_id,
+            information_requested_outputs=information_requested_outputs,
+            information_output_relation=information_output_relation,
+            information_fulfilled_outputs=information_fulfilled_outputs,
+            information_unavailable_outputs=information_unavailable_outputs,
+            information_reason_codes=information_reason_codes,
+            presented_candidates=(
+                tuple(
+                    PresentedCandidateSummary(
+                        sku=item.sku,
+                        name=item.name,
+                        product_kind=item.product_kind,
+                        role=item.role,
+                        task_id=item.task_id,
+                        goal_id=item.goal_id,
+                        search_plan_id=item.search_plan_id,
+                        source_turn=reduction.state.turn_number,
+                    )
+                    for item in plan.products
+                )
+                if plan.products
+                else previous_presented_candidates
+            ),
             source_turn=reduction.state.turn_number,
         )
         events.append(
@@ -1538,10 +2824,52 @@ def record_response_delivery(
         source_turn=state.turn_number,
     )
     summary = state.answer_plan_summary
-    if summary is not None and summary.plan_id == plan_id:
+    plan_matches_summary = bool(
+        summary is not None
+        and summary.plan_id == plan_id
+        and summary.source_turn == state.turn_number
+    )
+    if plan_matches_summary:
         summary = summary.model_copy(
             update={"delivery_status": ShadowDeliveryStatus.COMMITTED_TO_SESSION}
         )
+    tasks = list(state.tasks)
+    task_stack = state.task_stack
+    active_goal_id = state.active_goal_id
+    if (
+        plan_matches_summary
+        and summary is not None
+        and summary.validation_status == "accepted"
+        and summary.question_id is not None
+        and summary.question_task_id is not None
+    ):
+        question_task = next(
+            (task for task in tasks if task.task_id == summary.question_task_id),
+            None,
+        )
+        if (
+            question_task is not None
+            and question_task.status in _NON_TERMINAL_TASK_STATUSES
+            and question_task.target_goal_id == summary.question_goal_id
+        ):
+            # The response ends by asking this task's typed question, so the
+            # next unscoped continuation belongs to it.  Keep sibling work
+            # pending rather than losing it or allowing two active tasks.
+            tasks = [
+                (
+                    task.model_copy(update={"status": TaskStatus.PENDING})
+                    if task.task_id != question_task.task_id
+                    and task.status == TaskStatus.IN_PROGRESS
+                    else (
+                        task.model_copy(update={"status": TaskStatus.IN_PROGRESS})
+                        if task.task_id == question_task.task_id
+                        else task
+                    )
+                )
+                for task in tasks
+            ]
+            task_stack = _stack(tasks, question_task.task_id)
+            active_goal_id = summary.question_goal_id
     delivered = tuple(
         item.model_copy(
             update={"delivery_status": ShadowDeliveryStatus.COMMITTED_TO_SESSION}
@@ -1553,9 +2881,90 @@ def record_response_delivery(
         item.task_id: item for item in state.delivered_response_strategy_history
     }
     delivered_by_task.update({item.task_id: item for item in delivered})
+    information_requests = list(state.information_requests)
+    if (
+        plan_matches_summary
+        and summary is not None
+        and summary.validation_status == "accepted"
+        and summary.information_request_id is not None
+    ):
+        request = next(
+            (
+                item
+                for item in information_requests
+                if item.request_id == summary.information_request_id
+            ),
+            None,
+        )
+        summary_matches_request = bool(
+            request is not None
+            and request.status == InformationRequestStatus.PENDING
+            and summary.information_requested_outputs == request.requested_outputs
+            and summary.information_output_relation == request.output_relation
+        )
+        if summary_matches_request and request is not None:
+            requested = set(request.requested_outputs)
+            fulfilled = requested.intersection(
+                summary.information_fulfilled_outputs
+            )
+            unavailable = requested.intersection(
+                summary.information_unavailable_outputs
+            )
+            if request.output_relation == InformationOutputRelation.ALL:
+                resolved = bool(requested and requested.issubset(fulfilled))
+                unavailable_terminal = bool(
+                    requested and requested.issubset(unavailable)
+                )
+            else:
+                resolved = bool(requested.intersection(fulfilled))
+                # For ANY, an honest boundary is terminal only when every
+                # alternative output has been checked and found unavailable.
+                unavailable_terminal = bool(
+                    requested and requested.issubset(unavailable)
+                )
+            terminal_status = (
+                InformationRequestStatus.RESOLVED
+                if resolved
+                else InformationRequestStatus.UNAVAILABLE
+                if unavailable_terminal
+                else None
+            )
+            if terminal_status is not None:
+                replacement = request.model_copy(
+                    update={"status": terminal_status}
+                )
+                information_requests = [
+                    replacement if item.request_id == request.request_id else item
+                    for item in information_requests
+                ]
+                if terminal_status == InformationRequestStatus.RESOLVED:
+                    events.append(
+                        InformationRequestResolved(
+                            turn_id=turn_metadata.turn_id,
+                            turn_number=state.turn_number,
+                            request_id=request.request_id,
+                        )
+                    )
+                else:
+                    events.append(
+                        InformationRequestUnavailable(
+                            turn_id=turn_metadata.turn_id,
+                            turn_number=state.turn_number,
+                            request_id=request.request_id,
+                            reason_code=(
+                                summary.information_reason_codes[0]
+                                if summary.information_reason_codes
+                                else "validated_information_output_unavailable"
+                            ),
+                        )
+                    )
     new_state = state.model_copy(
         update={
             "answer_plan_summary": summary,
+            "tasks": tuple(tasks),
+            "task_stack": task_stack,
+            "active_goal_id": active_goal_id,
+            "information_requests": tuple(information_requests),
             "delivered_response_strategy_history": tuple(
                 delivered_by_task.values()
             )[-100:],

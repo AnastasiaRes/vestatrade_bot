@@ -9,6 +9,7 @@ from app.models import Product
 
 from .contracts import (
     CatalogFact,
+    CatalogFactIssue,
     CatalogProductSnapshot,
     FactProvenance,
     ProductKind,
@@ -17,14 +18,198 @@ from .registry import ProductContractRegistry, normalize_identity
 
 
 _NUMBER_RE = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
+_NUMERIC_RANGE_VALUE_RE = re.compile(
+    r"^\s*(?P<minimum>[-+]?\d+(?:[.,]\d+)?)\s*"
+    r"(?:\.\.|[-\u2013\u2014]|(?:to|до))\s*"
+    r"(?P<maximum>[-+]?\d+(?:[.,]\d+)?)\s*"
+    r"(?:(?:к\s*вт|kw|вт|w|мм|mm|см|cm|м|m|бар|bar|%))?\s*$",
+    re.IGNORECASE,
+)
+_NUMERIC_CHOICE_SPLIT_RE = re.compile(
+    r"\s+(?:или|либо|or)\s+",
+    re.IGNORECASE,
+)
+_NUMERIC_CHOICE_ITEM_RE = re.compile(
+    r"^\s*(?P<value>[-+]?\d+(?:[.,]\d+)?)\s*"
+    r"(?:(?:к\s*вт|kw|вт|w|мм|mm|см|cm|м|m|бар|bar|%))?\s*$",
+    re.IGNORECASE,
+)
+_COMPOUND_DIMENSION_RE = re.compile(
+    r"^\s*(?P<primary>\d+(?:[.,]\d+)?)\s*[xх×]\s*"
+    r"(?P<secondary>\d+(?:[.,]\d+)?)\s*(?:mm|мм)?\s*$",
+    re.IGNORECASE,
+)
+_PARENTHETICAL_PIPE_DIMENSION_RE = re.compile(
+    r"^\s*(?P<primary>\d+(?:[.,]\d+)?)\s*\(\s*"
+    r"(?P<secondary>\d+(?:[.,]\d+)?)\s*\)\s*(?:mm|мм)?\s*$",
+    re.IGNORECASE,
+)
+_SCALAR_NUMERIC_FACT_NAMES = frozenset(
+    {
+        "diameter_mm",
+        "mounting_length_mm",
+        "max_head_m",
+        "max_flow_l_h",
+        "power_kw",
+        "center_distance_mm",
+        "heat_output_w",
+        "suction_depth_m",
+        "circuits",
+        "port_count",
+        "glycol_concentration_percent",
+        "micron_rating_um",
+        "operating_temperature_c",
+        "operating_pressure_bar",
+    }
+)
+
+_UNIT_LABEL_ALIASES = {
+    "мм": "mm",
+    "см": "cm",
+    "м": "m",
+    "квт": "kw",
+    "вт": "w",
+    "бар": "bar",
+    "мпа": "mpa",
+    "кпа": "kpa",
+    "па": "pa",
+    "атм": "atm",
+    "л/ч": "l/h",
+    "л/мин": "l/min",
+    "м3/ч": "m3/h",
+    "м³/ч": "m3/h",
+    "мкм": "um",
+    "°с": "c",
+    "℃": "c",
+}
 
 
-def _number(value: object) -> float | int | None:
-    match = _NUMBER_RE.search(str(value or ""))
-    if not match:
-        return None
-    parsed = float(match.group(0).replace(",", "."))
+def _parsed_number(value: str) -> float | int:
+    parsed = float(value.replace(",", "."))
     return int(parsed) if parsed.is_integer() else parsed
+
+
+def normalize_unit_label(unit: str | None) -> str | None:
+    """Canonicalize spelling only; never convert a numeric value."""
+
+    if unit is None:
+        return None
+    compact = "".join(str(unit).casefold().replace("³", "3").split())
+    if not compact:
+        return None
+    return _UNIT_LABEL_ALIASES.get(compact, compact)
+
+
+def parse_numeric_range_value(
+    value: object,
+) -> tuple[float | int, float | int] | None:
+    """Parse an explicit closed numeric interval without choosing an endpoint.
+
+    This helper is deliberately syntax-only.  The semantic layer must already
+    have assigned the interval to a typed fact and unit; the catalogue layer
+    merely preserves the two stated bounds instead of silently treating
+    ``10-15`` as the scalar ``10``.
+    """
+
+    if not isinstance(value, str):
+        return None
+    match = _NUMERIC_RANGE_VALUE_RE.fullmatch(value)
+    if match is None:
+        return None
+    minimum = _parsed_number(match.group("minimum"))
+    maximum = _parsed_number(match.group("maximum"))
+    if float(minimum) > float(maximum):
+        return None
+    return minimum, maximum
+
+
+def format_numeric_range_value(
+    minimum: float | int,
+    maximum: float | int,
+) -> str:
+    """Return the stable source-independent representation used in V2 state."""
+
+    return f"{minimum}\u2013{maximum}"
+
+
+def parse_numeric_choice_value(
+    value: object,
+) -> tuple[float | int, ...] | None:
+    """Parse an explicit discrete numeric choice without choosing an item.
+
+    ``130 или 180`` is not the continuous interval ``130–180``.  Keeping the
+    alternatives distinct prevents readiness from silently taking the first
+    number and lets a later customer turn safely narrow the set.
+    """
+
+    if not isinstance(value, str):
+        return None
+    parts = _NUMERIC_CHOICE_SPLIT_RE.split(value.strip())
+    if len(parts) < 2:
+        return None
+    parsed: list[float | int] = []
+    for part in parts:
+        match = _NUMERIC_CHOICE_ITEM_RE.fullmatch(part)
+        if match is None:
+            return None
+        parsed.append(_parsed_number(match.group("value")))
+    unique = tuple(dict.fromkeys(parsed))
+    return unique if len(unique) >= 2 else None
+
+
+def format_numeric_choice_value(values: Iterable[float | int]) -> str:
+    """Return the stable representation of a discrete numeric choice."""
+
+    return " или ".join(str(value) for value in values)
+
+
+def _structured_scalar_number(
+    name: str,
+    raw: object,
+) -> tuple[float | int | None, bool]:
+    """Return an exact scalar and whether the structured source is ambiguous.
+
+    A range or a list of distinct values is not a scalar fact.  The only
+    multi-number forms interpreted here are declarative product dimensions:
+    ``primary x secondary`` and, for an outer pipe diameter, ``outer(wall)``.
+    No endpoint of an unrecognised multi-value source is selected.
+    """
+
+    if isinstance(raw, bool):
+        return None, False
+    if isinstance(raw, (int, float)):
+        return raw, False
+    source = str(raw or "")
+    compound = _COMPOUND_DIMENSION_RE.fullmatch(source)
+    if compound is not None and name in {
+        "diameter_mm",
+        "secondary_diameter_mm",
+        "length_mm",
+    }:
+        component = (
+            compound.group("primary")
+            if name == "diameter_mm"
+            else compound.group("secondary")
+        )
+        return _parsed_number(component), False
+    parenthetical = _PARENTHETICAL_PIPE_DIMENSION_RE.fullmatch(source)
+    if parenthetical is not None and name == "diameter_mm":
+        primary = _parsed_number(parenthetical.group("primary"))
+        secondary = _parsed_number(parenthetical.group("secondary"))
+        # ``16(2.2)`` is the established outer-diameter/wall notation.  A
+        # larger parenthesised value such as ``130(180)`` is an alternative,
+        # not a wall thickness, and therefore remains ambiguous.
+        if float(secondary) < float(primary):
+            return primary, False
+        return None, True
+
+    literals = tuple(_NUMBER_RE.finditer(source))
+    if not literals:
+        return None, False
+    values = tuple(_parsed_number(match.group(0)) for match in literals)
+    if len(values) > 1:
+        return None, True
+    return values[0], False
 
 
 def _fact(
@@ -53,17 +238,6 @@ def _fact(
 
 
 def _structured_fact(name: str, raw: object, field: str) -> CatalogFact | None:
-    numeric_names = {
-        "diameter_mm",
-        "mounting_length_mm",
-        "max_head_m",
-        "max_flow_l_h",
-        "power_kw",
-        "center_distance_mm",
-        "heat_output_w",
-        "suction_depth_m",
-        "circuits",
-    }
     unit = {
         "diameter_mm": "mm",
         "mounting_length_mm": "mm",
@@ -73,8 +247,24 @@ def _structured_fact(name: str, raw: object, field: str) -> CatalogFact | None:
         "center_distance_mm": "mm",
         "heat_output_w": "W",
         "suction_depth_m": "m",
+        "glycol_concentration_percent": "%",
+        "micron_rating_um": "um",
+        "operating_temperature_c": "C",
+        "operating_pressure_bar": "bar",
     }.get(name)
-    value: object = _number(raw) if name in numeric_names else normalize_fact_value(name, raw)
+    if name in _SCALAR_NUMERIC_FACT_NAMES:
+        normalized = normalize_fact_value(name, raw)
+        scalar, ambiguous = _structured_scalar_number(name, raw)
+        if ambiguous:
+            return None
+        value: object = scalar
+        if value is None and isinstance(normalized, (int, float)) and not isinstance(
+            normalized,
+            bool,
+        ):
+            value = normalized
+    else:
+        value = normalize_fact_value(name, raw)
     return _fact(
         name,
         value,
@@ -89,35 +279,251 @@ def _structured_fact(name: str, raw: object, field: str) -> CatalogFact | None:
 def normalize_fact_value(name: str, value: object) -> str | int | float | bool:
     """Normalize only explicit, compatible values; never infer a missing fact."""
 
+    if name == "circuits" and isinstance(value, bool):
+        return 2 if value else 1
     if isinstance(value, (int, float, bool)):
         return value
     text = normalize_identity(value)
+    if name == "connection_size":
+        # G/R/Rp/NPT describe a thread standard; the connection-size fact is
+        # only its nominal dimension.  Standards remain separate facts rather
+        # than making G1/2 fail to compare with a feed value of 1/2.
+        match = re.fullmatch(
+            r"(?:g|r|rp|npt)?\s*(\d+(?:\s+\d+/\d+)?|\d+/\d+)\s*(?:inch|дюйм(?:а|ов)?|[\"\u2033])?",
+            text,
+        )
+        if match:
+            return " ".join(match.group(1).split())
     if name == "connection_pattern":
-        if any(marker in text for marker in ("внутренняя/внутренняя", "вн. вн", "ff")):
+        compact = re.sub(r"[^a-zа-яе]+", " ", text).strip()
+        if "внутренняя/внутренняя" in text or re.search(
+            r"(?<![a-z])ff(?![a-z])", text
+        ) or re.fullmatch(
+            r"(?:вр|вн|внутренняя)\s+(?:вр|вн|внутренняя)", compact
+        ):
             return "female_female"
-        if any(marker in text for marker in ("внутренняя/наружная", "вн. нар", "fm")):
+        if any(marker in text for marker in ("внутренняя/наружная", "внутренней наружной")) or re.search(
+            r"(?<![a-z])fm(?![a-z])", text
+        ) or re.fullmatch(
+            r"(?:вр|вн|внутренняя)\s+(?:нр|нар|наружная)", compact
+        ):
             return "female_male"
+        if any(marker in text for marker in ("наружная/внутренняя", "наружной внутренней")) or re.search(
+            r"(?<![a-z])mf(?![a-z])", text
+        ) or re.fullmatch(
+            r"(?:нр|нар|наружная)\s+(?:вр|вн|внутренняя)", compact
+        ):
+            return "male_female"
+        if "наружная/наружная" in text or re.search(
+            r"(?<![a-z])mm(?![a-z])", text
+        ) or re.fullmatch(
+            r"(?:нр|нар|наружная)\s+(?:нр|нар|наружная)", compact
+        ):
+            return "male_male"
     if name == "valve_shape":
         if "углов" in text:
             return "angle"
         if "прям" in text:
             return "straight"
     if name == "boiler_type":
-        if "газ" in text:
+        if "газ" in text or text in {"gas", "natural gas"}:
             return "gas"
-        if "электр" in text:
+        if "электр" in text or text in {"electric", "electricity"}:
             return "electric"
+    if name == "port_count":
+        numeric = re.search(
+            r"(?<!\d)([2-9])\s*(?:[-–—]\s*[xх]?\s*|[xх]\s*)?"
+            r"(?:way|ways|ход(?:а|ов|овой|овый)?|"
+            r"port|ports|порт(?:а|ов|овый)?)\b",
+            text,
+        )
+        if numeric:
+            return int(numeric.group(1))
+        if re.search(
+            r"(?:three|тр[её]х)\s*(?:way|ход(?:овой|овый)?|port|порт(?:овый)?)\b",
+            text,
+        ):
+            return 3
+        number_words = {
+            "one": 1,
+            "один": 1,
+            "одна": 1,
+            "одно": 1,
+            "two": 2,
+            "два": 2,
+            "две": 2,
+            "three": 3,
+            "три": 3,
+            "four": 4,
+            "четыре": 4,
+        }
+        directional = re.findall(
+            r"(?<![a-zа-яеё\d])"
+            r"(\d+|one|two|three|four|один|одна|одно|два|две|три|четыре)\s*"
+            r"(?:inlets?|outlets?|вход(?:а|ов)?|выход(?:а|ов)?)\b",
+            text,
+        )
+        if directional:
+            counts = [
+                int(item) if item.isdigit() else number_words[item]
+                for item in directional
+            ]
+            total = sum(counts)
+            if 2 <= total <= 9:
+                return total
+    if name == "combustion_chamber":
+        if any(marker in text for marker in ("closed", "закр", "герметич")):
+            return "closed"
+        if any(marker in text for marker in ("open", "откр", "естественная тяга")):
+            return "open"
+    if name == "application":
+        if any(marker in text for marker in ("вод", "water", "гвс")):
+            return "water"
+        if any(marker in text for marker in ("газ", "gas")):
+            return "gas"
+        if any(marker in text for marker in ("пар", "steam")):
+            return "steam"
+    if name == "washable":
+        if any(
+            marker in text
+            for marker in (
+                "непромывн",
+                "не промывн",
+                "без промывки",
+                "non washable",
+                "not washable",
+                "not self cleaning",
+            )
+        ) or text in {"false", "no", "нет"}:
+            return False
+        if any(
+            marker in text
+            for marker in (
+                "самопромыв",
+                "промывн",
+                "self cleaning",
+                "backwash",
+                "washable",
+                "flushable",
+            )
+        ) or text in {"true", "yes", "да"}:
+            return True
+    if name == "coolant_type":
+        if "пропиленгликол" in text or "propylene glycol" in text:
+            return "propylene_glycol"
+        if "этиленгликол" in text or "ethylene glycol" in text:
+            return "ethylene_glycol"
+        if "гликол" in text or "glycol" in text or "антифриз" in text:
+            return "glycol_unspecified"
+        if text in {"water", "for water"} or "для воды" in text:
+            return "water"
+    if name == "filter_method":
+        if any(marker in text for marker in ("механич", "mechanical", "сетчат", "грязевик", "косой")):
+            return "mechanical"
+        if "магнит" in text or "magnetic" in text:
+            return "magnetic"
+        if "обратн" in text and "осмос" in text or "reverse osmosis" in text:
+            return "reverse_osmosis"
+        if "угол" in text or "carbon" in text:
+            return "carbon"
+        if "умягч" in text or "soften" in text:
+            return "softening"
+        if "обезжелез" in text or "iron removal" in text:
+            return "iron_removal"
     if name == "sewer_scope":
         if "наруж" in text or "external" in text:
             return "external"
         if "внутр" in text or "internal" in text:
             return "internal"
     if name == "circuits":
-        if "двух" in text or text == "2":
+        if (
+            "двух" in text
+            or text == "2"
+            or ("отоп" in text and ("горяч" in text or "гвс" in text))
+            or text in {"true", "yes", "да"}
+        ):
             return 2
-        if "одно" in text or text == "1":
+        if "одно" in text or text == "1" or text in {"false", "no", "нет"}:
             return 1
     return text
+
+
+def parse_pump_designation(
+    value: object,
+) -> dict[str, tuple[int | float, str, str]]:
+    """Parse common circulation-pump size codes without product/SKU rules.
+
+    Supported families include ``25/6-130``, ``25-40 180`` and variable-head
+    designations such as ``30/1-8``.  The parser is invoked only after the
+    product has already been typed as a pump.  Parenthesised alternative
+    mounting sizes (``130(180)``) deliberately remain absent instead of being
+    collapsed to the first number.
+    """
+
+    text = str(value or "")
+    if not text:
+        return {}
+
+    variable = re.search(
+        r"(?<!\d)(?P<dn>\d{2})\s*/\s*"
+        r"(?P<minimum>\d{1,2}(?:[.,]\d+)?)\s*[-–]\s*"
+        r"(?P<maximum>\d{1,2}(?:[.,]\d+)?)(?!\d)",
+        text,
+    )
+    if variable is not None:
+        minimum = float(variable.group("minimum").replace(",", "."))
+        maximum = float(variable.group("maximum").replace(",", "."))
+        if 0 <= minimum <= maximum <= 20:
+            maximum_value: int | float = (
+                int(maximum) if maximum.is_integer() else maximum
+            )
+            return {
+                "diameter_mm": (int(variable.group("dn")), "mm", variable.group(0)),
+                "max_head_m": (maximum_value, "m", variable.group(0)),
+            }
+
+    slash = re.search(
+        r"(?<!\d)(?P<dn>\d{2})\s*/\s*(?P<head>\d{1,2})"
+        r"(?:\s*[-–]\s*(?P<length>\d{3}))?(?!\d)",
+        text,
+    )
+    if slash is not None:
+        facts: dict[str, tuple[int | float, str, str]] = {
+            "diameter_mm": (int(slash.group("dn")), "mm", slash.group(0)),
+            "max_head_m": (int(slash.group("head")), "m", slash.group(0)),
+        }
+        suffix = text[slash.end():]
+        if slash.group("length") and not re.match(r"\s*\(\s*\d", suffix):
+            facts["mounting_length_mm"] = (
+                int(slash.group("length")),
+                "mm",
+                slash.group(0),
+            )
+        return facts
+
+    hyphen = re.search(
+        r"(?<!\d)(?P<dn>\d{2})\s*[-–]\s*(?P<head_code>\d{1,2})"
+        r"(?:\s*(?:[-–]\s*)?(?P<length>\d{3}))?(?!\d)",
+        text,
+    )
+    if hyphen is None:
+        return {}
+    raw_head = int(hyphen.group("head_code"))
+    head: int | float = raw_head / 10 if raw_head >= 20 else raw_head
+    if isinstance(head, float) and head.is_integer():
+        head = int(head)
+    facts = {
+        "diameter_mm": (int(hyphen.group("dn")), "mm", hyphen.group(0)),
+        "max_head_m": (head, "m", hyphen.group(0)),
+    }
+    suffix = text[hyphen.end():]
+    if hyphen.group("length") and not re.match(r"\s*\(\s*\d", suffix):
+        facts["mounting_length_mm"] = (
+            int(hyphen.group("length")),
+            "mm",
+            hyphen.group(0),
+        )
+    return facts
 
 
 def _generic_facts(
@@ -139,6 +545,28 @@ def _generic_facts(
             values = re.findall(r"(?<![/\d])(\d{2,3})\s*(?:mm|мм)\b", name, re.I)
             if values:
                 result.append(_fact("diameter_mm", int(values[-1]), source="name", field="name", raw=values[-1], parser="primary_metric_size", unit="mm"))
+
+    if "pipe_outer_diameter" in parsers and kind == ProductKind.PEX_PIPE:
+        # PEX/PE-X pipe names normally encode outer diameter followed by wall
+        # thickness (16x2.0 or 16(2.0)).  This parser only reads that explicit
+        # product designation; it never derives a missing size.
+        match = re.search(
+            r"(?<!\d)(?P<outer>\d{2,3})\s*(?:[xх]\s*\d(?:[.,]\d+)?|\(\s*\d(?:[.,]\d+)?\s*\))",
+            name,
+            re.I,
+        )
+        if match:
+            result.append(
+                _fact(
+                    "diameter_mm",
+                    int(match.group("outer")),
+                    source="name",
+                    field="name",
+                    raw=match.group(0),
+                    parser="pipe_outer_diameter",
+                    unit="mm",
+                )
+            )
 
     if "secondary_metric_size" in parsers:
         match = re.search(r"(?<![/\d])(?P<a>\d{2,3})\s*[*xх-]\s*(?P<b>\d{2,4})(?!\d)", name, re.I)
@@ -169,7 +597,7 @@ def _generic_facts(
             result.append(_fact("pressure_class", f"PN{match.group(1)}", source="name", field="name", raw=match.group(0), parser="pressure_class"))
 
     if "material_family" in parsers:
-        material = next((canonical for marker, canonical in (("pp fiber", "pp_fiber"), ("pp alux", "pp_alux"), ("pp r", "ppr"), ("биметал", "bimetal"), ("алюмин", "aluminium"), ("стал", "steel")) if marker in f"{name_norm} {description_norm}"), None)
+        material = next((canonical for marker, canonical in (("pex", "pex"), ("pe xa", "pex_a"), ("сшитого полиэтилена", "pex"), ("pp fiber", "pp_fiber"), ("pp alux", "pp_alux"), ("pp r", "ppr"), ("биметал", "bimetal"), ("алюмин", "aluminium"), ("стал", "steel")) if marker in f"{name_norm} {description_norm}"), None)
         result.append(_fact("material", material, source="name", field="name", raw=name, parser="material_family"))
 
     if "inch_size" in parsers:
@@ -177,9 +605,107 @@ def _generic_facts(
         if match:
             result.append(_fact("connection_size", " ".join(match.group(1).split()), source="name", field="name", raw=match.group(0), parser="inch_size", unit="inch"))
 
+    if "port_count" in parsers:
+        numeric_match = re.search(
+            r"(?<!\d)(?P<count>[2-9])\s*(?:[-–—]\s*[xх]?\s*|[xх]\s*)?"
+            r"(?:way|ways|ход(?:а|ов|овой|овый)?|port|ports|"
+            r"порт(?:а|ов|овый)?)\b",
+            name,
+            re.I,
+        )
+        word_match = re.search(
+            r"(?:three|тр[её]х)\s*(?:[-–—]\s*)?"
+            r"(?:way|ход(?:овой|овый)?|port|порт(?:овый)?)\b",
+            name,
+            re.I,
+        )
+        match = numeric_match or word_match
+        if match:
+            result.append(
+                _fact(
+                    "port_count",
+                    int(numeric_match.group("count")) if numeric_match else 3,
+                    source="name",
+                    field="name",
+                    raw=match.group(0),
+                    parser="port_count",
+                )
+            )
+
+    if "washable" in parsers:
+        for source, field, raw in (
+            ("name", "name", name),
+            ("description", "description", description),
+        ):
+            washable = normalize_fact_value("washable", raw)
+            if isinstance(washable, bool):
+                result.append(
+                    _fact(
+                        "washable",
+                        washable,
+                        source=source,
+                        field=field,
+                        raw=raw,
+                        parser="washable",
+                    )
+                )
+                break
+
+    if "filter_method" in parsers:
+        name_method = normalize_fact_value("filter_method", name_norm)
+        description_method = normalize_fact_value("filter_method", description_norm)
+        supported_methods = {
+            "mechanical",
+            "magnetic",
+            "reverse_osmosis",
+            "carbon",
+            "softening",
+            "iron_removal",
+        }
+        method = (
+            name_method
+            if name_method in supported_methods
+            else description_method
+        )
+        if method in {
+            "mechanical",
+            "magnetic",
+            "reverse_osmosis",
+            "carbon",
+            "softening",
+            "iron_removal",
+        }:
+            from_name = name_method in supported_methods
+            result.append(_fact(
+                "filter_method",
+                method,
+                source="name" if from_name else "description",
+                field="name" if from_name else "description",
+                raw=name if from_name else description,
+                parser="filter_method",
+            ))
+
+    if "micron_rating" in parsers:
+        micron_pattern = r"(?<![\d-])(\d+(?:[.,]\d+)?)(?!\s*[-–]\s*\d)\s*(?:мкм|micron|um)\b"
+        name_match = re.search(micron_pattern, name, re.I)
+        description_match = re.search(micron_pattern, description, re.I)
+        match = name_match or description_match
+        if match:
+            rating = float(match.group(1).replace(",", "."))
+            from_name = name_match is not None
+            result.append(_fact(
+                "micron_rating_um",
+                int(rating) if rating.is_integer() else rating,
+                source="name" if from_name else "description",
+                field="name" if from_name else "description",
+                raw=match.group(0),
+                parser="micron_rating",
+                unit="um",
+            ))
+
     if "connection_pattern" in parsers:
         pattern = normalize_fact_value("connection_pattern", name)
-        if pattern in {"female_female", "female_male"}:
+        if pattern in {"female_female", "female_male", "male_female", "male_male"}:
             result.append(_fact("connection_pattern", pattern, source="name", field="name", raw=name, parser="connection_pattern"))
 
     if "straight_or_angle" in parsers:
@@ -192,14 +718,27 @@ def _generic_facts(
             result.append(_fact("control_thread", f"M{match.group(1)}x{match.group(2).replace(',', '.')}", source="description", field="description", raw=match.group(0), parser="metric_thread"))
 
     if "pump_designation_diameter" in parsers or "pump_designation_head" in parsers:
-        match = re.search(r"(?<!\d)(\d{2})\s*/\s*(\d{1,2})(?:\s*-\s*(\d{2,3}))?", name)
-        if match:
-            if "pump_designation_diameter" in parsers:
-                result.append(_fact("diameter_mm", int(match.group(1)), source="name", field="name", raw=match.group(0), parser="pump_designation_diameter", unit="mm"))
-            if "pump_designation_head" in parsers:
-                result.append(_fact("max_head_m", int(match.group(2)), source="name", field="name", raw=match.group(0), parser="pump_designation_head", unit="m"))
-            if match.group(3):
-                result.append(_fact("mounting_length_mm", int(match.group(3)), source="name", field="name", raw=match.group(0), parser="pump_mounting_length", unit="mm"))
+        designation = parse_pump_designation(name)
+        for fact_name, (fact_value, unit, raw) in designation.items():
+            if fact_name == "diameter_mm" and "pump_designation_diameter" not in parsers:
+                continue
+            if fact_name == "max_head_m" and "pump_designation_head" not in parsers:
+                continue
+            result.append(
+                _fact(
+                    fact_name,
+                    fact_value,
+                    source="name",
+                    field="name",
+                    raw=raw,
+                    parser=(
+                        "pump_mounting_length"
+                        if fact_name == "mounting_length_mm"
+                        else f"pump_designation_{'diameter' if fact_name == 'diameter_mm' else 'head'}"
+                    ),
+                    unit=unit,
+                )
+            )
 
     if "power_kw" in parsers:
         match = re.search(r"(\d+(?:[.,]\d+)?)\s*квт\b", name_norm)
@@ -234,20 +773,78 @@ def normalize_catalog_product(
     )
     contract = registry.for_kind(kind)
     facts: list[CatalogFact] = []
+    fact_issues: list[CatalogFactIssue] = []
     facts.append(_fact("sku", product.sku, source="identity", field="sku", raw=product.sku, parser="catalog_identity"))
+    brand = _fact(
+        "brand",
+        normalize_fact_value("brand", product.brand),
+        source="attribute",
+        field="brand",
+        raw=product.brand,
+        parser="product_brand_field",
+    )
+    if brand is not None:
+        facts.append(brand)
+    identity_facts: dict[ProductKind, tuple[str, str]] = {
+        ProductKind.GAS_BOILER: ("boiler_type", "gas"),
+        ProductKind.ELECTRIC_BOILER: ("boiler_type", "electric"),
+        ProductKind.CIRCULATION_PUMP: ("pump_type", "circulation"),
+        ProductKind.DHW_CIRCULATION_PUMP: ("pump_type", "dhw_circulation"),
+        ProductKind.BOREHOLE_PUMP: ("pump_type", "borehole"),
+        ProductKind.DRAINAGE_PUMP: ("pump_type", "drainage"),
+        ProductKind.SEWAGE_PUMP: ("pump_type", "sewage"),
+        ProductKind.PUMP_STATION: ("pump_type", "pump_station"),
+        ProductKind.PEX_PIPE: ("material", "pex"),
+    }
+    identity_fact = identity_facts.get(kind)
+    if identity_fact is not None:
+        facts.append(
+            _fact(
+                identity_fact[0],
+                identity_fact[1],
+                source="identity",
+                field="product_kind",
+                raw=kind.value,
+                parser="catalog_product_kind",
+            )
+        )
     if contract is not None:
+        ambiguous_structured_fact_names: set[str] = set()
         for definition in contract.fact_definitions:
             if definition.name == "sku":
                 continue
             for field in definition.catalog_fields:
                 raw = attrs.get(normalize_identity(field))
                 if raw not in (None, ""):
+                    if definition.name in _SCALAR_NUMERIC_FACT_NAMES:
+                        _scalar, ambiguous = _structured_scalar_number(
+                            definition.name,
+                            raw,
+                        )
+                        if ambiguous:
+                            ambiguous_structured_fact_names.add(definition.name)
+                            fact_issues.append(
+                                CatalogFactIssue(
+                                    name=definition.name,
+                                    provenance=FactProvenance(
+                                        source="attribute",
+                                        source_field=field,
+                                        raw_value=str(raw)[:500],
+                                        parser="structured_attribute_ambiguous",
+                                    ),
+                                )
+                            )
+                            break
                     parsed = _structured_fact(definition.name, raw, field)
                     if parsed is not None:
                         facts.append(parsed)
                     break
         parsers = {parser for definition in contract.fact_definitions for parser in definition.general_parsers}
-        facts.extend(_generic_facts(product, kind, parsers))
+        facts.extend(
+            fact
+            for fact in _generic_facts(product, kind, parsers)
+            if fact.name not in ambiguous_structured_fact_names
+        )
 
     unique: dict[str, CatalogFact] = {}
     for fact in facts:
@@ -258,7 +855,15 @@ def normalize_catalog_product(
         category=product.category_path,
         product_kind=kind,
         role=role,
+        stock_status=product.stock_status or None,
+        stock_qty=product.stock_qty,
         facts=tuple(unique.values()),
+        fact_issues=tuple(
+            {
+                (item.name, item.provenance.source_field): item
+                for item in fact_issues
+            }.values()
+        ),
         unsupported_reason=unsupported,
     )
 

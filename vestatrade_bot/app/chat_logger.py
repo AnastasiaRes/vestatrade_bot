@@ -29,13 +29,12 @@ except ImportError:  # pragma: no cover - exercised on POSIX
     _msvcrt = None
 
 from app.models import ChatResponse
+from app.pii import redact_pii_for_model
 
 
 logger = logging.getLogger(__name__)
 
 _SAFE_SESSION_RE = re.compile(r"[^a-zA-Z0-9_-]")
-_EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}")
-_PHONE_RE = re.compile(r"(?:\+?\d[\s().-]*){10,}")
 _FILE_LOCKS: dict[Path, Lock] = {}
 _FILE_LOCKS_GUARD = Lock()
 _WINDOWS_LOCK_TIMEOUT_SECONDS = 5.0
@@ -43,8 +42,15 @@ _WINDOWS_LOCK_POLL_SECONDS = 0.01
 
 
 def _redact_pii(text: str) -> str:
-    text = _EMAIL_RE.sub("[email скрыт]", text)
-    return _PHONE_RE.sub("[телефон скрыт]", text)
+    """Use the same PII boundary as model transport and diagnostics."""
+
+    return (
+        redact_pii_for_model(text)
+        .replace("[email redacted]", "[email скрыт]")
+        .replace("[phone redacted]", "[телефон скрыт]")
+        .replace("[name redacted]", "[имя скрыто]")
+        .replace("[address redacted]", "[адрес скрыт]")
+    )
 
 
 def _file_lock(path: Path) -> Lock:

@@ -6,6 +6,7 @@ from app.answer_v2.contracts import (
     AnswerClaim,
     ClaimKind,
     KnowledgeStatus,
+    NextStepKind,
     RenderedSegmentKind,
 )
 from app.answer_v2.planner import build_answer_plan
@@ -55,7 +56,64 @@ def test_direct_answer_is_first_in_the_rendered_candidate() -> None:
     direct_item_ids = set(plan.sections[0].item_ids)
     rendered = deterministic_render(plan)
     assert rendered.segments[0].source_ids[0] in direct_item_ids
-    assert rendered.segments[0].text.startswith("Цена:")
+    assert rendered.segments[0].kind.value == "product"
+    assert "Труба PPR 25 мм" in rendered.segments[0].text
+    assert "цена — 250 руб." in rendered.segments[0].text
+
+
+def test_catalogue_facts_are_grouped_in_one_grounded_product_segment() -> None:
+    sources = _sources()
+    plan = _compile(sources=sources).answer_plan
+    assert plan is not None
+
+    rendered = deterministic_render(plan)
+    product_segments = [
+        item for item in rendered.segments if item.kind == RenderedSegmentKind.PRODUCT
+    ]
+
+    assert len(product_segments) == 1
+    product_text = product_segments[0].text
+    assert product_text.count("Труба PPR 25 мм") == 1
+    assert "цена — 250 руб." in product_text
+    assert "остаток по фиду — 7" in product_text
+    assert "https://example.test/pipe-25" in product_text
+    assert not any(
+        item.kind == RenderedSegmentKind.FACT
+        and any(
+            claim.claim_id in item.source_ids
+            and claim.kind
+            in {
+                ClaimKind.PRODUCT_IDENTITY,
+                ClaimKind.PRICE,
+                ClaimKind.STOCK,
+                ClaimKind.LINK,
+                ClaimKind.PRODUCT_ATTRIBUTE,
+            }
+            for claim in plan.claims
+        )
+        for item in rendered.segments
+    )
+    assert validate_rendered_answer(plan, rendered, sources).status == "accepted"
+
+
+def test_renderer_keeps_internal_catalogue_tokens_out_of_public_copy() -> None:
+    plan = _compile().answer_plan
+    assert plan is not None
+
+    text = deterministic_render(plan).text
+
+    for internal_token in (
+        "RUB",
+        "in_stock",
+        "out_of_stock",
+        "not_requested",
+        "diameter_mm",
+        "stock_qty",
+        "SKU",
+    ):
+        assert internal_token not in text
+    assert "25 мм mm" not in text
+    assert "\nЦена:" not in text
 
 
 def test_missing_direct_source_uses_boundary_instead_of_claiming_an_answer() -> None:
@@ -71,6 +129,40 @@ def test_missing_direct_source_uses_boundary_instead_of_claiming_an_answer() -> 
     rendered = deterministic_render(plan)
     assert rendered.segments[0].kind == RenderedSegmentKind.LIMITATION
     assert not any(item.kind == ClaimKind.PRICE for item in plan.claims)
+    assert "Ограничение" not in rendered.text
+    assert "Следующий шаг" not in rendered.text
+    assert "не буду подставлять" in rendered.text
+
+
+def test_direct_boundary_keeps_one_secondary_explanation_step_deliverable() -> None:
+    sources = _sources()
+    product = sources.products[0].model_copy(
+        update={"price": None, "currency": None}
+    )
+    sources = sources.model_copy(update={"products": (product,)})
+    policy = NextActionPlan(
+        primary=NextAction(
+            kind=NextActionKind.ANSWER_DIRECT_QUESTION,
+            task_id="task-pipe",
+            reason_code="answer_price_first",
+        ),
+        secondary=NextAction(
+            kind=NextActionKind.EXPLAIN_TERM_OR_METHOD,
+            task_id="task-pipe",
+            fact_name="diameter_mm",
+            reason_code="explain_measurement",
+        ),
+        task_ids=("task-pipe",),
+    )
+
+    plan = _compile(policy=policy, sources=sources).answer_plan
+
+    assert plan is not None
+    assert plan.status.value == "partial"
+    assert plan.next_step.kind == NextStepKind.EXPLAIN_HOW_TO_FIND_FACT
+    rendered = deterministic_render(plan)
+    assert sum(item.kind == RenderedSegmentKind.NEXT_STEP for item in rendered.segments) == 1
+    assert "диаметр присоединения" in rendered.text
 
 
 def test_secondary_catalogue_action_and_candidates_are_preserved() -> None:

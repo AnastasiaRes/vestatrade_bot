@@ -240,6 +240,78 @@ def test_canary_candidate_failure_falls_back_before_commit(
     )
 
 
+def test_legacy_owned_canary_turn_preserves_valid_v2_shadow_state_for_followup(
+    sample_products,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """A rejected public candidate must not erase accepted typed context."""
+
+    registry_path = _write_canary_registry(tmp_path)
+    settings = _settings(tmp_path, registry_path)
+    bot = ChatOrchestrator(
+        settings=settings,
+        products=sample_products,
+        llm_client=_NoNetworkClient(settings),
+    )
+    session_id = _eligible_session(bot.cutover_registry_v2.revision)
+    previous_states: list[DialogueStateV2] = []
+
+    monkeypatch.setattr(
+        bot.semantic_interpreter,
+        "interpret",
+        lambda *_args: {"status": "accepted"},
+    )
+
+    def run_candidate(previous, *_args):
+        previous_states.append(previous)
+        state_after = previous.model_copy(
+            update={"turn_number": previous.turn_number + 1}
+        )
+        return DialogueV2Outcome(
+            status="applied",
+            state_before=previous,
+            state_after=state_after,
+        )
+
+    def rejected_candidate(outcome, *_args, **kwargs):
+        return V2TurnCandidate(
+            turn_id=kwargs["turn_id"],
+            state_before=outcome.state_before,
+            state_after=outcome.state_after,
+            validation_status="rejected",
+            semantic_accepted=True,
+            contracts_resolved=False,
+            eligible_for_delivery=False,
+            rejection_reason_codes=("product_contract_resolution_missing",),
+        )
+
+    monkeypatch.setattr(bot, "_run_stage6_v2_candidate", run_candidate)
+    monkeypatch.setattr(
+        "app.agents.orchestrator.build_v2_turn_candidate",
+        rejected_candidate,
+    )
+    monkeypatch.setattr(
+        bot,
+        "_handle_chat",
+        lambda *_args: ChatResponse(session_id=session_id, answer="Legacy fallback"),
+    )
+
+    first = bot.handle_chat(session_id, "Описание соединения словами")
+    stored_after_first = bot.sessions.snapshot(session_id)
+    second = bot.handle_chat(session_id, "Теперь уточняю тип товара")
+    stored_after_second = bot.sessions.snapshot(session_id)
+
+    assert first.answer == second.answer == "Legacy fallback"
+    assert [state.turn_number for state in previous_states] == [0, 1]
+    assert stored_after_first.live_dialogue_state_v2 is None
+    assert stored_after_first.dialogue_state_v2 is not None
+    assert stored_after_first.dialogue_state_v2.turn_number == 1
+    assert stored_after_second.live_dialogue_state_v2 is None
+    assert stored_after_second.dialogue_state_v2 is not None
+    assert stored_after_second.dialogue_state_v2.turn_number == 2
+
+
 def test_early_safety_prevents_semantic_and_v2_execution(
     sample_products,
     tmp_path,

@@ -10,10 +10,32 @@ from app.answer_v2.contracts import (
     AnswerSourceSnapshot,
     ProductPresentationStatus,
 )
+from app.catalog_v2.contracts import ProductKind
 from app.dialogue_v2.controller import DialogueV2Outcome
+from app.dialogue_v2.contracts import TaskAct
 from app.models import ChatProductSummary, ChatResponse
 
 from .contracts import V2TurnCandidate
+
+
+_NON_DELIVERABLE_ANSWER_STATUSES = frozenset(
+    {
+        AnswerPlanStatus.BOUNDARY,
+        AnswerPlanStatus.UNSUPPORTED,
+        AnswerPlanStatus.REJECTED,
+    }
+)
+_MAX_RENDERED_ANSWER_LENGTH = 12_000
+_PRODUCT_CONTRACT_TASK_ACTS = frozenset(
+    {
+        TaskAct.FIND,
+        TaskAct.SELECT,
+        TaskAct.COMPARE,
+        TaskAct.CHECK_PRICE,
+        TaskAct.CHECK_STOCK,
+        TaskAct.GET_LINK,
+    }
+)
 
 
 def _digest_response(response: ChatResponse) -> str:
@@ -52,8 +74,12 @@ def build_v2_turn_candidate(
         reasons.append("stage5_pipeline_error")
     if answer_plan is None:
         reasons.append("answer_plan_missing")
+    elif answer_plan.status in _NON_DELIVERABLE_ANSWER_STATUSES:
+        reasons.append(f"answer_plan_status_{answer_plan.status.value}_not_deliverable")
     if rendered is None:
         reasons.append("rendered_answer_missing")
+    elif len(rendered.text) >= _MAX_RENDERED_ANSWER_LENGTH:
+        reasons.append("rendered_answer_length_limit_exceeded")
     if validation is None or validation.status != "accepted":
         reasons.append("grounding_not_accepted")
     if source_snapshot is None:
@@ -120,17 +146,72 @@ def build_v2_turn_candidate(
             if task_id in task_by_id
         )
     )
+    # Product contracts prove catalogue compatibility.  Independent tasks in
+    # the same turn (delivery explanation, general explanation or handoff) do
+    # not need a product contract.  Unknown task ids remain contract-required
+    # so a malformed/missing product task cannot bypass this fail-closed gate.
+    contract_required_task_ids = {
+        task_id
+        for task_id in current_task_ids
+        if task_id not in task_by_id
+        or task_by_id[task_id].act in _PRODUCT_CONTRACT_TASK_ACTS
+    }
     relevant_resolutions = tuple(
-        item for item in resolutions if not current_task_ids or item.task_id in current_task_ids
+        item
+        for item in resolutions
+        if item.task_id in contract_required_task_ids
     )
-    product_kinds = tuple(dict.fromkeys(item.product_kind for item in relevant_resolutions))
-    contracts_resolved = bool(relevant_resolutions) and all(
-        item.status.value == "resolved" and item.contract_id
+    # Rollout cells need the typed product identity even when the requested act
+    # itself is not a catalogue operation (for example an explanation or a
+    # delivery question about the selected product).  That identity can come
+    # from the task resolution itself or another task sharing the same typed
+    # goal.  It is metadata only: it does not relax the contract gate above.
+    current_goal_ids = {
+        task_by_id[task_id].target_goal_id
+        for task_id in current_task_ids
+        if task_id in task_by_id
+        and task_by_id[task_id].target_goal_id is not None
+    }
+    identity_resolutions = tuple(
+        item
+        for item in resolutions
+        if item.task_id in current_task_ids
+        or (item.goal_id is not None and item.goal_id in current_goal_ids)
+    )
+    product_kinds = tuple(
+        dict.fromkeys(
+            item.product_kind
+            for item in identity_resolutions
+            if item.product_kind != ProductKind.UNSUPPORTED
+        )
+    )
+    resolved_task_ids = {
+        item.task_id
         for item in relevant_resolutions
+        if item.status.value == "resolved" and item.contract_id
+    }
+    contracts_resolved = bool(answer_plan is not None) and (
+        not contract_required_task_ids
+        or (
+            resolved_task_ids == contract_required_task_ids
+            and all(
+                item.status.value == "resolved" and item.contract_id
+                for item in relevant_resolutions
+            )
+        )
     )
-    if answer_plan is not None and current_task_ids and (
-        {item.task_id for item in relevant_resolutions} != current_task_ids
-    ):
+    for resolution in relevant_resolutions:
+        if resolution.status.value == "resolved":
+            if resolution.contract_id:
+                continue
+            reasons.append("product_contract_id_missing")
+            reasons.extend(resolution.reason_codes)
+            continue
+        reasons.append(f"product_contract_{resolution.status.value}")
+        reasons.extend(resolution.reason_codes)
+    if contract_required_task_ids and not relevant_resolutions:
+        reasons.append("product_contract_resolution_missing")
+    if contract_required_task_ids and resolved_task_ids != contract_required_task_ids:
         contracts_resolved = False
         reasons.append("not_all_answer_tasks_have_contracts")
 
@@ -150,6 +231,10 @@ def build_v2_turn_candidate(
         and contracts_resolved
         and not reasons
     )
+    if not eligible and not reasons:
+        # This should be unreachable, but an opaque rejected candidate is not
+        # actionable in canary telemetry. Preserve a stable fail-closed cause.
+        reasons.append("v2_candidate_ineligible_without_specific_gate")
     return V2TurnCandidate(
         turn_id=turn_id,
         response=response,

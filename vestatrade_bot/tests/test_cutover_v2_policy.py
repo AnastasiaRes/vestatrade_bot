@@ -207,6 +207,28 @@ def test_cutover_policy_is_deterministic_and_canary_is_sticky() -> None:
     assert sticky.sticky_assignment_id == first.sticky_assignment_id
 
 
+def test_internal_canary_can_explicitly_admit_typed_recommend_one() -> None:
+    cell = _cell(
+        task_acts=(TaskAct.SELECT,),
+        product_kinds=(ProductKind.CIRCULATION_PUMP,),
+        allowed_next_actions=(NextActionKind.RECOMMEND_ONE,),
+    )
+    decision = decide_cutover(
+        EarlyControlResult(),
+        _candidate(
+            task_acts=(TaskAct.SELECT,),
+            product_kinds=(ProductKind.CIRCULATION_PUMP,),
+            next_action=NextActionKind.RECOMMEND_ONE,
+        ),
+        _registry(cell),
+        _runtime(),
+        session_fingerprint=_eligible_fingerprint(),
+    )
+
+    assert decision.owner_candidate == ResponseOwner.V2
+    assert decision.execution_mode == ExecutionMode.V2_INTERNAL_CANARY
+
+
 @pytest.mark.parametrize(
     ("early", "owner", "mode"),
     [

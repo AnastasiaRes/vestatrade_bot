@@ -16,10 +16,17 @@ from app.commerce_v2.contracts import (
 from .contracts import (
     ConstraintStatus,
     DialogueStateV2,
+    InformationOutputRelation,
+    InformationPurpose,
+    InformationRequestStatus,
+    InformationRequestV2,
+    InformationSubjectScope,
     NextAction,
     NextActionKind,
     NextActionPlan,
     ResponseStrategyKind,
+    RequestedInformationOutput,
+    ShadowDeliveryStatus,
     TaskAct,
     TaskStatus,
 )
@@ -109,7 +116,7 @@ class SellerPolicy:
             (
                 task
                 for task in state.tasks
-                if task.source_turn == state.turn_number
+                if task.was_addressed_on(state.turn_number)
                 and task.status not in {
                     TaskStatus.CANCELLED,
                     TaskStatus.SATISFIED,
@@ -124,7 +131,61 @@ class SellerPolicy:
             if task.task_id == state.task_stack.active_task_id
             and task.status == TaskStatus.IN_PROGRESS
         ]
-        task_ids = tuple(task.task_id for task in current_tasks)
+        # A compound request is represented as linked tasks.  After the user
+        # answers a question for the foreground product, the next linked
+        # product remains pending even though it was not repeated in the new
+        # utterance.  Keep at most the policy's normal primary/secondary
+        # cardinality, but make those typed sibling tasks eligible instead of
+        # silently orphaning them until the customer names the product again.
+        anchor_ids = {task.task_id for task in actionable}
+        related_ids = {
+            related_id
+            for task in actionable
+            for related_id in task.related_task_ids
+        }
+        related_ids.update(
+            task.task_id
+            for task in state.tasks
+            if anchor_ids.intersection(task.related_task_ids)
+        )
+        committed_presented_task_ids = {
+            candidate.task_id
+            for candidate in (
+                state.answer_plan_summary.presented_candidates
+                if state.answer_plan_summary is not None
+                and state.answer_plan_summary.delivery_status
+                == ShadowDeliveryStatus.COMMITTED_TO_SESSION
+                else ()
+            )
+        }
+        related_selections = sorted(
+            (
+                task
+                for task in state.tasks
+                if task.task_id in related_ids
+                and task.task_id not in anchor_ids
+                # A linked sibling that already received catalogue cards in
+                # the last committed answer remains available for an explicit
+                # return, but must not be executed again merely because the
+                # customer answered the other product's question.
+                and task.task_id not in committed_presented_task_ids
+                and task.act in _SELECTION_ACTS
+                and task.status in {
+                    TaskStatus.PENDING,
+                    TaskStatus.IN_PROGRESS,
+                    TaskStatus.BLOCKED,
+                }
+            ),
+            key=lambda task: (task.priority, task.task_id),
+        )
+        task_ids = tuple(
+            dict.fromkeys(
+                (
+                    *(task.task_id for task in (current_tasks or actionable)),
+                    *(task.task_id for task in related_selections),
+                )
+            )
+        )
 
         direct = [task for task in current_tasks if task.act in _DIRECT_ACTS]
         commerce_actionable = sorted(
@@ -141,11 +202,153 @@ class SellerPolicy:
             ),
             key=lambda task: (task.priority, task.task_id),
         )
-        selections = [task for task in actionable if task.act in _SELECTION_ACTS]
+        selections = [
+            task for task in actionable if task.act in _SELECTION_ACTS
+        ]
+        selections.extend(related_selections)
         explanations = [task for task in current_tasks if task.act == TaskAct.EXPLAIN]
         comparisons = [task for task in current_tasks if task.act == TaskAct.COMPARE]
         calculations = [task for task in current_tasks if task.act == TaskAct.CALCULATE]
         handoffs = [task for task in current_tasks if task.act == TaskAct.HANDOFF]
+
+        current_information_requests = tuple(
+            request
+            for request in state.information_requests
+            if request.source_turn == state.turn_number
+            and request.status == InformationRequestStatus.PENDING
+        )
+        pending_information_requests = current_information_requests
+        reselected_old_information_request = False
+        if not pending_information_requests:
+            addressed_task_by_id = {
+                task.task_id: task
+                for task in current_tasks
+                if task.act not in {TaskAct.GREETING, TaskAct.GRATITUDE}
+                and task.status
+                in {
+                    TaskStatus.PENDING,
+                    TaskStatus.IN_PROGRESS,
+                    TaskStatus.BLOCKED,
+                }
+            }
+            presented_summary = state.answer_plan_summary
+
+            def request_scope_is_still_active(
+                request: InformationRequestV2,
+            ) -> bool:
+                if (
+                    request.subject_scope
+                    != InformationSubjectScope.PRESENTED_CANDIDATES
+                ):
+                    return True
+                return bool(
+                    presented_summary is not None
+                    and any(
+                        (
+                            request.goal_id is None
+                            or candidate.goal_id == request.goal_id
+                        )
+                        and (
+                            presented_summary.delivery_status
+                            == ShadowDeliveryStatus.COMMITTED_TO_SESSION
+                            or candidate.source_turn
+                            < presented_summary.source_turn
+                        )
+                        for candidate in presented_summary.presented_candidates
+                    )
+                )
+
+            retriable = sorted(
+                (
+                    request
+                    for request in state.information_requests
+                    if request.source_turn < state.turn_number
+                    and request.status == InformationRequestStatus.PENDING
+                    and request.task_id in addressed_task_by_id
+                    and addressed_task_by_id[request.task_id].target_goal_id
+                    == request.goal_id
+                    and request_scope_is_still_active(request)
+                ),
+                key=lambda request: (request.source_turn, request.request_id),
+            )
+            if retriable:
+                # Retry only one oldest still-scoped request, and only because
+                # the customer explicitly readdressed its task this turn.  An
+                # unrelated or neutral turn cannot create a response loop.
+                pending_information_requests = (retriable[0],)
+                reselected_old_information_request = True
+        if pending_information_requests:
+            primary_request = pending_information_requests[0]
+            primary = self._information_request_action(primary_request)
+            secondary = None
+            if len(pending_information_requests) > 1:
+                secondary = self._information_request_action(
+                    pending_information_requests[1]
+                )
+            else:
+                same_goal_selections = sorted(
+                    (
+                        task
+                        for task in state.tasks
+                        if task.target_goal_id == primary_request.goal_id
+                        and task.act in _SELECTION_ACTS
+                        and task.status in {
+                            TaskStatus.PENDING,
+                            TaskStatus.IN_PROGRESS,
+                            TaskStatus.BLOCKED,
+                        }
+                    ),
+                    key=lambda task: (task.priority, task.task_id),
+                )
+                selection_candidates = tuple(
+                    {
+                        task.task_id: task
+                        for task in (*same_goal_selections, *selections)
+                    }.values()
+                )
+                if selection_candidates:
+                    secondary = self._selection_action(
+                        state,
+                        selection_candidates[0],
+                        readiness_by_task,
+                    )
+            scoped_task_ids = tuple(
+                dict.fromkeys(
+                    (
+                        primary_request.task_id,
+                        *(
+                            request.task_id
+                            for request in pending_information_requests[1:2]
+                        ),
+                        *task_ids,
+                        *(
+                            (secondary.task_id,)
+                            if secondary is not None and secondary.task_id is not None
+                            else ()
+                        ),
+                    )
+                )
+            )
+            reasons = [
+                (
+                    "pending_typed_information_request_reselected"
+                    if reselected_old_information_request
+                    else "typed_information_request_has_priority"
+                ),
+                primary.reason_code,
+            ]
+            if secondary is not None:
+                reasons.extend(
+                    (secondary.reason_code, "additional_customer_action_preserved")
+                )
+            return NextActionPlan(
+                primary=primary,
+                secondary=secondary,
+                reason_codes=tuple(dict.fromkeys(reasons)),
+                task_ids=scoped_task_ids,
+                required_facts=self._required_facts(state),
+                blocking_facts=self._blocking_facts(state),
+            )
 
         if direct:
             primary = self._direct_or_commerce_action(
@@ -187,15 +390,59 @@ class SellerPolicy:
             )
 
         if explanations:
+            # A bare ``explain`` task says neither what information the
+            # customer wants nor whether it concerns their installation or
+            # previously presented candidates.  Inferring the sole unknown
+            # goal fact here conflates those subjects and can turn a request
+            # to inspect shown cards into instructions for measuring the
+            # customer's system.  Typed InformationRequestV2 instances were
+            # handled above; without one the safe action is to wait for a
+            # complete semantic frame.
+            # A separate, typed selection from the same compound turn may
+            # still advance without interpreting the incomplete explanation.
+            # This preserves independent customer actions while keeping the
+            # ambiguous explanation itself out of the execution path.
+            if selections:
+                primary = self._selection_action(
+                    state,
+                    selections[0],
+                    readiness_by_task,
+                )
+                secondary = (
+                    self._selection_action(
+                        state,
+                        selections[1],
+                        readiness_by_task,
+                    )
+                    if len(selections) > 1
+                    else None
+                )
+                return NextActionPlan(
+                    primary=primary,
+                    secondary=secondary,
+                    reason_codes=tuple(
+                        dict.fromkeys(
+                            (
+                                "bare_explanation_deferred_missing_typed_information_request",
+                                primary.reason_code,
+                                *(
+                                    (secondary.reason_code,)
+                                    if secondary is not None
+                                    else ()
+                                ),
+                            )
+                        )
+                    ),
+                    task_ids=task_ids,
+                    required_facts=self._required_facts(state),
+                    blocking_facts=self._blocking_facts(state),
+                )
             return self._single(
-                NextActionKind.EXPLAIN_TERM_OR_METHOD,
+                NextActionKind.WAIT_FOR_SEMANTIC_UNDERSTANDING,
                 explanations[0].task_id,
-                "explicit_explanation_request",
+                "explanation_missing_typed_information_request",
                 task_ids,
                 state,
-                secondary=self._selection_action(
-                    state, selections[0], readiness_by_task
-                ) if selections else None,
             )
 
         if comparisons:
@@ -242,12 +489,36 @@ class SellerPolicy:
             )
 
         if selections:
-            action = self._selection_action(
+            primary = self._selection_action(
                 state, selections[0], readiness_by_task
             )
+            secondary = (
+                self._selection_action(
+                    state,
+                    selections[1],
+                    readiness_by_task,
+                )
+                if len(selections) > 1
+                else None
+            )
             return NextActionPlan(
-                primary=action,
-                reason_codes=(action.reason_code,),
+                primary=primary,
+                secondary=secondary,
+                reason_codes=tuple(
+                    dict.fromkeys(
+                        (
+                            primary.reason_code,
+                            *(
+                                (
+                                    secondary.reason_code,
+                                    "additional_customer_action_preserved",
+                                )
+                                if secondary is not None
+                                else ()
+                            ),
+                        )
+                    )
+                ),
                 task_ids=task_ids or (selections[0].task_id,),
                 required_facts=self._required_facts(state),
                 blocking_facts=self._blocking_facts(state),
@@ -322,14 +593,23 @@ class SellerPolicy:
                 NextActionKind.ANSWER_DIRECT_QUESTION,
                 NextActionKind.ANSWER_VERIFIED_COMMERCE_QUESTION,
                 NextActionKind.REPORT_COMMERCE_EXECUTION_STATUS,
+                NextActionKind.WAIT_FOR_SEMANTIC_UNDERSTANDING,
             }:
                 return action, False
             return (
-                NextAction(
-                    kind=mapping[directive.strategy],
-                    task_id=action.task_id,
-                    fact_name=directive.fact_name,
-                    reason_code=directive.reason_codes[0],
+                action.model_copy(
+                    update={
+                        "kind": mapping[directive.strategy],
+                        # An information request's fact binding is part of its
+                        # accepted semantic contract.  A loop strategy may
+                        # change presentation, never the requested subject.
+                        "fact_name": (
+                            action.fact_name
+                            if action.information_request_id is not None
+                            else directive.fact_name
+                        ),
+                        "reason_code": directive.reason_codes[0],
+                    }
                 ),
                 True,
             )
@@ -435,6 +715,48 @@ class SellerPolicy:
             reason_code="commerce_command_ready_for_shadow_outbox",
         )
 
+    @staticmethod
+    def _information_request_action(
+        request: InformationRequestV2,
+    ) -> NextAction:
+        """Map an explicit typed deliverable without inferring its subject."""
+
+        outputs = set(request.requested_outputs)
+        if (
+            request.output_relation == InformationOutputRelation.ANY
+            and RequestedInformationOutput.INSTRUCTION in outputs
+            and request.fact_name is not None
+        ):
+            kind = NextActionKind.EXPLAIN_HOW_TO_FIND_FACT
+            reason = "typed_information_instruction_selected"
+        elif (
+            request.purpose == InformationPurpose.PROVENANCE
+            or RequestedInformationOutput.VERIFIED_LINK in outputs
+        ):
+            kind = NextActionKind.STATE_CAPABILITY_BOUNDARY
+            reason = "verified_information_source_unavailable"
+        elif request.purpose == InformationPurpose.DETERMINATION_METHOD:
+            kind = NextActionKind.EXPLAIN_HOW_TO_FIND_FACT
+            reason = "typed_information_determination_method"
+        elif request.purpose == InformationPurpose.VALUE:
+            kind = NextActionKind.ANSWER_DIRECT_QUESTION
+            reason = "typed_information_value_request"
+        else:
+            kind = NextActionKind.EXPLAIN_TERM_OR_METHOD
+            reason = "typed_information_explanation_request"
+        return NextAction(
+            kind=kind,
+            task_id=request.task_id,
+            fact_name=request.fact_name,
+            information_request_id=request.request_id,
+            information_purpose=request.purpose,
+            requested_outputs=request.requested_outputs,
+            output_relation=request.output_relation,
+            source_kind=request.source_kind,
+            information_subject_scope=request.subject_scope,
+            reason_code=reason,
+        )
+
     def _selection_action(
         self,
         state: DialogueStateV2,
@@ -453,6 +775,12 @@ class SellerPolicy:
                     reason_code="product_contract_requires_decision_fact",
                 )
             if readiness.status == ReadinessStatus.EXACT_READY:
+                if task.act == TaskAct.SELECT:
+                    return NextAction(
+                        kind=NextActionKind.RECOMMEND_ONE,
+                        task_id=task_id,
+                        reason_code="select_exact_candidates_recommend_one",
+                    )
                 return NextAction(
                     kind=NextActionKind.SEARCH_EXACT,
                     task_id=task_id,
@@ -524,6 +852,12 @@ class SellerPolicy:
                 reason_code="unavailable_fact_must_not_be_reasked",
             )
         if goal is not None and (goal.canonical_type or goal.category.value != "other") and known:
+            if task.act == TaskAct.SELECT:
+                return NextAction(
+                    kind=NextActionKind.RECOMMEND_ONE,
+                    task_id=task_id,
+                    reason_code="select_confirmed_goal_recommend_one",
+                )
             return NextAction(
                 kind=NextActionKind.SEARCH_EXACT,
                 task_id=task_id,
@@ -556,7 +890,7 @@ class SellerPolicy:
         current_goal_ids = {
             task.target_goal_id
             for task in state.tasks
-            if task.source_turn == state.turn_number and task.target_goal_id
+            if task.was_addressed_on(state.turn_number) and task.target_goal_id
         }
         if not current_goal_ids and state.active_goal_id:
             current_goal_ids = {state.active_goal_id}
@@ -581,12 +915,14 @@ class SellerPolicy:
         task_ids: tuple[str, ...],
         state: DialogueStateV2,
         *,
+        fact_name: str | None = None,
         secondary: NextAction | None = None,
     ) -> NextActionPlan:
         return NextActionPlan(
             primary=NextAction(
                 kind=kind,
                 task_id=task_id,
+                fact_name=fact_name,
                 reason_code=reason,
             ),
             secondary=secondary,

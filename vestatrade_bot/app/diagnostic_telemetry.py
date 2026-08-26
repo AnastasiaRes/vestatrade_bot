@@ -29,17 +29,30 @@ from app.pii import redact_pii_for_model
 
 logger = logging.getLogger(__name__)
 TRACE_SCHEMA_VERSION = "1.0"
+_HEX_TO_ALPHA = str.maketrans("0123456789abcdef", "ghijklmnopqrstuv")
 _ACTIVE_TRACE: ContextVar["TurnTrace | None"] = ContextVar(
     "diagnostic_turn_trace",
     default=None,
 )
 
 
+def safe_session_fingerprint(session_id: str) -> str:
+    """Stable non-PII join key that cannot look like a phone number."""
+
+    digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+    return digest.translate(_HEX_TO_ALPHA)
+
+
 def _json_safe(value: Any) -> Any:
     if hasattr(value, "model_dump"):
         return _json_safe(value.model_dump(mode="json"))
     if isinstance(value, dict):
-        return {str(key): _json_safe(item) for key, item in value.items()}
+        # LLM/debug payloads should use typed field names, but fail closed if a
+        # malformed result ever promotes customer text to a mapping key.
+        return {
+            redact_pii_for_model(str(key)): _json_safe(item)
+            for key, item in value.items()
+        }
     if isinstance(value, (list, tuple, set)):
         return [_json_safe(item) for item in value]
     if isinstance(value, Path):
@@ -267,9 +280,7 @@ class TurnTrace:
             "trace_id": self.trace_id,
             "timestamp": self.timestamp,
             "duration_ms": int((monotonic() - self.started_at) * 1000),
-            "session_fingerprint": hashlib.sha256(
-                self.session_id.encode("utf-8")
-            ).hexdigest(),
+            "session_fingerprint": safe_session_fingerprint(self.session_id),
             "current_message": (
                 None
                 if (

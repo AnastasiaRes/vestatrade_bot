@@ -719,6 +719,43 @@ def test_contact_without_explicit_handoff_creates_no_workflow() -> None:
     assert outcome.commerce_planning.reason_codes == ("no_commerce_task_or_control",)
 
 
+def test_repeated_handoff_readdresses_one_task_and_one_workflow() -> None:
+    first = _run(
+        _semantic(["handoff"]),
+        turn_id="repeat-handoff-1",
+    )
+    first_handoff = next(
+        task for task in first.state_after.tasks if task.act.value == "handoff"
+    )
+    first_workflow = next(
+        workflow
+        for workflow in first.state_after.commerce_workflows
+        if workflow.workflow_kind == CommerceWorkflowKind.HANDOFF
+    )
+
+    repeated = _run(
+        _semantic(["handoff"], operation="new"),
+        state=first.state_after,
+        turn_id="repeat-handoff-2",
+    )
+    handoff_tasks = [
+        task for task in repeated.state_after.tasks if task.act.value == "handoff"
+    ]
+    handoff_workflows = [
+        workflow
+        for workflow in repeated.state_after.commerce_workflows
+        if workflow.workflow_kind == CommerceWorkflowKind.HANDOFF
+    ]
+
+    assert len(handoff_tasks) == 1
+    assert handoff_tasks[0].task_id == first_handoff.task_id
+    assert handoff_tasks[0].origin_turn == first_handoff.origin_turn
+    assert handoff_tasks[0].source_turn == repeated.state_after.turn_number
+    assert len(handoff_workflows) == 1
+    assert handoff_workflows[0].workflow_id == first_workflow.workflow_id
+    assert handoff_workflows[0].task_ids == (first_handoff.task_id,)
+
+
 def test_non_customer_contact_is_not_exposed_by_context_adapter() -> None:
     session = SessionState(session_id="third-party-contact")
     session.slots["manufacturer_phone"] = "+7 000 000-00-00"

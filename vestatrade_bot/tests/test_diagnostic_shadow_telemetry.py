@@ -130,6 +130,8 @@ def test_trace_contains_full_turn_layers_and_redacts_pii(sample_products, tmp_pa
     assert len(lines) == 1
     trace = json.loads(lines[0])
     assert trace["schema_version"] == "1.0"
+    assert len(trace["session_fingerprint"]) == 64
+    assert trace["session_fingerprint"].isalpha()
     assert trace["state_before"]["category"] is None
     assert trace["state_after"]["category"] == trace["legacy_decision"]["category"]
     assert trace["turn_understanding"]["status"] == "accepted"

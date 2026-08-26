@@ -59,6 +59,22 @@ def _task_fingerprint(state: DialogueStateV2, task_id: str) -> str | None:
         for item in state.direct_questions
         if item.task_id == task_id
     )
+    information_requests = sorted(
+        {
+            (
+                item.fact_name,
+                item.purpose.value,
+                tuple(output.value for output in item.requested_outputs),
+                item.output_relation.value,
+                item.source_kind.value if item.source_kind is not None else None,
+                item.subject_scope.value,
+                item.status.value,
+            )
+            for item in state.information_requests
+            if item.task_id == task_id
+        },
+        key=str,
+    )
     return _digest(
         {
             "act": task.act.value,
@@ -77,6 +93,7 @@ def _task_fingerprint(state: DialogueStateV2, task_id: str) -> str | None:
             ),
             "facts": facts,
             "direct": direct,
+            "information_requests": information_requests,
         }
     )
 

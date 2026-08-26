@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from contextlib import contextmanager
@@ -557,7 +558,16 @@ class OpenRouterClient:
             record_llm_json_validation(agent=agent, accepted=True)
             return parsed, True
         except json.JSONDecodeError as exc:
-            logger.warning("LLM JSON parse failed for %s: %s", agent, content[:500])
+            # Provider output may echo customer data. Log a stable diagnostic
+            # fingerprint, never the malformed payload itself.
+            logger.warning(
+                "LLM JSON parse failed for %s: chars=%s sha256=%s",
+                agent,
+                len(content),
+                hashlib.sha256(
+                    content.encode("utf-8", errors="surrogatepass")
+                ).hexdigest(),
+            )
             record_llm_json_validation(
                 agent=agent,
                 accepted=False,

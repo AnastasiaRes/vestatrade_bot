@@ -28,7 +28,10 @@ except ImportError:  # pragma: no cover - exercised only without optional depend
 
 from app.config import PROJECT_ROOT, Settings, get_settings
 from app.answer_v2.renderer import ResponseRendererV2
-from app.answer_v2.sources import build_answer_source_snapshot
+from app.answer_v2.sources import (
+    build_answer_source_snapshot,
+    build_verified_business_capability_facts,
+)
 from app.catalog_v2.contracts import ProductKind
 from app.catalog_v2.normalization import build_catalog_snapshot
 from app.commerce_v2.context import build_commerce_context_snapshot
@@ -727,6 +730,9 @@ class ChatOrchestrator:
             build_answer_source_snapshot(
                 products or [],
                 self.catalog_snapshot_v2,
+                capability_facts=build_verified_business_capability_facts(
+                    get_business_facts()
+                ),
             )
             if self._stage5_shadow_enabled() or self._stage6_pipeline_enabled()
             else None
@@ -765,6 +771,9 @@ class ChatOrchestrator:
                 self.answer_source_snapshot_v2 = build_answer_source_snapshot(
                     products,
                     self.catalog_snapshot_v2,
+                    capability_facts=build_verified_business_capability_facts(
+                        get_business_facts()
+                    ),
                 )
             self.intent_router.set_catalog_brands(
                 [product.brand for product in products if product.brand]
@@ -963,16 +972,26 @@ class ChatOrchestrator:
             catalog_planner_enabled=True,
             solution_plan_enabled=True,
             catalog_snapshot=self.catalog_snapshot_v2,
-            commerce_workflows_enabled=False,
+            # Read-only commerce planning is safe for the canary and lets a
+            # mixed request keep delivery/quantity as a separate typed task.
+            # External execution, handoff preparation and the outbox remain
+            # disabled below, so this cannot create an order or send data.
+            commerce_workflows_enabled=True,
             handoff_workflow_enabled=False,
             commerce_outbox_enabled=False,
             commerce_context=build_commerce_context_snapshot(
                 before_turn,
                 get_business_facts(),
             ),
-            commerce_capabilities=build_capability_snapshot(),
+            commerce_capabilities=build_capability_snapshot(
+                get_business_facts()
+            ),
             answer_plan_enabled=True,
-            response_renderer_enabled=True,
+            # The optional response LLM can only insert neutral transitions;
+            # it cannot improve or change facts.  The deterministic renderer
+            # is therefore the safer and cheaper live-canary default while
+            # the same production model still performs semantic parsing.
+            response_renderer_enabled=False,
             response_grounding_enabled=True,
             progress_guard_enabled=True,
             answer_source_snapshot=self.answer_source_snapshot_v2,
@@ -1275,6 +1294,7 @@ class ChatOrchestrator:
                                         )
                                         live_v2_outcome = self._run_stage6_v2_candidate(
                                             before_turn.live_dialogue_state_v2
+                                            or before_turn.dialogue_state_v2
                                             or DialogueStateV2(),
                                             semantic,
                                             turn_id,
@@ -1372,6 +1392,30 @@ class ChatOrchestrator:
                                 and self.settings.dialogue_v2_shadow_compare_enabled
                             )
                         )
+                        # A valid V2 reduction is still useful migration state
+                        # when legacy owned the public response (for example a
+                        # text description immediately after the verified photo
+                        # capability boundary).  Keep it only in the separate
+                        # shadow field: it cannot alter legacy slots, cards or
+                        # the answer that was just produced.  A later eligible
+                        # canary turn may then continue the typed goal instead
+                        # of silently forgetting accepted customer facts.
+                        #
+                        # The ordinary shadow pipeline below remains the owner
+                        # when it is enabled, and any live-path exception stays
+                        # fail-closed without a partial state write.
+                        if (
+                            not v2_shadow_enabled
+                            and live_commit is None
+                            and cutover_error is None
+                            and live_v2_outcome is not None
+                            and live_v2_outcome.status == "applied"
+                        ):
+                            state_with_v2 = self.sessions.snapshot(session_id)
+                            state_with_v2.dialogue_state_v2 = (
+                                live_v2_outcome.state_after
+                            )
+                            self.sessions.save(state_with_v2)
                         if (
                             semantic is None
                             and (

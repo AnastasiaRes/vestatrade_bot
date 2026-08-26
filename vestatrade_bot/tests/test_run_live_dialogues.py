@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from argparse import Namespace
 from types import SimpleNamespace
 from typing import Any
 
-from app.models import Product
+from app.models import Product, ProductCard
 from scripts import run_live_dialogues as harness
 
 
@@ -198,6 +199,35 @@ def test_live_first_turn_is_fixed_and_does_not_call_buyer_model() -> None:
     assert run.execution_status == "valid"
 
 
+def test_live_can_use_an_explicit_session_without_publishing_it() -> None:
+    bot = _RecordingBot()
+    explicit = "live-v2-canary-T01-17"
+
+    run = harness.run_live(
+        bot,
+        _NeverBuyerClient(),
+        _scenario(),
+        set(),
+        max_turns=1,
+        session_id=explicit,
+    )
+
+    assert run.session_id == explicit
+    assert explicit not in harness._session_fingerprint(explicit)
+
+
+def test_forced_canary_session_matches_policy_bucket() -> None:
+    revision = "registry-revision-test"
+    session_id = harness._eligible_canary_session_id("T01", revision, 5)
+    fingerprint = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+    bucket = int(
+        hashlib.sha256(f"{fingerprint}:{revision}".encode("utf-8")).hexdigest()[:8],
+        16,
+    ) % 100
+
+    assert bucket < 5
+
+
 def test_buyer_cannot_give_up_before_three_bot_answers() -> None:
     bot = _RecordingBot()
     client = _BuyerClient(
@@ -381,8 +411,61 @@ def test_manifest_has_run_inputs_and_never_contains_api_key(tmp_path: Any) -> No
     assert manifest["run"]["workers"] == 3
     assert manifest["run"]["max_turns"] == 12
     assert manifest["llm"]["model"] == "buyer/model"
+    assert manifest["llm"]["bot_model"] == "buyer/model"
+    assert manifest["llm"]["buyer_model"] == "buyer/model"
     assert secret not in serialized
     assert "openrouter_api_key" not in serialized
+
+
+def test_manifest_binds_the_exact_published_transcript_bytes() -> None:
+    original = {"schema_version": 1, "artifacts": {"report": "kept"}}
+    payload = '{"id":"T01","text":"радиатор"}\n'.encode("utf-8")
+
+    bound = harness.bind_transcript_artifact(original, payload)
+
+    assert bound["artifacts"]["report"] == "kept"
+    assert bound["artifacts"]["transcripts_sha256"] == hashlib.sha256(
+        payload
+    ).hexdigest()
+    assert original == {"schema_version": 1, "artifacts": {"report": "kept"}}
+
+
+def test_session_fingerprint_matches_telemetry_without_exposing_session_id() -> None:
+    session_id = "live-T01-secret-runtime-id"
+
+    fingerprint = harness._session_fingerprint(session_id)
+
+    assert len(fingerprint) == 64
+    assert fingerprint.isalpha()
+    assert session_id not in fingerprint
+
+
+def test_public_product_payload_preserves_visible_card_facts() -> None:
+    card = ProductCard(
+        sku="P-100",
+        name="Насос",
+        brand="Test",
+        price=1234.5,
+        currency="RUB",
+        stock_status="В наличии",
+        stock_qty=7,
+        url="https://example.test/p-100",
+        image_url="https://example.test/p-100.jpg",
+        characteristics={"Монтажная длина": "130 мм"},
+    )
+
+    assert harness._public_product_payload(card) == {
+        "sku": "P-100",
+        "name": "Насос",
+        "brand": "Test",
+        "price": 1234.5,
+        "currency": "RUB",
+        "stock_status": "В наличии",
+        "stock_qty": 7,
+        "url": "https://example.test/p-100",
+        "image_url": "https://example.test/p-100.jpg",
+        "characteristics": {"Монтажная длина": "130 мм"},
+    }
 
 
 def test_markdown_separates_invalid_dialogues() -> None:

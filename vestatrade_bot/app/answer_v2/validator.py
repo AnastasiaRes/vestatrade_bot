@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import math
 import re
 
 from .contracts import (
     AnswerPlan,
     AnswerSourceSnapshot,
+    CandidateFactStatus,
     AnswerValidationResult,
     ClaimKind,
     KnowledgeStatus,
+    ProductRecommendationRole,
     ProductPresentationStatus,
+    RecommendationCriterion,
     RenderedAnswer,
     RenderedSegmentKind,
     ValidationViolation,
@@ -25,12 +29,25 @@ _PROMISE_RE = re.compile(
     r"зарезервирован[аоы]?|оформлен[аоы]?)\b",
     re.IGNORECASE,
 )
+_PRODUCT_LINKED_CLAIM_KINDS = frozenset(
+    {
+        ClaimKind.PRODUCT_IDENTITY,
+        ClaimKind.PRICE,
+        ClaimKind.STOCK,
+        ClaimKind.LINK,
+        ClaimKind.PRODUCT_ATTRIBUTE,
+    }
+)
 
 
 def _literal_values(plan: AnswerPlan) -> set[str]:
     values: set[str] = set()
     for claim in plan.claims:
         if claim.allowed_in_response and claim.value is not None:
+            # A typed predicate may be rendered as a generic field label (for
+            # example ``area_m2``).  It is provenance-checked as part of the
+            # claim, so its literal is allowed like the value and unit.
+            values.add(claim.predicate)
             values.add(str(claim.value))
             if claim.unit:
                 values.add(claim.unit)
@@ -47,6 +64,15 @@ def _literal_values(plan: AnswerPlan) -> set[str]:
         values.add(plan.question.fact_name)
     if plan.next_step.fact_name:
         values.add(plan.next_step.fact_name)
+    report = plan.next_step.candidate_fact_report
+    if report is not None:
+        values.add(report.fact_name)
+        for item in report.items:
+            values.update((item.sku, item.name, item.fact_name))
+            if item.value is not None:
+                values.add(str(item.value))
+            if item.unit:
+                values.add(item.unit)
     return {item for item in values if item}
 
 
@@ -253,12 +279,18 @@ def _plan_integrity_violations(
 ) -> list[ValidationViolation]:
     violations: list[ValidationViolation] = []
     source_ids = {item.source_ref_id for item in plan.sources}
+    source_by_id = {item.source_ref_id: item for item in plan.sources}
     entities = (
         *plan.claims,
         *plan.products,
         *plan.analog_differences,
         *plan.limitations,
         *((plan.question,) if plan.question is not None else ()),
+        *(
+            plan.next_step.candidate_fact_report.items
+            if plan.next_step.candidate_fact_report is not None
+            else ()
+        ),
     )
     for entity in entities:
         for source_ref_id in entity.source_ref_ids:
@@ -274,6 +306,20 @@ def _plan_integrity_violations(
             violations.append(
                 ValidationViolation(code="unconfirmed_claim_asserted", detail=claim.claim_id)
             )
+        if claim.allowed_in_response and claim.kind in _PRODUCT_LINKED_CLAIM_KINDS:
+            linked_presentations = [
+                product
+                for product in plan.products
+                if product.sku == claim.subject_ref
+                and claim.claim_id in product.claim_ids
+            ]
+            if len(linked_presentations) != 1:
+                violations.append(
+                    ValidationViolation(
+                        code="catalog_claim_without_single_product_presentation",
+                        detail=claim.claim_id,
+                    )
+                )
     for product_plan in plan.products:
         product = snapshot.product(product_plan.sku)
         candidate = snapshot.candidate(
@@ -343,6 +389,289 @@ def _plan_integrity_violations(
                     detail=product_plan.product_plan_id,
                 )
             )
+
+    # A strict catalogue no-match and a verified exact/compatible analogue in
+    # the same task scope cannot both be true.  Fail closed if stale catalogue
+    # memory or cross-task assembly ever combines those mutually exclusive
+    # outcomes in one answer plan.
+    for limitation in plan.limitations:
+        if limitation.reason_code != "no_verified_contract_match":
+            continue
+        contradictory = next(
+            (
+                product
+                for product in plan.products
+                if product.task_id == limitation.task_id
+                and (
+                    limitation.goal_id is None
+                    or product.goal_id == limitation.goal_id
+                )
+                and product.status
+                in {
+                    ProductPresentationStatus.EXACT,
+                    ProductPresentationStatus.ANALOG,
+                }
+            ),
+            None,
+        )
+        if contradictory is not None:
+            violations.append(
+                ValidationViolation(
+                    code="catalog_no_match_contradicts_verified_product",
+                    detail=contradictory.product_plan_id,
+                )
+            )
+    recommendation_groups: dict[
+        tuple[str, str],
+        list[object],
+    ] = {}
+    for product_plan in plan.products:
+        if product_plan.recommendation_role is not None:
+            recommendation_groups.setdefault(
+                (product_plan.task_id, product_plan.search_plan_id),
+                [],
+            ).append(product_plan)
+
+    recommendation_action_present = bool(
+        plan.primary_action.value == "recommend_one"
+        or (
+            plan.secondary_action is not None
+            and plan.secondary_action.value == "recommend_one"
+        )
+    )
+    if recommendation_groups and not recommendation_action_present:
+        violations.append(
+            ValidationViolation(code="recommendation_without_typed_action")
+        )
+    if (
+        recommendation_action_present
+        and plan.products
+        and not recommendation_groups
+    ):
+        violations.append(
+            ValidationViolation(code="typed_recommendation_missing_primary")
+        )
+
+    for (task_id, search_plan_id), raw_group in recommendation_groups.items():
+        group = sorted(
+            raw_group,
+            key=lambda item: item.recommendation_rank or 99,
+        )
+        primary = [
+            item
+            for item in group
+            if item.recommendation_role == ProductRecommendationRole.PRIMARY
+        ]
+        alternatives = [
+            item
+            for item in group
+            if item.recommendation_role == ProductRecommendationRole.ALTERNATIVE
+        ]
+        if len(primary) != 1:
+            violations.append(
+                ValidationViolation(
+                    code="recommendation_primary_count_invalid",
+                    detail=f"{task_id}:{search_plan_id}",
+                )
+            )
+            continue
+        if len(alternatives) > 2 or [
+            item.recommendation_rank for item in group
+        ] != list(range(1, len(group) + 1)):
+            violations.append(
+                ValidationViolation(
+                    code="recommendation_alternative_count_or_rank_invalid",
+                    detail=f"{task_id}:{search_plan_id}",
+                )
+            )
+        if any(item.status != ProductPresentationStatus.EXACT for item in group):
+            violations.append(
+                ValidationViolation(
+                    code="non_exact_product_recommended",
+                    detail=f"{task_id}:{search_plan_id}",
+                )
+            )
+
+        exact_candidates = []
+        seen_candidate_skus: set[str] = set()
+        for candidate in snapshot.catalog_candidates:
+            if (
+                candidate.task_id != task_id
+                or candidate.search_plan_id != search_plan_id
+                or candidate.status.value != "eligible"
+                or candidate.mismatched_hard_facts
+                or candidate.missing_hard_facts
+                or not set(candidate.required_hard_facts).issubset(
+                    candidate.matched_hard_facts
+                )
+                or candidate.relaxations
+                or candidate.sku in seen_candidate_skus
+                or snapshot.product(candidate.sku) is None
+            ):
+                continue
+            seen_candidate_skus.add(candidate.sku)
+            exact_candidates.append(candidate)
+
+        priced = []
+        unpriced = []
+        for candidate in exact_candidates:
+            product = snapshot.product(candidate.sku)
+            if (
+                product is not None
+                and product.price is not None
+                and not isinstance(product.price, bool)
+                and math.isfinite(float(product.price))
+                and product.price >= 0
+                and product.currency
+            ):
+                priced.append((candidate, float(product.price), product.currency))
+            else:
+                unpriced.append(candidate)
+        currencies = {item[2] for item in priced}
+        if len(exact_candidates) <= 1:
+            expected = exact_candidates
+            expected_criterion = RecommendationCriterion.ONLY_EXACT_ELIGIBLE
+            expected_reasons = ("only_exact_eligible_candidate",)
+        elif priced and len(currencies) == 1:
+            priced.sort(
+                key=lambda item: (
+                    item[1],
+                    item[0].sku.casefold(),
+                    item[0].sku,
+                )
+            )
+            unpriced.sort(key=lambda item: (item.sku.casefold(), item.sku))
+            expected = [item[0] for item in priced] + unpriced
+            expected_criterion = RecommendationCriterion.LOWEST_CONFIRMED_PRICE
+            lowest = priced[0][1]
+            tied = sum(
+                abs(item[1] - lowest) <= 1e-9
+                for item in priced
+            )
+            expected_reasons = (
+                "lowest_confirmed_price_among_priced_exact_candidates",
+                *(
+                    ("stable_sku_tiebreak_among_equal_lowest_prices",)
+                    if tied > 1
+                    else ()
+                ),
+            )
+        else:
+            expected = sorted(
+                exact_candidates,
+                key=lambda item: (item.sku.casefold(), item.sku),
+            )
+            expected_criterion = RecommendationCriterion.STABLE_SKU_TIEBREAK
+            expected_reasons = (
+                "stable_sku_tiebreak_without_comparable_confirmed_price",
+            )
+
+        if not expected:
+            violations.append(
+                ValidationViolation(
+                    code="recommendation_has_no_exact_candidate_source",
+                    detail=f"{task_id}:{search_plan_id}",
+                )
+            )
+            continue
+        if [item.sku for item in group] != [
+            item.sku for item in expected[: len(group)]
+        ]:
+            violations.append(
+                ValidationViolation(
+                    code="recommendation_order_not_source_grounded",
+                    detail=f"{task_id}:{search_plan_id}",
+                )
+            )
+        primary_item = primary[0]
+        if (
+            primary_item.recommendation_criterion != expected_criterion
+            or primary_item.recommendation_reason_codes != expected_reasons
+        ):
+            violations.append(
+                ValidationViolation(
+                    code="recommendation_reason_not_source_grounded",
+                    detail=primary_item.product_plan_id,
+                )
+            )
+        for alternative in alternatives:
+            if (
+                alternative.recommendation_criterion != expected_criterion
+                or alternative.recommendation_reason_codes
+                != ("exact_eligible_recommendation_alternative",)
+            ):
+                violations.append(
+                    ValidationViolation(
+                        code="recommendation_alternative_reason_invalid",
+                        detail=alternative.product_plan_id,
+                    )
+                )
+        for item in group:
+            expected_source_id = item.recommendation_reason_codes[0]
+            if not any(
+                source_ref_id in source_by_id
+                and source_by_id[source_ref_id].source_type.value == "policy_reason"
+                and source_by_id[source_ref_id].field_name == "recommendation"
+                and source_by_id[source_ref_id].source_id == expected_source_id
+                for source_ref_id in item.source_ref_ids
+            ):
+                violations.append(
+                    ValidationViolation(
+                        code="recommendation_policy_source_missing",
+                        detail=item.product_plan_id,
+                    )
+                )
+    report = plan.next_step.candidate_fact_report
+    if report is not None:
+        for item in report.items:
+            product = snapshot.product(item.sku)
+            if (
+                product is None
+                or product.name != item.name
+                or item.fact_name != report.fact_name
+            ):
+                violations.append(
+                    ValidationViolation(
+                        code="candidate_fact_report_identity_mismatch",
+                        detail=item.item_id,
+                    )
+                )
+                continue
+            matching = tuple(
+                fact for fact in product.facts if fact.name == item.fact_name
+            )
+            issues = tuple(
+                issue
+                for issue in product.fact_issues
+                if issue.name == item.fact_name
+            )
+            if item.status == CandidateFactStatus.CONFIRMED and not any(
+                fact.value == item.value and fact.unit == item.unit
+                for fact in matching
+            ):
+                violations.append(
+                    ValidationViolation(
+                        code="candidate_fact_report_value_mismatch",
+                        detail=item.item_id,
+                    )
+                )
+            elif item.status == CandidateFactStatus.AMBIGUOUS and not (
+                issues
+                or len({(str(fact.value), fact.unit) for fact in matching}) > 1
+            ):
+                violations.append(
+                    ValidationViolation(
+                        code="candidate_fact_report_ambiguity_unproven",
+                        detail=item.item_id,
+                    )
+                )
+            elif item.status == CandidateFactStatus.MISSING and (matching or issues):
+                violations.append(
+                    ValidationViolation(
+                        code="candidate_fact_report_missing_fact_mismatch",
+                        detail=item.item_id,
+                    )
+                )
     return violations
 
 

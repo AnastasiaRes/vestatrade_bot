@@ -56,6 +56,8 @@ from .contracts import (
     FrozenModel,
     NextActionPlan,
     ReductionResult,
+    TaskAct,
+    TaskStatus,
     TurnMetadata,
 )
 from .reducer import (
@@ -156,12 +158,40 @@ class DialogueControllerV2:
         resolutions = ()
         readiness = ()
         if product_contracts_enabled:
+            foreground_tasks = tuple(
+                task
+                for task in reduction.state.tasks
+                if task.target_goal_id is not None
+                and (
+                    task.was_addressed_on(reduction.state.turn_number)
+                    or task.task_id == reduction.state.task_stack.active_task_id
+                )
+            )
+            foreground_ids = {task.task_id for task in foreground_tasks}
+            related_ids = {
+                related_id
+                for task in foreground_tasks
+                for related_id in task.related_task_ids
+            }
+            related_ids.update(
+                task.task_id
+                for task in reduction.state.tasks
+                if foreground_ids.intersection(task.related_task_ids)
+            )
             tasks = tuple(
                 task for task in reduction.state.tasks
                 if task.target_goal_id is not None
                 and (
-                    task.source_turn == reduction.state.turn_number
-                    or task.task_id == reduction.state.task_stack.active_task_id
+                    task.task_id in foreground_ids
+                    or (
+                        task.task_id in related_ids
+                        and task.act in {TaskAct.FIND, TaskAct.SELECT}
+                        and task.status in {
+                            TaskStatus.PENDING,
+                            TaskStatus.IN_PROGRESS,
+                            TaskStatus.BLOCKED,
+                        }
+                    )
                 )
             )
             resolutions = tuple(

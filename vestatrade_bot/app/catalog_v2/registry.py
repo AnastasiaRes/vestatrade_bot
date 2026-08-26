@@ -54,6 +54,7 @@ def _fact(
     fields: tuple[str, ...] = (),
     parsers: tuple[str, ...] = (),
     learn: str | None = None,
+    catalog_verifiable: bool = True,
 ) -> ContractFactDefinition:
     conversions = {
         "length_mm": {"mm": 1.0, "cm": 10.0, "m": 1000.0},
@@ -63,6 +64,19 @@ def _fact(
         "power_kw": {"kw": 1.0, "квт": 1.0, "w": 0.001, "вт": 0.001},
         "power_w": {"w": 1.0, "вт": 1.0, "kw": 1000.0, "квт": 1000.0},
         "flow": {"l/h": 1.0, "л/ч": 1.0, "l/min": 60.0, "л/мин": 60.0, "m3/h": 1000.0, "м3/ч": 1000.0},
+        "percent": {"%": 1.0, "percent": 1.0, "процент": 1.0},
+        "pressure_bar": {
+            "bar": 1.0,
+            "бар": 1.0,
+            "mpa": 10.0,
+            "мпа": 10.0,
+            "kpa": 0.01,
+            "кпа": 0.01,
+            "pa": 0.00001,
+            "па": 0.00001,
+            "atm": 1.01325,
+            "атм": 1.01325,
+        },
     }.get(unit_family or "", {})
     return ContractFactDefinition(
         name=name,
@@ -78,6 +92,7 @@ def _fact(
         catalog_fields=fields,
         general_parsers=parsers,
         learn_method_code=learn,
+        catalog_verifiable=catalog_verifiable,
     )
 
 
@@ -104,6 +119,24 @@ DIAMETER = _fact(
     fields=("диаметр (мм)", "диаметр условного прохода"),
     parsers=("primary_metric_size", "pump_designation_diameter"),
     learn="measure_outer_or_nominal_diameter",
+)
+PUMP_DIAMETER = DIAMETER.model_copy(
+    update={
+        "aliases": tuple(
+            dict.fromkeys(
+                (
+                    *DIAMETER.aliases,
+                    "connection_diameter_mm",
+                    "connection_size",
+                    "connection",
+                    "inlet_connection_diameter",
+                    "inlet_diameter",
+                    "присоединение",
+                    "присоединение_вход",
+                )
+            )
+        )
+    }
 )
 SECONDARY_DIAMETER = _fact(
     "secondary_diameter_mm",
@@ -162,7 +195,16 @@ MATERIAL = _fact(
 )
 CONNECTION_SIZE = _fact(
     "connection_size",
-    aliases=("thread_size", "connection_diameter_inch"),
+    aliases=(
+        "thread_size",
+        "connection_thread_size",
+        "nominal_thread_size",
+        "port_size",
+        "connection_diameter_inch",
+        "thread",
+        "резьба",
+        "размер_резьбы",
+    ),
     value_type=FactValueType.TEXT,
     required=True,
     decision=True,
@@ -213,7 +255,21 @@ MOUNTING_LENGTH = _fact(
 )
 MAX_HEAD = _fact(
     "max_head_m",
-    aliases=("required_head", "head_m", "maximum_head", "lift_height_m"),
+    aliases=(
+        "head",
+        "required_head",
+        "head_m",
+        "maximum_head",
+        "lift_height_m",
+        # Semantic models commonly call a pump head expressed in metres
+        # "pressure".  Readiness accepts this alias only with a head/length
+        # unit, so a pressure in bar is never silently converted to metres.
+        "pressure",
+        "required_pressure",
+        "pressure_head",
+        "system_head",
+        "напор",
+    ),
     unit_family="head_m",
     required=True,
     decision=True,
@@ -223,10 +279,36 @@ MAX_HEAD = _fact(
 )
 MAX_FLOW = _fact(
     "max_flow_l_h",
-    aliases=("flow", "flow_rate", "required_flow_l_h", "required_flow_l_min", "required_flow_m3_h"),
+    aliases=(
+        "flow",
+        "flow_rate",
+        "required_flow_l_h",
+        "required_flow_l_min",
+        "required_flow_m3_h",
+        "подача",
+        "расход",
+    ),
     unit_family="flow",
     strength=FactStrength.SOFT,
     fields=("макс. производительность, л/ч",),
+)
+DUTY_POINT_HEAD = _fact(
+    "duty_point_head_m",
+    aliases=("duty_head_m", "working_point_head_m", "required_duty_head_m"),
+    unit_family="head_m",
+    decision=True,
+    catalog_verifiable=False,
+)
+DUTY_POINT_FLOW = _fact(
+    "duty_point_flow_l_h",
+    aliases=(
+        "duty_flow_l_h",
+        "working_point_flow_l_h",
+        "required_duty_flow_l_h",
+    ),
+    unit_family="flow",
+    decision=True,
+    catalog_verifiable=False,
 )
 POWER_KW = _fact(
     "power_kw",
@@ -240,7 +322,17 @@ POWER_KW = _fact(
 )
 FUEL_TYPE = _fact(
     "boiler_type",
-    aliases=("fuel_type", "energy_source"),
+    aliases=(
+        "fuel_type",
+        "boiler_fuel_type",
+        "boiler_fuel",
+        "fuel",
+        "fuel_kind",
+        "energy_source",
+        "heating_source",
+        "type",
+        "тип",
+    ),
     value_type=FactValueType.TEXT,
     required=True,
     decision=True,
@@ -251,7 +343,17 @@ FUEL_TYPE = _fact(
 )
 CIRCUITS = _fact(
     "circuits",
-    aliases=("circuit_count", "number_of_circuits"),
+    aliases=(
+        "circuit_count",
+        "number_of_circuits",
+        "contours",
+        "contour_count",
+        "needs_hot_water",
+        "functionality",
+        "functions",
+        "контуры",
+        "функциональность",
+    ),
     required=True,
     decision=True,
     fields=("количество контуров",),
@@ -266,6 +368,89 @@ CHAMBER = _fact(
     comparison=ComparisonMode.CONTAINS,
     fields=("камера сгорания",),
     parsers=("combustion_chamber",),
+)
+APPLICATION = _fact(
+    "application",
+    aliases=(
+        "intended_use",
+        "working_medium",
+        "service_medium",
+        "medium",
+        "fluid",
+        "рабочая_среда",
+        "среда",
+        "назначение",
+    ),
+    value_type=FactValueType.TEXT,
+    comparison=ComparisonMode.EXACT,
+    fields=("рабочая среда",),
+)
+OPERATING_TEMPERATURE = _fact(
+    "operating_temperature_c",
+    aliases=(
+        "max_operating_temperature_c",
+        "maximum_operating_temperature_c",
+        "max_temperature_c",
+        "working_temperature_c",
+        "temperature_c",
+    ),
+    unit_family="temperature_c",
+    comparison=ComparisonMode.MINIMUM_RATING,
+    fields=(
+        "максимальная рабочая температура, °с",
+        "макс. температура воды, °c",
+        "максимальная температура воды, ℃",
+    ),
+)
+OPERATING_PRESSURE = _fact(
+    "operating_pressure_bar",
+    aliases=(
+        "max_operating_pressure_bar",
+        "maximum_operating_pressure_bar",
+        "max_pressure_bar",
+        "working_pressure_bar",
+        "pressure_bar",
+    ),
+    unit_family="pressure_bar",
+    comparison=ComparisonMode.MINIMUM_RATING,
+    fields=(
+        "максимальное рабочее давление, бар",
+        "рабочее давление, бар",
+        "максимальное давление, бар",
+        "максимальное давление в системе, бар",
+        "давление, бар",
+    ),
+)
+BRAND = _fact(
+    "brand",
+    aliases=(
+        "brand_name",
+        "manufacturer",
+        "manufacturer_name",
+        "vendor",
+        "бренд",
+        "производитель",
+    ),
+    value_type=FactValueType.TEXT,
+    comparison=ComparisonMode.EXACT,
+)
+PORT_COUNT = _fact(
+    "port_count",
+    aliases=(
+        "ports",
+        "number_of_ports",
+        "port_number",
+        "way_count",
+        "ways",
+        "количество_портов",
+        "количество_ходов",
+        "число_портов",
+        "ходы",
+    ),
+    decision=True,
+    fields=("количество портов", "количество ходов", "число портов"),
+    parsers=("port_count",),
+    learn="read_valve_port_count",
 )
 RADIATOR_MATERIAL = MATERIAL.model_copy(
     update={"required_for_exact": True, "decision_changing": True}
@@ -287,6 +472,99 @@ HEAT_OUTPUT = _fact(
     fields=("теплоотдача, вт",),
 )
 
+COOLANT_TYPE = _fact(
+    "coolant_type",
+    aliases=(
+        "coolant",
+        "working_fluid",
+        "heat_transfer_fluid",
+        "fluid_type",
+        "working_medium",
+        "heat_carrying_medium",
+        "теплоноситель",
+    ),
+    value_type=FactValueType.TEXT,
+    required=False,
+    decision=True,
+    comparison=ComparisonMode.EXACT,
+    fields=("рабочая среда", "теплоноситель"),
+)
+GLYCOL_CONCENTRATION = _fact(
+    "glycol_concentration_percent",
+    aliases=(
+        "glycol_concentration",
+        "glycol_content_percent",
+        "glycol_percent",
+        "propylene_glycol_concentration",
+        "propylene_glycol_percent",
+        "ethylene_glycol_concentration",
+        "ethylene_glycol_percent",
+        "antifreeze_concentration",
+        "coolant_concentration",
+    ),
+    unit_family="percent",
+    required=False,
+    decision=True,
+    comparison=ComparisonMode.NUMERIC,
+    fields=("концентрация гликоля, %", "концентрация теплоносителя, %"),
+)
+FILTER_METHOD = _fact(
+    "filter_method",
+    aliases=(
+        "filter_type",
+        "filtration_type",
+        "filtration_method",
+        "cleaning_type",
+        "type",
+        "тип_фильтра",
+        "метод_фильтрации",
+    ),
+    value_type=FactValueType.TEXT,
+    required=True,
+    decision=True,
+    comparison=ComparisonMode.EXACT,
+    parsers=("filter_method",),
+    learn="identify_required_water_treatment",
+)
+MICRON_RATING = _fact(
+    "micron_rating_um",
+    aliases=(
+        "micron_rating",
+        "filtration_rating_um",
+        "filter_mesh_um",
+        "particle_size_um",
+    ),
+    unit_family="micron",
+    required=False,
+    decision=True,
+    comparison=ComparisonMode.NUMERIC,
+    parsers=("micron_rating",),
+    learn="read_filter_micron_rating",
+)
+WASHABLE = _fact(
+    "washable",
+    aliases=(
+        "is_washable",
+        "flushable",
+        "backwashable",
+        "self_cleaning",
+        "self_cleaning_filter",
+        "промывной",
+        "самопромывной",
+    ),
+    value_type=FactValueType.BOOLEAN,
+    decision=True,
+    comparison=ComparisonMode.BOOLEAN,
+    fields=("промывной", "самопромывной", "возможность промывки"),
+    parsers=("washable",),
+    learn="read_filter_cleaning_method",
+)
+
+
+SPECIALIZED_FUEL_TYPE = FUEL_TYPE.model_copy(
+    update={"required_for_exact": False}
+)
+
 
 def _contract(
     contract_id: str,
@@ -300,6 +578,7 @@ def _contract(
     catalog_categories: tuple[str, ...] = (),
     candidates: tuple[ProductKind, ...] = (),
     invariants: tuple[str, ...] = (),
+    required_alternatives: tuple[tuple[str, tuple[str, ...]], ...] = (),
 ) -> ProductContract:
     return ProductContract(
         contract_id=contract_id,
@@ -310,9 +589,10 @@ def _contract(
         catalog_category_aliases=catalog_categories,
         allowed_catalog_roles=roles,
         supported_acts=_CATALOG_ACTS,
-        fact_definitions=(SKU, *facts),
+        fact_definitions=(SKU, BRAND, *facts),
         analog_invariants=("product_kind", *invariants),
         candidate_kinds=candidates or (kind,),
+        required_fact_alternatives=required_alternatives,
     )
 
 
@@ -321,6 +601,32 @@ BASE = (CatalogProductRole.BASE_PRODUCT,)
 
 
 DEFAULT_CONTRACTS: tuple[ProductContract, ...] = (
+    _contract(
+        "pipe.pex.v1", ProductKind.PEX_PIPE, "pipes",
+        (
+            "pex pipe",
+            "pex_pipe",
+            "pipe pex",
+            "pe xa pipe",
+            "труба pex",
+            "труба pe xa",
+            "труба из сшитого полиэтилена",
+        ),
+        BASE,
+        (
+            DIAMETER.model_copy(
+                update={
+                    "general_parsers": tuple(
+                        dict.fromkeys((*DIAMETER.general_parsers, "pipe_outer_diameter"))
+                    )
+                }
+            ),
+            MATERIAL,
+        ),
+        catalog_types=("труба",),
+        catalog_categories=("трубы",),
+        invariants=("diameter_mm",),
+    ),
     _contract(
         "pipe.ppr.v1", ProductKind.PIPE, "pipes",
         ("pipe", "ppr pipe", "polypropylene pipe", "труба", "полипропиленовая труба"),
@@ -370,10 +676,20 @@ DEFAULT_CONTRACTS: tuple[ProductContract, ...] = (
     _contract(
         "valve.ball.v1", ProductKind.BALL_VALVE, "valves",
         ("ball valve", "шаровой кран", "кран шаровой"),
-        COMPONENT, (CONNECTION_SIZE, CONNECTION_PATTERN, VALVE_SHAPE, MATERIAL),
+        COMPONENT,
+        (
+            CONNECTION_SIZE,
+            CONNECTION_PATTERN,
+            PORT_COUNT,
+            APPLICATION,
+            OPERATING_TEMPERATURE,
+            OPERATING_PRESSURE,
+            VALVE_SHAPE,
+            MATERIAL,
+        ),
         catalog_types=("кран шаровой", "кран шаровой угловой"),
         catalog_categories=("водозапорная арматура",),
-        invariants=("connection_size", "connection_pattern"),
+        invariants=("connection_size", "connection_pattern", "port_count"),
     ),
     _contract(
         "radiator.thermostatic_head.v1", ProductKind.THERMOSTATIC_HEAD, "radiator_fittings",
@@ -407,9 +723,13 @@ DEFAULT_CONTRACTS: tuple[ProductContract, ...] = (
     _contract(
         "pump.circulation.v1", ProductKind.CIRCULATION_PUMP, "pumps",
         ("circulation pump", "circulating pump", "циркуляционный насос"),
-        BASE, (DIAMETER, MAX_HEAD, MOUNTING_LENGTH, MAX_FLOW),
+        BASE, (PUMP_DIAMETER, MAX_HEAD, MOUNTING_LENGTH, MAX_FLOW,
+               DUTY_POINT_HEAD, DUTY_POINT_FLOW,
+               COOLANT_TYPE, GLYCOL_CONCENTRATION),
         catalog_types=("насос",), catalog_categories=("насосное оборудование", "прокачиваем скидки"),
-        invariants=("diameter_mm", "mounting_length_mm"),
+        invariants=("diameter_mm", "mounting_length_mm", "coolant_type",
+                    "glycol_concentration_percent"),
+        required_alternatives=(("max_head_m", ("duty_point_head_m",)),),
     ),
     _contract(
         "pump.dhw_circulation.v1", ProductKind.DHW_CIRCULATION_PUMP, "pumps",
@@ -442,17 +762,19 @@ DEFAULT_CONTRACTS: tuple[ProductContract, ...] = (
         ("boiler", "котел", "котел отопления"), BASE,
         (FUEL_TYPE, POWER_KW, CIRCUITS, CHAMBER),
         candidates=(ProductKind.GAS_BOILER, ProductKind.ELECTRIC_BOILER),
+        invariants=("boiler_type", "circuits"),
     ),
     _contract(
         "boiler.gas.v1", ProductKind.GAS_BOILER, "boilers",
-        ("gas boiler", "газовый котел"), BASE, (POWER_KW, CIRCUITS, CHAMBER),
-        catalog_types=("котел",), invariants=("power_kw", "circuits"),
+        ("gas boiler", "газовый котел"), BASE,
+        (SPECIALIZED_FUEL_TYPE, POWER_KW, CIRCUITS, CHAMBER),
+        catalog_types=("котел",), invariants=("boiler_type", "circuits"),
     ),
     _contract(
         "boiler.electric.v1", ProductKind.ELECTRIC_BOILER, "boilers",
         ("electric boiler", "электрический котел", "электрокотел"), BASE,
-        (POWER_KW, CIRCUITS), catalog_types=("котел",),
-        invariants=("power_kw", "circuits"),
+        (SPECIALIZED_FUEL_TYPE, POWER_KW, CIRCUITS), catalog_types=("котел",),
+        invariants=("boiler_type", "circuits"),
     ),
     _contract(
         "radiator.v1", ProductKind.RADIATOR, "radiators",
@@ -460,6 +782,24 @@ DEFAULT_CONTRACTS: tuple[ProductContract, ...] = (
         (RADIATOR_MATERIAL, CENTER_DISTANCE, CONNECTION_SIZE, HEAT_OUTPUT),
         catalog_types=("радиатор отопления",), catalog_categories=("радиаторы отопления",),
         invariants=("material", "center_distance_mm"),
+    ),
+    _contract(
+        "filter.water.v1", ProductKind.FILTER, "filters",
+        (
+            "filter",
+            "water filter",
+            "water_filter",
+            "mechanical water filter",
+            "фильтр",
+            "фильтр для воды",
+            "фильтр механической очистки",
+            "механический фильтр",
+            "грязевик",
+        ),
+        BASE, (FILTER_METHOD, CONNECTION_SIZE, MICRON_RATING, WASHABLE),
+        catalog_types=("фильтр", "фильтр косой"),
+        catalog_categories=("фильтры",),
+        invariants=("filter_method", "connection_size"),
     ),
 )
 
@@ -484,6 +824,23 @@ class CatalogKindRule:
 
 
 CATALOG_KIND_RULES: tuple[CatalogKindRule, ...] = (
+    # A filter catalogue contains complete filters together with cartridges,
+    # housings and service parts.  Keep those roles machine-readable so a
+    # target water-filter task can never receive a cartridge or housing.
+    CatalogKindRule(ProductKind.FILTER, CatalogProductRole.CONSUMABLE,
+                    ("фильтры",),
+                    name_markers=("картридж", "мембран", "фильтрующий элемент",
+                                  "комплект сменных")),
+    CatalogKindRule(ProductKind.FILTER, CatalogProductRole.ACCESSORY,
+                    ("фильтры",),
+                    name_markers=("корпус", "колба", "крышк", "ключ", "чехол", "инвертор")),
+    CatalogKindRule(ProductKind.FILTER, CatalogProductRole.BASE_PRODUCT,
+                    ("фильтры",), name_markers=("фильтр",),
+                    excluded_name_markers=("картридж", "корпус", "мембран", "фильтрующий элемент",
+                                           "комплект сменных", "колба", "крышк", "ключ", "чехол", "инвертор")),
+    CatalogKindRule(ProductKind.FILTER, CatalogProductRole.BASE_PRODUCT,
+                    ("фитинги",), type_markers=("фильтр",),
+                    name_markers=("фильтр",)),
     CatalogKindRule(ProductKind.RADIATOR_VALVE_KIT, CatalogProductRole.COMPONENT,
                     ("арматура для радиаторов",), name_markers=("комплект терморег",)),
     CatalogKindRule(ProductKind.THERMOSTATIC_HEAD, CatalogProductRole.COMPONENT,
@@ -523,6 +880,9 @@ CATALOG_KIND_RULES: tuple[CatalogKindRule, ...] = (
                     type_markers=("тройник",)),
     CatalogKindRule(ProductKind.COUPLING, CatalogProductRole.COMPONENT,
                     type_markers=("муфта",), category_markers=("канализационные системы",)),
+    CatalogKindRule(ProductKind.PEX_PIPE, CatalogProductRole.BASE_PRODUCT,
+                    category_markers=("трубы",),
+                    name_markers=("pex", "pe xa", "сшитого полиэтилена")),
     CatalogKindRule(ProductKind.PIPE, CatalogProductRole.BASE_PRODUCT,
                     category_markers=("трубы",), name_markers=("труба",)),
     CatalogKindRule(ProductKind.RADIATOR, CatalogProductRole.BASE_PRODUCT,
@@ -597,6 +957,13 @@ class ProductContractRegistry:
     def _semantic_matches(self, goal: ProductGoal) -> list[ProductContract]:
         identity = normalize_identity(goal.canonical_type or "")
         category = goal.category.value
+        evidence = normalize_identity(goal.evidence or "")
+        if identity in {"pipe", "труба"} and any(
+            marker in evidence
+            for marker in ("pex", "pe xa", "сшитого полиэтилена")
+        ):
+            pex = self._by_kind.get(ProductKind.PEX_PIPE)
+            return [pex] if pex else []
         exact_matches: list[ProductContract] = []
         partial_matches: list[ProductContract] = []
         for contract in self.contracts:

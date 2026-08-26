@@ -12,7 +12,12 @@ from typing import Any, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.catalog_v2.contracts import CatalogPlanningResult, ProductKind, ReadinessStatus
+from app.catalog_v2.contracts import (
+    CatalogPlanningResult,
+    CatalogProductRole,
+    ProductKind,
+    ReadinessStatus,
+)
 from app.commerce_v2.contracts import (
     CommerceOutboxEntry,
     CommercePlanningResult,
@@ -118,6 +123,45 @@ class ConstraintStrength(str, Enum):
     SOFT = "soft"
 
 
+class InformationPurpose(str, Enum):
+    VALUE = "value"
+    MEANING = "meaning"
+    DECISION_RELEVANCE = "decision_relevance"
+    DETERMINATION_METHOD = "determination_method"
+    COMPATIBILITY = "compatibility"
+    PROVENANCE = "provenance"
+
+
+class RequestedInformationOutput(str, Enum):
+    EXPLANATION = "explanation"
+    INSTRUCTION = "instruction"
+    VERIFIED_LINK = "verified_link"
+
+
+class InformationOutputRelation(str, Enum):
+    ALL = "all"
+    ANY = "any"
+
+
+class InformationSourceKind(str, Enum):
+    CATALOG_PRODUCT_PAGE = "catalog_product_page"
+    MANUFACTURER_DOCUMENTATION = "manufacturer_documentation"
+    TECHNICAL_DOCUMENTATION = "technical_documentation"
+    OFFICIAL_BUSINESS_SITE = "official_business_site"
+    ANY_VERIFIED = "any_verified"
+
+
+class InformationRequestStatus(str, Enum):
+    PENDING = "pending"
+    RESOLVED = "resolved"
+    UNAVAILABLE = "unavailable"
+
+
+class InformationSubjectScope(str, Enum):
+    CUSTOMER_GOAL = "customer_goal"
+    PRESENTED_CANDIDATES = "presented_candidates"
+
+
 class ProgressKind(str, Enum):
     NEW_TASK_CREATED = "new_task_created"
     GOAL_REFINED = "goal_refined"
@@ -126,6 +170,7 @@ class ProgressKind(str, Enum):
     UNKNOWN_REGISTERED = "unknown_registered"
     DIRECT_QUESTION_REGISTERED = "direct_question_registered"
     DIRECT_QUESTION_ANSWERED = "direct_question_answered"
+    INFORMATION_REQUEST_REGISTERED = "information_request_registered"
     TASK_SWITCHED = "task_switched"
     TASK_RETURNED = "task_returned"
     NO_PROGRESS = "no_progress"
@@ -136,6 +181,7 @@ class NextActionKind(str, Enum):
     ASK_DECISION_CHANGING_QUESTION = "ask_decision_changing_question"
     EXPLAIN_TERM_OR_METHOD = "explain_term_or_method"
     SEARCH_EXACT = "search_exact"
+    RECOMMEND_ONE = "recommend_one"
     SHOW_PRELIMINARY_OPTIONS = "show_preliminary_options"
     COMPARE = "compare"
     CALCULATE_PRELIMINARY = "calculate_preliminary"
@@ -203,10 +249,26 @@ class CustomerTask(FrozenModel):
     status: TaskStatus = TaskStatus.PENDING
     source: str
     source_turn: int = Field(ge=1)
+    created_turn: int | None = Field(default=None, ge=1)
+    last_addressed_turn: int | None = Field(default=None, ge=1)
     blocking_reason: str | None = None
     completed_subtasks: tuple[str, ...] = ()
     pending_subtasks: tuple[str, ...] = ()
     related_task_ids: tuple[str, ...] = ()
+
+    def was_addressed_on(self, turn_number: int) -> bool:
+        """Whether this existing task was part of the accepted current turn."""
+
+        return (
+            self.source_turn == turn_number
+            or self.last_addressed_turn == turn_number
+        )
+
+    @property
+    def origin_turn(self) -> int:
+        """Creation provenance for sessions saved before ``created_turn``."""
+
+        return self.created_turn or self.source_turn
 
 
 class ConstraintFactV2(FrozenModel):
@@ -232,6 +294,42 @@ class ConstraintFactV2(FrozenModel):
             raise ValueError("known constraint must contain a value")
         if self.status != ConstraintStatus.KNOWN and self.value is not None:
             raise ValueError("unknown/refused/deferred constraint cannot contain a value")
+        return self
+
+
+class InformationRequestV2(FrozenModel):
+    """PII-free typed information deliverable requested by the customer."""
+
+    request_id: str
+    task_id: str
+    goal_id: str | None = None
+    fact_name: str | None = Field(default=None, min_length=1, max_length=120)
+    purpose: InformationPurpose
+    requested_outputs: tuple[RequestedInformationOutput, ...] = Field(
+        min_length=1,
+        max_length=3,
+    )
+    output_relation: InformationOutputRelation = InformationOutputRelation.ALL
+    source_kind: InformationSourceKind | None = None
+    subject_scope: InformationSubjectScope = InformationSubjectScope.CUSTOMER_GOAL
+    status: InformationRequestStatus = InformationRequestStatus.PENDING
+    source_turn: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def verified_outputs_have_a_source_kind(self) -> "InformationRequestV2":
+        if len(set(self.requested_outputs)) != len(self.requested_outputs):
+            raise ValueError("requested_outputs must not contain duplicates")
+        if (
+            RequestedInformationOutput.VERIFIED_LINK in self.requested_outputs
+            and self.source_kind is None
+        ):
+            raise ValueError("verified_link requires source_kind")
+        if (
+            self.purpose == InformationPurpose.PROVENANCE
+            and RequestedInformationOutput.VERIFIED_LINK
+            not in self.requested_outputs
+        ):
+            raise ValueError("provenance requires verified_link")
         return self
 
 
@@ -265,6 +363,14 @@ class NextAction(FrozenModel):
     kind: NextActionKind
     task_id: str | None = None
     fact_name: str | None = None
+    information_request_id: str | None = None
+    information_purpose: InformationPurpose | None = None
+    requested_outputs: tuple[RequestedInformationOutput, ...] = ()
+    output_relation: InformationOutputRelation | None = None
+    source_kind: InformationSourceKind | None = None
+    information_subject_scope: InformationSubjectScope = (
+        InformationSubjectScope.CUSTOMER_GOAL
+    )
     reason_code: str
 
 
@@ -284,15 +390,40 @@ class TaskStack(FrozenModel):
     completed_task_ids: tuple[str, ...] = ()
 
 
+class PresentedCandidateSummary(FrozenModel):
+    """PII-free identity of a card included in the last answer candidate."""
+
+    sku: str
+    name: str
+    product_kind: ProductKind
+    role: CatalogProductRole
+    task_id: str
+    goal_id: str | None = None
+    search_plan_id: str
+    source_turn: int = Field(ge=0)
+
+
 class AnswerPlanSummary(FrozenModel):
     plan_id: str
     semantic_signature: str
     task_ids: tuple[str, ...] = ()
     primary_action: NextActionKind
     question_fact: str | None = None
+    # A delivered question is a typed continuation edge, not merely a fact
+    # name.  Defaults keep pre-existing V2 session payloads readable.
+    question_id: str | None = None
+    question_task_id: str | None = None
+    question_goal_id: str | None = None
     next_step_kind: str
     validation_status: str
     delivery_status: ShadowDeliveryStatus = ShadowDeliveryStatus.SHADOW_NOT_DELIVERED
+    information_request_id: str | None = None
+    information_requested_outputs: tuple[RequestedInformationOutput, ...] = ()
+    information_output_relation: InformationOutputRelation | None = None
+    information_fulfilled_outputs: tuple[RequestedInformationOutput, ...] = ()
+    information_unavailable_outputs: tuple[RequestedInformationOutput, ...] = ()
+    information_reason_codes: tuple[str, ...] = ()
+    presented_candidates: tuple[PresentedCandidateSummary, ...] = ()
     source_turn: int = Field(ge=0)
 
 
@@ -328,6 +459,7 @@ class DialogueStateV2(FrozenModel):
     product_goals: tuple[ProductGoal, ...] = ()
     active_goal_id: str | None = None
     constraints: tuple[ConstraintFactV2, ...] = ()
+    information_requests: tuple[InformationRequestV2, ...] = ()
     direct_questions: tuple[DirectQuestion, ...] = ()
     ambiguities: tuple[Ambiguity, ...] = ()
     progress: ProgressState = Field(default_factory=ProgressState)
@@ -353,6 +485,13 @@ class StateEventBase(FrozenModel):
 
 class TaskCreated(StateEventBase):
     event_type: Literal["task_created"] = "task_created"
+    task_id: str
+    act: TaskAct
+    goal_id: str | None = None
+
+
+class TaskAddressed(StateEventBase):
+    event_type: Literal["task_addressed"] = "task_addressed"
     task_id: str
     act: TaskAct
     goal_id: str | None = None
@@ -423,6 +562,31 @@ class DirectQuestionRegistered(StateEventBase):
     question_id: str
     task_id: str
     act: TaskAct
+
+
+class InformationRequestRegistered(StateEventBase):
+    event_type: Literal["information_request_registered"] = (
+        "information_request_registered"
+    )
+    request_id: str
+    task_id: str
+    goal_id: str | None = None
+    purpose: InformationPurpose
+
+
+class InformationRequestResolved(StateEventBase):
+    event_type: Literal["information_request_resolved"] = (
+        "information_request_resolved"
+    )
+    request_id: str
+
+
+class InformationRequestUnavailable(StateEventBase):
+    event_type: Literal["information_request_unavailable"] = (
+        "information_request_unavailable"
+    )
+    request_id: str
+    reason_code: str
 
 
 class AmbiguityRegistered(StateEventBase):
@@ -649,6 +813,7 @@ class ResponseCommitSucceeded(StateEventBase):
 
 ReducerEvent: TypeAlias = (
     TaskCreated
+    | TaskAddressed
     | TaskSuspended
     | TaskResumed
     | TaskCompleted
@@ -660,6 +825,9 @@ ReducerEvent: TypeAlias = (
     | ConstraintRefused
     | ConstraintDeferred
     | DirectQuestionRegistered
+    | InformationRequestRegistered
+    | InformationRequestResolved
+    | InformationRequestUnavailable
     | AmbiguityRegistered
     | TurnIgnoredAsDuplicate
     | PolicyDecisionRecorded
