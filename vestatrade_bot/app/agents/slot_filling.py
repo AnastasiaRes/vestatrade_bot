@@ -1443,6 +1443,20 @@ class SlotFillingAgent:
                             else ""
                         )
                     )
+                    if slots.get("old_model"):
+                        # Маркировка старого насоса уже даёт то, чем позиции
+                        # различаются в подборе: напор и присоединение. Внутри
+                        # одной серии монтажная длина бывает 130 и 180 — это
+                        # проверка стыковки по месту, а не фильтр выбора.
+                        # Требовать её замер до показа каталога значит отвечать
+                        # «ничего не нашёл» там, где в наличии лежат обе
+                        # длины: покупателю полезнее увидеть варианты и
+                        # сверить длину по карточке.
+                        askable_core = [
+                            item
+                            for item in askable_core
+                            if item[0] != "mounting_length_mm"
+                        ]
                     if askable_core:
                         return SlotFillingResult(
                             slots=slots,
@@ -1501,8 +1515,27 @@ class SlotFillingAgent:
                         ),
                     )
                 if has_any_core_param:
+                    duty_point_known = bool(
+                        (
+                            slots.get("required_flow_m3_h")
+                            or slots.get("required_flow_l_min")
+                        )
+                        and (slots.get("head_m") or slots.get("required_head_m"))
+                        and slots.get("system_type")
+                    )
                     missing_for_new_selection = [
-                        (item[0], item[2]) for item in askable_core
+                        (item[0], item[2])
+                        for item in askable_core
+                        # Рабочая точка задана полностью — расход, напор и схема.
+                        # Этого достаточно, чтобы отобрать насосы по кривой.
+                        # Монтажная длина и присоединение решают, встанет ли
+                        # выбранный насос на место, а не какой насос подходит;
+                        # держать из-за них весь подбор значит отвечать «ничего
+                        # не нашлось» при полностью известной гидравлике.
+                        if not (
+                            duty_point_known
+                            and item[0] in {"mounting_length_mm", "connection_size"}
+                        )
                     ]
                     if (
                         not slots.get("required_flow_m3_h")
@@ -1551,6 +1584,33 @@ class SlotFillingAgent:
                         )
                     slots["preliminary_selection"] = True
                     return SlotFillingResult(slots=slots)
+                if (
+                    slots.get("pump_selection_mode_explicit")
+                    and slots.get("pump_selection_mode") == "новый подбор"
+                ):
+                    # Покупатель уже ответил, какой это режим. Задать ему
+                    # следом «это замена или новый подбор?» — тот самый
+                    # повтор, на котором диалог встаёт: ответ получен, а
+                    # вопрос приходит дословно тот же. Спрашиваем то, что
+                    # нужно именно новому подбору.
+                    return SlotFillingResult(
+                        slots=slots,
+                        needs_clarification=True,
+                        question=(
+                            "Для нового подбора нужны расчётный расход (м³/ч), "
+                            "напор (м) и схема системы: радиаторы, тёплый пол "
+                            "или оба контура. Монтажную длину и присоединение "
+                            "сверим отдельно по карточке."
+                        ),
+                        expected_slots=[
+                            "required_flow_m3_h",
+                            "head_m",
+                            "system_type",
+                            "mounting_length_mm",
+                            "connection_size",
+                        ],
+                        blocking=True,
+                    )
                 return SlotFillingResult(
                     slots=slots,
                     needs_clarification=True,

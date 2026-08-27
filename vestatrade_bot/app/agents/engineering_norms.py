@@ -285,6 +285,23 @@ def _steel_to_ppr_answer(text: str, follow_up: bool = False) -> str | None:
     )
 
 
+# Вопрос о величине нормы отличается от запроса товара тем, чем управляет
+# глагол выбора. «Нужна труба канализационная 110» — это про товар, а «какой
+# уклон нужен для канализационной трубы 110» — про число: «нужен» здесь
+# относится к уклону, и внешняя проверка на запрос подбора зря забирала такой
+# вопрос себе.
+_ASKS_NORM_QUANTITY_RE = re.compile(
+    r"\b(?:как\w*|каков\w*|скольк\w*)\b[^.?!]{0,40}?"
+    r"\b(?:уклон\w*|перепад\w*)\b"
+)
+
+
+def asks_norm_quantity(message: str) -> bool:
+    """Спрашивают именно величину нормы, а не товар."""
+
+    return bool(_ASKS_NORM_QUANTITY_RE.search(normalize_text(message)))
+
+
 NORMS: tuple[Norm, ...] = (
     Norm("sewer_slope", _sewer_slope_matches, _sewer_slope_answer),
     Norm("steel_to_ppr", _steel_to_ppr_matches, _steel_to_ppr_answer),

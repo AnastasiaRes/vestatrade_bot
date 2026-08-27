@@ -13,6 +13,7 @@ import httpx
 
 from app.config import Settings, get_settings
 from app.models import Product, model_to_dict
+from app.agents.pipe_name_attributes import extract_pipe_attributes
 from app.agents.utils import normalize_sku, normalize_text
 
 
@@ -172,6 +173,7 @@ class FeedLoader:
                 description_removed,
                 placeholder_recovered,
             ) = self._sanitize_product_identity(product)
+            product = self._derive_pipe_attributes(product)
             recovered_placeholder_count += int(placeholder_recovered)
             internal_article_count += int(article_removed)
             foreign_description_count += int(description_removed)
@@ -215,6 +217,35 @@ class FeedLoader:
                 foreign_description_count,
             )
         return list(by_sku.values())
+
+    @staticmethod
+    def _derive_pipe_attributes(product: Product) -> Product:
+        """Дополнить атрибуты трубы тем, что написано в её названии.
+
+        Поставщик присылает спецификацию трубы текстом в названии, а не
+        полями: «PP-FIBER арм. стекл., PN 20, 25 MM». Без разбора весь код,
+        работающий с атрибутами, видит у такой позиции пустой словарь.
+
+        Дополнение только добавляет. Присланное поставщиком значение остаётся
+        авторитетным даже когда расходится с названием: фид — источник, а
+        разбор названия — догадка, пусть и надёжная.
+        """
+
+        derived = extract_pipe_attributes(product.name)
+        if not derived:
+            return product
+        attrs = dict(product.attributes_normalized or {})
+        existing = {normalize_text(key) for key in attrs}
+        added = {
+            key: value
+            for key, value in derived.items()
+            if normalize_text(key) not in existing
+        }
+        if not added:
+            return product
+        return product.model_copy(
+            update={"attributes_normalized": {**attrs, **added}}
+        )
 
     def _sanitize_product_identity(
         self,

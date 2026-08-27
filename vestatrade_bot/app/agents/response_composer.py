@@ -79,6 +79,8 @@ MANAGER_PERSONA = (
 class ResponseComposerAgent:
     def __init__(self, llm_client: OpenRouterClient | None = None) -> None:
         self.llm_client = llm_client or OpenRouterClient()
+        # Заполняется из контекста диалога в set_state; до первого хода пусто.
+        self._passport_documents: list[str] = []
         self.last_llm_used = False
         self.last_llm_requested = False
         self.last_llm_output_accepted = False
@@ -105,7 +107,12 @@ class ResponseComposerAgent:
         slots: dict[str, Any] | None,
         last_product_summary: str | None = None,
         docs_excerpt: str | None = None,
+        passport_documents: list[str] | None = None,
     ) -> None:
+        # Паспорта товара, о котором идёт разговор. Поиск по ним даёт заметно
+        # более точную выдержку, чем по всему каталогу документов: замер дал
+        # 24 попадания из 30 против 17.
+        self._passport_documents = list(passport_documents or [])
         parts: list[str] = []
         if category:
             parts.append(f"категория: {category}")
@@ -574,6 +581,56 @@ class ResponseComposerAgent:
             return specificity, self.BOILER_CONTOUR_DEFINITION
         return len("контур"), self.AMBIGUOUS_CONTOUR_DEFINITION
 
+    def _passport_definition(self, user_message: str):
+        """Найти определение термина в паспортах привязанных документов."""
+
+        try:
+            from app.config import PROJECT_ROOT, get_settings
+            from app.passport_glossary import default_index, find_definition
+
+            settings = get_settings()
+            index = default_index(
+                [settings.product_docs_dir, PROJECT_ROOT / "data"]
+            )
+        except Exception:  # pragma: no cover - индекс не должен ломать ответ
+            return None
+        return find_definition(index, user_message)
+
+    def _passport_quote(self, user_message: str) -> str | None:
+        """Найти ответ цитатой из паспорта товара, о котором идёт разговор."""
+
+        client = getattr(self, "llm_client", None)
+        if client is None:
+            return None
+        try:
+            from app.agents.passport_answer import PassportAnswerAgent
+            from app.config import PROJECT_ROOT, get_settings
+            from app.passport_retrieval import expand_query, load_or_build
+
+            settings = get_settings()
+            if not settings.embeddings_enabled:
+                return None
+            index = load_or_build(
+                settings.products_cache_path.with_name("passport_index.json"),
+                [settings.product_docs_dir, PROJECT_ROOT / "data"],
+                client.embed,
+                settings.embedding_model,
+            )
+            vectors = client.embed([expand_query(user_message)])
+            hits = index.search(
+                user_message,
+                documents=getattr(self, "_passport_documents", None) or None,
+                query_vector=vectors[0] if vectors else None,
+            )
+            if not hits:
+                return None
+            result = PassportAnswerAgent(client).answer(
+                user_message, [hit.chunk for hit in hits]
+            )
+        except Exception:  # pragma: no cover - поиск не должен ломать ответ
+            return None
+        return result[0] if result else None
+
     def compose_term_consult(self, user_message: str) -> str:
         definition = self._glossary_definition(user_message)
         if definition:
@@ -583,6 +640,29 @@ class ResponseComposerAgent:
             )
             self.last_draft = draft
             return draft
+        # Второй источник — паспорт производителя. Термины вроде «мокрый
+        # ротор», Kvs и «класс эксплуатации» в выверенном глоссарии не
+        # описаны, но определены в документах, которые уже привязаны к
+        # товарам. Цитата с указанием источника надёжнее пересказа моделью и
+        # проверяема: покупатель может открыть тот же паспорт.
+        passport = self._passport_definition(user_message)
+        if passport:
+            draft = (
+                f"{passport.text} Это формулировка производителя "
+                f"({passport.source}, {passport.section}). "
+                "Если нужно, подберу подходящие позиции из ассортимента — опишите задачу."
+            )
+            self.last_draft = draft
+            return draft
+        # Третий источник — ответ цитатой из паспорта. Глоссарий и индекс
+        # определений отвечают на «что это такое», а сюда попадают вопросы об
+        # эксплуатации, монтаже и ограничениях: «можно ли ставить вертикально»,
+        # «как часто выпускать воздух». Цитата проходит четыре проверки, и
+        # непрошедшее возвращает None — тогда покупатель видит прежний отказ.
+        quoted = self._passport_quote(user_message)
+        if quoted:
+            self.last_draft = quoted
+            return quoted
         fallback = (
             "Точное значение этого термина не подскажу без проверки — не хочу вводить в "
             "заблуждение. Могу объяснить базовые понятия: монтажная длина, напор, контуры "
@@ -1201,19 +1281,34 @@ class ResponseComposerAgent:
             )
             > 1
         ]
+        # Показываем сначала то, чем позиции различаются: это и есть ответ на
+        # «сравните». Раньше брались первые четыре ключа в порядке появления, и
+        # решающее различие вытеснялось общими для всех характеристиками —
+        # например, рабочее давление для класса отопления уступало место
+        # диаметру, одинаковому у обеих труб.
+        shown_keys = diff_keys + [key for key in seen_keys if key not in diff_keys]
         lines = ["Сравниваю показанные варианты по карточкам товаров:"]
         for card in cards:
             stock = card.stock_status
             if card.stock_qty is not None:
                 stock = f"{stock}, {card.stock_qty} шт."
             parts = [f"цена {card.price:g} {card.currency}", f"наличие: {stock}"]
-            for key in seen_keys[:4]:
+            for key in shown_keys[:5]:
                 value = card.characteristics.get(key)
                 if value:
                     parts.append(f"{key}: {value}")
             lines.append(f"- {card.sku} — {card.name}: {'; '.join(parts)}")
-        if diff_keys:
-            key = diff_keys[0]
+        # Главным отличием называем только то, что заполнено у всех позиций:
+        # строка «PP-FIBER против не указано против PP-ALUX» сообщает о пробеле
+        # в данных, а не о различии товаров.
+        complete_diff_keys = [
+            key
+            for key in diff_keys
+            if all(card.characteristics.get(key) for card in cards)
+        ]
+        headline_keys = complete_diff_keys or diff_keys
+        if headline_keys:
+            key = headline_keys[0]
             values = " против ".join(
                 str(card.characteristics.get(key, "не указано")) for card in cards
             )

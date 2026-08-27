@@ -3809,22 +3809,42 @@ class FeedSearchAgent:
             return "осев" in evidence
         return bool(expected and expected in evidence)
 
+    # Виды, которые этот матчер умеет отличать по типизированной identity
+    # товара. Список закрытый, и это нормально: он покрывает те случаи, где
+    # название само по себе обманывает («американка» как кран и как фитинг).
+    _PRODUCT_KIND_IDENTITY = {
+        "thermostatic head": "thermostatic_head",
+        "термоголовка": "thermostatic_head",
+        "термостатическая головка": "thermostatic_head",
+        "thermostatic valve": "thermostatic_valve",
+        "термостатический клапан": "thermostatic_valve",
+        "термостатический вентиль": "thermostatic_valve",
+        "ball valve": "ball_valve",
+        "шаровой кран": "ball_valve",
+        "кран шаровой": "ball_valve",
+        "elbow": "elbow",
+        "угольник": "elbow",
+        "уголок": "elbow",
+        "отвод": "elbow",
+    }
+
+    def _product_kind_is_recognised(self, requested: object) -> bool:
+        """Умеет ли матчер судить об этом виде товара.
+
+        Разделение обязательно, потому что ``product_kind`` — жёсткий фильтр.
+        Незнакомый вид («насос», «radiator shutoff valve») давал False на
+        каждом товаре, и запрос с таким слотом вычищал весь каталог: бот
+        отвечал «не нашёл подходящих товаров» там, где подходящие лежали в
+        наличии. Незнание вида — это отсутствие мнения, а не отказ.
+        """
+
+        return normalize_text(str(requested)) in self._PRODUCT_KIND_IDENTITY
+
     def _product_kind_matches(self, product: Product, requested: object) -> bool:
-        expected = normalize_text(str(requested))
-        identity = self.product_identity(product)
-        if expected in {"thermostatic head", "термоголовка", "термостатическая головка"}:
-            return identity.primary_kind == "thermostatic_head"
-        if expected in {
-            "thermostatic valve",
-            "термостатический клапан",
-            "термостатический вентиль",
-        }:
-            return identity.primary_kind == "thermostatic_valve"
-        if expected in {"ball valve", "шаровой кран", "кран шаровой"}:
-            return identity.primary_kind == "ball_valve"
-        if expected in {"elbow", "угольник", "уголок", "отвод"}:
-            return identity.primary_kind == "elbow"
-        return False
+        expected = self._PRODUCT_KIND_IDENTITY.get(normalize_text(str(requested)))
+        if expected is None:
+            return False
+        return self.product_identity(product).primary_kind == expected
 
     def _literal_notation_matches(self, product: Product, requested: object) -> bool:
         expected = re.sub(r"\s+", "", normalize_text(str(requested)))
@@ -4096,8 +4116,10 @@ class FeedSearchAgent:
             product, slots["body_form"]
         ):
             return False
-        if slots.get("product_kind") and not self._product_kind_matches(
-            product, slots["product_kind"]
+        if (
+            slots.get("product_kind")
+            and self._product_kind_is_recognised(slots["product_kind"])
+            and not self._product_kind_matches(product, slots["product_kind"])
         ):
             return False
         if slots.get("thread_standard") and not self._thread_standard_matches(
@@ -4992,7 +5014,9 @@ class FeedSearchAgent:
             else:
                 return 0
 
-        if slots.get("product_kind"):
+        if slots.get("product_kind") and self._product_kind_is_recognised(
+            slots["product_kind"]
+        ):
             if self._product_kind_matches(product, slots["product_kind"]):
                 score += 25
             else:
@@ -5332,15 +5356,30 @@ class FeedSearchAgent:
         )
         return self._number_matches(text, number)
 
+    # Насколько паспортный максимум может превышать номинал из маркировки.
+    #
+    # Паспорт VRS расшифровывает обозначение прямо: в «VRS.25 4.130» цифра 4 —
+    # это «максимальный напор в м.вод.ст. (4; 6; 8)», то есть номинал серии. В
+    # каталоге у той же позиции стоит фактический максимум на третьей скорости:
+    # 4,2 при номинале 4 и 8,5 при номинале 8. Покупатель называет цифру с
+    # шильдика, и сравнение по точному равенству отбрасывало ровно тот насос,
+    # который ему нужен. Соседние серии расходятся на 50 % и больше, так что
+    # запас в 15 % их не смешивает.
+    _HEAD_NOMINAL_TOLERANCE = 1.15
+
     def _head_matches(self, product: Product, head_m: float) -> bool:
         values = []
         for attr_key, attr_value in product.attributes_normalized.items():
             if "напор" in normalize_text(attr_key):
                 values.append(normalize_text(attr_value))
         if values:
+            upper = head_m * self._HEAD_NOMINAL_TOLERANCE
             return any(
                 any(
-                    abs(float(raw.replace(",", ".")) - head_m) < 0.01
+                    # Допуск односторонний: паспортный максимум не бывает ниже
+                    # номинала, поэтому меньшее значение — это другая серия, а
+                    # не та же с округлением.
+                    head_m - 0.01 <= float(raw.replace(",", ".")) <= upper + 0.01
                     for raw in re.findall(r"\d+(?:[,.]\d+)?", value)
                 )
                 for value in values

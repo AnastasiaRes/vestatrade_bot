@@ -284,6 +284,596 @@ def _attach_passport_power_range(
     )
 
 
+_VRS_SPEC_CACHE: dict[tuple[str, float], dict[str, dict[str, str]]] = {}
+
+# Строки таблицы, которые переносим в атрибуты.
+#
+# Имена намеренно содержат скорость. В фиде «максимальный напор, м» означает
+# разное: у VRS.254 и VRS.256 это третья скорость (4,2 и 6), а у VRS.258 —
+# вторая (8 при паспортных 8,5 на третьей). Записать паспортное значение под
+# фидовым именем значило бы смешать два разных числа — ровно та путаница, из-за
+# которой запрос «напор 4» не находит насос с маркировкой 25/4.
+#
+# Монтажная длина здесь не для записи, а для проверки разметки колонок.
+_VRS_SPEC_ROWS: tuple[tuple[str, str, str], ...] = (
+    ("3.3", "максимальный расход (скорость iii), м3/ч", "speed"),
+    ("3.1", "максимальный расход (скорость i), м3/ч", "speed"),
+    ("2.3", "максимальный напор (скорость iii), м", "speed"),
+    ("9", "минимальное статическое давление, бар", "speed"),
+    ("5", "вес, кг", "column"),
+)
+
+
+def _vrs_numbers(line: str) -> list[str]:
+    """Вытащить числовые значения строки таблицы, отбросив её номер и единицу.
+
+    Единица «м3/час» сама содержит цифру, и обрезка «до первой цифры»
+    останавливалась на ней, превращая тройку значений в четвёрку и ломая
+    сопоставление с колонками. Поэтому составные единицы убираются явно.
+    """
+
+    body = re.sub(r"^\s*\d+(?:\.\d+)?\s*", "", line)
+    body = re.sub(r"м\s*3\s*/\s*час|м³\s*/\s*ч", " ", body, flags=re.IGNORECASE)
+    body = re.sub(r"^[^0-9]*", "", body)
+    return re.findall(r"\d+(?:[.,]\d+)?", body)
+
+
+def _parse_vrs_specification(path: Path) -> dict[str, dict[str, str]]:
+    """Разобрать таблицу характеристик паспорта циркуляционных насосов VRS.
+
+    Таблица использует объединённые ячейки, и после извлечения текста от них
+    остаётся только число значений в строке. Оно и определяет, к чему значение
+    относится:
+
+    * восемь значений — по одному на колонку (254.130, 254.180, 324.180, …);
+    * шесть — по одному на семейство (254, 324, 256, 326, 258, 328);
+    * три — по одному на группу напора: {254, 324}, {256, 326}, {258, 328}.
+
+    Догадка здесь недопустима, поэтому разбор себя проверяет: строка
+    «Монтажная длина» обязана совпасть с суффиксами колонок из шапки. Если не
+    совпала — разметка колонок прочитана неверно, и вся таблица отбрасывается.
+    """
+
+    if path.suffix.lower() != ".pdf":
+        return {}
+    cache_key = (str(path), path.stat().st_mtime)
+    cached = _VRS_SPEC_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    result: dict[str, dict[str, str]] = {}
+    try:
+        from pypdf import PdfReader
+
+        lines: list[str] = []
+        for page in PdfReader(str(path)).pages:
+            lines.extend((page.extract_text() or "").splitlines())
+        result = _parse_vrs_lines(lines)
+    except Exception as exc:  # pragma: no cover - защита от битого PDF
+        logger.warning("Не удалось разобрать таблицу VRS из %s: %s", path.name, exc)
+        result = {}
+    _VRS_SPEC_CACHE[cache_key] = result
+    return result
+
+
+def _parse_vrs_lines(lines: list[str]) -> dict[str, dict[str, str]]:
+    stripped = [line.strip() for line in lines if line.strip()]
+
+    # Шапка: пары строк «254.» и «130» идут подряд после «Значение для типа».
+    try:
+        head = next(
+            index
+            for index, line in enumerate(stripped)
+            if "Значение для типа" in line
+        )
+    except StopIteration:
+        return {}
+    columns: list[tuple[str, str]] = []
+    index = head + 1
+    while index + 1 < len(stripped):
+        family = re.fullmatch(r"(\d{3})\.", stripped[index])
+        mounting = re.fullmatch(r"(\d{3})", stripped[index + 1])
+        if not family or not mounting:
+            break
+        columns.append((family.group(1), mounting.group(1)))
+        index += 2
+    if len(columns) < 4:
+        return {}
+
+    families: list[str] = []
+    for family, _ in columns:
+        if family not in families:
+            families.append(family)
+    # Группа напора — это цифра напора в номере семейства: 254 и 324 → 4.
+    head_groups: list[str] = []
+    for family in families:
+        digit = family[2]
+        if digit not in head_groups:
+            head_groups.append(digit)
+
+    # Строки таблицы читаем только после её шапки. Выше по документу лежит
+    # легенда расшифровки маркировки, где строка « 1 2 3 4 5 6» нумерует части
+    # обозначения: она выглядит как строка таблицы №1 и перехватывала её.
+    rows: dict[str, list[str]] = {}
+    body = stripped[index:]
+    for position, line in enumerate(body):
+        marker = re.match(r"^(\d+(?:\.\d+)?)\s", line)
+        if not marker:
+            continue
+        values = _vrs_numbers(line)
+        if not values:
+            # Длинное название переносится, и значения оказываются на
+            # следующей строке вместе с единицей: «9 Минимальное статическое» /
+            # «давление» / «бар 0,7 0,9 1,0».
+            for offset in (1, 2):
+                if position + offset >= len(body):
+                    break
+                nxt = body[position + offset]
+                if re.match(r"^\d+(?:\.\d+)?\s", nxt):
+                    break
+                values = _vrs_numbers(nxt)
+                if values:
+                    break
+        if values:
+            rows.setdefault(marker.group(1), values)
+
+    mounting_row = rows.get("1")
+    if not mounting_row or len(mounting_row) != len(columns):
+        return {}
+    if [value for value in mounting_row] != [mounting for _, mounting in columns]:
+        # Колонки прочитаны неверно: дальше сопоставлять нечего.
+        return {}
+
+    result: dict[str, dict[str, str]] = {
+        f"{family}.{mounting}": {} for family, mounting in columns
+    }
+    for row_key, attribute, layout in _VRS_SPEC_ROWS:
+        values = rows.get(row_key)
+        if not values:
+            continue
+        if layout == "column" and len(values) == len(columns):
+            for (family, mounting), value in zip(columns, values):
+                result[f"{family}.{mounting}"][attribute] = value.replace(",", ".")
+            continue
+        if len(values) == len(head_groups):
+            per_group = dict(zip(head_groups, values))
+            for family, mounting in columns:
+                value = per_group.get(family[2])
+                if value:
+                    result[f"{family}.{mounting}"][attribute] = value.replace(",", ".")
+            continue
+        if len(values) == len(families):
+            per_family = dict(zip(families, values))
+            for family, mounting in columns:
+                value = per_family.get(family)
+                if value:
+                    result[f"{family}.{mounting}"][attribute] = value.replace(",", ".")
+    return {key: value for key, value in result.items() if value}
+
+
+def _attach_vrs_pump_specification(
+    product: Product,
+    path: Path,
+    spec: dict[str, dict[str, str]],
+) -> None:
+    """Перенести характеристики из таблицы паспорта VRS в атрибуты насоса.
+
+    Расхода в фиде нет ни у одной позиции, поэтому подбор по рабочей точке
+    Q–H был невозможен в принципе: половина условия отсутствовала. В паспорте
+    он есть, причём по скоростям.
+
+    Значение фида остаётся авторитетным: ``setdefault`` не перезаписывает уже
+    известное, а имена паспортных атрибутов содержат скорость и потому не
+    сталкиваются с фидовыми.
+    """
+
+    if not spec:
+        return
+    model = re.match(r"^vrs\.(\d{3})\.(\d{2})\b", normalize_text(product.sku))
+    if not model:
+        return
+    column = f"{model.group(1)}.{model.group(2)}0"
+    values = spec.get(column)
+    if not values:
+        return
+    for key, value in values.items():
+        product.attributes_normalized.setdefault(key, value)
+
+
+_PIPE_CLASS_CACHE: dict[tuple[str, float], dict[str, str]] = {}
+
+# Классы эксплуатации по ГОСТ 32415-2013 в том виде, в каком паспорт их
+# называет. Ключ — обозначение класса в таблице, значение — имя атрибута.
+_PIPE_CLASS_ATTRIBUTES: dict[str, str] = {
+    "1": "рабочее давление, гвс 60 °с, бар",
+    "2": "рабочее давление, гвс 70 °с, бар",
+    "4": "рабочее давление, напольное отопление, бар",
+    "5": "рабочее давление, радиаторное отопление, бар",
+    "хв": "рабочее давление, холодное водоснабжение, бар",
+}
+
+_PIPE_CLASS_START_RE = re.compile(r"(?<![\w,.])(ХВ|[1245])\s+(?=[А-ЯЁ])")
+_PIPE_TEMPERATURE_RE = re.compile(r"(\d{2,3})\s*[º°o]\s*[СC]")
+
+
+def _parse_pipe_operating_classes(path: Path) -> dict[str, str]:
+    """Прочитать таблицу классов эксплуатации из паспорта полипропиленовой трубы.
+
+    Именно этих значений боту не хватает: на запрос по отоплению он отвечает,
+    что рабочая температура и давление не подтверждены, хотя в паспорте они
+    расписаны по классам — 90 °С и 6 бар для радиаторного отопления у PP-FIBER
+    PN20 против 95 °С и 10 бар у PP-ALUX PN25.
+
+    Разбирается только табличная форма «класс — описание с температурой —
+    давление». У неармированной серии давления даны в МПа внутри размерной
+    таблицы и без температур; догадываться о них по номеру класса нельзя,
+    поэтому такой паспорт возвращает пустой результат.
+    """
+
+    if path.suffix.lower() != ".pdf":
+        return {}
+    cache_key = (str(path), path.stat().st_mtime)
+    cached = _PIPE_CLASS_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    result: dict[str, str] = {}
+    try:
+        from pypdf import PdfReader
+
+        lines: list[str] = []
+        for page in PdfReader(str(path)).pages:
+            lines.extend((page.extract_text() or "").splitlines())
+        result = _parse_pipe_class_lines(lines)
+    except Exception as exc:  # pragma: no cover - защита от битого PDF
+        logger.warning("Не удалось разобрать классы эксплуатации из %s: %s", path.name, exc)
+        result = {}
+    _PIPE_CLASS_CACHE[cache_key] = result
+    return result
+
+
+def _parse_pipe_class_lines(lines: list[str]) -> dict[str, str]:
+    stripped = [line.strip() for line in lines if line.strip()]
+    try:
+        start = next(
+            index
+            for index, line in enumerate(stripped)
+            if "давление, бар" in normalize_text(line)
+        )
+    except StopIteration:
+        return {}
+
+    # Таблица заканчивается там, где начинается следующий раздел паспорта.
+    block: list[str] = []
+    for line in stripped[start + 1 :]:
+        if re.match(r"^\d+\s*\.\s*[А-ЯЁ]", line) or "Технические характеристики" in line:
+            break
+        block.append(line)
+    if not block:
+        return {}
+
+    joined = " ".join(block)
+    marks = list(_PIPE_CLASS_START_RE.finditer(joined))
+    if not marks:
+        return {}
+
+    result: dict[str, str] = {}
+    temperatures: list[int] = []
+    for position, mark in enumerate(marks):
+        end = marks[position + 1].start() if position + 1 < len(marks) else len(joined)
+        segment = joined[mark.end() : end]
+        key = normalize_text(mark.group(1))
+        attribute = _PIPE_CLASS_ATTRIBUTES.get(key)
+        if not attribute:
+            continue
+        temperature = _PIPE_TEMPERATURE_RE.search(segment)
+        if temperature:
+            temperatures.append(int(temperature.group(1)))
+            segment = segment[: temperature.start()] + segment[temperature.end() :]
+        pressures = re.findall(r"\d+(?:[.,]\d+)?", segment)
+        if not pressures:
+            continue
+        result[attribute] = pressures[-1].replace(",", ".")
+
+    if temperatures:
+        result["максимальная рабочая температура, °с"] = str(max(temperatures))
+    return result
+
+
+def _attach_pipe_operating_classes(
+    product: Product,
+    classes: dict[str, str],
+) -> None:
+    """Перенести классы эксплуатации в атрибуты трубы, не трогая данные фида."""
+
+    for key, value in classes.items():
+        product.attributes_normalized.setdefault(key, value)
+
+
+_PIPE_DIMENSION_CACHE: dict[tuple[str, float], dict[str, dict[str, str]]] = {}
+
+# Строки размерной таблицы, которые переносим в атрибуты. Ключ — узнаваемый
+# фрагмент названия строки в паспорте.
+_PIPE_DIMENSION_ROWS: tuple[tuple[str, str], ...] = (
+    ("внутренний диаметр", "внутренний диаметр, мм"),
+    ("номинальная толщина стенки", "толщина стенки (мм)"),
+    ("вес трубы", "вес трубы, кг/м"),
+    ("объем жидкости", "объём жидкости, л/м"),
+    ("стандартное размерное соотношение", "sdr"),
+    ("максимальная рабочая температура", "максимальная рабочая температура, °с"),
+)
+
+_PIPE_SIZE_RE = re.compile(r"(\d{2,3})\s*[хx]\s*(\d{1,2}(?:[.,]\d+)?)")
+
+
+def _trailing_numbers(line: str, count: int) -> list[str] | None:
+    """Вернуть ровно ``count`` чисел, если строка ими заканчивается.
+
+    Названия строк сами содержат цифры — «Объём жидкости в 1 м.п.», «PN, МПа».
+    Считать все числа подряд нельзя, поэтому берём только замыкающую серию
+    нужной длины.
+    """
+
+    pattern = r"(?<![\d,.])" + r"\s+".join([r"\d+(?:[.,]\d+)?"] * count) + r"\s*$"
+    match = re.search(pattern, line)
+    if not match:
+        return None
+    return re.findall(r"\d+(?:[.,]\d+)?", match.group(0))
+
+
+def _parse_pipe_dimension_lines(lines: list[str]) -> dict[str, dict[str, str]]:
+    """Разобрать таблицу «значение характеристики для труб с размерами».
+
+    Колонки — типоразмеры трубы, поэтому позицию определяет её наружный
+    диаметр. Разбор себя проверяет: строка «Номинальный наружный диаметр»
+    обязана совпасть с диаметрами из шапки. Не совпала — колонки прочитаны
+    неверно, и таблица отбрасывается целиком.
+    """
+
+    stripped = [line.strip() for line in lines if line.strip()]
+    try:
+        start = next(
+            index
+            for index, line in enumerate(stripped)
+            if "значение характеристики для труб" in normalize_text(line)
+        )
+    except StopIteration:
+        return {}
+
+    # Шапка типоразмеров: либо одной строкой «20х3,4 25х4,2 …», либо разбитая
+    # переносами на «20х» / «3,4».
+    diameters: list[str] = []
+    cursor = start + 1
+    # Строка шапки может оборваться на середине типоразмера: «… 50х8,3 63х», а
+    # толщина от него уходит на следующую строку. Такой висящий размер нужно
+    # учесть, иначе колонок насчитается меньше, чем значений в строках.
+    pending_wall = False
+    while cursor < len(stripped):
+        line = stripped[cursor]
+        if pending_wall:
+            pending_wall = False
+            if re.fullmatch(r"\d{1,2}(?:[.,]\d+)?", line):
+                cursor += 1
+                continue
+        found = _PIPE_SIZE_RE.findall(line)
+        tail = re.search(r"(\d{2,3})\s*[хx]\s*$", line)
+        if found or tail:
+            diameters.extend(size[0] for size in found)
+            if tail:
+                diameters.append(tail.group(1))
+                pending_wall = True
+            cursor += 1
+            continue
+        head = re.fullmatch(r"(\d{2,3})\s*[хx]", line)
+        if head and cursor + 1 < len(stripped):
+            diameters.append(head.group(1))
+            cursor += 2
+            continue
+        break
+    if len(diameters) < 3:
+        return {}
+
+    columns = len(diameters)
+    rows: dict[str, list[str]] = {}
+    label_parts: list[str] = []
+    for line in stripped[cursor:]:
+        values = _trailing_numbers(line, columns)
+        if values is None:
+            if re.match(r"^\d+\s*\.\s*[А-ЯЁ]", line):
+                break
+            label_parts.append(line)
+            if len(label_parts) > 4:
+                label_parts = label_parts[-4:]
+            continue
+        label = normalize_text(" ".join(label_parts + [line]))
+        label = re.sub(r"[\d.,]+\s*$", "", label).strip()
+        rows.setdefault(label, values)
+        label_parts = []
+
+    outer = next(
+        (values for label, values in rows.items() if "наружный диаметр" in label),
+        None,
+    )
+    if not outer or [value.split(".")[0] for value in outer] != diameters:
+        return {}
+
+    result: dict[str, dict[str, str]] = {diameter: {} for diameter in diameters}
+    for label, values in rows.items():
+        for marker, attribute in _PIPE_DIMENSION_ROWS:
+            if marker not in label:
+                continue
+            for diameter, value in zip(diameters, values):
+                result[diameter][attribute] = value.replace(",", ".")
+            break
+    return {key: value for key, value in result.items() if value}
+
+
+def _parse_pipe_dimensions(path: Path) -> dict[str, dict[str, str]]:
+    if path.suffix.lower() != ".pdf":
+        return {}
+    cache_key = (str(path), path.stat().st_mtime)
+    cached = _PIPE_DIMENSION_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    result: dict[str, dict[str, str]] = {}
+    try:
+        from pypdf import PdfReader
+
+        lines: list[str] = []
+        for page in PdfReader(str(path)).pages:
+            lines.extend((page.extract_text() or "").splitlines())
+        result = _parse_pipe_dimension_lines(lines)
+    except Exception as exc:  # pragma: no cover - защита от битого PDF
+        logger.warning("Не удалось разобрать размеры труб из %s: %s", path.name, exc)
+        result = {}
+    _PIPE_DIMENSION_CACHE[cache_key] = result
+    return result
+
+
+def _attach_pipe_dimensions(
+    product: Product,
+    dimensions: dict[str, dict[str, str]],
+) -> None:
+    """Перенести строку размерной таблицы, соответствующую диаметру трубы."""
+
+    if not dimensions:
+        return
+    diameter = product.attributes_normalized.get("диаметр (мм)")
+    if not diameter:
+        match = re.search(r"(\d{2,3})\s*(?:мм|mm)", normalize_text(product.name))
+        diameter = match.group(1) if match else None
+    if not diameter:
+        return
+    values = dimensions.get(str(diameter).split(".")[0])
+    if not values:
+        return
+    for key, value in values.items():
+        product.attributes_normalized.setdefault(key, value)
+
+
+_VALVE_SPEC_CACHE: dict[tuple[str, float], dict[str, str]] = {}
+
+# Вертикальная таблица «№ | Характеристика, ед. изм. | Значение | Пояснение»
+# из паспортов радиаторной арматуры. У каждой строки одно значение, но рядом
+# стоит колонка пояснения — обычный текст с числами, поэтому значение берётся
+# строго по образцу, а не «первым числом строки».
+_VALVE_SPEC_ROWS: tuple[tuple[str, str, str], ...] = (
+    (
+        "максимальная температура рабочей среды",
+        "максимальная температура рабочей среды, °с",
+        r"[ºo°]\s*с\s*([+-]?\d{1,3})",
+    ),
+    (
+        "номинальное давление",
+        "номинальное давление, мпа",
+        r"мпа\s*(\d+(?:[.,]\d+)?)",
+    ),
+    (
+        "пропускная способность при полностью открытом",
+        "пропускная способность kvs, м3/ч",
+        r"kvs\s*(\d+(?:[.,]\d+)?)",
+    ),
+    (
+        "номинальный диаметр",
+        "номинальный диаметр dn, мм",
+        r"мм\s*(\d{1,3}(?:\s*,\s*\d{1,3})*)",
+    ),
+    (
+        "резьба под термостатическую головку",
+        "резьба под термоголовку",
+        r"(м\s*\d{2}\s*[хx]\s*\d(?:[.,]\d)?)",
+    ),
+    (
+        "средний полный срок службы",
+        "срок службы, лет",
+        r"лет\s*(\d{1,2})",
+    ),
+)
+
+
+def _parse_valve_specification(path: Path) -> dict[str, str]:
+    """Прочитать характеристики радиаторной арматуры из паспорта.
+
+    Шестнадцать позиций радиаторной арматуры не имели ни одного содержательного
+    атрибута: фид отдаёт только идентификаторы, а разбор названия для клапанов
+    ничего не даёт. При этом в паспорте расписаны и температура среды, и Kvs, и
+    резьба под термоголовку — последняя определяет, встанет ли головка на
+    клапан.
+    """
+
+    if path.suffix.lower() != ".pdf":
+        return {}
+    cache_key = (str(path), path.stat().st_mtime)
+    cached = _VALVE_SPEC_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    result: dict[str, str] = {}
+    try:
+        from pypdf import PdfReader
+
+        lines: list[str] = []
+        for page in PdfReader(str(path)).pages:
+            lines.extend((page.extract_text() or "").splitlines())
+        result = _parse_valve_spec_lines(lines)
+    except Exception as exc:  # pragma: no cover - защита от битого PDF
+        logger.warning("Не удалось разобрать характеристики из %s: %s", path.name, exc)
+        result = {}
+    _VALVE_SPEC_CACHE[cache_key] = result
+    return result
+
+
+def _parse_valve_spec_lines(lines: list[str]) -> dict[str, str]:
+    stripped = [line.strip() for line in lines if line.strip()]
+    try:
+        start = next(
+            index
+            for index, line in enumerate(stripped)
+            if "технические характеристики" in normalize_text(line)
+        )
+    except StopIteration:
+        return {}
+
+    # Строки таблицы нумерованы, а их названия и значения переносятся. Собираем
+    # каждую строку целиком до следующего номера.
+    rows: list[str] = []
+    current: list[str] = []
+    for line in stripped[start + 1 :]:
+        if re.match(r"^\d{1,2}\s+[А-ЯЁA-Z]", line):
+            if current:
+                rows.append(" ".join(current))
+            current = [line]
+        elif current:
+            current.append(line)
+    if current:
+        rows.append(" ".join(current))
+
+    result: dict[str, str] = {}
+    for row in rows:
+        text = normalize_text(row)
+        for marker, attribute, pattern in _VALVE_SPEC_ROWS:
+            if marker not in text or attribute in result:
+                continue
+            match = re.search(pattern, text)
+            if match:
+                value = re.sub(r"\s+", " ", match.group(1)).strip()
+                # Запятая означает разное: в «1,0» это десятичный разделитель, а
+                # в «15, 20» — перечисление двух типоразмеров. Заменять её на
+                # точку можно только в одиночном числе, иначе DN 15 и 20
+                # склеиваются в несуществующий размер «15.20».
+                if re.fullmatch(r"\d+,\d+", value):
+                    value = value.replace(",", ".")
+                result[attribute] = value
+            break
+    return result
+
+
+def _attach_valve_specification(product: Product, values: dict[str, str]) -> None:
+    """Дополнить арматуру характеристиками из паспорта, не трогая фид."""
+
+    for key, value in values.items():
+        product.attributes_normalized.setdefault(key, value)
+
+
 def _attach_confirmed_connection_facts(
     product: Product,
     path: Path,
@@ -498,9 +1088,36 @@ def load_docs_for_products(
             boiler_power_ranges = (
                 _extract_boiler_power_ranges(path) if has_boiler_target else {}
             )
+            has_vrs_target = any(
+                normalize_text(product.sku).startswith("vrs.") for product in targets
+            )
+            vrs_spec = _parse_vrs_specification(path) if has_vrs_target else {}
+            has_pipe_target = any(
+                "труба" in normalize_text(product.name) for product in targets
+            )
+            pipe_classes = (
+                _parse_pipe_operating_classes(path) if has_pipe_target else {}
+            )
+            pipe_dimensions = _parse_pipe_dimensions(path) if has_pipe_target else {}
+            has_fitting_target = any(
+                any(
+                    marker in normalize_text(f"{product.category_path} {product.name}")
+                    for marker in ("клапан", "термоголов", "кран", "арматур")
+                )
+                for product in targets
+            )
+            valve_spec = (
+                _parse_valve_specification(path) if has_fitting_target else {}
+            )
             for product in targets:
                 _attach_document_evidence(product, document)
                 _attach_passport_power_range(product, path, boiler_power_ranges)
                 _attach_confirmed_connection_facts(product, path, text)
+                _attach_vrs_pump_specification(product, path, vrs_spec)
+                if "труба" in normalize_text(product.name):
+                    _attach_pipe_operating_classes(product, pipe_classes)
+                    _attach_pipe_dimensions(product, pipe_dimensions)
+                elif valve_spec:
+                    _attach_valve_specification(product, valve_spec)
             attached_docs += 1
     return attached_docs

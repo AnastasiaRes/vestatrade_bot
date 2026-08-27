@@ -178,6 +178,72 @@ class OpenRouterClient:
             return self.openrouter_endpoint
         return None
 
+    def _embeddings_endpoint(self) -> str | None:
+        """Адрес эмбеддингов у текущего провайдера.
+
+        Ollama отдаёт OpenAI-совместимый ``/v1/embeddings`` на том же порту,
+        что и чат, поэтому развилка повторяет ``_endpoint``: переключение
+        провайдера не должно требовать отдельной настройки адреса.
+        """
+
+        if self.settings.llm_provider == "ollama":
+            if not self.settings.ollama_base_url:
+                return None
+            base_url = self.settings.ollama_base_url.rstrip("/")
+            if base_url.endswith("/v1"):
+                return f"{base_url}/embeddings"
+            return f"{base_url}/v1/embeddings"
+        if self.settings.llm_provider == "openrouter":
+            return "https://openrouter.ai/api/v1/embeddings"
+        return None
+
+    def embed(self, texts: list[str], *, batch_size: int = 96) -> list[list[float]] | None:
+        """Посчитать векторы для набора текстов.
+
+        Возвращает ``None``, когда провайдер недоступен или ответ не разобрать:
+        поиск по словам продолжит работать, а молчаливый частичный результат
+        испортил бы индекс — половина векторов от одной модели, половина от
+        другой не сравнимы между собой.
+        """
+
+        if not texts:
+            return []
+        endpoint = self._embeddings_endpoint()
+        headers = self._headers()
+        model = self.settings.embedding_model
+        if not endpoint or not headers or not model:
+            return None
+
+        vectors: list[list[float]] = []
+        with httpx.Client(timeout=self._timeout(120.0)) as client:
+            for start in range(0, len(texts), batch_size):
+                batch = texts[start : start + batch_size]
+                try:
+                    response = client.post(
+                        endpoint,
+                        headers=headers,
+                        json={"model": model, "input": batch},
+                    )
+                    response.raise_for_status()
+                    payload = response.json()
+                except Exception as exc:
+                    logger.warning("Эмбеддинги недоступны (%s): %s", model, exc)
+                    return None
+                rows = payload.get("data")
+                if not isinstance(rows, list) or len(rows) != len(batch):
+                    logger.warning(
+                        "Эмбеддинги вернули %s векторов вместо %s",
+                        len(rows) if isinstance(rows, list) else "?",
+                        len(batch),
+                    )
+                    return None
+                for row in rows:
+                    vector = row.get("embedding") if isinstance(row, dict) else None
+                    if not isinstance(vector, list) or not vector:
+                        return None
+                    vectors.append([float(value) for value in vector])
+        return vectors
+
     def _headers(self) -> dict[str, str] | None:
         headers = {"Content-Type": "application/json"}
         if self.settings.llm_provider == "openrouter":

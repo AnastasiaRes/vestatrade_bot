@@ -13,3 +13,4 @@ app/data/*.lock
 app/data/diagnostics/
 tmp/
 qa_runtime/
+app/data/passport_index.json

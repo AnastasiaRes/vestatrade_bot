@@ -100,7 +100,7 @@ from .engineering_interpreter import (
     EngineeringInterpretation,
     EngineeringInterpreterAgent,
 )
-from .engineering_norms import match_engineering_norm
+from .engineering_norms import asks_norm_quantity, match_engineering_norm
 from .engineering_requirements import EngineeringRequirementsAgent
 from .catalog_scope import UnsupportedFamily, match_unsupported_family
 from .diagnostic_feed_search import DiagnosticFeedSearchAgent
@@ -3556,6 +3556,7 @@ class ChatOrchestrator:
         self.composer.set_history(session.history)
         last_summary: str | None = None
         docs_excerpt: str | None = None
+        last_product: Product | None = None
         if session.last_products:
             last_card = session.last_products[0]
             last_summary = (
@@ -3565,10 +3566,44 @@ class ChatOrchestrator:
             last_product = self._find_product_by_sku(last_card.sku)
             if last_product and last_product.docs_text:
                 docs_excerpt = last_product.docs_text[:700]
-        self.composer.set_state(session.category, session.slots, last_summary, docs_excerpt)
+        # Паспорта товара из контекста сужают поиск выдержки: разговор о насосе
+        # ищет ответ в его паспорте, а не среди всех документов каталога.
+        passport_documents = (
+            [document.filename for document in last_product.documents]
+            if last_product is not None and last_product.documents
+            else []
+        )
+        self.composer.set_state(
+            session.category,
+            session.slots,
+            last_summary,
+            docs_excerpt,
+            passport_documents,
+        )
         agents_used: list[str] = []
         if turn_plan.actions:
             agents_used.append("TurnPlanner")
+
+        passport_answer = self._maybe_passport_quote_answer(
+            message, passport_documents
+        )
+        if passport_answer:
+            agents_used.append("PassportAnswerAgent")
+            self._append_history(session, message, passport_answer)
+            self.sessions.save(session)
+            return self._response(
+                session_id,
+                passport_answer,
+                session.last_products,
+                False,
+                IntentResult(
+                    intent_type="attribute_request",
+                    category=session.category or "other",
+                    confidence=1.0,
+                ),
+                session,
+                agents_used,
+            )
 
         confirmed_requirement = self._confirmed_requirement_answer(message, session)
         if confirmed_requirement:
@@ -22345,6 +22380,12 @@ class ChatOrchestrator:
 
         if intent.category == "other":
             return False
+        if asks_norm_quantity(message):
+            # «Какой уклон нужен для канализационной трубы 110?» содержит и
+            # товарное существительное, и слово «нужен», но просит число, а не
+            # товар. Без этого исключения вопрос уходил в подбор трубы и
+            # покупатель получал встречный вопрос о длине отрезка.
+            return False
         text = normalize_text(message)
         explicit_definition = any(
             marker in text for marker in ("что такое", "что значит", "что означает")
@@ -25877,6 +25918,41 @@ class ChatOrchestrator:
         if "кот" in text:
             return "boilers"
         return None
+
+    # Вопрос об эксплуатации товара, на который отвечает его паспорт.
+    #
+    # Условия узкие намеренно. Реплика должна быть вопросом о показанном
+    # товаре и не касаться цены, наличия и заказа: коммерческие вопросы
+    # обрабатывает каталог, и паспорту там сказать нечего. Ответ показывается
+    # только если прошёл четыре проверки; иначе ход идёт прежним путём и
+    # поведение не меняется.
+    _PASSPORT_QUESTION_RE = re.compile(
+        r"\?|^\s*(?:как|какой|какая|какое|какие|можно|нужно|надо|зачем|почему|"
+        r"чем|что|сколько|где|когда)\b",
+        re.IGNORECASE,
+    )
+    _PASSPORT_COMMERCE_RE = re.compile(
+        r"\bцен\w*|\bстои\w*|\bскидк\w*|в\s+наличии|\bзаказ\w*|\bкупи\w*|"
+        r"\bдостав\w*|\bсчет\b|\bсчёт\b|\bоплат\w*",
+        re.IGNORECASE,
+    )
+
+    def _maybe_passport_quote_answer(
+        self,
+        message: str,
+        passport_documents: list[str],
+    ) -> str | None:
+        if not passport_documents:
+            return None
+        text = message.strip()
+        if len(text) < 8 or not self._PASSPORT_QUESTION_RE.search(text):
+            return None
+        if self._PASSPORT_COMMERCE_RE.search(text):
+            return None
+        try:
+            return self.composer._passport_quote(message)
+        except Exception:  # pragma: no cover - поиск не должен ломать ход
+            return None
 
     def _confirmed_requirement_answer(
         self,

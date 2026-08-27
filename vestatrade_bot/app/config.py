@@ -97,9 +97,11 @@ class Settings(BaseModel):
     ollama_base_url: str | None
     ollama_model: str
     ollama_model_strong: str
+    ollama_embedding_model: str
     openrouter_api_key: str | None
     openrouter_model: str
     openrouter_model_strong: str
+    openrouter_embedding_model: str
     daily_budget_usd: float
     products_cache_path: Path
     usage_budget_path: Path
@@ -162,6 +164,28 @@ class Settings(BaseModel):
         return self.openrouter_model_strong
 
     @property
+    def embedding_model(self) -> str:
+        """Модель эмбеддингов текущего провайдера.
+
+        Имя обязано попадать в индекс: размерности у моделей разные (1536 у
+        text-embedding-3-small, 1024 у bge-m3), и запрос, посчитанный другой
+        моделью, превращает поиск в шум. Смена провайдера должна приводить к
+        пересборке индекса, а не к тихой деградации выдачи.
+        """
+
+        if self.llm_provider == "ollama":
+            return self.ollama_embedding_model
+        return self.openrouter_embedding_model
+
+    @property
+    def embeddings_enabled(self) -> bool:
+        if self.llm_provider == "ollama":
+            return bool(self.ollama_base_url and self.ollama_embedding_model)
+        if self.llm_provider == "openrouter":
+            return bool(self.openrouter_api_key and self.openrouter_embedding_model)
+        return False
+
+    @property
     def llm_enabled(self) -> bool:
         if self.llm_provider == "ollama":
             return bool(self.ollama_base_url and self.ollama_model)
@@ -193,8 +217,13 @@ def get_settings() -> Settings:
         ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
         ollama_model=ollama_model,
         ollama_model_strong=os.getenv("OLLAMA_MODEL_STRONG", ollama_model),
+        ollama_embedding_model=os.getenv("OLLAMA_EMBEDDING_MODEL", "bge-m3"),
         openrouter_api_key=openrouter_api_key,
         openrouter_model=openrouter_model,
+        openrouter_embedding_model=os.getenv(
+            "OPENROUTER_EMBEDDING_MODEL",
+            "openai/text-embedding-3-small",
+        ),
         # Сильная модель для подбора/консультанта. По умолчанию = дешёвой,
         # чтобы без настройки ничего не ломалось; в .env можно указать мощнее.
         openrouter_model_strong=os.getenv(

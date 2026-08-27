@@ -1,0 +1,264 @@
+"""Ответ на вопрос о товаре цитатой из паспорта.
+
+Роль модели здесь узкая намеренно: она выбирает пункт среди переданных и
+вырезает из него дословный фрагмент. Ответ покупателю не сочиняется — он
+собирается из цитаты производителя и одной поясняющей фразы.
+
+Так сделано потому, что свободный пересказ уже дважды дал уверенную неправду:
+на паре труб модель заявила, что стекловолокно термостойче алюминия, хотя
+паспорта говорят обратное. Проверить пересказ нечем, а покупатель понесёт его
+в магазин.
+
+Четыре проверки перед показом, все механические:
+
+1. Цитата дословно встречается в указанном пункте.
+2. Указан пункт из числа переданных, а не выдуманный.
+3. Нет цен, артикулов и обещаний наличия: у паспорта таких данных нет.
+4. Каждое число из пояснения есть в цитате — это ловит ровно тот случай, когда
+   модель добавляет правдоподобную цифру от себя.
+
+Порядок проверок влияет только на то, какая причина отказа попадёт в
+диагностику. Коммерческая идёт раньше числовой намеренно: «стоит 4000 руб»
+содержит и цифру, и цену, но назвать это отказом по цене точнее.
+
+Не прошло — возвращается ``None``, и вызывающий код показывает честный отказ.
+Отказ дешевле неправды.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from app.openrouter_client import OpenRouterClient
+from app.passport_chunks import Chunk
+
+
+PASSPORT_ANSWER_PROMPT = """
+Ты — инженер-консультант компании Vesta Trading. Покупатель задал вопрос о
+товаре, и тебе дали выдержки из паспорта этого товара. Твоя задача — найти
+среди них ту, что отвечает на вопрос, и вырезать из неё точную цитату.
+
+ТЫ НЕ ПИШЕШЬ ОТВЕТ. Ответ покупателю соберут из твоей цитаты. От тебя нужны
+три вещи: номер подходящей выдержки, дословный фрагмент из неё и одна фраза,
+объясняющая цитату простыми словами.
+
+КАК ВЫБИРАТЬ ВЫДЕРЖКУ
+Подходит та, где ответ содержится прямо. Выдержка «про ту же тему» не годится:
+на вопрос о температуре хранения не подходит пункт о температуре рабочей
+среды. Если ни одна не отвечает — верни answerable=false. Это нормальный
+исход, а не неудача.
+
+КАК ВЫРЕЗАТЬ ЦИТАТУ
+Копируй из выбранной выдержки: те же слова, те же числа, те же единицы.
+Ничего не переписывай и не сокращай внутри фразы — цитату сверяют с документом.
+Бери законченную мысль: одно-два предложения, а не обрывок.
+
+Разрешено ровно одно исправление: склеить слово, разорванное пробелом при
+извлечении из PDF. «пр и исправном» — это «при исправном», «перерыв ов» — это
+«перерывов», «темпера туре» — «температуре». В самом паспорте таких разрывов
+нет, они появились при чтении файла, и показывать их покупателю значит
+показывать чужую ошибку вместо текста производителя.
+
+Больше ничего менять нельзя. Ни одной буквы, ни одной цифры, ни одной
+единицы измерения. Если кажется, что в паспорте опечатка в числе — это не
+опечатка, это значение, и оно уйдёт покупателю как есть.
+
+КАК ПИСАТЬ ПОЯСНЕНИЕ
+Одна фраза обычными словами: что цитата означает для покупателя.
+В пояснении не должно быть ни одного числа, которого нет в цитате. Если
+хочется назвать цифру — значит, её надо было включить в цитату.
+Без вводных «хороший вопрос» и «согласно документации». Сразу по делу.
+
+ЧЕГО НЕЛЬЗЯ НИКОГДА
+- Не добавляй фактов из своих знаний. Даже верных: их нечем проверить.
+- Не называй цены, артикулы, наличие и сроки поставки — в паспорте их нет.
+- Не обещай совместимость с другим товаром.
+- Не объединяй цитаты из разных выдержек.
+
+ФОРМАТ ОТВЕТА
+Строго JSON, без markdown и текста вокруг:
+{
+  "answerable": true|false,
+  "excerpt": <номер выдержки, целое число>,
+  "quote": "дословный фрагмент из этой выдержки",
+  "framing": "одна фраза простыми словами"
+}
+При answerable=false поля excerpt, quote и framing оставь пустыми
+(excerpt: 0, quote: "", framing: "").
+
+ПРИМЕР
+Вопрос: «Можно ли ставить насос вертикально?»
+Выдержка 3: «5.5. Насос следует устанавливать так, чтобы вал двигателя
+находился в горизонтальном положении.»
+{"answerable": true, "excerpt": 3, "quote": "Насос следует устанавливать так,
+чтобы вал двигателя находился в горизонтальном положении.", "framing":
+"Вертикально ставить нельзя: паспорт требует горизонтального вала."}
+""".strip()
+
+
+class PassportAnswer(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    answerable: bool
+    excerpt: int = Field(default=0, ge=0)
+    quote: str = Field(default="", max_length=600)
+    framing: str = Field(default="", max_length=400)
+
+
+# Паспорт не содержит коммерческих данных, поэтому их появление означает, что
+# модель добавила от себя.
+_COMMERCE_RE = re.compile(
+    r"\bруб|\brub\b|₽|в наличии|на складе|\bарт\.|\bцена\b|\bскидк|"
+    r"\bдостав|\bсрок поставки",
+    re.IGNORECASE,
+)
+_SKU_RE = re.compile(r"\b[A-Za-z]{2,4}[.\-][A-Za-z0-9.\-]{3,}\b")
+_NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)?")
+
+
+def _normalise(text: str) -> str:
+    """Свести к виду, в котором цитату можно искать в выдержке.
+
+    Извлечение PDF расставляет пробелы непредсказуемо — «перерыв ов», «пр и», —
+    и требовать посимвольного совпадения значило бы отклонять верные цитаты.
+    Поэтому пробелы при сверке не учитываются, а всё остальное учитывается.
+    """
+
+    return re.sub(r"\s+", "", text.lower().replace("ё", "е"))
+
+
+class PassportAnswerAgent:
+    """Собирает ответ из цитаты паспорта под контролем четырёх проверок."""
+
+    def __init__(self, llm_client: OpenRouterClient) -> None:
+        self.llm_client = llm_client
+        self.last_rejection_reason: str | None = None
+        self.last_llm_used = False
+        # Сколько раз пришлось поправить номер выдержки: если растёт, значит
+        # список кандидатов стоит подавать иначе.
+        self.corrected_excerpts = 0
+
+    def answer(self, question: str, chunks: list[Chunk]) -> tuple[str, Chunk] | None:  # noqa: D401
+        """Вернуть текст ответа и пункт-источник либо ``None``."""
+
+        self.last_rejection_reason = None
+        self.last_llm_used = False
+        if not chunks:
+            self.last_rejection_reason = "no_candidates"
+            return None
+
+        listing = "\n\n".join(
+            f"Выдержка {number} (паспорт {chunk.document}, {chunk.section}):\n{chunk.text}"
+            for number, chunk in enumerate(chunks, start=1)
+        )
+        data, used = self.llm_client.complete_json(
+            "PassportAnswerAgent",
+            [
+                {"role": "system", "content": PASSPORT_ANSWER_PROMPT},
+                {
+                    "role": "user",
+                    "content": f"Вопрос покупателя: {question}\n\n{listing}",
+                },
+            ],
+            {},
+        )
+        self.last_llm_used = used
+        if not used or not data:
+            self.last_rejection_reason = "llm_unavailable"
+            return None
+
+        verified = self._verify(data, chunks, question)
+        if verified is None:
+            return None
+        answer, chunk = verified
+        return answer, chunk
+
+    def _verify(
+        self,
+        data: dict[str, Any],
+        chunks: list[Chunk],
+        question: str = "",
+    ) -> tuple[str, Chunk] | None:
+        try:
+            parsed = PassportAnswer.model_validate(data)
+        except ValidationError as exc:
+            self.last_rejection_reason = f"schema: {exc.error_count()} ошибок"
+            return None
+
+        if not parsed.answerable:
+            self.last_rejection_reason = "model_found_no_answer"
+            return None
+
+        # Проверка 1: цитата дословна и взята из переданного материала.
+        #
+        # Номер выдержки модель иногда путает — цитирует первую, а указывает
+        # вторую. Отклонять из-за этого верную цитату незачем: гарантия в том,
+        # что фрагмент дословно есть среди переданного, а ссылку можно
+        # восстановить поиском. Выдумка так всё равно не пройдёт — её нет ни в
+        # одной выдержке.
+        if not parsed.quote:
+            self.last_rejection_reason = "empty_quote"
+            return None
+        needle = _normalise(parsed.quote)
+        matching = [
+            index
+            for index, candidate in enumerate(chunks)
+            if needle in _normalise(candidate.text)
+        ]
+        if not matching:
+            self.last_rejection_reason = "quote_not_verbatim"
+            return None
+
+        # Проверка 2: источником называется выдержка, где цитата и правда есть.
+        stated = parsed.excerpt - 1
+        chunk = chunks[stated] if stated in matching else chunks[matching[0]]
+        if stated not in matching:
+            self.corrected_excerpts += 1
+
+        # Проверка 3: коммерческих обещаний в паспорте нет.
+        #
+        # Обозначение изделия — не коммерческое обещание. Оно стоит и в
+        # вопросе покупателя, и в цитате: «кран VT.226 не подходит для
+        # соединения с накидной гайкой» — законный ответ. Отклоняется только
+        # обозначение, взявшееся ниоткуда, и слова про цену и наличие, которых
+        # в паспорте нет вовсе.
+        if _COMMERCE_RE.search(parsed.framing):
+            self.last_rejection_reason = "commerce_claim"
+            return None
+        known = f"{parsed.quote} {question}".lower()
+        framing_without_designations = parsed.framing
+        for designation in _SKU_RE.findall(parsed.framing):
+            if designation.lower() not in known:
+                self.last_rejection_reason = f"unknown_designation: {designation}"
+                return None
+            # Цифры внутри обозначения — часть имени изделия, а не факт о нём:
+            # «VRS.254.18.0» иначе провалит числовую проверку, хотя ничего не
+            # утверждает.
+            framing_without_designations = framing_without_designations.replace(
+                designation, " "
+            )
+
+        # Проверка 4: числа пояснения содержатся в цитате.
+        quote_numbers = {
+            number.replace(",", ".") for number in _NUMBER_RE.findall(parsed.quote)
+        }
+        for number in _NUMBER_RE.findall(framing_without_designations):
+            if number.replace(",", ".") not in quote_numbers:
+                self.last_rejection_reason = f"number_not_in_quote: {number}"
+                return None
+
+        return self._render(parsed, chunk), chunk
+
+    @staticmethod
+    def _render(parsed: PassportAnswer, chunk: Chunk) -> str:
+        quote = parsed.quote.strip().strip('«»"')
+        parts = [f"По паспорту: «{quote}»"]
+        if parsed.framing:
+            parts.append(parsed.framing.strip())
+        source = chunk.section.rstrip(".")
+        parts.append(f"Источник: {chunk.document}, {source}.")
+        return " ".join(parts)
