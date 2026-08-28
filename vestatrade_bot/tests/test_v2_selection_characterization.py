@@ -186,7 +186,7 @@ def test_external_sewer_context_corrects_stale_ppr_scope() -> None:
     )
 
     assert len(understanding.products) == 1
-    assert understanding.products[0].canonical_type == "sewer pipe"
+    assert understanding.products[0].canonical_type == "sewer_pipe"
     assert understanding.products[0].category.value == "sewer"
     facts = {item.name: item for item in understanding.constraints}
     assert facts["sewer_scope"].value == "external"
@@ -601,6 +601,8 @@ def test_exact_full_product_name_resolves_to_one_catalogue_identity() -> None:
         ],
         constraints=[
             _known("diameter_mm", 25, "25/4-180", unit="mm"),
+            _known("connection_size", "1/2", name, unit=None),
+            _known("max_flow_l_h", 4, name, unit="l/h"),
             _known("max_head_m", 4, "25/4-180", unit="m"),
             _known("mounting_length_mm", 180, "25/4-180", unit="mm"),
         ],
@@ -642,6 +644,8 @@ def test_exact_full_product_name_resolves_to_one_catalogue_identity() -> None:
     )
     assert not {
         "diameter_mm",
+        "connection_size",
+        "max_flow_l_h",
         "max_head_m",
         "mounting_length_mm",
     }.intersection(item.name for item in candidate.selection_request.known_facts)

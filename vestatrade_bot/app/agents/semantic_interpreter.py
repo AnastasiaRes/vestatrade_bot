@@ -25,9 +25,13 @@ from app.catalog_v2.registry import DEFAULT_CONTRACTS
 from app.models import SessionState
 from app.openrouter_client import OpenRouterClient
 from app.pii import redact_pii_for_model
+from app.semantic_v2.contracts import SemanticGateResult, SemanticTurnDeltaV1
 
 from .domain_ontology import (
     RANGE_CAPABLE_CONSTRAINT_FACTS,
+    action_aliases,
+    canonical_product_type,
+    closed_value_aliases,
     semantic_ontology_payload,
 )
 
@@ -769,6 +773,8 @@ class SemanticInterpretationResult(StrictModel):
     audit_rejection_reason: str | None = None
     structural_repairs: tuple[str, ...] = ()
     understanding: TurnUnderstanding | None = None
+    semantic_delta: SemanticTurnDeltaV1 | None = None
+    semantic_gate: SemanticGateResult | None = None
     rejection_reason: str | None = None
     fallback_reason: str | None = None
 
@@ -1752,27 +1758,44 @@ def _reconcile_selection_strategy_contract(
         changes.append("selection_strategy_safely_defaulted_to_standard")
 
 
-_EXPLICIT_SHOW_SELECTION_RE = re.compile(
-    r"(?iu)(?<![\w-])"
-    r"(?:покаж(?:и|ите|и-ка)|подбер(?:и|ите)|предлож(?:и|ите))"
-    r"(?:\s+(?:мне|нам))?\s+"
-    r"(?:вариант(?:ы|ов)?|товар(?:ы|ов)?|модел(?:и|ей)?|что\s+(?:у\s+вас\s+)?есть)"
+_SHOW_ACTION_ALIAS_PATTERN = "|".join(
+    re.escape(alias).replace(r"\ ", r"\s+")
+    for alias in sorted(action_aliases("show"), key=len, reverse=True)
 )
-_PPR_RE = re.compile(r"(?iu)(?<![\w-])(?:ппр|pp[-\s]?r)(?![\w-])")
+_EXPLICIT_SHOW_SELECTION_RE = re.compile(
+    r"(?iu)(?<![\w-])(?:"
+    r"(?:покаж(?:ите|и-ка|и|ы)|подбер(?:ите|и)|предлож(?:ите|и)|выда(?:йте|й))"
+    r"(?:\s+(?:мне|нам))?(?:\s+(?:вариант(?:ы|ов)?|товар(?:ы|ов)?|модел(?:и|ей)?|"
+    r"подходящ\w*(?:\s+позици\w*)?|доступн\w*(?:\s+позици\w*)?|наличие|"
+    r"что\s+(?:у\s+вас\s+)?есть))?|"
+    r"что\s+(?:(?:у\s+вас\s+)?есть|можно\s+(?:взять|купить))|"
+    r"можно\s+вариант(?:ы|ов)?|"
+    rf"{_SHOW_ACTION_ALIAS_PATTERN}"
+    r")"
+)
+_PPR_RE = re.compile(
+    r"(?iu)(?<![\w-])(?:ппр|pp[-\s]?r|пп[эе]ровск\w*|полипропилен\w*)(?![\w-])"
+)
 _RADIATOR_MAIN_RE = re.compile(
-    r"(?iu)(?<![\w-])радиаторн\w*\s+"
-    r"(?:магистрал\w*|контур\w*|отоплен\w*|систем\w*)"
+    r"(?iu)(?<![\w-])(?:"
+    r"радиаторн\w*\s+(?:магистрал\w*|контур\w*|отоплен\w*|систем\w*|разводк\w*)|"
+    r"(?:на|для)\s+батаре\w*"
+    r")"
 )
 _GLASS_FIBER_RE = re.compile(
-    r"(?iu)(?:армирован\w*\s+)?(?:стекло[-\s]?волок\w*|стекловолок\w*)"
+    r"(?iu)(?:армирован\w*\s+)?(?:стекло[-\s]?(?:волок|валак)\w*|"
+    r"стекло(?:волок|валак)\w*|со\s+стекл\w*)"
 )
 _INTERNAL_INTERNAL_RE = re.compile(
-    r"(?iu)(?<![\w-])(?:вн|вр|внутренняя)\s*[-/–—]\s*"
-    r"(?:вн|вр|внутренняя)(?![\w-])"
+    r"(?iu)(?<![\w-])(?:"
+    r"(?:вн|вр|внутренняя)\s*(?:[-/–—]|\s+)\s*(?:вн|вр|внутренняя)|"
+    r"обе\s+резьб\w*\s+внутренн\w*|"
+    r"внутренн\w*\s+резьб\w*\s+с\s+обеих\s+сторон"
+    r")(?![\w-])"
 )
 _SEWER_CONTEXT_RE = re.compile(
     r"(?iu)(?<![\w-])(?:"
-    r"канализац\w*|септик\w*|"
+    r"канализац\w*|канализац[ыи]я\w*|канали(?:я|и)\w*|септик\w*|сиптик\w*|сток\w*|"
     r"туалет\w*(?:\s+труб\w*)?|"
     r"труб\w*[^.!?\n]{0,80}туалет\w*|"
     r"от\s+дом\w*[^.!?\n]{0,60}(?:на\s+улиц\w*|до\s+септик\w*)"
@@ -1783,8 +1806,40 @@ _EXTERNAL_SEWER_RE = re.compile(
     r"наружн\w*\s+канализац\w*|"
     r"(?:на|для)\s+улиц\w*|"
     r"(?:до|к)\s+септик\w*|"
-    r"от\s+дом\w*[^.!?\n]{0,60}(?:на\s+улиц\w*|до\s+септик\w*)"
+    r"наруж\w*[^.!?\n]{0,40}(?:от|из)\s+дом\w*|"
+    r"(?:от|из)\s+дом\w*[^.!?\n]{0,60}(?:на\s+улиц\w*|наруж\w*|до\s+септик\w*)|"
+    r"вывод\w*\s+сток\w*[^.!?\n]{0,40}(?:наруж\w*|из\s+дом\w*)"
     r")(?![\w-])"
+)
+_CIRCULATION_PUMP_RE = re.compile(
+    r"(?iu)(?<![\w-])(?:циркуляци\w*\s+нас+ос\w*|циркуляционник\w*|"
+    r"насос\w*\s+(?:для|на)\s+(?:радиатор\w*|отоплен\w*))"
+)
+_BALL_VALVE_RE = re.compile(
+    r"(?iu)(?<![\w-])(?:valtec\s+base|кран\w*\s+base|шаров\w*\s+(?:кран\w*\s+)?(?:base|б[эе]йс))"
+)
+_SPOKEN_PIPE_DIAMETER_RE = re.compile(
+    r"(?iu)(?<![\w-])(?:двадцать\s+пят\w*|двадцат\w+|25)(?![\w-])"
+)
+_SPOKEN_SEWER_DIAMETER_RE = re.compile(
+    r"(?iu)(?<![\w-])(?:сто\s+десят\w*|110)(?![\w-])"
+    r"(?:\s*(?:мм|миллиметр\w*|диаметр\w*))?"
+)
+_SPOKEN_TEMPERATURE_RE = re.compile(
+    r"(?iu)(?:температур\w*|подач\w*)?[^.!?\n]{0,24}?"
+    r"(?P<value>90|девяност\w*)(?:\s*(?P<unit>°?\s*[cс]|градус\w*))?"
+)
+_SPOKEN_PUMP_FLOW_RE = re.compile(
+    r"(?iu)(?<![\w-])(?:q\s*=\s*)?(?P<value>полтора|1[,.]5)\s*"
+    r"(?P<unit>куб\w*(?:\s+в\s+час)?|м\s*[³3]\s*/\s*ч)"
+)
+_SPOKEN_PUMP_HEAD_RE = re.compile(
+    r"(?iu)(?:(?:напор\w*|h\s*=)[^.!?\n]{0,20})?"
+    r"(?P<value>четыр(?:е|ё|ех|ёх)|4)\s*(?P<unit>м|метр\w*)"
+    r"(?:\s+напор\w*)?"
+)
+_VALVE_SIZE_RE = re.compile(
+    r"(?iu)(?<![\w-])(?P<value>g\s*1\s*/\s*2|dn\s*15|полдюйм\w*|1\s*/\s*2)(?![\w-])"
 )
 
 
@@ -1820,6 +1875,52 @@ def _active_authoritative_goal(
     return typed[0] if len(typed) == 1 else None
 
 
+def _bounded_fact_followup_targets_active_goal(
+    current_message: str,
+    authoritative_state: dict[str, Any] | None,
+) -> bool:
+    """Recognize a short, exact fact answer for the active typed goal."""
+
+    active_goal = _active_authoritative_goal(authoritative_state)
+    if active_goal is None:
+        return False
+    category = str(active_goal.get("category") or "")
+    canonical_type = str(active_goal.get("canonical_type") or "").casefold()
+    if category == ProductCategory.VALVES.value or canonical_type == "ball_valve":
+        return bool(
+            _VALVE_SIZE_RE.search(current_message)
+            or _INTERNAL_INTERNAL_RE.search(current_message)
+        )
+    if category == ProductCategory.SEWER.value or canonical_type in {
+        "sewer_pipe",
+        "sewer pipe",
+    }:
+        return bool(
+            _EXTERNAL_SEWER_RE.search(current_message)
+            or _SPOKEN_SEWER_DIAMETER_RE.search(current_message)
+        )
+    if category == ProductCategory.PIPES.value or canonical_type in {
+        "pipe",
+        "ppr_pipe",
+        "ppr pipe",
+    }:
+        return bool(
+            _SPOKEN_PIPE_DIAMETER_RE.search(current_message)
+            or _GLASS_FIBER_RE.search(current_message)
+            or _RADIATOR_MAIN_RE.search(current_message)
+            or _SPOKEN_TEMPERATURE_RE.search(current_message)
+        )
+    if category == ProductCategory.PUMPS.value or canonical_type in {
+        "circulation_pump",
+        "circulation pump",
+    }:
+        return bool(
+            _SPOKEN_PUMP_FLOW_RE.search(current_message)
+            or _SPOKEN_PUMP_HEAD_RE.search(current_message)
+        )
+    return False
+
+
 def _has_constraint_name(
     constraints: list[dict[str, Any]],
     names: set[str],
@@ -1835,15 +1936,16 @@ def _append_known_constraint(
     constraints: list[dict[str, Any]],
     *,
     name: str,
-    value: str,
+    value: str | int | float | bool,
     evidence: str,
     applies_to_product: int | None,
+    unit: str | None = None,
 ) -> None:
     constraints.append(
         ConstraintFact(
             name=name,
             value=value,
-            unit=None,
+            unit=unit,
             status=ConstraintStatus.KNOWN,
             polarity=ConstraintPolarity.REQUIRED,
             applies_to_product=applies_to_product,
@@ -1866,7 +1968,69 @@ def _recover_explicit_show_selection_control(
     """
 
     match = _EXPLICIT_SHOW_SELECTION_RE.search(current_message)
-    if match is None or repaired_turn.get("information_requests"):
+    if match is None:
+        return
+    remainder = current_message[: match.start()] + current_message[match.end() :]
+    generic_whole_turn = not remainder.strip(" \t\r\n.,!?;:-—–")
+    if repaired_turn.get("information_requests"):
+        # A generic command such as «Что есть?» or «Покажи варианты» is not a
+        # direct characteristic question.  Some model samples attach the
+        # previously pending fact as a fresh information request, which lets
+        # ProductFact steal the turn.  Only when the show phrase covers the
+        # whole utterance (apart from punctuation) may that stale proposal be
+        # removed; compound turns keep every explicit request.
+        if not generic_whole_turn:
+            return
+        repaired_turn["information_requests"] = []
+        acts = [
+            str(getattr(item, "value", item))
+            for item in (repaired_turn.get("acts") or [])
+            if str(getattr(item, "value", item)) != CustomerAct.EXPLAIN.value
+        ]
+        if CustomerAct.FIND.value not in acts:
+            acts.append(CustomerAct.FIND.value)
+        repaired_turn["acts"] = acts
+        changes.append("generic_show_stale_information_request_removed")
+    if generic_whole_turn:
+        evidence = match.group(0).strip()
+        repaired_turn["acts"] = list(
+            dict.fromkeys(
+                [
+                    *[
+                        str(getattr(item, "value", item))
+                        for item in (repaired_turn.get("acts") or [])
+                        if str(getattr(item, "value", item))
+                        not in {
+                            CustomerAct.EXPLAIN.value,
+                            CustomerAct.CHECK_STOCK.value,
+                        }
+                    ],
+                    CustomerAct.FIND.value,
+                ]
+            )
+        )
+        repaired_turn["selection_controls"] = [
+            {
+                "kind": SelectionControlKind.CONTINUE_WITH_CONFIRMED_FACTS.value,
+                "evidence": evidence,
+            }
+        ]
+        repaired_turn["selection_strategy"] = {
+            "kind": SelectionStrategyKind.CONTINUE_WITH_CONFIRMED_FACTS.value,
+            "evidence": evidence,
+        }
+        ambiguities = repaired_turn.get("ambiguities")
+        if isinstance(ambiguities, list):
+            repaired_turn["ambiguities"] = [
+                item
+                for item in ambiguities
+                if not (
+                    isinstance(item, dict)
+                    and "selection" in str(item.get("kind") or "").casefold()
+                )
+            ]
+        changes.append("explicit_show_selection_control_recovered")
+        changes.append("generic_show_anchor_forced_continue")
         return
     raw_strategy = repaired_turn.get("selection_strategy")
     strategy_kind = (
@@ -1913,12 +2077,100 @@ def _recover_bounded_selection_category_and_facts(
     active_goal = _active_authoritative_goal(authoritative_state)
     active_category = str((active_goal or {}).get("category") or "")
     active_type = str((active_goal or {}).get("canonical_type") or "")
+    radiator_main = _RADIATOR_MAIN_RE.search(current_message)
+    if active_category == ProductCategory.PIPES.value and radiator_main is not None:
+        # In an established pipe task, phrases such as «для батарей» describe
+        # the pipe service.  A semantic-model radiator mention grounded only
+        # in that phrase must not open a competing radiator goal.  Preserve a
+        # real topic switch such as «нужен радиатор для батарей» by looking for
+        # an explicit radiator noun outside the application span.
+        residual = (
+            current_message[: radiator_main.start()]
+            + " "
+            + current_message[radiator_main.end() :]
+        )
+        explicit_radiator_outside_service = re.search(
+            r"(?iu)(?<![\w-])(?:радиатор\w*|батаре(?:я|ю|и))(?![\w-])",
+            residual,
+        )
+        if explicit_radiator_outside_service is None:
+            retained_products = [
+                item
+                for item in normalized_products
+                if not (
+                    item.get("role") == ProductRole.TARGET.value
+                    and item.get("category") == ProductCategory.RADIATORS.value
+                )
+            ]
+            if len(retained_products) != len(normalized_products):
+                normalized_products[:] = retained_products
+                changes.append("pipe_service_radiator_product_false_positive_dropped")
     target_indexes = [
         index
         for index, item in enumerate(normalized_products)
         if item.get("role") == ProductRole.TARGET.value
     ]
     target_index = target_indexes[0] if len(target_indexes) == 1 else None
+
+    sku_tokens = [
+        match.group(0)
+        for match in _MIXED_IDENTIFIER_TOKEN_RE.finditer(current_message)
+        if "." in match.group(0) and any(char.isdigit() for char in match.group(0))
+    ]
+    explicit_sku = sku_tokens[0] if len(sku_tokens) == 1 else None
+    if explicit_sku is not None:
+        if not normalized_products:
+            normalized_products.append(
+                ProductMention(
+                    text=explicit_sku,
+                    canonical_type="catalog_product",
+                    category=ProductCategory.OTHER,
+                    role=ProductRole.TARGET,
+                    evidence=explicit_sku,
+                ).model_dump(mode="json")
+            )
+            target_index = 0
+            changes.append("explicit_sku_product_scope_recovered")
+        if not _has_constraint_name(constraints, {"sku", "article", "артикул"}):
+            _append_known_constraint(
+                constraints,
+                name="sku",
+                value=explicit_sku,
+                evidence=explicit_sku,
+                applies_to_product=target_index,
+            )
+            changes.append("explicit_sku_constraint_recovered")
+        if active_goal is not None:
+            repaired_turn["operation"] = GoalOperation.SWITCH.value
+            changes.append("explicit_sku_overrode_stale_goal")
+
+    pump_match = _CIRCULATION_PUMP_RE.search(current_message)
+    if pump_match is not None and not normalized_products:
+        normalized_products.append(
+            ProductMention(
+                text=pump_match.group(0),
+                canonical_type="circulation_pump",
+                category=ProductCategory.PUMPS,
+                role=ProductRole.TARGET,
+                evidence=pump_match.group(0),
+            ).model_dump(mode="json")
+        )
+        target_index = 0
+        changes.append("pump_product_goal_recovered")
+
+    valve_match = _BALL_VALVE_RE.search(current_message)
+    if valve_match is not None and not normalized_products:
+        normalized_products.append(
+            ProductMention(
+                text=valve_match.group(0),
+                canonical_type="ball_valve",
+                category=ProductCategory.VALVES,
+                role=ProductRole.TARGET,
+                evidence=valve_match.group(0),
+            ).model_dump(mode="json")
+        )
+        target_index = 0
+        changes.append("valve_product_goal_recovered")
 
     sewer_match = _SEWER_CONTEXT_RE.search(current_message)
     external_match = _EXTERNAL_SEWER_RE.search(current_message)
@@ -1933,13 +2185,22 @@ def _recover_bounded_selection_category_and_facts(
             for item in normalized_products
         )
     )
-    if sewer_match is not None and (has_pipe_scope or "труб" in current_message.casefold()):
-        evidence = sewer_match.group(0).strip()
+    if (sewer_match is not None or external_match is not None) and (
+        has_pipe_scope
+        or "труб" in current_message.casefold()
+        or any(
+            marker in current_message.casefold().replace("ё", "е")
+            for marker in ("канал", "септик", "сиптик", "сток")
+        )
+    ):
+        evidence_match = sewer_match or external_match
+        assert evidence_match is not None
+        evidence = evidence_match.group(0).strip()
         if target_index is None and not normalized_products:
             normalized_products.append(
                 ProductMention(
                     text=evidence,
-                    canonical_type="sewer pipe",
+                    canonical_type="sewer_pipe",
                     category=ProductCategory.SEWER,
                     role=ProductRole.TARGET,
                     evidence=evidence,
@@ -1947,8 +2208,15 @@ def _recover_bounded_selection_category_and_facts(
             )
             target_index = 0
         elif target_index is not None:
-            normalized_products[target_index]["canonical_type"] = "sewer pipe"
+            normalized_products[target_index]["canonical_type"] = "sewer_pipe"
             normalized_products[target_index]["category"] = ProductCategory.SEWER.value
+            if _grounded_evidence_fragment(
+                str(normalized_products[target_index].get("evidence") or ""),
+                current_message,
+            ) is None:
+                normalized_products[target_index]["evidence"] = evidence
+                normalized_products[target_index]["text"] = evidence
+                changes.append("product_evidence_rebound_to_current_message")
         if active_category == ProductCategory.PIPES.value:
             repaired_turn["operation"] = GoalOperation.CORRECT.value
         changes.append("external_sewer_goal_recovered")
@@ -1988,14 +2256,93 @@ def _recover_bounded_selection_category_and_facts(
         product_categories.add(ProductCategory.PIPES.value)
         changes.append("ppr_product_goal_recovered")
     pipe_target = bool(
-        product_types.intersection({"pipe", "ppr pipe", "polypropylene pipe"})
-        or ProductCategory.PIPES.value in product_categories
-        or active_category == ProductCategory.PIPES.value
+        product_types.intersection(
+            {
+                "pipe",
+                "ppr pipe",
+                "polypropylene pipe",
+                "sewer_pipe",
+                "sewer pipe",
+            }
+        )
+        or product_categories.intersection(
+            {ProductCategory.PIPES.value, ProductCategory.SEWER.value}
+        )
+        or active_category
+        in {ProductCategory.PIPES.value, ProductCategory.SEWER.value}
     )
-    radiator_main = _RADIATOR_MAIN_RE.search(current_message)
+
+    def ontology_evidence(aliases: tuple[str, ...]) -> str | None:
+        normalized_message = _normalize_evidence(current_message)
+        for alias in sorted(aliases, key=len, reverse=True):
+            normalized_alias = _normalize_evidence(alias)
+            if normalized_alias and normalized_alias in normalized_message:
+                match = re.search(re.escape(alias), current_message, flags=re.IGNORECASE)
+                return match.group(0) if match is not None else alias
+        return None
+
+    spoken_diameter = _SPOKEN_PIPE_DIAMETER_RE.search(current_message)
     if (
         pipe_target
-        and radiator_main is not None
+        and spoken_diameter is not None
+        and not _has_constraint_name(constraints, {"diameter_mm", "diameter"})
+    ):
+        _append_known_constraint(
+            constraints,
+            name="diameter_mm",
+            value=25,
+            unit="mm",
+            evidence=spoken_diameter.group(0),
+            applies_to_product=target_index,
+        )
+        changes.append("spoken_numeric_anchor_recovered")
+    spoken_sewer_diameter = _SPOKEN_SEWER_DIAMETER_RE.search(current_message)
+    sewer_diameter_constraints = [
+        item
+        for item in constraints
+        if _normalize_schema_identifier(item.get("name"))
+        in {"diameter_mm", "diameter"}
+        and item.get("status") == ConstraintStatus.KNOWN.value
+    ]
+    if (
+        pipe_target
+        and (
+            active_category == ProductCategory.SEWER.value
+            or ProductCategory.SEWER.value in product_categories
+            or product_types.intersection({"sewer_pipe", "sewer pipe"})
+        )
+        and spoken_sewer_diameter is not None
+    ):
+        evidence = spoken_sewer_diameter.group(0).strip()
+        if len(sewer_diameter_constraints) == 1:
+            constraint = sewer_diameter_constraints[0]
+            constraint.update(
+                {
+                    "name": "diameter_mm",
+                    "value": 110,
+                    "unit": "mm",
+                    "evidence": evidence,
+                }
+            )
+            changes.append("spoken_sewer_diameter_anchor_canonicalized")
+        elif not sewer_diameter_constraints:
+            _append_known_constraint(
+                constraints,
+                name="diameter_mm",
+                value=110,
+                unit="mm",
+                evidence=evidence,
+                applies_to_product=target_index,
+            )
+            changes.append("spoken_sewer_diameter_anchor_recovered")
+        else:
+            changes.append("spoken_sewer_diameter_anchor_ambiguous")
+    radiator_ontology_evidence = ontology_evidence(
+        closed_value_aliases("pipe", "pipe_service", "heating")
+    )
+    if (
+        pipe_target
+        and (radiator_main is not None or radiator_ontology_evidence is not None)
         and not _has_constraint_name(
             constraints,
             {"pipe_service", "application", "application_type", "service_type"},
@@ -2005,14 +2352,21 @@ def _recover_bounded_selection_category_and_facts(
             constraints,
             name="pipe_service",
             value="heating",
-            evidence=radiator_main.group(0),
+            evidence=(
+                radiator_main.group(0)
+                if radiator_main is not None
+                else str(radiator_ontology_evidence)
+            ),
             applies_to_product=target_index,
         )
         changes.append("pipe_service_recovered_from_radiator_main")
     glass = _GLASS_FIBER_RE.search(current_message)
+    glass_ontology_evidence = ontology_evidence(
+        closed_value_aliases("pipe", "reinforcement", "glass_fiber")
+    )
     if (
         pipe_target
-        and glass is not None
+        and (glass is not None or glass_ontology_evidence is not None)
         and not _has_constraint_name(
             constraints,
             {"reinforcement", "reinforcement_type", "pipe_reinforcement"},
@@ -2022,10 +2376,73 @@ def _recover_bounded_selection_category_and_facts(
             constraints,
             name="reinforcement",
             value="glass_fiber",
-            evidence=glass.group(0),
+            evidence=(
+                glass.group(0)
+                if glass is not None
+                else str(glass_ontology_evidence)
+            ),
             applies_to_product=target_index,
         )
         changes.append("glass_fiber_reinforcement_recovered")
+
+    spoken_temperature = _SPOKEN_TEMPERATURE_RE.search(current_message)
+    if (
+        pipe_target
+        and spoken_temperature is not None
+        and not _has_constraint_name(
+            constraints,
+            {"operating_temperature_c", "maximum_operating_temperature_c"},
+        )
+    ):
+        _append_known_constraint(
+            constraints,
+            name="operating_temperature_c",
+            value=90,
+            unit="c",
+            evidence=spoken_temperature.group(0).strip(),
+            applies_to_product=target_index,
+        )
+        changes.append("spoken_numeric_anchor_recovered")
+
+    pump_target = bool(
+        product_types.intersection({"circulation_pump", "circulation pump"})
+        or ProductCategory.PUMPS.value in product_categories
+        or active_type.casefold() in {"circulation_pump", "circulation pump"}
+    )
+    spoken_flow = _SPOKEN_PUMP_FLOW_RE.search(current_message)
+    if pump_target and spoken_flow is not None:
+        constraints[:] = [
+            item
+            for item in constraints
+            if _normalize_schema_identifier(item.get("name"))
+            not in {"duty_point_flow_l_h", "max_flow_l_h", "flow"}
+        ]
+        _append_known_constraint(
+            constraints,
+            name="duty_point_flow_l_h",
+            value=1.5,
+            unit="m3/h",
+            evidence=spoken_flow.group(0).strip(),
+            applies_to_product=target_index,
+        )
+        changes.append("spoken_numeric_anchor_recovered")
+    spoken_head = _SPOKEN_PUMP_HEAD_RE.search(current_message)
+    if pump_target and spoken_head is not None:
+        constraints[:] = [
+            item
+            for item in constraints
+            if _normalize_schema_identifier(item.get("name"))
+            not in {"duty_point_head_m", "max_head_m", "head"}
+        ]
+        _append_known_constraint(
+            constraints,
+            name="duty_point_head_m",
+            value=4,
+            unit="m",
+            evidence=spoken_head.group(0).strip(),
+            applies_to_product=target_index,
+        )
+        changes.append("spoken_numeric_anchor_recovered")
 
     valve_target = bool(
         product_types.intersection({"ball valve", "ball_valve", "valve"})
@@ -2033,9 +2450,15 @@ def _recover_bounded_selection_category_and_facts(
         or active_category == ProductCategory.VALVES.value
     )
     connection_pair = _INTERNAL_INTERNAL_RE.search(current_message)
+    connection_ontology_evidence = ontology_evidence(
+        closed_value_aliases("ball_valve", "connection_pattern", "female_female")
+    )
     if (
         valve_target
-        and connection_pair is not None
+        and (
+            connection_pair is not None
+            or connection_ontology_evidence is not None
+        )
         and not _has_constraint_name(
             constraints,
             {"connection_pattern", "thread_pair", "connection_type", "thread_type"},
@@ -2045,10 +2468,28 @@ def _recover_bounded_selection_category_and_facts(
             constraints,
             name="connection_pattern",
             value="female_female",
-            evidence=connection_pair.group(0),
+            evidence=(
+                connection_pair.group(0)
+                if connection_pair is not None
+                else str(connection_ontology_evidence)
+            ),
             applies_to_product=target_index,
         )
         changes.append("connection_pattern_recovered_from_explicit_pair")
+    valve_size = _VALVE_SIZE_RE.search(current_message)
+    if (
+        valve_target
+        and valve_size is not None
+        and not _has_constraint_name(constraints, {"connection_size", "thread_size"})
+    ):
+        _append_known_constraint(
+            constraints,
+            name="connection_size",
+            value="1/2",
+            evidence=valve_size.group(0),
+            applies_to_product=target_index,
+        )
+        changes.append("valve_connection_size_recovered")
 
 
 def _numeric_string_declared_unit_is_ungrounded(
@@ -4472,6 +4913,11 @@ def validate_product_modifier_coverage(
         exempt_spans = [
             match.span() for match in _LATIN_ALPHANUMERIC_IDENTIFIER_RE.finditer(evidence)
         ]
+        exempt_spans.extend(
+            match.span()
+            for match in _MIXED_IDENTIFIER_TOKEN_RE.finditer(evidence)
+            if "." in match.group(0)
+        )
         if _LATIN_WORD_RE.search(evidence):
             exempt_spans.extend(
                 match.span() for match in _STRUCTURED_MODEL_NUMBER_RE.finditer(evidence)
@@ -4771,6 +5217,20 @@ def repair_grounded_semantic_payload(
         "value",
         repaired.get("operation"),
     )
+    show_match = _EXPLICIT_SHOW_SELECTION_RE.search(current_message)
+    if show_match is not None:
+        show_remainder = (
+            current_message[: show_match.start()]
+            + current_message[show_match.end() :]
+        )
+        if (
+            not show_remainder.strip(" \t\r\n.,!?;:-—–")
+            and _active_authoritative_goal(authoritative_dialogue_state) is not None
+            and operation in {GoalOperation.NEW.value, GoalOperation.UNKNOWN.value}
+        ):
+            repaired["operation"] = GoalOperation.CONTINUE.value
+            operation = GoalOperation.CONTINUE.value
+            changes.append("generic_show_rebound_to_active_goal")
     typed_characteristic_followup = _is_technical_characteristic_question(
         current_message,
         [],
@@ -4784,6 +5244,16 @@ def repair_grounded_semantic_payload(
         repaired["operation"] = GoalOperation.CONTINUE.value
         operation = GoalOperation.CONTINUE.value
         changes.append("typed_characteristic_question_rebound_to_active_goal")
+    if (
+        _bounded_fact_followup_targets_active_goal(
+            current_message,
+            authoritative_dialogue_state,
+        )
+        and operation in {GoalOperation.NEW.value, GoalOperation.UNKNOWN.value}
+    ):
+        repaired["operation"] = GoalOperation.CONTINUE.value
+        operation = GoalOperation.CONTINUE.value
+        changes.append("bounded_fact_followup_rebound_to_active_goal")
     stale_product_may_be_inherited = operation in {
         GoalOperation.CONTINUE.value,
         GoalOperation.REFINE.value,
@@ -4795,6 +5265,9 @@ def repair_grounded_semantic_payload(
     product_index_map: dict[int, int] = {}
     stale_typed_product_indexes: set[int] = set()
     normalized_products: list[Any] = []
+    authoritative_active_goal = _active_authoritative_goal(
+        authoritative_dialogue_state
+    )
     if isinstance(raw_products, list):
         for old_index, item in enumerate(raw_products):
             if not isinstance(item, dict):
@@ -4802,13 +5275,32 @@ def repair_grounded_semantic_payload(
                 continue
             canonical_type = item.get("canonical_type")
             if not isinstance(canonical_type, str) or not canonical_type.strip():
-                repair_code = (
-                    "target_product_missing_canonical_type_dropped"
-                    if item.get("role") == ProductRole.TARGET.value
-                    else "product_missing_canonical_type_dropped"
+                inherited_untyped_followup = bool(
+                    authoritative_active_goal is not None
+                    and stale_product_may_be_inherited
                 )
+                repair_code = (
+                    "inherited_untyped_product_proposal_dropped"
+                    if inherited_untyped_followup
+                    else (
+                        "target_product_missing_canonical_type_dropped"
+                        if item.get("role") == ProductRole.TARGET.value
+                        else "product_missing_canonical_type_dropped"
+                    )
+                )
+                if inherited_untyped_followup:
+                    stale_typed_product_indexes.add(old_index)
                 changes.append(repair_code)
                 continue
+            canonical_identity = canonical_product_type(canonical_type)
+            if canonical_identity is not None:
+                canonical_name, canonical_category = canonical_identity
+                if canonical_name != canonical_type:
+                    item["canonical_type"] = canonical_name
+                    changes.append("product_type_canonicalized_from_registry")
+                if item.get("category") != canonical_category:
+                    item["category"] = canonical_category
+                    changes.append("product_category_canonicalized_from_registry")
             evidence = item.get("evidence")
             grounded: str | None = None
             if isinstance(evidence, str) and evidence.strip():
@@ -5136,13 +5628,69 @@ def repair_grounded_semantic_payload(
                     )
                     continue
 
-            non_known_grounding, grounded_non_known_name = (
-                _grounded_non_known_fact_name(
-                item,
-                normalized_products,
-                authoritative_product_hints,
-                authoritative_dialogue_state,
+            product_index = item.get("applies_to_product")
+            invalid_product_binding_removed = bool(
+                product_index is not None
+                and product_index not in stale_typed_product_indexes
+                and (
+                    isinstance(product_index, bool)
+                    or not isinstance(product_index, int)
+                    or product_index < 0
+                    or product_index >= len(normalized_products)
+                )
             )
+            if invalid_product_binding_removed:
+                # Preserve the independently grounded fact while removing the
+                # model's invalid mention index.  Downstream semantic/state
+                # gates still see an unbound fact and therefore cannot treat
+                # the bad index as authority for a product choice.
+                item["applies_to_product"] = None
+                changes.append("constraint_invalid_product_binding_removed")
+
+            if normalized_status != ConstraintStatus.KNOWN.value:
+                definitions = _non_known_fact_definitions(
+                    item,
+                    normalized_products,
+                    authoritative_product_hints,
+                )
+                evidence_matches = (
+                    _non_known_alias_matches(definitions, str(item["evidence"]))
+                    if definitions
+                    else set()
+                )
+                if definitions and not evidence_matches:
+                    proposed_name = _normalize_schema_identifier(
+                        _canonical_constraint_fact_name(
+                            str(item.get("name") or "")
+                        )
+                    )
+                    full_message_spans = _non_known_alias_spans(
+                        definitions,
+                        current_message,
+                    )
+                    if set(full_message_spans) == {proposed_name}:
+                        start, end = full_message_spans[proposed_name]
+                        predicate_evidence = current_message[start:end]
+                        combined_evidence = _combined_grounded_evidence_fragment(
+                            str(item["evidence"]),
+                            predicate_evidence,
+                            current_message,
+                        )
+                        if combined_evidence is not None:
+                            item["evidence"] = combined_evidence
+                            changes.append(
+                                "constraint_non_known_evidence_expanded"
+                            )
+
+            non_known_grounding, grounded_non_known_name = (
+                ("compatible", None)
+                if invalid_product_binding_removed
+                else _grounded_non_known_fact_name(
+                    item,
+                    normalized_products,
+                    authoritative_product_hints,
+                    authoritative_dialogue_state,
+                )
             )
             if non_known_grounding == "reject":
                 non_known_ambiguities.append(
@@ -5957,6 +6505,29 @@ class SemanticInterpreter:
                     validation_errors.append(f"first_pass: {exc}")
             if understanding is None:
                 raise ValueError("; ".join(validation_errors)[:2000])
+            # Import locally to keep the compatibility bridge dependent on the
+            # legacy TurnUnderstanding schema without creating an import cycle
+            # while this module is initialised.
+            from app.semantic_v2.bridge import build_semantic_turn_delta
+
+            semantic_turn_id = "semantic:" + hashlib.sha256(
+                (
+                    f"{state_before.session_id}:"
+                    f"{getattr(state_before, 'session_revision', 0)}:"
+                    f"{safe_message}"
+                ).encode("utf-8")
+            ).hexdigest()[:24]
+            semantic_delta, semantic_gate = build_semantic_turn_delta(
+                understanding,
+                message=safe_message,
+                turn_id=semantic_turn_id,
+                session_id=state_before.session_id,
+                semantic_repairs=structural_repairs,
+            )
+            if not semantic_gate.accepted:
+                raise ValueError(
+                    "semantic_gate:" + ",".join(semantic_gate.reason_codes)
+                )
             return SemanticInterpretationResult(
                 status="accepted",
                 requested=True,
@@ -5965,6 +6536,8 @@ class SemanticInterpreter:
                 model=model,
                 latency_ms=int((monotonic() - started) * 1000),
                 understanding=understanding,
+                semantic_delta=semantic_delta,
+                semantic_gate=semantic_gate,
                 audit_requested=True,
                 audit_output_accepted=audit_accepted,
                 structural_repairs=structural_repairs,

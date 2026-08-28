@@ -51,6 +51,7 @@ from app.commerce_v2.registry import (
     build_capability_snapshot,
     resolve_commerce_workflows,
 )
+from app.semantic_v2.bridge import adapt_delta_to_turn_understanding
 
 from .contracts import (
     DialogueStateV2,
@@ -151,9 +152,28 @@ class DialogueControllerV2:
                 latency_ms=int((monotonic() - started) * 1000),
             )
 
+        reducer_input = semantic_result.understanding
+        if semantic_result.semantic_delta is not None:
+            reducer_input = adapt_delta_to_turn_understanding(
+                semantic_result.semantic_delta,
+                semantic_result.understanding,
+            )
+        if reducer_input is None:
+            return DialogueV2Outcome(
+                status="skipped",
+                state_before=state_before,
+                state_after=state_before,
+                next_action_plan=self.policy.decide(
+                    state_before,
+                    semantic_available=False,
+                ),
+                skip_reason="semantic_delta_rejected",
+                latency_ms=int((monotonic() - started) * 1000),
+            )
+
         reduction = reduce_dialogue_state(
             state_before,
-            semantic_result.understanding,
+            reducer_input,
             turn_metadata,
         )
         if product_contracts_enabled and catalog_snapshot:

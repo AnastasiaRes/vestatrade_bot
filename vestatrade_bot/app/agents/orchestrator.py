@@ -1059,6 +1059,29 @@ class ChatOrchestrator:
     ) -> Any:
         """Give a typed direct question the shared product evidence service."""
 
+        semantic_delta = getattr(semantic, "semantic_delta", None)
+        current_actions = {
+            getattr(item, "action", None)
+            for item in getattr(semantic_delta, "action_candidates", ())
+        }
+        semantic_repairs = set(
+            getattr(semantic_delta, "semantic_repairs", ())
+        )
+        # Explicit show commands own the turn before any pending
+        # questionnaire fact.  Without this guard a stale decision question
+        # can make ProductFactEvidenceService treat «Что есть?» as a request
+        # for that old predicate and replace a valid Selection candidate.
+        # ``select`` alone is intentionally insufficient: the semantic model
+        # can emit it beside ``fact`` for an ordinal characteristic question.
+        # Such a question must still reach ProductFactEvidenceService.
+        if "show" in current_actions and semantic_repairs.intersection(
+            {
+                "explicit_show_selection_control_recovered",
+                "generic_show_anchor_forced_continue",
+            }
+        ):
+            return base_candidate
+
         action_plan = outcome.next_action_plan
         action = action_plan.primary if action_plan is not None else None
         # Do not make product-fact delivery depend on the planner choosing one
@@ -1093,10 +1116,28 @@ class ChatOrchestrator:
         )
         if evidence is None:
             return base_candidate
+        normalized_message = " ".join(message.casefold().replace("ё", "е").split())
+        base_supported_direct_request = bool(
+            current_actions.intersection(
+                {"check_price", "check_stock", "get_link"}
+            )
+            or any(
+                marker in normalized_message
+                for marker in (
+                    "сколько стоит",
+                    "какая цена",
+                    "какова цена",
+                    "есть в наличии",
+                    "ссылка на товар",
+                    "дай ссылку",
+                )
+            )
+        )
         if (
             evidence.request.predicate == "unsupported_product_fact"
             and bool(getattr(base_candidate, "eligible_for_delivery", False))
             and bool(getattr(base_candidate, "semantic_accepted", False))
+            and base_supported_direct_request
         ):
             # The generic unknown-attribute guard exists to prevent an
             # unverified Legacy fallback in Preview.  It must not replace a

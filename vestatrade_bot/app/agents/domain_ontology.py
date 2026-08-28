@@ -7,6 +7,9 @@ new dialogue-specific branch or regular expression.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 from typing import Any
 
 
@@ -14,7 +17,13 @@ PRODUCT_TYPE_ONTOLOGY: tuple[dict[str, Any], ...] = (
     {
         "canonical_type": "circulation_pump",
         "category": "pumps",
-        "aliases": ["циркуляционный насос", "насос для циркуляции"],
+        "aliases": [
+            "циркуляционный насос",
+            "насос для циркуляции",
+            "циркуляционник",
+            "насос на отопление",
+            "насос для радиаторного контура",
+        ],
     },
     {
         "canonical_type": "booster_pump",
@@ -44,7 +53,15 @@ PRODUCT_TYPE_ONTOLOGY: tuple[dict[str, Any], ...] = (
     {
         "canonical_type": "pipe",
         "category": "pipes",
-        "aliases": ["труба", "трубопровод"],
+        "aliases": [
+            "труба",
+            "трубопровод",
+            "полипропиленовая труба",
+            "полипропилен",
+            "ППР",
+            "PPR",
+            "ппэровская",
+        ],
     },
     {
         "canonical_type": "pex_pipe",
@@ -58,7 +75,13 @@ PRODUCT_TYPE_ONTOLOGY: tuple[dict[str, Any], ...] = (
     {
         "canonical_type": "sewer_pipe",
         "category": "sewer",
-        "aliases": ["канализационная труба", "труба для канализации"],
+        "aliases": [
+            "канализационная труба",
+            "труба для канализации",
+            "каналия",
+            "труба для стоков",
+            "вывод стоков",
+        ],
     },
     {
         "canonical_type": "elbow",
@@ -83,7 +106,13 @@ PRODUCT_TYPE_ONTOLOGY: tuple[dict[str, Any], ...] = (
     {
         "canonical_type": "ball_valve",
         "category": "valves",
-        "aliases": ["шаровый кран", "кран"],
+        "aliases": [
+            "шаровый кран",
+            "кран",
+            "кран BASE",
+            "VALTEC BASE",
+            "шаровый BASE",
+        ],
     },
     {
         "canonical_type": "check_valve",
@@ -245,7 +274,17 @@ CONSTRAINT_FACT_ONTOLOGY: dict[str, tuple[dict[str, Any], ...]] = {
         {
             "name": "mounting_length_mm",
             "meaning": "pump installation length, not pipe length",
-            "aliases": ["монтажная длина", "длина насоса"],
+            "aliases": [
+                "монтажная длина",
+                "длина насоса",
+                "по монтажу",
+                "между присоединениями",
+                "длина между присоединениями",
+                "между патрубками",
+                "монтажный размер",
+                "длина монтажа",
+                "по длине монтажа",
+            ],
         },
         {
             "name": "coolant_type",
@@ -410,7 +449,19 @@ CONSTRAINT_FACT_ONTOLOGY: dict[str, tuple[dict[str, Any], ...]] = {
                 },
                 {
                     "value": "heating",
-                    "aliases": ["heating", "отопление", "для отопления"],
+                    "aliases": [
+                        "heating",
+                        "отопление",
+                        "для отопления",
+                "на батареи",
+                "для батарей",
+                "радиаторная магистраль",
+                "радиаторная разводка",
+                "радиаторный контур",
+                "отопительный контур",
+                "контур с радиаторами",
+                "контур радиаторов",
+                    ],
                 },
             ],
         },
@@ -461,6 +512,11 @@ CONSTRAINT_FACT_ONTOLOGY: dict[str, tuple[dict[str, Any], ...]] = {
                         "glass fiber",
                         "стекловолокно",
                         "стекловолокном",
+                        "со стеклом",
+                        "волокно стекла",
+                        "волокном стекла",
+                        "стекловолоконное армирование",
+                        "стекловолоконным армированием",
                         "PP-FIBER",
                         "PP FIBER",
                     ],
@@ -709,7 +765,14 @@ CONSTRAINT_FACT_ONTOLOGY: dict[str, tuple[dict[str, Any], ...]] = {
                     "aliases": [
                         "female female",
                         "ВР-ВР",
+                        "ВР/ВР",
+                        "вн-вн",
                         "внутренняя/внутренняя",
+                        "обе резьбы внутренние",
+                        "внутренняя резьба с обеих сторон",
+                        "ВР с двух сторон",
+                        "ВР с обеих сторон",
+                        "оба присоединения с внутренней резьбой",
                     ],
                 },
                 {
@@ -908,6 +971,61 @@ CAPABILITY_CONSTRAINT_ONTOLOGY: tuple[dict[str, Any], ...] = (
 )
 
 
+# Action language belongs to the same versioned semantic registry as products,
+# predicates and categorical values.  Downstream planners remain authoritative
+# for capability readiness; these aliases only preserve what the customer
+# explicitly asked for.
+ACTION_ALIAS_ONTOLOGY: tuple[dict[str, Any], ...] = (
+    {
+        "action": "fact",
+        "aliases": ["какой", "какая", "сколько миллиметров", "характеристика"],
+    },
+    {
+        "action": "compare",
+        "aliases": ["сравни", "сравните", "чем отличается", "что лучше"],
+    },
+    {
+        "action": "calculate",
+        "aliases": ["посчитай", "рассчитай", "сколько выйдет", "итоговая стоимость"],
+    },
+    {
+        "action": "rationale",
+        "aliases": ["почему именно", "обоснуй", "объясни выбор"],
+    },
+    {
+        "action": "compatibility",
+        "aliases": ["совместим", "подойдёт ли", "подойдет ли", "можно соединить"],
+    },
+    {
+        "action": "project",
+        "aliases": ["собери проект", "собрать котельную", "комплект на объект"],
+    },
+    {
+        "action": "show",
+        "aliases": [
+            "покажи",
+            "покажы",
+            "покажите",
+            "что есть",
+            "что можно взять",
+            "что можно купить",
+            "можно варианты",
+            "выдай варианты",
+            "подбери доступные",
+            "подбери доступные позиции",
+            "покажи доступные",
+            "покажи доступные позиции",
+            "покажи наличие",
+            "что доступно",
+            "какие есть в наличии",
+            "какие позиции подходят",
+            "выведи подходящие позиции",
+            "какие трубы есть",
+        ],
+    },
+)
+
+
 def semantic_ontology_payload() -> dict[str, Any]:
     return {
         "product_types": [dict(item) for item in PRODUCT_TYPE_ONTOLOGY],
@@ -918,6 +1036,7 @@ def semantic_ontology_payload() -> dict[str, Any]:
         "capability_constraints": [
             dict(item) for item in CAPABILITY_CONSTRAINT_ONTOLOGY
         ],
+        "action_aliases": [dict(item) for item in ACTION_ALIAS_ONTOLOGY],
         "range_capable_constraint_facts": sorted(
             RANGE_CAPABLE_CONSTRAINT_FACTS
         ),
@@ -929,3 +1048,93 @@ def semantic_ontology_payload() -> dict[str, Any]:
             "alternative": "replacement or analogue requested for a source item",
         },
     }
+
+
+def semantic_ontology_version() -> str:
+    """Stable digest used by semantic deltas and diagnostic telemetry."""
+
+    encoded = json.dumps(
+        semantic_ontology_payload(),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def action_aliases(action: str) -> tuple[str, ...]:
+    """Return the one canonical action vocabulary used by prompt and anchors."""
+
+    return tuple(
+        str(alias)
+        for definition in ACTION_ALIAS_ONTOLOGY
+        if definition.get("action") == action
+        for alias in definition.get("aliases", ())
+    )
+
+
+def canonical_product_type(value: object) -> tuple[str, str] | None:
+    """Resolve one exact ontology product alias to its canonical identity.
+
+    The resolver is intentionally exact after punctuation/spacing
+    normalization.  It is shared semantic vocabulary, not fuzzy catalogue
+    search, and therefore cannot turn an unrelated phrase into a product.
+    """
+
+    normalized = " ".join(
+        token
+        for token in re.sub(
+            r"[^0-9a-zа-яё]+",
+            " ",
+            str(value or "").casefold().replace("_", " "),
+            flags=re.IGNORECASE,
+        ).split()
+        if token
+    )
+    if not normalized:
+        return None
+    for definition in PRODUCT_TYPE_ONTOLOGY:
+        canonical = str(definition.get("canonical_type") or "")
+        candidates = (canonical, *(definition.get("aliases") or ()))
+        for candidate in candidates:
+            candidate_normalized = " ".join(
+                token
+                for token in re.sub(
+                    r"[^0-9a-zа-яё]+",
+                    " ",
+                    str(candidate).casefold().replace("_", " "),
+                    flags=re.IGNORECASE,
+                ).split()
+                if token
+            )
+            if normalized == candidate_normalized:
+                return canonical, str(definition.get("category") or "other")
+    return None
+
+
+def fact_aliases(product_kind: str, predicate: str) -> tuple[str, ...]:
+    """Return predicate aliases from the versioned semantic ontology."""
+
+    return tuple(
+        str(alias)
+        for definition in CONSTRAINT_FACT_ONTOLOGY.get(product_kind, ())
+        if definition.get("name") == predicate
+        for alias in definition.get("aliases", ())
+    )
+
+
+def closed_value_aliases(
+    product_kind: str,
+    predicate: str,
+    value: object,
+) -> tuple[str, ...]:
+    """Return aliases for one closed fact value without a parallel dictionary."""
+
+    return tuple(
+        str(alias)
+        for definition in CONSTRAINT_FACT_ONTOLOGY.get(product_kind, ())
+        if definition.get("name") == predicate
+        for closed_value in definition.get("closed_values", ())
+        if closed_value.get("value") == value
+        for alias in closed_value.get("aliases", ())
+    )

@@ -135,6 +135,10 @@ def bind_exact_named_product(
         # technical requirements keep their own evidence and remain active.
         designation_fact_names = {
             "diameter_mm",
+            "connection_size",
+            "duty_point_flow_l_h",
+            "duty_point_head_m",
+            "max_flow_l_h",
             "max_head_m",
             "mounting_length_mm",
         }

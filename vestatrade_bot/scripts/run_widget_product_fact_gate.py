@@ -195,7 +195,7 @@ def _attach_traces(results: dict[str, Any], telemetry_path: Path) -> None:
     for run in results["runs"]:
         traces = grouped.get(_fingerprint(run["session_id"]), [])
         used: set[int] = set()
-        for turn in run["turns"]:
+        for turn_index, turn in enumerate(run["turns"]):
             chosen = None
             for index, trace in enumerate(traces):
                 if index in used:
@@ -207,6 +207,12 @@ def _attach_traces(results: dict[str, Any], telemetry_path: Path) -> None:
                 chosen = trace
                 used.add(index)
                 break
+            if chosen is None:
+                # Privacy-safe V2 telemetry deliberately omits the raw
+                # current_message.  Session ids are unique per run, so trace
+                # order is the deterministic fallback join key.
+                if turn_index < len(traces):
+                    chosen = traces[turn_index]
             turn["telemetry"] = _trace_excerpt(chosen)
 
 

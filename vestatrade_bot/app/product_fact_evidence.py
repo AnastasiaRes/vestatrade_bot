@@ -17,6 +17,7 @@ from typing import Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.agents.passport_answer import PassportAnswerAgent
+from app.agents.domain_ontology import fact_aliases
 from app.config import PROJECT_ROOT, Settings
 from app.diagnostic_telemetry import record_passport_event
 from app.models import Product, SessionState
@@ -730,6 +731,19 @@ class ProductFactEvidenceService:
             return "selection_power_rationale"
         if any(marker in text for marker in ("подойдет", "подойдёт", "совместим")):
             return "compatibility_boundary"
+        if (
+            "по монтаж" in text
+            or "между присоедин" in text
+            or any(
+                _normalise(alias) in text
+                for alias in fact_aliases(
+                    "circulation_pump",
+                    "mounting_length_mm",
+                )
+            )
+            or ("миллиметр" in text and "насос" in text and "длин" in text)
+        ):
+            return "installation_length_mm"
         semantic = _SEMANTIC_PREDICATE_ALIASES.get(
             _normalise(semantic_fact_name).replace(" ", "_")
         )

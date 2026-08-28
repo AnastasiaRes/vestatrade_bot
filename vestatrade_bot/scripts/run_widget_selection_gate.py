@@ -19,6 +19,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = ROOT / "reports" / "widget_selection_v2_2026-08-28" / "targeted"
+_TRACE_SEQUENCE_PREFIX = "\x00turn-index:"
 
 SCENARIOS: tuple[dict[str, Any], ...] = (
     {
@@ -129,6 +130,7 @@ def _post(
 
 def _traces(path: Path) -> dict[tuple[str, str], dict[str, Any]]:
     result: dict[tuple[str, str], dict[str, Any]] = {}
+    sequence_by_session: dict[str, int] = {}
     if not path.is_file():
         return result
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -136,10 +138,13 @@ def _traces(path: Path) -> dict[tuple[str, str], dict[str, Any]]:
             trace = json.loads(line)
         except json.JSONDecodeError:
             continue
-        result[(
-            str(trace.get("session_fingerprint") or ""),
-            str(trace.get("current_message") or ""),
-        )] = trace
+        fingerprint = str(trace.get("session_fingerprint") or "")
+        message = str(trace.get("current_message") or "")
+        if message:
+            result[(fingerprint, message)] = trace
+        turn_index = sequence_by_session.get(fingerprint, 0)
+        result[(fingerprint, f"{_TRACE_SEQUENCE_PREFIX}{turn_index}")] = trace
+        sequence_by_session[fingerprint] = turn_index + 1
     return result
 
 
@@ -171,9 +176,12 @@ def _attach(results: dict[str, Any], telemetry: Path) -> None:
     traces = _traces(telemetry)
     for run in results["runs"]:
         fingerprint = _fingerprint(run["session_id"])
-        for turn in run["turns"]:
+        for turn_index, turn in enumerate(run["turns"]):
             turn["telemetry"] = _trace_excerpt(
                 traces.get((fingerprint, turn["message"]))
+                or traces.get(
+                    (fingerprint, f"{_TRACE_SEQUENCE_PREFIX}{turn_index}")
+                )
             )
 
 
