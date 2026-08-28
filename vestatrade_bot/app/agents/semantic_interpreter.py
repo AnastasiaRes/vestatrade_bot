@@ -1693,6 +1693,38 @@ def _reconcile_selection_strategy_contract(
         return
 
     if (
+        strategy_kind == SelectionStrategyKind.AMBIGUOUS.value
+        and not raw_controls
+    ):
+        normalized_strategy_evidence = _normalize_evidence(
+            strategy_evidence or ""
+        )
+        has_matching_typed_ambiguity = bool(
+            normalized_strategy_evidence
+            and any(
+                isinstance(item, dict)
+                and _normalize_evidence(str(item.get("evidence") or ""))
+                == normalized_strategy_evidence
+                for item in (repaired_turn.get("ambiguities") or ())
+            )
+        )
+        if not has_matching_typed_ambiguity:
+            # ``ambiguous`` is a redundant strategy verdict, not permission to
+            # change or relax product facts.  When its required typed evidence
+            # is absent, narrowing only that verdict to ``standard`` preserves
+            # independently grounded products, constraints and direct
+            # questions from the same LLM frame.  Real typed ambiguities and
+            # any conflicting selection controls still validate fail-closed.
+            repaired_turn["selection_strategy"] = {
+                "kind": SelectionStrategyKind.STANDARD.value,
+                "evidence": None,
+            }
+            changes.append(
+                "untyped_ambiguous_selection_strategy_defaulted_to_standard"
+            )
+        return
+
+    if (
         strategy_kind == SelectionStrategyKind.CONTINUE_WITH_CONFIRMED_FACTS.value
         and grounded_strategy_evidence is not None
     ):
@@ -1718,6 +1750,305 @@ def _reconcile_selection_strategy_contract(
     if strategy_evidence is None and strategy != canonical_standard:
         repaired_turn["selection_strategy"] = canonical_standard
         changes.append("selection_strategy_safely_defaulted_to_standard")
+
+
+_EXPLICIT_SHOW_SELECTION_RE = re.compile(
+    r"(?iu)(?<![\w-])"
+    r"(?:покаж(?:и|ите|и-ка)|подбер(?:и|ите)|предлож(?:и|ите))"
+    r"(?:\s+(?:мне|нам))?\s+"
+    r"(?:вариант(?:ы|ов)?|товар(?:ы|ов)?|модел(?:и|ей)?|что\s+(?:у\s+вас\s+)?есть)"
+)
+_PPR_RE = re.compile(r"(?iu)(?<![\w-])(?:ппр|pp[-\s]?r)(?![\w-])")
+_RADIATOR_MAIN_RE = re.compile(
+    r"(?iu)(?<![\w-])радиаторн\w*\s+"
+    r"(?:магистрал\w*|контур\w*|отоплен\w*|систем\w*)"
+)
+_GLASS_FIBER_RE = re.compile(
+    r"(?iu)(?:армирован\w*\s+)?(?:стекло[-\s]?волок\w*|стекловолок\w*)"
+)
+_INTERNAL_INTERNAL_RE = re.compile(
+    r"(?iu)(?<![\w-])(?:вн|вр|внутренняя)\s*[-/–—]\s*"
+    r"(?:вн|вр|внутренняя)(?![\w-])"
+)
+_SEWER_CONTEXT_RE = re.compile(
+    r"(?iu)(?<![\w-])(?:"
+    r"канализац\w*|септик\w*|"
+    r"туалет\w*(?:\s+труб\w*)?|"
+    r"труб\w*[^.!?\n]{0,80}туалет\w*|"
+    r"от\s+дом\w*[^.!?\n]{0,60}(?:на\s+улиц\w*|до\s+септик\w*)"
+    r")(?![\w-])"
+)
+_EXTERNAL_SEWER_RE = re.compile(
+    r"(?iu)(?<![\w-])(?:"
+    r"наружн\w*\s+канализац\w*|"
+    r"(?:на|для)\s+улиц\w*|"
+    r"(?:до|к)\s+септик\w*|"
+    r"от\s+дом\w*[^.!?\n]{0,60}(?:на\s+улиц\w*|до\s+септик\w*)"
+    r")(?![\w-])"
+)
+
+
+def _active_authoritative_goal(
+    authoritative_state: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Read the active typed goal from the bounded semantic context."""
+
+    if not isinstance(authoritative_state, dict):
+        return None
+    # Keep support for narrow unit-test fixtures while production always uses
+    # the versioned ``goals`` collection emitted by semantic_context().
+    direct = authoritative_state.get("active_goal")
+    if isinstance(direct, dict):
+        return direct
+    active_goal_id = authoritative_state.get("active_goal_id")
+    goals = authoritative_state.get("goals")
+    if not isinstance(goals, list):
+        return None
+    if active_goal_id is not None:
+        selected = next(
+            (
+                item
+                for item in goals
+                if isinstance(item, dict)
+                and item.get("goal_id") == active_goal_id
+            ),
+            None,
+        )
+        if selected is not None:
+            return selected
+    typed = [item for item in goals if isinstance(item, dict)]
+    return typed[0] if len(typed) == 1 else None
+
+
+def _has_constraint_name(
+    constraints: list[dict[str, Any]],
+    names: set[str],
+) -> bool:
+    return any(
+        _normalize_schema_identifier(item.get("name")) in names
+        for item in constraints
+        if isinstance(item, dict)
+    )
+
+
+def _append_known_constraint(
+    constraints: list[dict[str, Any]],
+    *,
+    name: str,
+    value: str,
+    evidence: str,
+    applies_to_product: int | None,
+) -> None:
+    constraints.append(
+        ConstraintFact(
+            name=name,
+            value=value,
+            unit=None,
+            status=ConstraintStatus.KNOWN,
+            polarity=ConstraintPolarity.REQUIRED,
+            applies_to_product=applies_to_product,
+            evidence=evidence,
+        ).model_dump(mode="json")
+    )
+
+
+def _recover_explicit_show_selection_control(
+    repaired_turn: dict[str, Any],
+    current_message: str,
+    changes: list[str],
+) -> None:
+    """Turn an explicit show command into the existing typed control.
+
+    This does not relax a technical fact.  It records the customer's explicit
+    choice to see a preliminary result using only already confirmed facts.
+    Direct information requests keep their higher priority and are never
+    rewritten into selection here.
+    """
+
+    match = _EXPLICIT_SHOW_SELECTION_RE.search(current_message)
+    if match is None or repaired_turn.get("information_requests"):
+        return
+    raw_strategy = repaired_turn.get("selection_strategy")
+    strategy_kind = (
+        str(getattr(raw_strategy.get("kind"), "value", raw_strategy.get("kind")))
+        if isinstance(raw_strategy, dict)
+        else ""
+    )
+    raw_controls = repaired_turn.get("selection_controls")
+    if strategy_kind == SelectionStrategyKind.CONTINUE_WITH_CONFIRMED_FACTS.value:
+        return
+    if raw_controls or strategy_kind not in {
+        "",
+        SelectionStrategyKind.STANDARD.value,
+    }:
+        return
+    evidence = match.group(0).strip()
+    control = {
+        "kind": SelectionControlKind.CONTINUE_WITH_CONFIRMED_FACTS.value,
+        "evidence": evidence,
+    }
+    repaired_turn["selection_controls"] = [control]
+    repaired_turn["selection_strategy"] = {
+        "kind": SelectionStrategyKind.CONTINUE_WITH_CONFIRMED_FACTS.value,
+        "evidence": evidence,
+    }
+    changes.append("explicit_show_selection_control_recovered")
+
+
+def _recover_bounded_selection_category_and_facts(
+    repaired_turn: dict[str, Any],
+    current_message: str,
+    normalized_products: list[dict[str, Any]],
+    constraints: list[dict[str, Any]],
+    authoritative_state: dict[str, Any] | None,
+    changes: list[str],
+) -> None:
+    """Recover a small closed vocabulary of unambiguous selection facts.
+
+    Each recovered value is backed by an exact current-turn fragment.  The
+    helper deliberately covers only the phrases required by the accepted QA
+    scenarios; it is not a fuzzy product or category resolver.
+    """
+
+    active_goal = _active_authoritative_goal(authoritative_state)
+    active_category = str((active_goal or {}).get("category") or "")
+    active_type = str((active_goal or {}).get("canonical_type") or "")
+    target_indexes = [
+        index
+        for index, item in enumerate(normalized_products)
+        if item.get("role") == ProductRole.TARGET.value
+    ]
+    target_index = target_indexes[0] if len(target_indexes) == 1 else None
+
+    sewer_match = _SEWER_CONTEXT_RE.search(current_message)
+    external_match = _EXTERNAL_SEWER_RE.search(current_message)
+    has_pipe_scope = bool(
+        active_category in {ProductCategory.PIPES.value, ProductCategory.SEWER.value}
+        or active_type.casefold() in {"pipe", "ppr pipe", "sewer pipe"}
+        or any(
+            str(item.get("category") or "")
+            in {ProductCategory.PIPES.value, ProductCategory.SEWER.value}
+            or str(item.get("canonical_type") or "").casefold()
+            in {"pipe", "ppr pipe", "sewer pipe"}
+            for item in normalized_products
+        )
+    )
+    if sewer_match is not None and (has_pipe_scope or "труб" in current_message.casefold()):
+        evidence = sewer_match.group(0).strip()
+        if target_index is None and not normalized_products:
+            normalized_products.append(
+                ProductMention(
+                    text=evidence,
+                    canonical_type="sewer pipe",
+                    category=ProductCategory.SEWER,
+                    role=ProductRole.TARGET,
+                    evidence=evidence,
+                ).model_dump(mode="json")
+            )
+            target_index = 0
+        elif target_index is not None:
+            normalized_products[target_index]["canonical_type"] = "sewer pipe"
+            normalized_products[target_index]["category"] = ProductCategory.SEWER.value
+        if active_category == ProductCategory.PIPES.value:
+            repaired_turn["operation"] = GoalOperation.CORRECT.value
+        changes.append("external_sewer_goal_recovered")
+        if external_match is not None and not _has_constraint_name(
+            constraints,
+            {"sewer_scope", "installation_scope", "sewer_type"},
+        ):
+            _append_known_constraint(
+                constraints,
+                name="sewer_scope",
+                value="external",
+                evidence=external_match.group(0).strip(),
+                applies_to_product=target_index,
+            )
+            changes.append("external_sewer_scope_recovered")
+
+    product_types = {
+        str(item.get("canonical_type") or "").casefold()
+        for item in normalized_products
+    }
+    product_categories = {
+        str(item.get("category") or "") for item in normalized_products
+    }
+    ppr_match = _PPR_RE.search(current_message)
+    if ppr_match is not None and not normalized_products:
+        normalized_products.append(
+            ProductMention(
+                text=ppr_match.group(0),
+                canonical_type="pipe",
+                category=ProductCategory.PIPES,
+                role=ProductRole.TARGET,
+                evidence=ppr_match.group(0),
+            ).model_dump(mode="json")
+        )
+        target_index = 0
+        product_types.add("pipe")
+        product_categories.add(ProductCategory.PIPES.value)
+        changes.append("ppr_product_goal_recovered")
+    pipe_target = bool(
+        product_types.intersection({"pipe", "ppr pipe", "polypropylene pipe"})
+        or ProductCategory.PIPES.value in product_categories
+        or active_category == ProductCategory.PIPES.value
+    )
+    radiator_main = _RADIATOR_MAIN_RE.search(current_message)
+    if (
+        pipe_target
+        and radiator_main is not None
+        and not _has_constraint_name(
+            constraints,
+            {"pipe_service", "application", "application_type", "service_type"},
+        )
+    ):
+        _append_known_constraint(
+            constraints,
+            name="pipe_service",
+            value="heating",
+            evidence=radiator_main.group(0),
+            applies_to_product=target_index,
+        )
+        changes.append("pipe_service_recovered_from_radiator_main")
+    glass = _GLASS_FIBER_RE.search(current_message)
+    if (
+        pipe_target
+        and glass is not None
+        and not _has_constraint_name(
+            constraints,
+            {"reinforcement", "reinforcement_type", "pipe_reinforcement"},
+        )
+    ):
+        _append_known_constraint(
+            constraints,
+            name="reinforcement",
+            value="glass_fiber",
+            evidence=glass.group(0),
+            applies_to_product=target_index,
+        )
+        changes.append("glass_fiber_reinforcement_recovered")
+
+    valve_target = bool(
+        product_types.intersection({"ball valve", "ball_valve", "valve"})
+        or ProductCategory.VALVES.value in product_categories
+        or active_category == ProductCategory.VALVES.value
+    )
+    connection_pair = _INTERNAL_INTERNAL_RE.search(current_message)
+    if (
+        valve_target
+        and connection_pair is not None
+        and not _has_constraint_name(
+            constraints,
+            {"connection_pattern", "thread_pair", "connection_type", "thread_type"},
+        )
+    ):
+        _append_known_constraint(
+            constraints,
+            name="connection_pattern",
+            value="female_female",
+            evidence=connection_pair.group(0),
+            applies_to_product=target_index,
+        )
+        changes.append("connection_pattern_recovered_from_explicit_pair")
 
 
 def _numeric_string_declared_unit_is_ungrounded(
@@ -5105,6 +5436,17 @@ def repair_grounded_semantic_payload(
         ambiguities,
         changes,
     )
+    _recover_bounded_selection_category_and_facts(
+        repaired,
+        current_message,
+        normalized_products,
+        normalized_constraints,
+        authoritative_dialogue_state,
+        changes,
+    )
+    # The bounded recovery may add or correct the one current target product;
+    # keep the strict validator and all later stages on the same typed frame.
+    repaired["products"] = normalized_products
     normalized_constraints = _dedupe_equivalent_numeric_constraints(
         normalized_constraints,
         changes,
@@ -5133,14 +5475,19 @@ def repair_grounded_semantic_payload(
         repaired["constraints"],
         changes,
     )
-    _reconcile_selection_strategy_contract(
+    _normalize_terminal_pending_selection_strategy(
+        repaired,
+        authoritative_dialogue_state,
+        changes,
+    )
+    _recover_explicit_show_selection_control(
         repaired,
         current_message,
         changes,
     )
-    _normalize_terminal_pending_selection_strategy(
+    _reconcile_selection_strategy_contract(
         repaired,
-        authoritative_dialogue_state,
+        current_message,
         changes,
     )
     _promote_unambiguous_constraint_correction(

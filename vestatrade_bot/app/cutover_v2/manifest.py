@@ -89,6 +89,75 @@ def json_collection_count(path: Path | None) -> int | None:
     return None
 
 
+def file_collection_manifest(
+    directories: tuple[Path, ...] | list[Path] | None,
+    *,
+    suffixes: tuple[str, ...] = (".pdf",),
+) -> dict[str, Any]:
+    """Fingerprint a corpus without persisting machine-specific paths."""
+
+    digest = hashlib.sha256()
+    count = 0
+    total_bytes = 0
+    seen: set[Path] = set()
+    for directory_index, directory in enumerate(directories or ()):
+        root = Path(directory)
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*")):
+            if not path.is_file() or path.suffix.lower() not in suffixes:
+                continue
+            resolved = path.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            relative = path.relative_to(root).as_posix()
+            try:
+                content = path.read_bytes()
+            except OSError:
+                continue
+            digest.update(f"{directory_index}:{relative}".encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(content)
+            digest.update(b"\0")
+            count += 1
+            total_bytes += len(content)
+    return {
+        "file_count": count,
+        "total_bytes": total_bytes,
+        "sha256": digest.hexdigest() if count else None,
+    }
+
+
+def passport_index_metadata(path: Path | None) -> dict[str, Any]:
+    result = {
+        "sha256": file_sha256(path),
+        "version": None,
+        "model": None,
+        "dimension": None,
+        "chunk_count": None,
+    }
+    if path is None or not path.is_file():
+        return result
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return result
+    result.update(
+        {
+            "version": payload.get("version"),
+            "model": payload.get("model"),
+            "dimension": payload.get("dimension"),
+            "chunk_count": (
+                len(payload.get("chunks"))
+                if isinstance(payload.get("chunks"), list)
+                else None
+            ),
+        }
+    )
+    return result
+
+
 def build_release_manifest(
     project_root: Path,
     *,
@@ -103,6 +172,10 @@ def build_release_manifest(
     testset_path: Path | None = None,
     generation_settings: dict[str, int | float | str | bool | None] | None = None,
     run_timestamp: str | None = None,
+    embedding_model: str | None = None,
+    embeddings_enabled: bool | None = None,
+    passport_index_path: Path | None = None,
+    passport_dirs: tuple[Path, ...] | list[Path] | None = None,
 ) -> dict[str, Any]:
     diff = _git(project_root, "diff", "--no-ext-diff", "HEAD", "--", "app", "tests")
     return {
@@ -134,6 +207,12 @@ def build_release_manifest(
         },
         "llm_provider": llm_provider,
         "llm_model": llm_model,
+        "retrieval": {
+            "embedding_model": embedding_model,
+            "embeddings_enabled": embeddings_enabled,
+            "passport_index": passport_index_metadata(passport_index_path),
+            "passport_corpus": file_collection_manifest(passport_dirs),
+        },
         "prompt_contracts": {
             "semantic_version": SEMANTIC_PROMPT_VERSION,
             "semantic_sha256": SEMANTIC_PROMPT_HASH,

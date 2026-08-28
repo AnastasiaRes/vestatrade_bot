@@ -262,6 +262,12 @@ def main(argv: list[str]) -> int:
                 "max_retries": settings.llm_max_retries,
                 "retry_delay_seconds": settings.llm_retry_delay_seconds,
             },
+            embedding_model=settings.embedding_model,
+            embeddings_enabled=settings.embeddings_enabled,
+            passport_index_path=settings.products_cache_path.with_name(
+                "passport_index.json"
+            ),
+            passport_dirs=(settings.product_docs_dir, PROJECT_ROOT / "data"),
             run_timestamp=datetime.now(timezone.utc).isoformat(),
             feature_flags={
                 "DIALOGUE_V2_ROUTING_ENABLED": True,

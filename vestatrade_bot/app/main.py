@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 import logging
 from pathlib import Path
+import secrets
 from threading import RLock
 from typing import Any
 from uuid import uuid4
@@ -158,13 +159,37 @@ async def widget_demo() -> FileResponse:
 
 
 @app.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest) -> ChatResponse:
+async def chat(
+    request: ChatRequest,
+    x_dialogue_qa_token: str | None = Header(
+        default=None,
+        alias="X-Dialogue-QA-Token",
+    ),
+) -> ChatResponse:
     if not request.message.strip():
         raise HTTPException(status_code=400, detail="message must not be empty")
+    if request.qa_mode is not None:
+        configured_token = settings.dialogue_v2_qa_control_token
+        qa_authorized = bool(
+            settings.dialogue_v2_qa_controls_enabled
+            and configured_token
+            and x_dialogue_qa_token
+            and secrets.compare_digest(configured_token, x_dialogue_qa_token)
+        )
+        if not qa_authorized:
+            raise HTTPException(status_code=403, detail="QA dialogue mode is disabled")
     # The orchestration path intentionally waits for a local LLM for up to the
     # shared request budget.  Keep that blocking work outside the ASGI event
     # loop so /health and static pages stay responsive meanwhile.
-    if request.client_turn_id is None:
+    if request.qa_mode is not None:
+        response = await run_in_threadpool(
+            orchestrator.handle_chat,
+            request.session_id,
+            request.message,
+            request.client_turn_id,
+            request.qa_mode,
+        )
+    elif request.client_turn_id is None:
         # Preserve the original two-argument controller boundary for existing
         # integrations and tests.  The optional retry key is forwarded only
         # when the client actually supplies it.

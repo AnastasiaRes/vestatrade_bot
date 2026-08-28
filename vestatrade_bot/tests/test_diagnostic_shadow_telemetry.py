@@ -12,6 +12,7 @@ from app.diagnostic_telemetry import (
     build_turn_trace,
     catalogue_manifest,
     finish_turn_trace,
+    record_passport_event,
 )
 from app.models import ChatResponse, SearchQuery, SessionState
 from app.openrouter_client import OpenRouterClient
@@ -208,12 +209,22 @@ def test_transport_and_search_events_are_recorded_at_shared_boundaries(
             "diagnostic-test",
             [{"role": "user", "content": "Покажите насос"}],
         )
+        embedding_result = client.embed(
+            ["Покажите насос, мой телефон +7 999 123-45-67"]
+        )
+        record_passport_event(
+            event="passport_retrieval",
+            status="no_hits",
+            document_scope=["pump-passport.pdf"],
+            hits=[],
+        )
         products = search.search(
             SearchQuery(
                 original_text="Покажите насос",
                 category="pumps",
             )
         )
+        sku_resolution = search.resolve_sku(sample_products[0].sku)
         response = ChatResponse(
             session_id=state.session_id,
             answer="Диагностический ответ",
@@ -226,6 +237,7 @@ def test_transport_and_search_events_are_recorded_at_shared_boundaries(
         )
 
     assert llm_result.llm_used is False
+    assert embedding_result is None
     payload = json.loads(
         settings.diagnostic_trace_path.read_text(encoding="utf-8").splitlines()[0]
     )
@@ -237,3 +249,30 @@ def test_transport_and_search_events_are_recorded_at_shared_boundaries(
     assert payload["search_plan_events"][0]["result_skus"] == [
         product.sku for product in products
     ]
+    assert sku_resolution.status.value == "exact"
+    resolver_event = payload["search_plan_events"][1]
+    assert resolver_event["operation"] == "resolve_sku"
+    assert resolver_event["details"]["status"] == "exact"
+    assert resolver_event["details"]["canonical_sku"] == sample_products[0].sku
+    assert payload["runtime"]["embedding_model"] == settings.embedding_model
+    assert payload["runtime"]["embeddings_configured"] is False
+    assert payload["embedding_calls"] == [
+        {
+            "batch_count": 0,
+            "event": "embedding_request",
+            "failure_code": "embedding_transport_not_configured",
+            "input_count": 1,
+            "model": settings.embedding_model,
+            "provider": "disabled",
+            "succeeded": False,
+        }
+    ]
+    assert payload["passport_events"] == [
+        {
+            "document_scope": ["pump-passport.pdf"],
+            "event": "passport_retrieval",
+            "hits": [],
+            "status": "no_hits",
+        }
+    ]
+    assert "+7 999 123-45-67" not in json.dumps(payload, ensure_ascii=False)

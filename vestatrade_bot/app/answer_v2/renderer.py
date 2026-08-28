@@ -568,6 +568,11 @@ def _product_segment(
         )
         qualifier = f"{qualifier}; по фиду не подтверждены {missing}"
     identity = f"«{product.name}» (артикул {product.sku})"
+    if "sku_resolution_unique_prefix" in product.reason_codes:
+        qualifier = (
+            "сокращённый артикул однозначно сопоставлен с этой полной "
+            f"карточкой; {qualifier}"
+        )
     if (
         product.recommendation_role is not None
         and product.recommendation_role.value == "primary"
@@ -790,7 +795,13 @@ def deterministic_render(answer_plan: AnswerPlan) -> RenderedAnswer:
             # is carried by the no-match segment below so grounding still sees
             # the typed direct-answer item as fulfilled.
             continue
-        if limitation.reason_code == "no_verified_in_stock_contract_match":
+        if limitation.reason_code == "ambiguous_sku_prefix":
+            limitation_text = (
+                "Указанное сокращение артикула соответствует нескольким товарам "
+                "в текущем каталоге. Уточните полный артикул; случайный вариант "
+                "я выбирать не буду."
+            )
+        elif limitation.reason_code == "no_verified_in_stock_contract_match":
             limitation_text = (
                 "Среди товаров с подтверждённым наличием не найден вариант, "
                 "у которого можно проверить совпадение всех обязательных "

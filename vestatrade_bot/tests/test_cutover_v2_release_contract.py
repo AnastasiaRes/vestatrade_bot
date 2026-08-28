@@ -54,9 +54,44 @@ def test_local_preview_flag_is_opt_in_and_defaults_off(monkeypatch) -> None:
         get_settings.cache_clear()
 
 
+def test_per_request_qa_controls_require_explicit_switch_and_token(monkeypatch) -> None:
+    get_settings.cache_clear()
+    monkeypatch.delenv("DIALOGUE_V2_QA_CONTROLS_ENABLED", raising=False)
+    monkeypatch.delenv("DIALOGUE_V2_QA_CONTROL_TOKEN", raising=False)
+    try:
+        defaults = get_settings()
+        assert defaults.dialogue_v2_qa_controls_enabled is False
+        assert defaults.dialogue_v2_qa_control_token is None
+
+        get_settings.cache_clear()
+        monkeypatch.setenv("DIALOGUE_V2_QA_CONTROLS_ENABLED", "true")
+        monkeypatch.setenv("DIALOGUE_V2_QA_CONTROL_TOKEN", "qa-secret")
+        configured = get_settings()
+        assert configured.dialogue_v2_qa_controls_enabled is True
+        assert configured.dialogue_v2_qa_control_token == "qa-secret"
+    finally:
+        get_settings.cache_clear()
+
+
 def test_release_manifest_is_reproducible_and_filters_secrets(tmp_path) -> None:
     catalog = tmp_path / "catalog.json"
     feed = tmp_path / "feed.xml"
+    passports = tmp_path / "passports"
+    passports.mkdir()
+    (passports / "pump.pdf").write_bytes(b"verified passport")
+    passport_index = tmp_path / "passport_index.json"
+    passport_index.write_text(
+        json.dumps(
+            {
+                "version": "2",
+                "model": "test/embedding",
+                "dimension": 3,
+                "chunks": [{"document": "pump.pdf"}],
+                "vectors": "",
+            }
+        ),
+        encoding="utf-8",
+    )
     catalog.write_bytes(b"stable catalog")
     feed.write_bytes(b"stable feed")
     flags = {
@@ -73,6 +108,10 @@ def test_release_manifest_is_reproducible_and_filters_secrets(tmp_path) -> None:
         registry_revision="registry-sha",
         llm_provider="openrouter",
         llm_model="test/model",
+        embedding_model="test/embedding",
+        embeddings_enabled=True,
+        passport_index_path=passport_index,
+        passport_dirs=(passports,),
         feature_flags=flags,
     )
     second = build_release_manifest(
@@ -82,6 +121,10 @@ def test_release_manifest_is_reproducible_and_filters_secrets(tmp_path) -> None:
         registry_revision="registry-sha",
         llm_provider="openrouter",
         llm_model="test/model",
+        embedding_model="test/embedding",
+        embeddings_enabled=True,
+        passport_index_path=passport_index,
+        passport_dirs=(passports,),
         feature_flags=flags,
     )
 
@@ -98,6 +141,13 @@ def test_release_manifest_is_reproducible_and_filters_secrets(tmp_path) -> None:
     assert first["prompt_contracts"]["semantic_sha256"]
     assert first["prompt_contracts"]["renderer_sha256"]
     assert first["run_timestamp"] is None
+    assert first["retrieval"]["embedding_model"] == "test/embedding"
+    assert first["retrieval"]["embeddings_enabled"] is True
+    assert first["retrieval"]["passport_index"]["model"] == "test/embedding"
+    assert first["retrieval"]["passport_index"]["chunk_count"] == 1
+    assert first["retrieval"]["passport_index"]["sha256"]
+    assert first["retrieval"]["passport_corpus"]["file_count"] == 1
+    assert first["retrieval"]["passport_corpus"]["sha256"]
 
 
 def test_live_state_and_idempotent_response_round_trip_in_session_stores() -> None:

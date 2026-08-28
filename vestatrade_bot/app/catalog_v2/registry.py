@@ -5,8 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.dialogue_v2.contracts import CustomerTask, DialogueStateV2, ProductGoal
+from app.sku_resolution import SkuResolutionStatus, resolve_catalog_sku
 
 from .contracts import (
+    CatalogProductSnapshot,
     CatalogProductRole,
     ComparisonMode,
     ContractFactDefinition,
@@ -974,6 +976,7 @@ class ProductContractRegistry:
         self,
         state: DialogueStateV2,
         task: CustomerTask,
+        catalog_snapshot: tuple[CatalogProductSnapshot, ...] = (),
     ) -> ContractResolution:
         goal = next(
             (item for item in state.product_goals if item.goal_id == task.target_goal_id),
@@ -985,6 +988,59 @@ class ProductContractRegistry:
                 status=ContractResolutionStatus.UNSUPPORTED,
                 reason_codes=("task_has_no_product_goal",),
             )
+        explicit_sku_facts = tuple(
+            fact
+            for fact in state.constraints
+            if fact.active
+            and fact.status.value == "known"
+            and fact.polarity.value == "required"
+            and normalize_identity(fact.name)
+            in {"sku", "article", "vendor code", "vendorcode", "артикул"}
+            and (
+                fact.goal_id == goal.goal_id
+                or (fact.goal_id is None and fact.task_id in {None, task.task_id})
+            )
+        )
+        if len(explicit_sku_facts) == 1 and catalog_snapshot:
+            sku_resolution = resolve_catalog_sku(
+                explicit_sku_facts[0].value,
+                catalog_snapshot,
+            )
+            if sku_resolution.status in {
+                SkuResolutionStatus.EXACT,
+                SkuResolutionStatus.UNIQUE_PREFIX,
+            } and sku_resolution.candidates:
+                resolved_product = sku_resolution.candidates[0]
+                contract = self.for_kind(resolved_product.product_kind)
+                if contract is None:
+                    return ContractResolution(
+                        task_id=task.task_id,
+                        goal_id=goal.goal_id,
+                        status=ContractResolutionStatus.UNSUPPORTED,
+                        product_kind=resolved_product.product_kind,
+                        reason_codes=("explicit_sku_product_kind_unsupported",),
+                    )
+                if task.act.value not in contract.supported_acts:
+                    return ContractResolution(
+                        task_id=task.task_id,
+                        goal_id=goal.goal_id,
+                        status=ContractResolutionStatus.UNSUPPORTED,
+                        product_kind=contract.product_kind,
+                        reason_codes=(
+                            "customer_act_not_supported_by_explicit_sku_contract",
+                        ),
+                    )
+                return ContractResolution(
+                    task_id=task.task_id,
+                    goal_id=goal.goal_id,
+                    status=ContractResolutionStatus.RESOLVED,
+                    contract_id=contract.contract_id,
+                    product_kind=contract.product_kind,
+                    reason_codes=(
+                        "explicit_sku_overrode_stale_product_goal",
+                        f"sku_resolution_{sku_resolution.status.value}",
+                    ),
+                )
         matches = self._semantic_matches(goal)
         if not matches:
             return ContractResolution(

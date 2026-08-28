@@ -47,10 +47,18 @@ PASSPORT_ANSWER_PROMPT = """
 объясняющая цитату простыми словами.
 
 КАК ВЫБИРАТЬ ВЫДЕРЖКУ
+Выдержки отсортированы по близости к вопросу: первая — самая вероятная.
+Начинай с неё и бери другую только тогда, когда она отвечает точнее.
+
 Подходит та, где ответ содержится прямо. Выдержка «про ту же тему» не годится:
 на вопрос о температуре хранения не подходит пункт о температуре рабочей
-среды. Если ни одна не отвечает — верни answerable=false. Это нормальный
-исход, а не неудача.
+среды, а на вопрос о положении насоса — пункт о повороте клеммной коробки.
+
+Прежде чем выбрать, сформулируй для себя: какими словами эта выдержка отвечает
+на заданный вопрос? Если ответить нечем — это не та выдержка.
+
+Если ни одна не отвечает — верни answerable=false. Это нормальный исход, а не
+неудача.
 
 КАК ВЫРЕЗАТЬ ЦИТАТУ
 Копируй из выбранной выдержки: те же слова, те же числа, те же единицы.
@@ -84,19 +92,27 @@ PASSPORT_ANSWER_PROMPT = """
 {
   "answerable": true|false,
   "excerpt": <номер выдержки, целое число>,
+  "why": "чем именно эта выдержка отвечает на вопрос",
   "quote": "дословный фрагмент из этой выдержки",
   "framing": "одна фраза простыми словами"
 }
-При answerable=false поля excerpt, quote и framing оставь пустыми
-(excerpt: 0, quote: "", framing: "").
+Поле why заполняется первым и объясняет выбор: оно нужно, чтобы проверить
+себя, а покупателю не показывается.
+При answerable=false поля excerpt, quote, why и framing оставь пустыми
+(excerpt: 0, остальные "").
 
 ПРИМЕР
 Вопрос: «Можно ли ставить насос вертикально?»
-Выдержка 3: «5.5. Насос следует устанавливать так, чтобы вал двигателя
+Выдержка 1: «5.5. Насос следует устанавливать так, чтобы вал двигателя
 находился в горизонтальном положении.»
-{"answerable": true, "excerpt": 3, "quote": "Насос следует устанавливать так,
-чтобы вал двигателя находился в горизонтальном положении.", "framing":
-"Вертикально ставить нельзя: паспорт требует горизонтального вала."}
+Выдержка 4: «5.11. Кожух электродвигателя с клеммной коробкой может быть
+переустановлен в любое удобное положение.»
+{"answerable": true, "excerpt": 1, "why": "прямо задаёт требуемое положение
+вала при установке", "quote": "Насос следует устанавливать так, чтобы вал
+двигателя находился в горизонтальном положении.", "framing": "Вертикально
+ставить нельзя: паспорт требует горизонтального вала."}
+Выдержка 4 тоже про положение, но про поворот кожуха, а не про установку
+насоса — она на вопрос не отвечает.
 """.strip()
 
 
@@ -105,8 +121,30 @@ class PassportAnswer(BaseModel):
 
     answerable: bool
     excerpt: int = Field(default=0, ge=0)
+    # Обоснование выбора. Покупателю не показывается: оно нужно, чтобы модель
+    # проверила себя, — без него она берёт правдоподобную выдержку вместо
+    # отвечающей. На вопросе о вертикальной установке так был выбран пункт о
+    # клеммной коробке, хотя пункт о горизонтальном вале стоял первым.
+    why: str = Field(default="", max_length=300)
     quote: str = Field(default="", max_length=600)
     framing: str = Field(default="", max_length=400)
+
+
+class VerifiedPassportEvidence(BaseModel):
+    """Structured result kept behind the existing passport-answer API.
+
+    Legacy callers still receive the same rendered string from ``answer``.
+    V2 can additionally consume this immutable, source-preserving result
+    instead of parsing prose back into a fact.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    quote: str
+    framing: str = ""
+    document: str
+    section: str
+    ordinal: int = Field(ge=0)
 
 
 # Паспорт не содержит коммерческих данных, поэтому их появление означает, что
@@ -138,15 +176,22 @@ class PassportAnswerAgent:
         self.llm_client = llm_client
         self.last_rejection_reason: str | None = None
         self.last_llm_used = False
+        self.last_verified_evidence: VerifiedPassportEvidence | None = None
         # Сколько раз пришлось поправить номер выдержки: если растёт, значит
         # список кандидатов стоит подавать иначе.
         self.corrected_excerpts = 0
 
-    def answer(self, question: str, chunks: list[Chunk]) -> tuple[str, Chunk] | None:  # noqa: D401
+    def answer(
+        self,
+        question: str,
+        chunks: list[Chunk],
+        context: str | None = None,
+    ) -> tuple[str, Chunk] | None:
         """Вернуть текст ответа и пункт-источник либо ``None``."""
 
         self.last_rejection_reason = None
         self.last_llm_used = False
+        self.last_verified_evidence = None
         if not chunks:
             self.last_rejection_reason = "no_candidates"
             return None
@@ -161,7 +206,12 @@ class PassportAnswerAgent:
                 {"role": "system", "content": PASSPORT_ANSWER_PROMPT},
                 {
                     "role": "user",
-                    "content": f"Вопрос покупателя: {question}\n\n{listing}",
+                    "content": (
+                        # Диалог нужен для местоимений: на «можно ли его ставить
+                        # вертикально» без контекста непонятно, о чём речь.
+                        (f"О чём разговор: {context}\n\n" if context else "")
+                        + f"Вопрос покупателя: {question}\n\n{listing}"
+                    ),
                 },
             ],
             {},
@@ -251,6 +301,13 @@ class PassportAnswerAgent:
                 self.last_rejection_reason = f"number_not_in_quote: {number}"
                 return None
 
+        self.last_verified_evidence = VerifiedPassportEvidence(
+            quote=parsed.quote.strip().strip('«»"'),
+            framing=parsed.framing,
+            document=chunk.document,
+            section=chunk.section,
+            ordinal=chunk.ordinal,
+        )
         return self._render(parsed, chunk), chunk
 
     @staticmethod

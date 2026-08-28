@@ -8,6 +8,11 @@ from numbers import Real
 from typing import Any
 
 from app.models import Product, SearchQuery
+from app.sku_resolution import (
+    SkuResolution,
+    SkuResolutionStatus,
+    resolve_catalog_sku,
+)
 
 from .product_constraints import (
     normalize_inch_size,
@@ -1192,15 +1197,18 @@ class FeedSearchAgent:
         return (tier, distance)
 
     def _search_sku(self, sku: str) -> list[Product]:
-        needle = normalize_sku(sku)
-        # An article identifies exactly one catalog row.  Prefix/substring
-        # fallback made ``ABC-12345`` silently resolve to ``ABC-12345-X`` and
-        # is unsafe for both explicit SKU requests and compact feed articles.
-        return [
-            product
-            for product in self.products
-            if needle and normalize_sku(product.sku) == needle
-        ]
+        resolution = self.resolve_sku(sku)
+        if resolution.status not in {
+            SkuResolutionStatus.EXACT,
+            SkuResolutionStatus.UNIQUE_PREFIX,
+        }:
+            return []
+        return list(resolution.candidates)
+
+    def resolve_sku(self, sku: str) -> SkuResolution[Product]:
+        """Resolve an explicit article without fuzzy or substring matching."""
+
+        return resolve_catalog_sku(sku, self.products)
 
     def _product_text(self, product: Product) -> str:
         attr_text = " ".join(f"{key} {value}" for key, value in product.attributes_normalized.items())

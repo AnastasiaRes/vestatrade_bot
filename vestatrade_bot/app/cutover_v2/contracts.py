@@ -8,7 +8,12 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.answer_v2.contracts import AnswerPlanStatus
-from app.catalog_v2.contracts import CatalogProductRole, ProductKind
+from app.catalog_v2.contracts import (
+    CatalogProductRole,
+    ProductKind,
+    SelectionRequest,
+    SelectionResult,
+)
 from app.dialogue_v2.contracts import DialogueStateV2, NextActionKind, TaskAct
 from app.models import ChatResponse
 
@@ -170,6 +175,8 @@ class V2TurnCandidate(FrozenModel):
     product_statuses: tuple[str, ...] = ()
     response_product_kinds: tuple[ProductKind, ...] = ()
     response_product_roles: tuple[CatalogProductRole, ...] = ()
+    selection_request: SelectionRequest | None = None
+    selection_result: SelectionResult | None = None
     semantic_accepted: bool = False
     contracts_resolved: bool = False
     external_side_effect_started: bool = False

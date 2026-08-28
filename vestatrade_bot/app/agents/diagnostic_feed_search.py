@@ -6,6 +6,7 @@ from typing import Any
 
 from app.diagnostic_telemetry import catalogue_manifest, record_search_event
 from app.models import Product, SearchQuery
+from app.sku_resolution import SkuResolution
 
 from .feed_search import FeedSearchAgent
 
@@ -48,6 +49,29 @@ class DiagnosticFeedSearchAgent(FeedSearchAgent):
             operation="resolve_sku_mentions",
             query=message,
             result_skus=self._skus(result),
+        )
+        return result
+
+    def resolve_sku(self, sku: str) -> SkuResolution[Product]:
+        try:
+            result = super().resolve_sku(sku)
+        except Exception as exc:
+            record_search_event(
+                operation="resolve_sku",
+                query=sku,
+                result_skus=[],
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            raise
+        record_search_event(
+            operation="resolve_sku",
+            query=sku,
+            result_skus=self._skus(list(result.candidates)),
+            details={
+                "status": result.status.value,
+                "canonical_sku": result.canonical_sku,
+                "reason_code": result.reason_code,
+            },
         )
         return result
 

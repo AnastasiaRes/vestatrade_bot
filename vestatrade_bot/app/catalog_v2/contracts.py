@@ -326,6 +326,102 @@ class CatalogPlanningResult(FrozenModel):
     error: str | None = None
 
 
+class SelectionRequestAction(str, Enum):
+    SHOW = "show"
+    RECOMMEND = "recommend"
+    CONTINUE_SELECTION = "continue_selection"
+
+
+class SelectionResultStatus(str, Enum):
+    SHOWN = "shown"
+    NEED_CLARIFICATION = "need_clarification"
+    NO_MATCH = "no_match"
+    REJECTED = "rejected"
+
+
+class SelectionFactInput(FrozenModel):
+    name: str
+    value: str | int | float | bool | None = None
+    unit: str | None = None
+    status: Literal["known", "unknown", "refused", "deferred"]
+    polarity: Literal["required", "preferred", "excluded"] = "required"
+    strength: Literal["hard", "soft"] = "hard"
+    evidence: str = Field(default="", max_length=240)
+    source: str
+    source_turn: int = Field(ge=1)
+
+
+class PresentedSelectionProduct(FrozenModel):
+    sku: str
+    name: str
+    ordinal: int = Field(ge=1)
+
+
+class SelectionRequest(FrozenModel):
+    schema_version: Literal["1.0"] = CATALOG_CONTRACT_SCHEMA_VERSION
+    original_utterance: str = Field(max_length=8_000)
+    action: SelectionRequestAction
+    task_id: str
+    goal_id: str | None = None
+    category: str
+    product_kind: ProductKind
+    contract_id: str | None = None
+    known_facts: tuple[SelectionFactInput, ...] = ()
+    hard_constraints: tuple[SearchConstraint, ...] = ()
+    soft_constraints: tuple[SearchConstraint, ...] = ()
+    explicitly_unknown_facts: tuple[str, ...] = ()
+    current_product_focus: str | None = None
+    previously_delivered_products: tuple[PresentedSelectionProduct, ...] = ()
+    catalog_revision: str
+
+
+class SelectionConstraintDisposition(FrozenModel):
+    disposition: Literal["applied", "relaxed", "rejected", "unverified"]
+    fact_name: str
+    requested_value: str | int | float | bool | None = None
+    candidate_sku: str | None = None
+    reason_codes: tuple[str, ...] = ()
+
+
+class SelectionProductCard(FrozenModel):
+    sku: str
+    name: str
+    price: float
+    currency: str
+    stock_status: str
+    stock_qty: int | None = None
+    url: str
+    image_url: str | None = None
+
+
+class SelectionResult(FrozenModel):
+    schema_version: Literal["1.0"] = CATALOG_CONTRACT_SCHEMA_VERSION
+    status: SelectionResultStatus
+    selection_id: str
+    task_id: str
+    goal_id: str | None = None
+    contract_id: str | None = None
+    category: str
+    product_kind: ProductKind
+    applied_facts: tuple[SelectionFactInput, ...] = ()
+    hard_constraints: tuple[SearchConstraint, ...] = ()
+    soft_constraints: tuple[SearchConstraint, ...] = ()
+    applied_filters: tuple[SelectionConstraintDisposition, ...] = ()
+    constraint_dispositions: tuple[SelectionConstraintDisposition, ...] = ()
+    missing_critical_fact: str | None = None
+    candidates_before_filters: int = Field(default=0, ge=0)
+    candidates_after_filters: int = Field(default=0, ge=0)
+    ordered_skus: tuple[str, ...] = ()
+    cards: tuple[SelectionProductCard, ...] = ()
+    excluded_candidate_reason_codes: dict[str, tuple[str, ...]] = Field(
+        default_factory=dict
+    )
+    catalog_revision: str
+    outcome_gate_passed: bool = False
+    customer_visible_state_updated: bool = False
+    reason_code: str
+
+
 class CoverageEntry(FrozenModel):
     product_kind: ProductKind
     role: CatalogProductRole

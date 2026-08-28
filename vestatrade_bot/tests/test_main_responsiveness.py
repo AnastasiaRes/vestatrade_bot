@@ -106,3 +106,49 @@ def test_reload_feed_error_is_redacted(monkeypatch) -> None:
     assert "credential-bearing" not in str(captured.value.detail)
     assert captured.value.detail["code"] == "FEED_RELOAD_FAILED"
     assert captured.value.detail["trace_id"]
+
+
+def test_qa_mode_is_rejected_without_server_authorization(monkeypatch) -> None:
+    monkeypatch.setattr(main.settings, "dialogue_v2_qa_controls_enabled", False)
+    monkeypatch.setattr(main.settings, "dialogue_v2_qa_control_token", None)
+
+    with pytest.raises(HTTPException) as captured:
+        asyncio.run(
+            main.chat(
+                ChatRequest(
+                    session_id="qa-shadow",
+                    message="Покажите насос",
+                    qa_mode="shadow",
+                ),
+                x_dialogue_qa_token="wrong",
+            )
+        )
+
+    assert captured.value.status_code == 403
+
+
+def test_authorized_qa_mode_is_forwarded_to_the_same_chat_path(monkeypatch) -> None:
+    calls = []
+
+    def qa_chat(session_id, message, client_turn_id, qa_mode):
+        calls.append((session_id, message, client_turn_id, qa_mode.value))
+        return ChatResponse(session_id=session_id, answer="QA answer")
+
+    monkeypatch.setattr(main.settings, "dialogue_v2_qa_controls_enabled", True)
+    monkeypatch.setattr(main.settings, "dialogue_v2_qa_control_token", "qa-secret")
+    monkeypatch.setattr(main.orchestrator, "handle_chat", qa_chat)
+    monkeypatch.setattr(main.chat_logger, "log_turn", lambda *_args: None)
+
+    response = asyncio.run(
+        main.chat(
+            ChatRequest(
+                session_id="qa-shadow",
+                message="Покажите насос",
+                qa_mode="shadow",
+            ),
+            x_dialogue_qa_token="qa-secret",
+        )
+    )
+
+    assert response.answer == "QA answer"
+    assert calls == [("qa-shadow", "Покажите насос", None, "shadow")]

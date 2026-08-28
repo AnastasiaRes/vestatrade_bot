@@ -81,6 +81,7 @@ class ResponseComposerAgent:
         self.llm_client = llm_client or OpenRouterClient()
         # Заполняется из контекста диалога в set_state; до первого хода пусто.
         self._passport_documents: list[str] = []
+        self._last_product_summary: str | None = None
         self.last_llm_used = False
         self.last_llm_requested = False
         self.last_llm_output_accepted = False
@@ -113,6 +114,8 @@ class ResponseComposerAgent:
         # более точную выдержку, чем по всему каталогу документов: замер дал
         # 24 попадания из 30 против 17.
         self._passport_documents = list(passport_documents or [])
+        # Товар, о котором идёт разговор: нужен для местоимений в вопросе.
+        self._last_product_summary = last_product_summary
         parts: list[str] = []
         if category:
             parts.append(f"категория: {category}")
@@ -603,33 +606,19 @@ class ResponseComposerAgent:
         if client is None:
             return None
         try:
-            from app.agents.passport_answer import PassportAnswerAgent
-            from app.config import PROJECT_ROOT, get_settings
-            from app.passport_retrieval import expand_query, load_or_build
+            from app.config import get_settings
+            from app.product_fact_evidence import PassportEvidenceService
 
             settings = get_settings()
-            if not settings.embeddings_enabled:
-                return None
-            index = load_or_build(
-                settings.products_cache_path.with_name("passport_index.json"),
-                [settings.product_docs_dir, PROJECT_ROOT / "data"],
-                client.embed,
-                settings.embedding_model,
-            )
-            vectors = client.embed([expand_query(user_message)])
-            hits = index.search(
+            result = PassportEvidenceService(settings, client).answer(
                 user_message,
-                documents=getattr(self, "_passport_documents", None) or None,
-                query_vector=vectors[0] if vectors else None,
-            )
-            if not hits:
-                return None
-            result = PassportAnswerAgent(client).answer(
-                user_message, [hit.chunk for hit in hits]
+                document_scope=tuple(self._passport_documents),
+                context=getattr(self, "_last_product_summary", None),
+                flow="legacy",
             )
         except Exception:  # pragma: no cover - поиск не должен ломать ответ
             return None
-        return result[0] if result else None
+        return result.answer_text
 
     def compose_term_consult(self, user_message: str) -> str:
         definition = self._glossary_definition(user_message)

@@ -12,6 +12,7 @@ from app.dialogue_v2.contracts import (
     NextActionKind,
     NextActionPlan,
 )
+from app.sku_resolution import SkuResolutionStatus, resolve_catalog_sku
 
 from .contracts import (
     CandidateAssessment,
@@ -385,6 +386,27 @@ def _make_search_plan(
     in_stock_required: bool = False,
 ) -> CatalogSearchPlan:
     hard, soft = _constraints(assessment)
+    sku_resolution = None
+    required_sku_constraints = tuple(
+        item
+        for item in hard
+        if item.name == "sku" and item.polarity == "required"
+    )
+    if len(required_sku_constraints) == 1:
+        sku_resolution = resolve_catalog_sku(
+            required_sku_constraints[0].value,
+            catalog_snapshot,
+        )
+        if sku_resolution.status in {
+            SkuResolutionStatus.EXACT,
+            SkuResolutionStatus.UNIQUE_PREFIX,
+        } and sku_resolution.canonical_sku is not None:
+            hard = tuple(
+                item.model_copy(update={"value": sku_resolution.canonical_sku})
+                if item is required_sku_constraints[0]
+                else item
+                for item in hard
+            )
     hard_names = {item.name for item in hard}
     known_constraint_names = {
         item.name for item in (*hard, *soft)
@@ -422,12 +444,17 @@ def _make_search_plan(
     }
     if "sku" in hard_names:
         unresolved_required_hard = set()
+    ambiguous_sku_prefix = bool(
+        sku_resolution is not None
+        and sku_resolution.status == SkuResolutionStatus.AMBIGUOUS_PREFIX
+    )
     search_blocked = (
         assessment.status in {
             ReadinessStatus.NEEDS_DECISION_FACT,
             ReadinessStatus.BLOCKED,
         }
         or bool(unresolved_required_hard)
+        or ambiguous_sku_prefix
     )
     compatible_kinds = set(contract.candidate_kinds or (contract.product_kind,))
     pool = tuple(
@@ -485,6 +512,8 @@ def _make_search_plan(
             assessment.status != ReadinessStatus.PRELIMINARY_READY or not unverified
         ):
             stages.append(CatalogSearchStage.HONEST_NO_MATCH)
+    elif ambiguous_sku_prefix:
+        stages.append(CatalogSearchStage.HONEST_NO_MATCH)
 
     unavailable = tuple(
         dict.fromkeys(
@@ -493,14 +522,22 @@ def _make_search_plan(
         )
     )
     reasons = ["deterministic_contract_search_plan"]
+    if sku_resolution is not None:
+        reasons.append(f"sku_resolution_{sku_resolution.status.value}")
     if in_stock_required:
         reasons.append("in_stock_requirement_from_typed_fact")
-    if search_blocked:
+    if ambiguous_sku_prefix:
+        reasons.append("catalog_search_blocked_ambiguous_sku_prefix")
+    elif search_blocked:
         reasons.append("catalog_search_blocked_missing_required_hard_facts")
     if unverified:
         reasons.append("some_candidates_cannot_be_verified_from_feed")
-    if CatalogSearchStage.HONEST_NO_MATCH in stages and not search_blocked:
+    if CatalogSearchStage.HONEST_NO_MATCH in stages and (
+        not search_blocked or ambiguous_sku_prefix
+    ):
         reasons.append("no_verified_contract_match")
+    if ambiguous_sku_prefix:
+        reasons.append("ambiguous_sku_prefix")
     if in_stock_required and not eligible and not relaxed:
         reasons.append("no_verified_in_stock_contract_match")
         if not unverified:

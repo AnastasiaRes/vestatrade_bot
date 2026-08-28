@@ -205,12 +205,15 @@ class TurnTrace:
     state_before: SessionState
     settings: Settings
     catalog: dict[str, Any]
+    qa_mode: str | None = None
     trace_id: str = field(default_factory=lambda: uuid4().hex)
     started_at: float = field(default_factory=monotonic)
     timestamp: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
     llm_calls: list[dict[str, Any]] = field(default_factory=list)
+    embedding_calls: list[dict[str, Any]] = field(default_factory=list)
+    passport_events: list[dict[str, Any]] = field(default_factory=list)
     search_events: list[dict[str, Any]] = field(default_factory=list)
     semantic_shadow: dict[str, Any] | None = None
     dialogue_v2_shadow: dict[str, Any] | None = None
@@ -219,6 +222,16 @@ class TurnTrace:
 
     def record_llm(self, event: dict[str, Any]) -> None:
         self.llm_calls.append(_json_safe(event))
+
+    def record_embedding(self, event: dict[str, Any]) -> None:
+        # Never persist the input texts or vectors.  Counts, dimensions and a
+        # stable failure code are sufficient to distinguish retrieval outages
+        # from semantic or catalogue errors without copying customer data into
+        # an additional diagnostic surface.
+        self.embedding_calls.append(_json_safe(event))
+
+    def record_passport(self, event: dict[str, Any]) -> None:
+        self.passport_events.append(_json_safe(event))
 
     def record_search(self, event: dict[str, Any]) -> None:
         self.search_events.append(_json_safe(event))
@@ -304,6 +317,9 @@ class TurnTrace:
                 "llm_provider": self.settings.llm_provider,
                 "llm_model": self.settings.llm_model,
                 "llm_model_strong": self.settings.llm_model_strong,
+                "embedding_model": self.settings.embedding_model,
+                "embeddings_configured": self.settings.embeddings_enabled,
+                "qa_mode": self.qa_mode,
                 "semantic_shadow_model": (
                     self.settings.semantic_shadow_model
                     or self.settings.llm_model_strong
@@ -451,6 +467,8 @@ class TurnTrace:
             "dialogue_v2_shadow": self.dialogue_v2_shadow,
             "search_plan_events": self.search_events,
             "llm_calls": self.llm_calls,
+            "embedding_calls": self.embedding_calls,
+            "passport_events": self.passport_events,
             "legacy_answer_plan": (
                 {
                     "final_answer_source": debug.get("final_answer_source"),
@@ -503,6 +521,7 @@ def build_turn_trace(
     message: str,
     state_before: SessionState,
     catalog: dict[str, Any],
+    qa_mode: str | None = None,
 ) -> TurnTrace | None:
     if not (
         settings.diagnostic_telemetry_enabled
@@ -524,6 +543,7 @@ def build_turn_trace(
         or settings.dialogue_v2_live_delivery_enabled
         or settings.dialogue_v2_internal_canary_enabled
         or settings.dialogue_v2_force_legacy
+        or qa_mode is not None
     ):
         return None
     return TurnTrace(
@@ -533,6 +553,7 @@ def build_turn_trace(
         state_before=state_before,
         settings=settings,
         catalog=catalog,
+        qa_mode=qa_mode,
     )
 
 
@@ -544,6 +565,34 @@ def record_llm_event(**event: Any) -> None:
         except Exception as exc:  # pragma: no cover - injected telemetry failure
             logger.warning(
                 "Could not record LLM diagnostic error_type=%s",
+                type(exc).__name__,
+            )
+
+
+def record_embedding_event(**event: Any) -> None:
+    """Record one embedding transport boundary without text or vectors."""
+
+    trace = _ACTIVE_TRACE.get()
+    if trace is not None:
+        try:
+            trace.record_embedding(event)
+        except Exception as exc:  # pragma: no cover - injected telemetry failure
+            logger.warning(
+                "Could not record embedding diagnostic error_type=%s",
+                type(exc).__name__,
+            )
+
+
+def record_passport_event(**event: Any) -> None:
+    """Record passport retrieval and verification provenance."""
+
+    trace = _ACTIVE_TRACE.get()
+    if trace is not None:
+        try:
+            trace.record_passport(event)
+        except Exception as exc:  # pragma: no cover - injected telemetry failure
+            logger.warning(
+                "Could not record passport diagnostic error_type=%s",
                 type(exc).__name__,
             )
 
@@ -569,6 +618,7 @@ def record_search_event(
     result_skus: list[str],
     relaxations: list[str] | None = None,
     error: str | None = None,
+    details: dict[str, Any] | None = None,
 ) -> None:
     trace = _ACTIVE_TRACE.get()
     if trace is None:
@@ -585,6 +635,7 @@ def record_search_event(
                 "relaxations": relaxations or [],
                 "result_skus": result_skus,
                 "error": error,
+                **({"details": details} if details else {}),
             }
         )
     except Exception as exc:  # pragma: no cover - injected telemetry failure

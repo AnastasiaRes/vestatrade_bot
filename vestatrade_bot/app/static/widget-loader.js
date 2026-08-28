@@ -74,6 +74,10 @@
         joinUrl(assetsBase, "/static/vesta_iconka.png"),
       startOpen: parseBoolean(data.open || globalConfig.open, false),
       persistSession: parseBoolean(data.persistSession || globalConfig.persistSession, true),
+      dialogueMode: normalizeDialogueMode(
+        data.dialogueMode || globalConfig.dialogueMode,
+      ),
+      qaToken: String(data.qaToken || globalConfig.qaToken || "").trim(),
       maxMessageLength: sanitizeMessageLength(
         data.maxMessageLength || globalConfig.maxMessageLength,
       ),
@@ -794,11 +798,19 @@
       const typing = appendTyping(messages, config);
 
       try {
+        const headers = { "Content-Type": "application/json" };
+        if (config.dialogueMode && config.qaToken) {
+          headers["X-Dialogue-QA-Token"] = config.qaToken;
+        }
+        const requestBody = { session_id: sessionId, message: text };
+        if (config.dialogueMode) {
+          requestBody.qa_mode = config.dialogueMode;
+        }
         const response = await fetch(joinUrl(config.apiBase, "/chat"), {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers,
           credentials: "omit",
-          body: JSON.stringify({ session_id: sessionId, message: text }),
+          body: JSON.stringify(requestBody),
         });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) {
@@ -1072,6 +1084,13 @@
 
   function normalizePosition(value) {
     return value === "left" ? "left" : "right";
+  }
+
+  function normalizeDialogueMode(value) {
+    const mode = String(value || "").trim().toLowerCase();
+    return ["legacy", "shadow", "v2_preview", "auto"].includes(mode)
+      ? mode
+      : "";
   }
 
   function parseBoolean(value, fallback) {

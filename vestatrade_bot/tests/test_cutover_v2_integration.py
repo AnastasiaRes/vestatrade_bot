@@ -22,7 +22,12 @@ from app.cutover_v2.contracts import (
 )
 from app.dialogue_v2.contracts import DialogueStateV2, NextActionKind, TaskAct
 from app.dialogue_v2.controller import DialogueV2Outcome
-from app.models import ChatProductSummary, ChatResponse, SessionState
+from app.models import (
+    ChatProductSummary,
+    ChatResponse,
+    DialogueQAMode,
+    SessionState,
+)
 from app.session_store import InMemorySessionStore
 
 
@@ -70,6 +75,25 @@ def _settings(tmp_path, registry_path):
             "dialogue_v2_internal_canary_enabled": True,
             "dialogue_v2_internal_canary_percent": 5,
             "dialogue_v2_migration_registry_path": registry_path,
+        }
+    )
+
+
+def _qa_settings(tmp_path):
+    return get_settings().model_copy(
+        update={
+            "llm_provider": "disabled",
+            "diagnostic_telemetry_enabled": True,
+            "diagnostic_trace_path": tmp_path / "qa-modes.jsonl",
+            "dialogue_v2_routing_enabled": False,
+            "dialogue_v2_shadow_compare_enabled": False,
+            "dialogue_v2_live_delivery_enabled": False,
+            "dialogue_v2_internal_canary_enabled": False,
+            "dialogue_v2_internal_canary_percent": 0,
+            "dialogue_v2_local_preview_enabled": False,
+            "dialogue_v2_qa_controls_enabled": True,
+            "dialogue_v2_qa_control_token": "qa-secret",
+            "commerce_external_execution_enabled": False,
         }
     )
 
@@ -162,6 +186,106 @@ def test_local_preview_enables_live_attempt_only_without_external_execution(
         update={"dialogue_v2_local_preview_enabled": False}
     )
     assert bot._stage6_live_attempt_enabled() is False
+
+
+def test_protected_qa_preview_uses_v2_without_public_rollout_flags(
+    sample_products,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    settings = _qa_settings(tmp_path)
+    bot = ChatOrchestrator(
+        settings=settings,
+        products=sample_products,
+        llm_client=_NoNetworkClient(settings),
+    )
+    state_after = DialogueStateV2(turn_number=1)
+    outcome = DialogueV2Outcome(
+        status="applied",
+        state_before=DialogueStateV2(),
+        state_after=state_after,
+    )
+    monkeypatch.setattr(
+        bot.semantic_interpreter,
+        "interpret",
+        lambda *_args: {"status": "accepted"},
+    )
+    monkeypatch.setattr(bot, "_run_stage6_v2_candidate", lambda *_args: outcome)
+    monkeypatch.setattr(
+        "app.agents.orchestrator.build_v2_turn_candidate",
+        lambda *_args, **_kwargs: _candidate("qa-v2", state_after, bot),
+    )
+
+    def legacy_must_not_run(*_args, **_kwargs):
+        raise AssertionError("legacy executed for an accepted QA V2 preview")
+
+    monkeypatch.setattr(bot, "_handle_chat", legacy_must_not_run)
+    response = bot.handle_chat(
+        "qa-v2",
+        "Сколько стоит VT.228.N.04?",
+        qa_mode=DialogueQAMode.V2_PREVIEW,
+    )
+
+    assert response.products[0].sku == "VT.228.N.04"
+    stored = bot.sessions.snapshot("qa-v2")
+    assert stored.live_dialogue_state_v2 is not None
+    assert stored.v2_migration_cell_id is None
+    trace = json.loads(settings.diagnostic_trace_path.read_text().splitlines()[0])
+    assert trace["runtime"]["qa_mode"] == "v2_preview"
+    assert trace["cutover_v2"]["decision"]["owner_candidate"] == "v2"
+    assert "approved_protected_qa_v2_preview" in trace["cutover_v2"]["decision"]["reason_codes"]
+
+
+def test_protected_qa_shadow_keeps_legacy_public_and_v2_state_separate(
+    sample_products,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    settings = _qa_settings(tmp_path)
+    bot = ChatOrchestrator(
+        settings=settings,
+        products=sample_products,
+        llm_client=_NoNetworkClient(settings),
+    )
+    state_after = DialogueStateV2(turn_number=1)
+    outcome = DialogueV2Outcome(
+        status="applied",
+        state_before=DialogueStateV2(),
+        state_after=state_after,
+    )
+    monkeypatch.setattr(
+        bot.semantic_interpreter,
+        "interpret",
+        lambda *_args: {"status": "accepted"},
+    )
+    monkeypatch.setattr(bot.dialogue_controller_v2, "run", lambda *_args, **_kwargs: outcome)
+    monkeypatch.setattr(
+        "app.agents.orchestrator.build_v2_turn_candidate",
+        lambda *_args, **_kwargs: _candidate("qa-shadow", state_after, bot),
+    )
+    monkeypatch.setattr(
+        bot,
+        "_handle_chat",
+        lambda *_args: ChatResponse(session_id="qa-shadow", answer="Legacy public"),
+    )
+
+    response = bot.handle_chat(
+        "qa-shadow",
+        "Сколько стоит VT.228.N.04?",
+        qa_mode=DialogueQAMode.SHADOW,
+    )
+
+    assert response.answer == "Legacy public"
+    stored = bot.sessions.snapshot("qa-shadow")
+    assert stored.live_dialogue_state_v2 is None
+    assert stored.dialogue_state_v2 is not None
+    assert stored.dialogue_state_v2.turn_number == 1
+    assert stored.last_products == []
+    assert stored.v2_last_products == []
+    assert stored.product_focus is None
+    trace = json.loads(settings.diagnostic_trace_path.read_text().splitlines()[0])
+    assert trace["runtime"]["qa_mode"] == "shadow"
+    assert trace["cutover_v2"]["decision"]["owner_candidate"] == "legacy"
 
 
 def test_internal_canary_has_one_owner_and_does_not_execute_legacy(

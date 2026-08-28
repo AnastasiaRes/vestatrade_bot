@@ -30,6 +30,7 @@ from app.catalog_v2.contracts import (
 from app.catalog_v2.planner import plan_catalog_search
 from app.catalog_v2.readiness import assess_task_readiness
 from app.catalog_v2.registry import ProductContractRegistry
+from app.catalog_v2.selection import bind_exact_named_product
 from app.commerce_v2.contracts import (
     CommerceCapabilitySnapshot,
     CommerceContextSnapshot,
@@ -155,6 +156,15 @@ class DialogueControllerV2:
             semantic_result.understanding,
             turn_metadata,
         )
+        if product_contracts_enabled and catalog_snapshot:
+            reduction = reduction.model_copy(
+                update={
+                    "state": bind_exact_named_product(
+                        reduction.state,
+                        catalog_snapshot,
+                    )
+                }
+            )
         resolutions = ()
         readiness = ()
         if product_contracts_enabled:
@@ -195,7 +205,11 @@ class DialogueControllerV2:
                 )
             )
             resolutions = tuple(
-                self.contract_registry.resolve_task(reduction.state, task)
+                self.contract_registry.resolve_task(
+                    reduction.state,
+                    task,
+                    catalog_snapshot,
+                )
                 for task in tasks
             )
             readiness = tuple(

@@ -29,6 +29,9 @@ class CutoverRuntime(BaseModel):
     internal_canary_enabled: bool = False
     internal_canary_percent: int = Field(default=0, ge=0, le=5)
     local_preview_enabled: bool = False
+    # Protected per-request QA preview.  It bypasses rollout registry/cohort
+    # assignment, but never semantic, contract, grounding or safety gates.
+    qa_preview_enabled: bool = False
     external_actions_enabled: bool = False
     force_legacy: bool = False
     registry_valid: bool = True
@@ -151,7 +154,7 @@ def decide_cutover(
             ExecutionMode.LEGACY_ONLY,
             "v2_routing_disabled",
         )
-    if not runtime.registry_valid:
+    if not runtime.registry_valid and not runtime.qa_preview_enabled:
         return _decision(
             ResponseOwner.LEGACY,
             ExecutionMode.LEGACY_ONLY,
@@ -184,6 +187,26 @@ def decide_cutover(
             ResponseOwner.LEGACY,
             ExecutionMode.LEGACY_FALLBACK,
             "v2_candidate_delivery_proof_incomplete",
+            candidate=candidate,
+        )
+
+    if runtime.qa_preview_enabled:
+        if (
+            runtime.external_actions_enabled
+            or candidate.pending_command_ids
+            or candidate.external_side_effect_started
+        ):
+            return _decision(
+                ResponseOwner.LEGACY,
+                ExecutionMode.LEGACY_ONLY,
+                "qa_preview_external_actions_not_disabled",
+                candidate=candidate,
+            )
+        return _decision(
+            ResponseOwner.V2,
+            ExecutionMode.V2_PRIMARY,
+            "approved_protected_qa_v2_preview",
+            eligible=True,
             candidate=candidate,
         )
 

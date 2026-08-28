@@ -20,6 +20,9 @@ def test_widget_loader_is_served() -> None:
     assert "Подберите циркуляционный насос подешевле" in response.text
     assert "Подберите электрический котёл для дома площадью 100 м²" in response.text
     assert "Дайте ссылку на товар" in response.text
+    assert "data.dialogueMode" in response.text
+    assert "X-Dialogue-QA-Token" in response.text
+    assert "requestBody.qa_mode" in response.text
 
 
 def test_widget_demo_is_served() -> None:

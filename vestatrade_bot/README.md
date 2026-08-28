@@ -419,6 +419,15 @@ curl -X POST http://127.0.0.1:8000/reload-feed -H "X-Admin-Token: $RELOAD_FEED_T
 `data-accent`, `data-width`, `data-height`, `data-z-index`, `data-open`,
 `data-show-quick`, `data-quick` (через `|`), `data-persist-session`.
 
+На закрытом интеграционном QA-стенде этот же виджет поддерживает изолированные
+режимы `legacy`, `shadow`, `v2_preview` и `auto` через `data-dialogue-mode`.
+Режим передаётся в тот же `/chat`; сервер принимает его только при включённом
+`DIALOGUE_V2_QA_CONTROLS_ENABLED` и совпадающем `data-qa-token` /
+`DIALOGUE_V2_QA_CONTROL_TOKEN`. В публичной установке оба QA-атрибута должны
+отсутствовать, а серверный переключатель — оставаться выключенным. Для
+параллельного сравнения каждому режиму задают отдельный `data-instance-id`,
+чтобы состояния и `session_id` не смешивались.
+
 > `data-persist-session` по умолчанию `true` — `session_id` сохраняется в
 > `localStorage` и живёт между визитами. Если нужно, чтобы каждый визит
 > начинался с чистого контекста, ставьте `data-persist-session="false"`.

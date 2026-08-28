@@ -282,6 +282,34 @@ def test_flags_and_kill_switch_fail_closed(runtime, reason) -> None:
     assert reason in decision.reason_codes
 
 
+def test_protected_qa_preview_bypasses_rollout_assignment_but_not_candidate_gates() -> None:
+    decision = decide_cutover(
+        EarlyControlResult(),
+        _candidate(),
+        _registry(),
+        _runtime(
+            registry_valid=False,
+            internal_canary_enabled=False,
+            internal_canary_percent=0,
+            qa_preview_enabled=True,
+        ),
+        session_fingerprint="qa-session",
+    )
+
+    assert decision.owner_candidate == ResponseOwner.V2
+    assert decision.execution_mode == ExecutionMode.V2_PRIMARY
+    assert "approved_protected_qa_v2_preview" in decision.reason_codes
+
+    rejected = decide_cutover(
+        EarlyControlResult(),
+        _candidate(eligible_for_delivery=False, contracts_resolved=False),
+        _registry(),
+        _runtime(qa_preview_enabled=True),
+        session_fingerprint="qa-session",
+    )
+    assert rejected.owner_candidate == ResponseOwner.LEGACY
+
+
 def test_existing_session_without_assignment_is_not_switched_mid_task() -> None:
     decision = decide_cutover(
         EarlyControlResult(),

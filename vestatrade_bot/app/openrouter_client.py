@@ -14,6 +14,7 @@ import httpx
 from app.budget import BudgetManager
 from app.config import Settings, get_settings
 from app.diagnostic_telemetry import (
+    record_embedding_event,
     record_llm_event,
     record_llm_json_validation,
 )
@@ -212,12 +213,24 @@ class OpenRouterClient:
         headers = self._headers()
         model = self.settings.embedding_model
         if not endpoint or not headers or not model:
+            record_embedding_event(
+                event="embedding_request",
+                provider=self.settings.llm_provider,
+                model=model or None,
+                input_count=len(texts),
+                batch_count=0,
+                succeeded=False,
+                failure_code="embedding_transport_not_configured",
+            )
             return None
 
         vectors: list[list[float]] = []
+        started_at = monotonic()
+        batch_count = 0
         with httpx.Client(timeout=self._timeout(120.0)) as client:
             for start in range(0, len(texts), batch_size):
                 batch = texts[start : start + batch_size]
+                batch_count += 1
                 try:
                     response = client.post(
                         endpoint,
@@ -228,6 +241,17 @@ class OpenRouterClient:
                     payload = response.json()
                 except Exception as exc:
                     logger.warning("Эмбеддинги недоступны (%s): %s", model, exc)
+                    record_embedding_event(
+                        event="embedding_request",
+                        provider=self.settings.llm_provider,
+                        model=model,
+                        input_count=len(texts),
+                        completed_vectors=len(vectors),
+                        batch_count=batch_count,
+                        duration_ms=int((monotonic() - started_at) * 1000),
+                        succeeded=False,
+                        failure_code="embedding_transport_failed",
+                    )
                     return None
                 rows = payload.get("data")
                 if not isinstance(rows, list) or len(rows) != len(batch):
@@ -236,12 +260,46 @@ class OpenRouterClient:
                         len(rows) if isinstance(rows, list) else "?",
                         len(batch),
                     )
+                    record_embedding_event(
+                        event="embedding_request",
+                        provider=self.settings.llm_provider,
+                        model=model,
+                        input_count=len(texts),
+                        completed_vectors=len(vectors),
+                        batch_count=batch_count,
+                        duration_ms=int((monotonic() - started_at) * 1000),
+                        succeeded=False,
+                        failure_code="embedding_count_mismatch",
+                    )
                     return None
                 for row in rows:
                     vector = row.get("embedding") if isinstance(row, dict) else None
                     if not isinstance(vector, list) or not vector:
+                        record_embedding_event(
+                            event="embedding_request",
+                            provider=self.settings.llm_provider,
+                            model=model,
+                            input_count=len(texts),
+                            completed_vectors=len(vectors),
+                            batch_count=batch_count,
+                            duration_ms=int((monotonic() - started_at) * 1000),
+                            succeeded=False,
+                            failure_code="embedding_vector_invalid",
+                        )
                         return None
                     vectors.append([float(value) for value in vector])
+        record_embedding_event(
+            event="embedding_request",
+            provider=self.settings.llm_provider,
+            model=model,
+            input_count=len(texts),
+            completed_vectors=len(vectors),
+            vector_dimension=(len(vectors[0]) if vectors else 0),
+            batch_count=batch_count,
+            duration_ms=int((monotonic() - started_at) * 1000),
+            succeeded=True,
+            failure_code=None,
+        )
         return vectors
 
     def _headers(self) -> dict[str, str] | None:

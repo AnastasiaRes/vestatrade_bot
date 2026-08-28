@@ -318,6 +318,33 @@ def test_evidenceless_continue_verdict_cannot_authorize_selection_control() -> N
     )
 
 
+def test_untyped_ambiguous_verdict_does_not_discard_grounded_turn_fields() -> None:
+    payload = _new_pipe_payload()
+    payload.update(
+        {
+            "selection_controls": [],
+            "selection_strategy": {"kind": "ambiguous", "evidence": None},
+        }
+    )
+
+    result = SemanticInterpreter(_SemanticClient(payload)).interpret(
+        "Нужна полипропиленовая труба",
+        SessionState(session_id="untyped-ambiguous-strategy-is-narrowed"),
+    )
+
+    assert result.status == "accepted"
+    assert result.understanding is not None
+    assert len(result.understanding.products) == 1
+    assert result.understanding.products[0].canonical_type == "pipe"
+    assert result.understanding.constraints == []
+    assert result.understanding.selection_strategy is not None
+    assert result.understanding.selection_strategy.kind.value == "standard"
+    assert (
+        "untyped_ambiguous_selection_strategy_defaulted_to_standard"
+        in result.structural_repairs
+    )
+
+
 def test_non_known_fact_name_is_rebound_by_product_ontology() -> None:
     payload = _continue_control().model_dump(mode="json")
     payload.update(

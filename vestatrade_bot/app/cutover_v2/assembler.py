@@ -11,6 +11,10 @@ from app.answer_v2.contracts import (
     ProductPresentationStatus,
 )
 from app.catalog_v2.contracts import ProductKind
+from app.catalog_v2.selection import (
+    build_selection_request,
+    build_selection_result,
+)
 from app.dialogue_v2.controller import DialogueV2Outcome
 from app.dialogue_v2.contracts import TaskAct
 from app.models import ChatProductSummary, ChatResponse
@@ -56,6 +60,9 @@ def build_v2_turn_candidate(
     *,
     session_id: str,
     turn_id: str,
+    original_utterance: str = "",
+    previously_delivered_products: tuple[object, ...] = (),
+    current_product_focus: str | None = None,
 ) -> V2TurnCandidate:
     """Fail closed unless text, cards, sources, contracts and state agree."""
 
@@ -134,6 +141,24 @@ def build_v2_turn_candidate(
             handoff_ticket_id=None,
             debug={},
         )
+
+    selection_request = build_selection_request(
+        outcome,
+        source_snapshot,
+        original_utterance=original_utterance,
+        previously_delivered_products=previously_delivered_products,
+        current_product_focus=current_product_focus,
+    )
+    selection_result = None
+    if selection_request is not None and source_snapshot is not None:
+        selection_result = build_selection_result(
+            selection_request,
+            outcome,
+            source_snapshot,
+            response.products if response is not None else (),
+        )
+        if not selection_result.outcome_gate_passed:
+            reasons.append(selection_result.reason_code)
 
     catalog = outcome.catalog_planning
     resolutions = catalog.contract_resolutions if catalog is not None else ()
@@ -259,6 +284,8 @@ def build_v2_turn_candidate(
         response_product_roles=tuple(
             item.role for item in (answer_plan.products if answer_plan else ())
         ),
+        selection_request=selection_request,
+        selection_result=selection_result,
         semantic_accepted=semantic_accepted,
         contracts_resolved=contracts_resolved,
         external_side_effect_started=False,

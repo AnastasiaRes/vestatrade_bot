@@ -1468,7 +1468,19 @@ def build_answer_plan(
                             )
                             if item is not None
                         ),
-                        reason_codes=candidate.reason_codes,
+                        reason_codes=tuple(
+                            dict.fromkeys(
+                                (
+                                    *candidate.reason_codes,
+                                    *(
+                                        ("sku_resolution_unique_prefix",)
+                                        if "sku_resolution_unique_prefix"
+                                        in search_plan.reason_codes
+                                        else ()
+                                    ),
+                                )
+                            )
+                        ),
                         recommendation_role=recommendation_role,
                         recommendation_rank=recommendation_rank,
                         recommendation_criterion=recommendation_criterion,
@@ -1481,7 +1493,24 @@ def build_answer_plan(
                 # the corresponding card.  Promoting these records to generic
                 # task limitations made a fact absent on one SKU sound absent
                 # on every shown SKU.
-            if "no_verified_in_stock_contract_match" in search_plan.reason_codes:
+            if "ambiguous_sku_prefix" in search_plan.reason_codes:
+                limitations.append(
+                    LimitationPlan(
+                        limitation_id=_stable_id(
+                            "limit", search_plan.plan_id, "ambiguous_sku_prefix"
+                        ),
+                        status=LimitationStatus.UNSUPPORTED,
+                        reason_code="ambiguous_sku_prefix",
+                        task_id=search_plan.task_id,
+                        goal_id=search_plan.goal_id,
+                        fact_name="sku",
+                        source_ref_ids=(plan_ref.source_ref_id,),
+                        allowed_strategy_kinds=(
+                            ResponseStrategyKind.STATE_CAPABILITY_BOUNDARY,
+                        ),
+                    )
+                )
+            elif "no_verified_in_stock_contract_match" in search_plan.reason_codes:
                 limitations.append(
                     LimitationPlan(
                         limitation_id=_stable_id(

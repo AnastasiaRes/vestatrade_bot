@@ -150,6 +150,8 @@ class Settings(BaseModel):
     dialogue_v2_migration_registry_path: Path | None = None
     dialogue_v2_legacy_dry_run_compare_enabled: bool = False
     dialogue_v2_force_legacy: bool = False
+    dialogue_v2_qa_controls_enabled: bool = False
+    dialogue_v2_qa_control_token: str | None = None
 
     @property
     def llm_model(self) -> str:
@@ -393,5 +395,12 @@ def get_settings() -> Settings:
         dialogue_v2_force_legacy=_env_bool(
             "DIALOGUE_V2_FORCE_LEGACY",
             False,
+        ),
+        dialogue_v2_qa_controls_enabled=_env_bool(
+            "DIALOGUE_V2_QA_CONTROLS_ENABLED",
+            False,
+        ),
+        dialogue_v2_qa_control_token=_optional_env(
+            "DIALOGUE_V2_QA_CONTROL_TOKEN"
         ),
     )

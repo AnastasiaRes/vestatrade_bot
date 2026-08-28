@@ -44,10 +44,11 @@ from app.diagnostic_telemetry import (
     record_dialogue_v2_shadow,
     record_semantic_shadow,
 )
-from app.dialogue_v2.contracts import DialogueStateV2, TurnMetadata
+from app.dialogue_v2.contracts import DialogueStateV2, NextActionKind, TurnMetadata
 from app.dialogue_v2.controller import DialogueControllerV2, DialogueV2Outcome
 from app.dialogue_v2.reducer import record_response_delivery
 from app.cutover_v2.assembler import build_v2_turn_candidate
+from app.cutover_v2.product_fact import build_v2_product_fact_candidate
 from app.cutover_v2.contracts import (
     EarlyControlOutcome,
     EarlyControlResult,
@@ -63,6 +64,7 @@ from app.feed_loader import FeedLoader
 from app.models import (
     ChatProductSummary,
     ChatResponse,
+    DialogueQAMode,
     HandoffSummary,
     IdempotentResponseRecord,
     IntentResult,
@@ -79,7 +81,9 @@ from app.models import (
 )
 from app.openrouter_client import OpenRouterClient
 from app.pii import redact_pii_for_model
+from app.product_fact_evidence import ProductFactEvidenceService
 from app.session_store import SessionStore, build_session_store
+from app.sku_resolution import SkuResolutionStatus
 
 from app.business_config import get_business_facts
 
@@ -714,7 +718,7 @@ class ChatOrchestrator:
         )
         self.commerce_capabilities_v2 = (
             build_capability_snapshot(get_business_facts())
-            if self._stage4_shadow_enabled()
+            if self._stage4_shadow_enabled() or self._qa_v2_resources_enabled()
             else build_capability_snapshot()
         )
         self.catalog_snapshot_v2 = (
@@ -723,6 +727,7 @@ class ChatOrchestrator:
                 self._stage3_shadow_enabled()
                 or self._stage5_shadow_enabled()
                 or self._stage6_pipeline_enabled()
+                or self._qa_v2_resources_enabled()
             )
             else ()
         )
@@ -734,7 +739,11 @@ class ChatOrchestrator:
                     get_business_facts()
                 ),
             )
-            if self._stage5_shadow_enabled() or self._stage6_pipeline_enabled()
+            if (
+                self._stage5_shadow_enabled()
+                or self._stage6_pipeline_enabled()
+                or self._qa_v2_resources_enabled()
+            )
             else None
         )
         self.ranking_agent = RankingAgent()
@@ -752,6 +761,11 @@ class ChatOrchestrator:
         self.docs_attached = 0
         if products:
             self.docs_attached = load_docs_for_products(products, self._docs_dirs())
+        self.product_fact_evidence = ProductFactEvidenceService(
+            self.settings,
+            self.llm_client,
+            self.search_agent.products,
+        )
 
     def _docs_dirs(self) -> list[Any]:
         return [self.settings.product_docs_dir, PROJECT_ROOT / "data"]
@@ -761,13 +775,19 @@ class ChatOrchestrator:
             products, source = self.feed_loader.load_products(refresh=refresh)
             self.docs_attached = load_docs_for_products(products, self._docs_dirs())
             self.search_agent.set_products(products)
+            self.product_fact_evidence.set_products(products)
             if (
                 self._stage3_shadow_enabled()
                 or self._stage5_shadow_enabled()
                 or self._stage6_pipeline_enabled()
+                or self._qa_v2_resources_enabled()
             ):
                 self.catalog_snapshot_v2 = build_catalog_snapshot(products)
-            if self._stage5_shadow_enabled() or self._stage6_pipeline_enabled():
+            if (
+                self._stage5_shadow_enabled()
+                or self._stage6_pipeline_enabled()
+                or self._qa_v2_resources_enabled()
+            ):
                 self.answer_source_snapshot_v2 = build_answer_source_snapshot(
                     products,
                     self.catalog_snapshot_v2,
@@ -827,7 +847,24 @@ class ChatOrchestrator:
             )
         )
 
-    def _stage6_live_attempt_enabled(self) -> bool:
+    def _qa_v2_resources_enabled(self) -> bool:
+        return bool(
+            self.settings.dialogue_v2_qa_controls_enabled
+            and self.settings.dialogue_v2_qa_control_token
+        )
+
+    def _stage6_live_attempt_enabled(
+        self,
+        qa_mode: DialogueQAMode | None = None,
+    ) -> bool:
+        if qa_mode in {DialogueQAMode.LEGACY, DialogueQAMode.SHADOW}:
+            return False
+        if qa_mode == DialogueQAMode.V2_PREVIEW:
+            return bool(
+                self._qa_v2_resources_enabled()
+                and not self.settings.commerce_external_execution_enabled
+                and not self.settings.dialogue_v2_force_legacy
+            )
         return bool(
             self.settings.dialogue_v2_routing_enabled
             and self.settings.dialogue_v2_live_delivery_enabled
@@ -1009,11 +1046,99 @@ class ChatOrchestrator:
             answer_source_snapshot=self.answer_source_snapshot_v2,
         )
 
-    def _stage6_runtime(self, before_turn: SessionState) -> CutoverRuntime:
+    def _maybe_build_v2_product_fact_candidate(
+        self,
+        message: str,
+        before_turn: SessionState,
+        semantic: Any,
+        outcome: DialogueV2Outcome,
+        base_candidate: Any,
+        *,
+        session_id: str,
+        turn_id: str,
+    ) -> Any:
+        """Give a typed direct question the shared product evidence service."""
+
+        action_plan = outcome.next_action_plan
+        action = action_plan.primary if action_plan is not None else None
+        # Do not make product-fact delivery depend on the planner choosing one
+        # particular action label.  The semantic LLM can legitimately describe
+        # a question such as "Какая у первого монтажная длина?" as ``explain``;
+        # the ordinary planner then emits WAIT_FOR_SEMANTIC_UNDERSTANDING.  The
+        # bounded predicate detector below is stricter than that broad action
+        # label: it only returns evidence for a supported direct product fact
+        # (or a typed fail-closed refusal).  Safety has already passed through
+        # the Stage 6 early-control gate before this method is called.
+        semantic_fact_name = action.fact_name if action is not None else None
+        understanding = getattr(semantic, "understanding", None)
+        if (
+            understanding is not None
+            and action is not None
+            and action.information_request_id is not None
+        ):
+            request = next(
+                (
+                    item
+                    for item in understanding.information_requests
+                    if getattr(item, "fact_name", None)
+                ),
+                None,
+            )
+            if request is not None:
+                semantic_fact_name = request.fact_name
+        evidence = self.product_fact_evidence.evaluate(
+            message,
+            before_turn,
+            semantic_fact_name=semantic_fact_name,
+        )
+        if evidence is None:
+            return base_candidate
+        if (
+            evidence.request.predicate == "unsupported_product_fact"
+            and bool(getattr(base_candidate, "eligible_for_delivery", False))
+            and bool(getattr(base_candidate, "semantic_accepted", False))
+        ):
+            # The generic unknown-attribute guard exists to prevent an
+            # unverified Legacy fallback in Preview.  It must not replace a
+            # fully valid native V2 answer (for example an already supported
+            # price question) merely because this bounded adapter does not own
+            # that predicate.
+            return base_candidate
+        candidate = build_v2_product_fact_candidate(
+            outcome,
+            base_candidate,
+            evidence,
+            self.answer_source_snapshot_v2,
+            session_id=session_id,
+            turn_id=turn_id,
+        )
+        return candidate or base_candidate
+
+    def _stage6_runtime(
+        self,
+        before_turn: SessionState,
+        qa_mode: DialogueQAMode | None = None,
+    ) -> CutoverRuntime:
+        qa_preview = bool(
+            qa_mode == DialogueQAMode.V2_PREVIEW
+            and self._qa_v2_resources_enabled()
+        )
+        qa_shadow = bool(
+            qa_mode == DialogueQAMode.SHADOW
+            and self._qa_v2_resources_enabled()
+        )
         return CutoverRuntime(
-            routing_enabled=self.settings.dialogue_v2_routing_enabled,
-            shadow_compare_enabled=self.settings.dialogue_v2_shadow_compare_enabled,
-            live_delivery_enabled=self.settings.dialogue_v2_live_delivery_enabled,
+            routing_enabled=(
+                self.settings.dialogue_v2_routing_enabled
+                or qa_preview
+                or qa_shadow
+            ),
+            shadow_compare_enabled=(
+                self.settings.dialogue_v2_shadow_compare_enabled or qa_shadow
+            ),
+            live_delivery_enabled=(
+                self.settings.dialogue_v2_live_delivery_enabled or qa_preview
+            ),
             internal_canary_enabled=(
                 self.settings.dialogue_v2_internal_canary_enabled
             ),
@@ -1023,6 +1148,7 @@ class ChatOrchestrator:
             local_preview_enabled=(
                 self.settings.dialogue_v2_local_preview_enabled
             ),
+            qa_preview_enabled=qa_preview,
             external_actions_enabled=(
                 self.settings.commerce_external_execution_enabled
             ),
@@ -1124,12 +1250,33 @@ class ChatOrchestrator:
                     characteristics={},
                 )
             )
-        selected.v2_last_products = cards
-        # History and the presentation cache are shared transport context, not
-        # legacy decision slots.  A technical fallback therefore still knows
-        # which cards the customer actually saw.
-        selected.last_products = cards
-        selected.shown_product_skus = [card.sku for card in cards]
+        if cards:
+            selected.v2_last_products = cards
+            # History and the presentation cache contain only cards that were
+            # actually delivered after the source and outcome gates above.
+            selected.last_products = cards
+            selected.shown_product_skus = [card.sku for card in cards]
+            selection_result = candidate.selection_result
+            selected.shown_result_signature = (
+                selection_result.selection_id
+                if selection_result is not None
+                else hashlib.sha256(
+                    "\x1f".join(card.sku for card in cards).encode("utf-8")
+                ).hexdigest()[:32]
+            )
+            if len(cards) == 1:
+                selected.product_focus = ProductFocusState(
+                    sku=cards[0].sku,
+                    category=(
+                        selection_result.category
+                        if selection_result is not None
+                        else None
+                    ),
+                    origin="v2_delivered_selection",
+                )
+            elif selection_result is not None:
+                # A list supports ordinal references but has no single "этот".
+                selected.product_focus = None
         self._append_history(selected, message, candidate.response.answer)
         self._record_idempotent_response(
             selected,
@@ -1170,11 +1317,21 @@ class ChatOrchestrator:
         error: str | None = None,
     ) -> dict[str, Any]:
         candidate_summary = None
+        selection_delivery = None
         if candidate is not None:
             candidate_summary = candidate.model_dump(
                 mode="json",
                 exclude={"response", "state_before", "state_after"},
             )
+            if candidate.selection_result is not None:
+                selection_delivery = candidate.selection_result.model_dump(
+                    mode="json"
+                )
+                selection_delivery["customer_visible_state_updated"] = bool(
+                    commit is not None
+                    and commit.committed
+                    and candidate.selection_result.status.value == "shown"
+                )
         return {
             "schema_version": "1.0",
             "rollout_registry": {
@@ -1207,6 +1364,7 @@ class ChatOrchestrator:
             "early_control": early_control,
             "decision": decision,
             "candidate": candidate_summary,
+            "selection_delivery": selection_delivery,
             "arbitration": arbitration,
             "commit": commit,
             "parity": parity,
@@ -1225,6 +1383,7 @@ class ChatOrchestrator:
         session_id: str,
         message: str,
         client_turn_id: str | None = None,
+        qa_mode: DialogueQAMode | None = None,
     ) -> ChatResponse:
         # Turns inside one dialogue are transactional, while independent users
         # may proceed in parallel.  This preserves session history without the
@@ -1253,6 +1412,7 @@ class ChatOrchestrator:
                     or self._stage5_shadow_enabled()
                     or self._stage6_pipeline_enabled()
                     or self.settings.dialogue_v2_force_legacy
+                    or qa_mode is not None
                 ):
                     try:
                         trace = build_turn_trace(
@@ -1263,6 +1423,7 @@ class ChatOrchestrator:
                             catalog=self.search_agent.get_catalog_manifest(
                                 self.products_loaded_from
                             ),
+                            qa_mode=(qa_mode.value if qa_mode is not None else None),
                         )
                     except Exception as trace_exc:
                         logger.warning(
@@ -1288,7 +1449,7 @@ class ChatOrchestrator:
                                 self.llm_client,
                                 model=self.settings.llm_model_strong,
                             )
-                            if self._stage6_live_attempt_enabled():
+                            if self._stage6_live_attempt_enabled(qa_mode):
                                 early_control = self._stage6_early_control(
                                     message,
                                     before_turn,
@@ -1326,6 +1487,26 @@ class ChatOrchestrator:
                                             self.answer_source_snapshot_v2,
                                             session_id=session_id,
                                             turn_id=turn_id,
+                                            original_utterance=message,
+                                            previously_delivered_products=tuple(
+                                                before_turn.last_products
+                                            ),
+                                            current_product_focus=(
+                                                before_turn.product_focus.sku
+                                                if before_turn.product_focus is not None
+                                                else None
+                                            ),
+                                        )
+                                        live_candidate = (
+                                            self._maybe_build_v2_product_fact_candidate(
+                                                message,
+                                                before_turn,
+                                                semantic,
+                                                live_v2_outcome,
+                                                live_candidate,
+                                                session_id=session_id,
+                                                turn_id=turn_id,
+                                            )
                                         )
                                         # Record every live-attempt outcome,
                                         # including candidates rejected before
@@ -1341,7 +1522,7 @@ class ChatOrchestrator:
                                             early_control,
                                             live_candidate,
                                             self.cutover_registry_v2.registry(),
-                                            self._stage6_runtime(before_turn),
+                                            self._stage6_runtime(before_turn, qa_mode),
                                             session_fingerprint=session_fingerprint,
                                         )
                                         live_arbitration = arbitrate_turn(
@@ -1394,7 +1575,7 @@ class ChatOrchestrator:
                                         early_control,
                                         None,
                                         self.cutover_registry_v2.registry(),
-                                        self._stage6_runtime(before_turn),
+                                        self._stage6_runtime(before_turn, qa_mode),
                                         session_fingerprint=session_fingerprint,
                                     )
                             response = self._handle_chat(session_id, message)
@@ -1402,15 +1583,23 @@ class ChatOrchestrator:
                         # Run only after the legacy response is fully produced.
                         # The result is never copied to intent, session, search
                         # or response and its failures are contained internally.
-                        v2_shadow_enabled = (
-                            self.settings.dialogue_state_v2_shadow_enabled
-                            or self.settings.seller_policy_v2_shadow_enabled
-                            or self._stage3_shadow_enabled()
-                            or self._stage4_shadow_enabled()
-                            or self._stage5_shadow_enabled()
-                            or (
-                                self.settings.dialogue_v2_routing_enabled
-                                and self.settings.dialogue_v2_shadow_compare_enabled
+                        qa_shadow_enabled = bool(
+                            qa_mode == DialogueQAMode.SHADOW
+                            and self._qa_v2_resources_enabled()
+                        )
+                        v2_shadow_enabled = bool(
+                            qa_mode != DialogueQAMode.LEGACY
+                            and (
+                                self.settings.dialogue_state_v2_shadow_enabled
+                                or self.settings.seller_policy_v2_shadow_enabled
+                                or self._stage3_shadow_enabled()
+                                or self._stage4_shadow_enabled()
+                                or self._stage5_shadow_enabled()
+                                or qa_shadow_enabled
+                                or (
+                                    self.settings.dialogue_v2_routing_enabled
+                                    and self.settings.dialogue_v2_shadow_compare_enabled
+                                )
                             )
                         )
                         # A valid V2 reduction is still useful migration state
@@ -1439,6 +1628,7 @@ class ChatOrchestrator:
                             self.sessions.save(state_with_v2)
                         if (
                             semantic is None
+                            and qa_mode != DialogueQAMode.LEGACY
                             and (
                                 self.settings.semantic_shadow_enabled
                                 or v2_shadow_enabled
@@ -1482,23 +1672,28 @@ class ChatOrchestrator:
                                     policy_enabled=(
                                         self.settings.seller_policy_v2_shadow_enabled
                                         or self.settings.dialogue_v2_shadow_compare_enabled
+                                        or qa_shadow_enabled
                                     ),
                                     product_contracts_enabled=(
                                         self._stage3_shadow_enabled()
                                         or self.settings.dialogue_v2_shadow_compare_enabled
+                                        or qa_shadow_enabled
                                     ),
                                     catalog_planner_enabled=(
                                         self.settings.catalog_planner_v2_shadow_enabled
                                         or self.settings.solution_plan_v2_shadow_enabled
                                         or self.settings.dialogue_v2_shadow_compare_enabled
+                                        or qa_shadow_enabled
                                     ),
                                     solution_plan_enabled=(
                                         self.settings.solution_plan_v2_shadow_enabled
                                         or self.settings.dialogue_v2_shadow_compare_enabled
+                                        or qa_shadow_enabled
                                     ),
                                     catalog_snapshot=self.catalog_snapshot_v2,
                                     commerce_workflows_enabled=(
                                         self.settings.commerce_workflows_v2_shadow_enabled
+                                        or qa_shadow_enabled
                                     ),
                                     handoff_workflow_enabled=(
                                         self.settings.handoff_workflow_v2_shadow_enabled
@@ -1514,18 +1709,22 @@ class ChatOrchestrator:
                                     answer_plan_enabled=(
                                         self.settings.answer_plan_v2_shadow_enabled
                                         or self.settings.dialogue_v2_shadow_compare_enabled
+                                        or qa_shadow_enabled
                                     ),
                                     response_renderer_enabled=(
                                         self.settings.response_renderer_v2_shadow_enabled
                                         or self.settings.dialogue_v2_shadow_compare_enabled
+                                        or qa_shadow_enabled
                                     ),
                                     response_grounding_enabled=(
                                         self.settings.response_grounding_v2_shadow_enabled
                                         or self.settings.dialogue_v2_shadow_compare_enabled
+                                        or qa_shadow_enabled
                                     ),
                                     progress_guard_enabled=(
                                         self.settings.progress_guard_v2_shadow_enabled
                                         or self.settings.dialogue_v2_shadow_compare_enabled
+                                        or qa_shadow_enabled
                                     ),
                                     answer_source_snapshot=(
                                         self.answer_source_snapshot_v2
@@ -1539,6 +1738,7 @@ class ChatOrchestrator:
                                         or self._stage4_shadow_enabled()
                                         or self._stage5_shadow_enabled()
                                         or self.settings.dialogue_v2_shadow_compare_enabled
+                                        or qa_shadow_enabled
                                     )
                                 ):
                                     state_with_v2 = self.sessions.snapshot(session_id)
@@ -1547,12 +1747,35 @@ class ChatOrchestrator:
                                     )
                                     self.sessions.save(state_with_v2)
                                 record_dialogue_v2_shadow(v2_outcome)
-                                if self.settings.dialogue_v2_shadow_compare_enabled:
+                                if (
+                                    self.settings.dialogue_v2_shadow_compare_enabled
+                                    or qa_shadow_enabled
+                                ):
                                     shadow_candidate = build_v2_turn_candidate(
                                         v2_outcome,
                                         self.answer_source_snapshot_v2,
                                         session_id=session_id,
                                         turn_id=turn_id,
+                                        original_utterance=message,
+                                        previously_delivered_products=tuple(
+                                            before_turn.last_products
+                                        ),
+                                        current_product_focus=(
+                                            before_turn.product_focus.sku
+                                            if before_turn.product_focus is not None
+                                            else None
+                                        ),
+                                    )
+                                    shadow_candidate = (
+                                        self._maybe_build_v2_product_fact_candidate(
+                                            message,
+                                            before_turn,
+                                            semantic,
+                                            v2_outcome,
+                                            shadow_candidate,
+                                            session_id=session_id,
+                                            turn_id=turn_id,
+                                        )
                                     )
                                     parity = assess_response_parity(
                                         response,
@@ -1564,10 +1787,14 @@ class ChatOrchestrator:
                                         early_control,
                                         shadow_candidate,
                                         self.cutover_registry_v2.registry(),
-                                        self._stage6_runtime(before_turn).model_copy(
+                                        self._stage6_runtime(
+                                            before_turn,
+                                            qa_mode,
+                                        ).model_copy(
                                             update={
                                                 "live_delivery_enabled": False,
                                                 "internal_canary_enabled": False,
+                                                "qa_preview_enabled": False,
                                             }
                                         ),
                                         session_fingerprint=hashlib.sha256(
@@ -1631,7 +1858,11 @@ class ChatOrchestrator:
                                 )
                             )
 
-                        if client_turn_id or self._stage6_pipeline_enabled():
+                        if (
+                            client_turn_id
+                            or self._stage6_pipeline_enabled()
+                            or qa_mode is not None
+                        ):
                             committed_legacy = self.sessions.snapshot(session_id)
                             committed_legacy.session_revision += 1
                             self._record_idempotent_response(
@@ -7376,6 +7607,11 @@ class ChatOrchestrator:
         session.question_repeats = 0
 
         agents_used.append("FeedSearchAgent")
+        sku_resolution = (
+            self.search_agent.resolve_sku(query.sku)
+            if query.sku
+            else None
+        )
         products = self._drop_underpowered_boilers(
             direct_products or self._safe_search(query),
             query,
@@ -7426,6 +7662,48 @@ class ChatOrchestrator:
                 agents_used,
             )
         if not products:
+            if (
+                query.sku
+                and sku_resolution is not None
+                and sku_resolution.status
+                == SkuResolutionStatus.AMBIGUOUS_PREFIX
+            ):
+                candidates = list(sku_resolution.candidates)
+                visible_candidates = candidates[:5]
+                candidate_text = "; ".join(
+                    f"{candidate.sku} — {candidate.name}"
+                    for candidate in visible_candidates
+                )
+                remaining = len(candidates) - len(visible_candidates)
+                remaining_text = (
+                    f"; и ещё {remaining} вариантов"
+                    if remaining > 0
+                    else ""
+                )
+                answer = (
+                    f"Сокращение артикула {query.sku} неоднозначно: "
+                    f"{candidate_text}{remaining_text}. "
+                    "Уточните полный артикул; случайный вариант выбирать не буду."
+                )
+                intent.raw = dict(intent.raw or {})
+                intent.raw["sku_resolution_status"] = (
+                    sku_resolution.status.value
+                )
+                intent.raw["sku_resolution_candidates"] = [
+                    candidate.sku for candidate in candidates
+                ]
+                agents_used.append("ResponseComposerAgent")
+                self._append_history(session, message, answer)
+                self.sessions.save(session)
+                return self._response(
+                    session_id,
+                    answer,
+                    [],
+                    False,
+                    intent,
+                    session,
+                    agents_used,
+                )
             if query.sku and (intent.raw or {}).get("explicit_sku_marker"):
                 suggestion_result = resolve_sku_suggestion(
                     query.sku,
@@ -7802,6 +8080,21 @@ class ChatOrchestrator:
                     power_alternative_offer,
                 )
         answer = self._guard_composed_answer(answer, "products", agents_used)
+        if (
+            query.sku
+            and sku_resolution is not None
+            and sku_resolution.status == SkuResolutionStatus.UNIQUE_PREFIX
+            and sku_resolution.canonical_sku
+        ):
+            answer = (
+                f"Сокращение {query.sku} однозначно соответствует артикулу "
+                f"{sku_resolution.canonical_sku} в текущем каталоге.\n\n{answer}"
+            )
+            intent.raw = dict(intent.raw or {})
+            intent.raw["sku_resolution_status"] = (
+                sku_resolution.status.value
+            )
+            intent.raw["canonical_sku"] = sku_resolution.canonical_sku
         if power_alternative_offer:
             # This is deterministic workflow guidance, not a product fact from
             # the generative composer, so append it after validating the cards.

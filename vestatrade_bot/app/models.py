@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -77,6 +78,15 @@ class ProductCard(BaseModel):
     characteristics: dict[str, str] = Field(default_factory=dict)
 
 
+class DialogueQAMode(str, Enum):
+    """Explicit, server-gated routing mode for production-like QA sessions."""
+
+    LEGACY = "legacy"
+    SHADOW = "shadow"
+    V2_PREVIEW = "v2_preview"
+    AUTO = "auto"
+
+
 class ChatRequest(BaseModel):
     session_id: str = Field(
         min_length=1,
@@ -90,6 +100,10 @@ class ChatRequest(BaseModel):
         max_length=160,
         pattern=r"^[A-Za-z0-9._:-]+$",
     )
+    # Accepted by the public schema only so the same widget and /chat route can
+    # be exercised on a protected QA stand.  app.main rejects it unless the
+    # server-side QA switch and token are both configured.
+    qa_mode: DialogueQAMode | None = None
 
 
 class ChatProductSummary(BaseModel):
