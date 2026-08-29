@@ -27,6 +27,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import math
@@ -232,10 +233,12 @@ class PassportIndex:
         chunks: list[Chunk],
         vectors: list[list[float]] | None,
         model: str | None,
+        source_digest: str | None = None,
     ) -> None:
         self.chunks = chunks
         self.vectors = vectors
         self.model = model
+        self.source_digest = source_digest
 
     @property
     def has_vectors(self) -> bool:
@@ -261,6 +264,11 @@ class PassportIndex:
             for index, chunk in enumerate(self.chunks)
             if not documents or chunk.document in documents
         ]
+        # A requested product scope is a hard evidence boundary.  Falling back
+        # to the whole corpus when a scoped document is absent can return a
+        # perfectly verified quote from another product.
+        if not candidates and documents:
+            return []
         if not candidates:
             candidates = list(range(len(self.chunks)))
 
@@ -301,6 +309,7 @@ class PassportIndex:
         return {
             "version": INDEX_VERSION,
             "model": self.model,
+            "source_digest": self.source_digest,
             "dimension": len(self.vectors[0]) if self.has_vectors else 0,
             "chunks": [
                 {
@@ -315,7 +324,12 @@ class PassportIndex:
         }
 
     @classmethod
-    def from_payload(cls, payload: dict, expected_model: str) -> "PassportIndex | None":
+    def from_payload(
+        cls,
+        payload: dict,
+        expected_model: str,
+        expected_source_digest: str | None = None,
+    ) -> "PassportIndex | None":
         if payload.get("version") != INDEX_VERSION:
             return None
         if payload.get("model") != expected_model:
@@ -324,6 +338,12 @@ class PassportIndex:
                 payload.get("model"),
                 expected_model,
             )
+            return None
+        if (
+            expected_source_digest is not None
+            and payload.get("source_digest") != expected_source_digest
+        ):
+            logger.info("Набор паспортов изменился — пересобираю индекс")
             return None
         chunks = [
             Chunk(
@@ -339,7 +359,48 @@ class PassportIndex:
         vectors = _decode(blob, dimension) if blob and dimension else None
         if vectors is not None and len(vectors) != len(chunks):
             return None
-        return cls(chunks, vectors, payload.get("model"))
+        return cls(
+            chunks,
+            vectors,
+            payload.get("model"),
+            source_digest=payload.get("source_digest"),
+        )
+
+
+def _source_digest(docs_dirs: list[Path]) -> str:
+    """Fingerprint the local PDF corpus without reading every file body.
+
+    The cache is local to this checkout, so a stable manifest of resolved path,
+    size and nanosecond mtime is sufficient and cheap to recompute per request.
+    """
+
+    entries: list[str] = []
+    for directory in docs_dirs:
+        root = Path(directory)
+        if not root.exists():
+            continue
+        mapping: dict[str, dict] = {}
+        map_path = root / "product_docs_map.json"
+        if map_path.exists():
+            try:
+                value = json.loads(map_path.read_text(encoding="utf-8"))
+                if isinstance(value, dict):
+                    mapping = value
+            except (OSError, json.JSONDecodeError):
+                mapping = {}
+        for path in sorted(root.iterdir()):
+            if path.suffix.lower() != ".pdf" and path.name != "product_docs_map.json":
+                continue
+            if (
+                path.suffix.lower() == ".pdf"
+                and (mapping.get(path.name) or {}).get("enabled") is False
+            ):
+                continue
+            stat = path.stat()
+            entries.append(
+                f"{path.resolve()}\0{stat.st_size}\0{stat.st_mtime_ns}"
+            )
+    return hashlib.sha256("\n".join(entries).encode("utf-8")).hexdigest()
 
 
 def read_chunks(docs_dirs: list[Path]) -> list[Chunk]:
@@ -347,13 +408,35 @@ def read_chunks(docs_dirs: list[Path]) -> list[Chunk]:
 
     chunks: list[Chunk] = []
     for directory in docs_dirs:
-        if not Path(directory).exists():
+        root = Path(directory)
+        if not root.exists():
             continue
-        for path in sorted(Path(directory).iterdir()):
+        mapping: dict[str, dict] = {}
+        map_path = root / "product_docs_map.json"
+        if map_path.exists():
+            try:
+                value = json.loads(map_path.read_text(encoding="utf-8"))
+                if isinstance(value, dict):
+                    mapping = value
+            except (OSError, json.JSONDecodeError):
+                mapping = {}
+        for path in sorted(root.iterdir()):
             if path.suffix.lower() != ".pdf":
                 continue
+            if (mapping.get(path.name) or {}).get("enabled") is False:
+                continue
             try:
-                pages = [(page.extract_text() or "") for page in PdfReader(str(path)).pages]
+                text_mode = str(
+                    (mapping.get(path.name) or {}).get("pdf_text_mode") or "plain"
+                )
+                reader = PdfReader(str(path))
+                if text_mode == "layout":
+                    pages = [
+                        (page.extract_text(extraction_mode="layout") or "")
+                        for page in reader.pages
+                    ]
+                else:
+                    pages = [(page.extract_text() or "") for page in reader.pages]
             except Exception as exc:  # pragma: no cover - защита от битого PDF
                 logger.warning("Не удалось прочитать %s: %s", path.name, exc)
                 continue
@@ -365,6 +448,7 @@ def build_index(
     docs_dirs: list[Path],
     embed,
     model: str,
+    source_digest: str | None = None,
 ) -> PassportIndex:
     """Собрать индекс. Без эмбеддингов остаётся поиск по словам."""
 
@@ -377,7 +461,12 @@ def build_index(
             logger.warning("Векторов %s против %s кусков — индекс без векторов",
                            len(vectors), len(chunks))
         vectors = None
-    return PassportIndex(chunks, vectors, model if vectors else None)
+    return PassportIndex(
+        chunks,
+        vectors,
+        model if vectors else None,
+        source_digest=source_digest,
+    )
 
 
 def load_or_build(
@@ -386,15 +475,25 @@ def load_or_build(
     embed,
     model: str,
 ) -> PassportIndex:
+    source_digest = _source_digest(docs_dirs)
     if cache_path.exists():
         try:
             payload = json.loads(cache_path.read_text(encoding="utf-8"))
-            index = PassportIndex.from_payload(payload, model)
+            index = PassportIndex.from_payload(
+                payload,
+                model,
+                expected_source_digest=source_digest,
+            )
             if index is not None:
                 return index
         except (OSError, ValueError, KeyError) as exc:
             logger.warning("Индекс паспортов повреждён (%s) — пересобираю", exc)
-    index = build_index(docs_dirs, embed, model)
+    index = build_index(
+        docs_dirs,
+        embed,
+        model,
+        source_digest=source_digest,
+    )
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text(

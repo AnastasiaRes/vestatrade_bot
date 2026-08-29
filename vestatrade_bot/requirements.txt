@@ -5,6 +5,8 @@ python-dotenv>=1.0,<2.0
 httpx>=0.27,<1.0
 rapidfuzz>=3.6,<4.0
 pypdf>=4.0,<7.0
+# Required by pypdf for AES-encrypted manufacturer passports.
+cryptography>=3.1,<47.0
 openpyxl>=3.1,<4.0
 pytest>=8.0,<9.0
 redis>=5.0,<7.0

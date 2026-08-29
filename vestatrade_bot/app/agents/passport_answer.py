@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -79,6 +80,8 @@ PASSPORT_ANSWER_PROMPT = """
 Одна фраза обычными словами: что цитата означает для покупателя.
 В пояснении не должно быть ни одного числа, которого нет в цитате. Если
 хочется назвать цифру — значит, её надо было включить в цитату.
+Не повторяй в пояснении номер модели или мощность из вопроса, если их нет в
+цитате. Если безопасное пояснение не требуется, оставь framing пустым.
 Без вводных «хороший вопрос» и «согласно документации». Сразу по делу.
 
 ЧЕГО НЕЛЬЗЯ НИКОГДА
@@ -166,7 +169,12 @@ def _normalise(text: str) -> str:
     Поэтому пробелы при сверке не учитываются, а всё остальное учитывается.
     """
 
-    return re.sub(r"\s+", "", text.lower().replace("ё", "е"))
+    normalized = unicodedata.normalize("NFKC", text).lower().replace("ё", "е")
+    # PDF extractors and LLMs can render the same decimal separator according
+    # to different locales.  Treat only punctuation between digits as format;
+    # changed digits still fail the verbatim evidence check.
+    normalized = re.sub(r"(?<=\d)[,.](?=\d)", ".", normalized)
+    return re.sub(r"\s+", "", normalized)
 
 
 class PassportAnswerAgent:
@@ -175,6 +183,7 @@ class PassportAnswerAgent:
     def __init__(self, llm_client: OpenRouterClient) -> None:
         self.llm_client = llm_client
         self.last_rejection_reason: str | None = None
+        self.last_framing_drop_reason: str | None = None
         self.last_llm_used = False
         self.last_verified_evidence: VerifiedPassportEvidence | None = None
         # Сколько раз пришлось поправить номер выдержки: если растёт, значит
@@ -190,11 +199,20 @@ class PassportAnswerAgent:
         """Вернуть текст ответа и пункт-источник либо ``None``."""
 
         self.last_rejection_reason = None
+        self.last_framing_drop_reason = None
         self.last_llm_used = False
         self.last_verified_evidence = None
         if not chunks:
             self.last_rejection_reason = "no_candidates"
             return None
+
+        table_answer = self._deterministic_arderia_power_answer(
+            question,
+            chunks,
+            context=context,
+        )
+        if table_answer is not None:
+            return table_answer
 
         listing = "\n\n".join(
             f"Выдержка {number} (паспорт {chunk.document}, {chunk.section}):\n{chunk.text}"
@@ -298,8 +316,13 @@ class PassportAnswerAgent:
         }
         for number in _NUMBER_RE.findall(framing_without_designations):
             if number.replace(",", ".") not in quote_numbers:
-                self.last_rejection_reason = f"number_not_in_quote: {number}"
-                return None
+                # The quote itself is already proven verbatim.  Do not throw
+                # away useful evidence because the optional explanation added
+                # a number; drop the entire explanation so the unproved value
+                # can never reach the customer.
+                self.last_framing_drop_reason = f"number_not_in_quote: {number}"
+                parsed = parsed.model_copy(update={"framing": ""})
+                break
 
         self.last_verified_evidence = VerifiedPassportEvidence(
             quote=parsed.quote.strip().strip('«»"'),
@@ -309,6 +332,74 @@ class PassportAnswerAgent:
             ordinal=chunk.ordinal,
         )
         return self._render(parsed, chunk), chunk
+
+    def _deterministic_arderia_power_answer(
+        self,
+        question: str,
+        chunks: list[Chunk],
+        *,
+        context: str | None,
+    ) -> tuple[str, Chunk] | None:
+        """Read one model column from the verified Arderia E-series table.
+
+        The PDF extractor flattens the table into one row.  Asking an LLM to
+        reconstruct the column mapping made it quote the heading and stop just
+        before the values.  Here the mapping is mechanical: model and minimum
+        power arrays are read from the same source chunk and matched by index.
+        """
+
+        request = _normalise(f"{question} {context or ''}")
+        if "миним" not in request or "мощн" not in request:
+            return None
+        model_match = re.search(r"(?:arderia)?e(4|6|9|12|16|20|24)\b", request)
+        if not model_match:
+            return None
+        requested_model = model_match.group(1)
+
+        for chunk in chunks:
+            if chunk.document != "Руководство_электрические_котлы_ARDERIA_2023.pdf":
+                continue
+            text = " ".join(chunk.text.split())
+            models_match = re.search(
+                r"Модель\s+((?:E\d+\s+){2,}E\d+)",
+                text,
+                re.IGNORECASE,
+            )
+            minimum_match = re.search(
+                r"мин\.{0,2}\s*((?:\d+(?:[.,]\d+)?\s+){2,}\d+(?:[.,]\d+)?)",
+                text,
+                re.IGNORECASE,
+            )
+            if not models_match or not minimum_match:
+                continue
+            models = re.findall(r"E(\d+)", models_match.group(1), re.IGNORECASE)
+            values = re.findall(r"\d+(?:[.,]\d+)?", minimum_match.group(1))
+            if requested_model not in models:
+                continue
+            column = models.index(requested_model)
+            if column >= len(values):
+                continue
+            value = values[column]
+            quote_start = models_match.start()
+            quote_end = minimum_match.end()
+            quote = text[quote_start:quote_end]
+            framing = f"Минимальная мощность модели E{requested_model} — {value} кВт."
+            parsed = PassportAnswer(
+                answerable=True,
+                excerpt=1,
+                why="модель и строка минимальной мощности сопоставлены по одной колонке таблицы",
+                quote=quote,
+                framing=framing,
+            )
+            self.last_verified_evidence = VerifiedPassportEvidence(
+                quote=quote,
+                framing=framing,
+                document=chunk.document,
+                section=chunk.section,
+                ordinal=chunk.ordinal,
+            )
+            return self._render(parsed, chunk), chunk
+        return None
 
     @staticmethod
     def _render(parsed: PassportAnswer, chunk: Chunk) -> str:

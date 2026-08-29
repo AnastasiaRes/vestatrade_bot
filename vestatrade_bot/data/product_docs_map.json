@@ -1,4 +1,16 @@
 {
+  "0962d51dab5c3219f584820a92d556aa.pdf": {"skus": ["VT.5000.0.0"]},
+  "132779.pdf": {"enabled": false},
+  "63109b6ad4cd19.27758769.pdf": {"skus": ["8216262000"]},
+  "Instrukciya.pdf": {"enabled": false},
+  "Rommer_pasport алюминиевые.pdf": {
+    "skus": ["RBM-0210-050006", "RAL-1210-050006"],
+    "pdf_text_mode": "layout"
+  },
+  "a93621c2b5b44dcdd178ce52c8155937.pdf": {"enabled": false},
+  "rommer stalnyie panelnyie_2.pdf": {"enabled": false},
+  "user-manual-pumps-grundfos-ups-25-40.pdf": {"enabled": false},
+  "Руководство_электрические_котлы_ARDERIA_2023.pdf": {"skus": ["2202210"]},
   "VT.033-034-0425.pdf": {"sku_prefixes": ["VT.033", "VT.034"]},
   "VT.047-048-0425.pdf": {"sku_prefixes": ["VT.047", "VT.048"]},
   "VT.226-227-228-1248в.pdf": {"sku_prefixes": ["VT.226", "VT.227", "VT.228"]},

@@ -212,6 +212,7 @@ class PassportEvidenceService:
                 canonical_sku=canonical_sku,
                 llm_used=agent.last_llm_used,
                 rejection_reason=agent.last_rejection_reason,
+                framing_drop_reason=agent.last_framing_drop_reason,
                 corrected_excerpts=agent.corrected_excerpts,
                 document_scope=list(documents),
                 source=(

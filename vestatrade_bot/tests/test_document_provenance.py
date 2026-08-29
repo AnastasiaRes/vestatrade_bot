@@ -72,6 +72,22 @@ def test_multiple_documents_keep_separate_sources_and_legacy_text(tmp_path) -> N
     assert all("/" not in document.filename for document in product.documents)
 
 
+def test_exact_sku_map_does_not_match_a_longer_sku(tmp_path) -> None:
+    exact = Product(sku="MODEL-1", name="Exact model")
+    sibling = Product(sku="MODEL-10", name="Different model")
+    (tmp_path / "manual.txt").write_text("Паспорт точной модели", encoding="utf-8")
+    (tmp_path / "product_docs_map.json").write_text(
+        json.dumps({"manual.txt": {"skus": ["MODEL-1"]}}),
+        encoding="utf-8",
+    )
+
+    attached = load_docs_for_products([exact, sibling], tmp_path)
+
+    assert attached == 1
+    assert [document.filename for document in exact.documents] == ["manual.txt"]
+    assert sibling.documents == []
+
+
 def test_pdf_evidence_records_page_count_and_best_section_pages(
     tmp_path,
     monkeypatch,

@@ -110,14 +110,14 @@ def test_document_filter_restricts_the_search() -> None:
     assert {hit.chunk.document for hit in hits} == {"pipe.pdf"}
 
 
-def test_missing_document_falls_back_to_the_whole_corpus() -> None:
-    # Пустая выдача хуже широкой: у товара может не быть паспорта.
+def test_missing_scoped_document_does_not_search_the_whole_corpus() -> None:
+    # Scope товара — граница доказательства. Иначе цитата будет от другого SKU.
     chunks = chunk_pages(_pages(), "pump.pdf")
     index = PassportIndex(chunks, None, None)
 
     hits = index.search("обратная магистраль", documents=["нет-такого.pdf"])
 
-    assert hits
+    assert hits == []
 
 
 def test_index_is_rebuilt_when_the_embedding_model_changes(tmp_path: Path) -> None:
@@ -178,6 +178,27 @@ def test_cache_is_reused_and_not_recomputed(tmp_path: Path) -> None:
 
     assert cache.exists()
     assert embedder.calls == calls_after_build
+
+
+def test_cache_is_rebuilt_when_pdf_corpus_changes(tmp_path: Path, monkeypatch) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    cache = tmp_path / "index.json"
+    calls: list[str | None] = []
+
+    def fake_build(docs_dirs, embed, model, source_digest=None):
+        calls.append(source_digest)
+        return PassportIndex([], None, model, source_digest=source_digest)
+
+    monkeypatch.setattr("app.passport_retrieval.build_index", fake_build)
+
+    load_or_build(cache, [docs], _FakeEmbedder(), "fake-1")
+    load_or_build(cache, [docs], _FakeEmbedder(), "fake-1")
+    (docs / "new.pdf").write_bytes(b"new passport")
+    load_or_build(cache, [docs], _FakeEmbedder(), "fake-1")
+
+    assert len(calls) == 2
+    assert calls[0] != calls[1]
 
 
 def test_keyword_weight_keeps_exact_designations_usable() -> None:

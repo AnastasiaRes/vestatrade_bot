@@ -7,6 +7,7 @@
    паспортов, покрывающих несколько артикулов:
 
    {
+     "exact-model.pdf": {"skus": ["EXACT.ARTICLE"]},
      "VT.033-034-0425.pdf": {"sku_prefixes": ["VT.033", "VT.034"]},
      "газовые котлы ARDERIA.pdf": {"brand": "Arderia", "name_contains_any": ["газовый"]}
    }
@@ -54,8 +55,8 @@ _IMPORTANT_SECTION_MARKERS: tuple[tuple[str, ...], ...] = tuple(
 )
 
 # Кэш извлечённого текста, чтобы не перечитывать PDF при каждом создании оркестратора.
-_TEXT_CACHE: dict[tuple[str, float], str] = {}
-_DOCUMENT_CACHE: dict[tuple[str, float], ProductDocument] = {}
+_TEXT_CACHE: dict[tuple[str, float, str], str] = {}
+_DOCUMENT_CACHE: dict[tuple[str, float, str], ProductDocument] = {}
 _BOILER_POWER_RANGE_CACHE: dict[
     tuple[str, float], dict[str, tuple[float, float, int]]
 ] = {}
@@ -67,13 +68,18 @@ def _doc_key(value: str) -> str:
     return normalize_sku(value).replace("/", "-")
 
 
-def _read_pdf_pages(path: Path) -> list[str]:
+def _read_pdf_pages(path: Path, extraction_mode: str = "plain") -> list[str]:
     """Return one extracted string per PDF page, preserving page boundaries."""
 
     try:
         from pypdf import PdfReader
 
         reader = PdfReader(str(path))
+        if extraction_mode == "layout":
+            return [
+                (page.extract_text(extraction_mode="layout") or "")
+                for page in reader.pages
+            ]
         return [(page.extract_text() or "") for page in reader.pages]
     except ImportError:
         logger.warning("pypdf не установлен — пропускаю %s", path.name)
@@ -133,12 +139,16 @@ def _section_page_map(pages: list[str]) -> dict[str, int]:
     return result
 
 
-def _extract_document(path: Path) -> ProductDocument:
-    cache_key = (str(path), path.stat().st_mtime)
+def _extract_document(path: Path, text_mode: str = "plain") -> ProductDocument:
+    cache_key = (str(path), path.stat().st_mtime, text_mode)
     if cache_key in _DOCUMENT_CACHE:
         return _DOCUMENT_CACHE[cache_key].model_copy(deep=True)
     if path.suffix.lower() == ".pdf":
-        pages = _read_pdf_pages(path)
+        pages = (
+            _read_pdf_pages(path, extraction_mode=text_mode)
+            if text_mode != "plain"
+            else _read_pdf_pages(path)
+        )
         raw_text = "\n".join(pages)
         page_count: int | None = len(pages) or None
         section_pages = _section_page_map(pages)
@@ -984,11 +994,16 @@ def _load_map(docs_dir: Path) -> dict[str, dict[str, Any]]:
 
 
 def _match_by_rule(products: list[Product], rule: dict[str, Any]) -> list[Product]:
+    exact_skus = {_doc_key(str(sku)) for sku in rule.get("skus", []) if str(sku)}
     prefixes = [_doc_key(prefix) for prefix in rule.get("sku_prefixes", [])]
     brand = normalize_text(str(rule["brand"])) if rule.get("brand") else None
     name_needles = [normalize_text(str(n)) for n in rule.get("name_contains_any", [])]
     matched: list[Product] = []
     for product in products:
+        if exact_skus:
+            if _doc_key(product.sku) in exact_skus:
+                matched.append(product)
+            continue
         if prefixes:
             sku_key = _doc_key(product.sku)
             if any(sku_key.startswith(prefix) for prefix in prefixes):
@@ -1069,6 +1084,9 @@ def load_docs_for_products(
             if path.suffix.lower() not in SUPPORTED_SUFFIXES:
                 continue
             rule = mapping.get(path.name)
+            if rule and rule.get("enabled") is False:
+                logger.info("Документ %s отключён в карте — пропускаю", path.name)
+                continue
             if rule:
                 targets = _match_by_rule(products, rule)
             else:
@@ -1076,7 +1094,15 @@ def load_docs_for_products(
             if not targets:
                 logger.warning("Документ %s не совпал ни с одним товаром фида", path.name)
                 continue
-            document = _extract_document(path)
+            text_mode = str((rule or {}).get("pdf_text_mode") or "plain")
+            if text_mode not in {"plain", "layout"}:
+                logger.warning(
+                    "Документ %s: неизвестный pdf_text_mode=%s — использую plain",
+                    path.name,
+                    text_mode,
+                )
+                text_mode = "plain"
+            document = _extract_document(path, text_mode=text_mode)
             text = document.text
             if not text:
                 logger.warning("Документ %s без текстового слоя — пропускаю", path.name)

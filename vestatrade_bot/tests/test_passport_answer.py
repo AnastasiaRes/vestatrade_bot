@@ -84,9 +84,8 @@ def test_wrong_excerpt_number_is_corrected_not_refused() -> None:
     assert agent.corrected_excerpts == 1
 
 
-def test_number_absent_from_the_quote_is_rejected() -> None:
-    # Ровно тот случай, ради которого проверка и написана: модель добавляет
-    # правдоподобную цифру от себя.
+def test_number_absent_from_quote_drops_framing_but_keeps_verified_quote() -> None:
+    # Неподтверждённое пояснение не доставляется, но дословная цитата остаётся.
     agent = PassportAnswerAgent(
         _StubLLM(
             _reply(
@@ -97,8 +96,65 @@ def test_number_absent_from_the_quote_is_rejected() -> None:
         )
     )
 
-    assert agent.answer("Как часто выпускать воздух?", _chunks()) is None
-    assert (agent.last_rejection_reason or "").startswith("number_not_in_quote")
+    result = agent.answer("Как часто выпускать воздух?", _chunks())
+
+    assert result is not None
+    answer, _ = result
+    assert "один раз в полгода" in answer
+    assert "6 месяцев" not in answer
+    assert "дважды" not in answer
+    assert (agent.last_framing_drop_reason or "").startswith("number_not_in_quote")
+
+
+def test_pdf_ligature_is_formatting_not_a_changed_quote() -> None:
+    chunks = [
+        Chunk(
+            document="rommer.pdf",
+            text="Rommer Proﬁ 500 Алюминиевый 0,157 кВт",
+            section="таблица характеристик",
+            ordinal=0,
+        )
+    ]
+    agent = PassportAnswerAgent(
+        _StubLLM(
+            _reply(
+                quote="Rommer Profi 500 Алюминиевый 0.157 кВт",
+                framing="Теплоотдача секции — 0,157 кВт.",
+            )
+        )
+    )
+
+    assert agent.answer("Какая теплоотдача Rommer Profi 500?", chunks) is not None
+
+
+def test_arderia_minimum_power_is_read_from_matching_model_column() -> None:
+    chunk = Chunk(
+        document="Руководство_электрические_котлы_ARDERIA_2023.pdf",
+        text=(
+            "Технические характеристики электрокотла Arderia "
+            "Модель E4 E6 E9 E12 E16 E20 E24 Подключение Однофазное "
+            "Мощность макс. кВт 4.0 6.0 9.0 12.0 16.0 20.0 24.0 "
+            "мин.. 0.7 1.0 0.8 1.0 1.4 1.7 2.0"
+        ),
+        section="таблица характеристик",
+        ordinal=27,
+    )
+    llm = _StubLLM(_reply(), used=False)
+    agent = PassportAnswerAgent(llm)
+
+    result = agent.answer(
+        "Какая минимальная мощность у этого котла?",
+        [chunk],
+        context="2202210 — Котел Arderia E9",
+    )
+
+    assert result is not None
+    answer, source = result
+    assert "0.8 кВт" in answer
+    assert source.ordinal == 27
+    assert agent.last_llm_used is False
+    assert agent.last_verified_evidence is not None
+    assert agent.last_verified_evidence.document == chunk.document
 
 
 def test_number_present_in_the_quote_passes() -> None:
