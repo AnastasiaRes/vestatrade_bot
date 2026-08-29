@@ -406,6 +406,7 @@ class CustomerAct(str, Enum):
     FIND = "find"
     SELECT = "select"
     COMPARE = "compare"
+    COMPATIBILITY = "compatibility"
     EXPLAIN = "explain"
     CALCULATE = "calculate"
     CHECK_PRICE = "check_price"

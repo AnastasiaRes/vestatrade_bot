@@ -416,6 +416,22 @@ CIRCUITS = _fact(
     parsers=("circuit_count",),
     learn="decide_heating_only_or_dhw",
 )
+INTEGRATED_CIRCULATION_PUMP = _fact(
+    "integrated_circulation_pump",
+    aliases=(
+        "built_in_pump",
+        "builtin_pump",
+        "integrated_pump",
+        "circulation_pump_included",
+        "встроенный насос",
+        "насос в котле",
+    ),
+    value_type=FactValueType.BOOLEAN,
+    strength=FactStrength.SOFT,
+    comparison=ComparisonMode.EXACT,
+    fields=("насос", "циркуляционный насос"),
+    parsers=("integrated_circulation_pump",),
+)
 CHAMBER = _fact(
     "combustion_chamber",
     aliases=("chamber_type",),
@@ -915,7 +931,7 @@ DEFAULT_CONTRACTS: tuple[ProductContract, ...] = (
     _contract(
         "boiler.generic.v1", ProductKind.BOILER, "boilers",
         ("boiler", "котел", "котел отопления"), BASE,
-        (FUEL_TYPE, POWER_KW, BUILDING_AREA, CIRCUITS, CHAMBER, DECLARED_HEATED_AREA),
+        (FUEL_TYPE, POWER_KW, BUILDING_AREA, CIRCUITS, INTEGRATED_CIRCULATION_PUMP, CHAMBER, DECLARED_HEATED_AREA),
         candidates=(ProductKind.GAS_BOILER, ProductKind.ELECTRIC_BOILER),
         invariants=("boiler_type", "circuits"),
         required_alternatives=(("power_kw", ("area_m2",)),),
@@ -924,7 +940,7 @@ DEFAULT_CONTRACTS: tuple[ProductContract, ...] = (
     _contract(
         "boiler.gas.v1", ProductKind.GAS_BOILER, "boilers",
         ("gas boiler", "газовый котел"), BASE,
-        (SPECIALIZED_FUEL_TYPE, POWER_KW, BUILDING_AREA, CIRCUITS, CHAMBER, DECLARED_HEATED_AREA),
+        (SPECIALIZED_FUEL_TYPE, POWER_KW, BUILDING_AREA, CIRCUITS, INTEGRATED_CIRCULATION_PUMP, CHAMBER, DECLARED_HEATED_AREA),
         catalog_types=("котел",), invariants=("boiler_type", "circuits"),
         required_alternatives=(("power_kw", ("area_m2",)),),
         preliminary_identity_fact_groups=(("power_kw", "area_m2"),),
@@ -932,7 +948,7 @@ DEFAULT_CONTRACTS: tuple[ProductContract, ...] = (
     _contract(
         "boiler.electric.v1", ProductKind.ELECTRIC_BOILER, "boilers",
         ("electric boiler", "электрический котел", "электрокотел"), BASE,
-        (SPECIALIZED_FUEL_TYPE, POWER_KW, BUILDING_AREA, CIRCUITS, DECLARED_HEATED_AREA), catalog_types=("котел",),
+        (SPECIALIZED_FUEL_TYPE, POWER_KW, BUILDING_AREA, CIRCUITS, INTEGRATED_CIRCULATION_PUMP, DECLARED_HEATED_AREA), catalog_types=("котел",),
         invariants=("boiler_type", "circuits"),
         required_alternatives=(("power_kw", ("area_m2",)),),
         preliminary_identity_fact_groups=(("power_kw", "area_m2"),),

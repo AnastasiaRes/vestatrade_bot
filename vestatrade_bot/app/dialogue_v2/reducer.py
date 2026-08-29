@@ -156,6 +156,7 @@ _PRODUCT_SCOPED_ACTS = {
     TaskAct.FIND,
     TaskAct.SELECT,
     TaskAct.COMPARE,
+    TaskAct.COMPATIBILITY,
     TaskAct.CHECK_PRICE,
     TaskAct.CHECK_STOCK,
     TaskAct.GET_LINK,

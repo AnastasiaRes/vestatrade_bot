@@ -36,6 +36,7 @@ _ACT_TO_CAPABILITY = {
     "select": "select",
     "compare": "compare",
     "calculate": "calculate",
+    "compatibility": "compatibility",
     "explain": "fact",
 }
 
@@ -129,12 +130,10 @@ def _actions(frame: TurnUnderstanding, message: str) -> tuple[SemanticActionCand
             "fact": "explain",
             "compare": "compare",
             "calculate": "calculate",
-            # These capabilities are not implemented here.  ``explain`` is
-            # only a compatibility adapter to the already accepted typed
-            # ProductFact boundary (rationale/compatibility refusal); the
-            # canonical action remains explicit in SemanticTurnDelta.
+            # Rationale and project remain future-facing semantic actions;
+            # Compatibility now has its own bounded two-sided evidence path.
             "rationale": "explain",
-            "compatibility": "explain",
+            "compatibility": "compatibility",
         }.get(action)
         actions.append(
             SemanticActionCandidate(

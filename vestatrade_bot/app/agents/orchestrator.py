@@ -39,6 +39,12 @@ from app.calculation_v2.service import (
     build_calculation_result,
     validate_calculation_result,
 )
+from app.compatibility_v2.service import (
+    InterfaceFactService,
+    build_compatibility_request,
+    build_compatibility_result,
+    validate_compatibility_result,
+)
 from app.comparison_v2.service import (
     build_comparison_request,
     build_comparison_result,
@@ -59,6 +65,7 @@ from app.dialogue_v2.controller import DialogueControllerV2, DialogueV2Outcome
 from app.dialogue_v2.reducer import record_response_delivery
 from app.cutover_v2.assembler import build_v2_turn_candidate
 from app.cutover_v2.calculation import build_v2_calculation_candidate
+from app.cutover_v2.compatibility import build_v2_compatibility_candidate
 from app.cutover_v2.comparison import build_v2_comparison_candidate
 from app.cutover_v2.product_fact import build_v2_product_fact_candidate
 from app.cutover_v2.contracts import (
@@ -1094,14 +1101,16 @@ class ChatOrchestrator:
         )
         action_plan = outcome.next_action_plan
         if (
-            "compare" in current_actions
+            {"compare", "compatibility"}.intersection(current_actions)
             or (
                 action_plan is not None
-                and action_plan.primary.kind == NextActionKind.COMPARE
+                and action_plan.primary.kind
+                in {NextActionKind.COMPARE, NextActionKind.CHECK_COMPATIBILITY}
             )
         ):
-            # Compare has its own evidence boundary.  A fact detector must
-            # never turn an explicit comparison into a one-product answer.
+            # Compare and Compatibility have their own multi-product evidence
+            # boundaries. A fact detector must never turn either relationship
+            # request into a one-product answer.
             return base_candidate
         # Explicit show commands own the turn before any pending
         # questionnaire fact.  Without this guard a stale decision question
@@ -1253,6 +1262,70 @@ class ChatOrchestrator:
             update={
                 "comparison_request": request,
                 "comparison_result": result,
+                "rejection_reason_codes": tuple(
+                    dict.fromkeys(
+                        (*base_candidate.rejection_reason_codes, *result.reason_codes)
+                    )
+                ),
+            }
+        )
+
+    def _maybe_build_v2_compatibility_candidate(
+        self,
+        message: str,
+        before_turn: SessionState,
+        outcome: DialogueV2Outcome,
+        base_candidate: Any,
+        *,
+        session_id: str,
+        turn_id: str,
+    ) -> Any:
+        """Give Compatibility one source-bound, two-sided V2 seam.
+
+        This adapter reads only the current V2 source snapshot.  For a missing
+        thermostat interface it may use the already accepted ProductFact
+        passport/embedding/verifier path; it never composes a Legacy answer or
+        runs a broad catalogue search.
+        """
+
+        snapshot = self.answer_source_snapshot_v2
+        if snapshot is None:
+            return base_candidate
+        request = build_compatibility_request(
+            outcome,
+            before_turn,
+            snapshot,
+            original_utterance=message,
+        )
+        if request is None:
+            return base_candidate
+        result = validate_compatibility_result(
+            request,
+            build_compatibility_result(
+                request,
+                snapshot,
+                interface_facts=InterfaceFactService(
+                    snapshot,
+                    product_fact_evidence=self.product_fact_evidence,
+                    products=self.search_agent.products,
+                ),
+            ),
+            snapshot,
+        )
+        candidate = build_v2_compatibility_candidate(
+            outcome,
+            base_candidate,
+            result,
+            snapshot,
+            session_id=session_id,
+            turn_id=turn_id,
+        )
+        if candidate is not None:
+            return candidate.model_copy(update={"compatibility_request": request})
+        return base_candidate.model_copy(
+            update={
+                "compatibility_request": request,
+                "compatibility_result": result,
                 "rejection_reason_codes": tuple(
                     dict.fromkeys(
                         (*base_candidate.rejection_reason_codes, *result.reason_codes)
@@ -1543,6 +1616,7 @@ class ChatOrchestrator:
         selection_delivery = None
         comparison_delivery = None
         calculation_delivery = None
+        compatibility_delivery = None
         if candidate is not None:
             candidate_summary = candidate.model_dump(
                 mode="json",
@@ -1572,6 +1646,16 @@ class ChatOrchestrator:
                     mode="json"
                 )
                 calculation_delivery["customer_visible_scope_preserved"] = bool(
+                    commit is not None
+                    and commit.committed
+                    and candidate.response is not None
+                    and not candidate.response.products
+                )
+            if candidate.compatibility_result is not None:
+                compatibility_delivery = candidate.compatibility_result.model_dump(
+                    mode="json"
+                )
+                compatibility_delivery["customer_visible_scope_preserved"] = bool(
                     commit is not None
                     and commit.committed
                     and candidate.response is not None
@@ -1612,6 +1696,7 @@ class ChatOrchestrator:
             "selection_delivery": selection_delivery,
             "comparison_delivery": comparison_delivery,
             "calculation_delivery": calculation_delivery,
+            "compatibility_delivery": compatibility_delivery,
             "arbitration": arbitration,
             "commit": commit,
             "parity": parity,
@@ -1746,6 +1831,16 @@ class ChatOrchestrator:
                                         )
                                         live_candidate = (
                                             self._maybe_build_v2_comparison_candidate(
+                                                message,
+                                                before_turn,
+                                                live_v2_outcome,
+                                                live_candidate,
+                                                session_id=session_id,
+                                                turn_id=turn_id,
+                                            )
+                                        )
+                                        live_candidate = (
+                                            self._maybe_build_v2_compatibility_candidate(
                                                 message,
                                                 before_turn,
                                                 live_v2_outcome,
@@ -2035,6 +2130,16 @@ class ChatOrchestrator:
                                     )
                                     shadow_candidate = (
                                         self._maybe_build_v2_comparison_candidate(
+                                            message,
+                                            before_turn,
+                                            v2_outcome,
+                                            shadow_candidate,
+                                            session_id=session_id,
+                                            turn_id=turn_id,
+                                        )
+                                    )
+                                    shadow_candidate = (
+                                        self._maybe_build_v2_compatibility_candidate(
                                             message,
                                             before_turn,
                                             v2_outcome,

@@ -636,7 +636,11 @@ def test_future_boundaries_preserve_action_and_reuse_existing_explain_path() -> 
         assert gate.accepted
         assert adapted is not None
         assert action in {item.action for item in delta.action_candidates}
-        assert [item.value for item in adapted.acts] == ["explain"]
+        assert [item.value for item in adapted.acts] == (
+            ["explain", "compatibility"]
+            if action == "compatibility"
+            else ["explain"]
+        )
 
 
 def test_product_fact_predicate_paraphrases_share_existing_evidence_path() -> None:

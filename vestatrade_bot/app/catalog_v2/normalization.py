@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 
+from app.component_evidence import builtin_part_state_from_text
 from app.models import Product
 
 from .contracts import (
@@ -329,6 +330,11 @@ def _structured_fact(name: str, raw: object, field: str) -> CatalogFact | None:
 def normalize_fact_value(name: str, value: object) -> str | int | float | bool:
     """Normalize only explicit, compatible values; never infer a missing fact."""
 
+    if name == "integrated_circulation_pump":
+        state = builtin_part_state_from_text(str(value or ""), "насос")
+        # An omitted / merely mentioned component must not become a false
+        # catalogue fact.  ``_fact`` drops this empty result.
+        return state if state is not None else ""
     if name == "circuits" and isinstance(value, bool):
         return 2 if value else 1
     if isinstance(value, (int, float, bool)):
@@ -981,6 +987,19 @@ def _generic_facts(
     if "circuit_count" in parsers:
         circuits = 2 if "двухконтур" in name_norm else 1 if "одноконтур" in name_norm or "1 контур" in name_norm else None
         result.append(_fact("circuits", circuits, source="name", field="name", raw=name, parser="circuit_count"))
+
+    if "integrated_circulation_pump" in parsers:
+        state = builtin_part_state_from_text(description, "насос")
+        result.append(
+            _fact(
+                "integrated_circulation_pump",
+                state,
+                source="description",
+                field="description",
+                raw=description,
+                parser="integrated_circulation_pump",
+            )
+        )
 
     if "combustion_chamber" in parsers:
         chamber = "closed" if "закр" in name_norm and "камер" in name_norm else None

@@ -8,6 +8,10 @@ from numbers import Real
 from typing import Any
 
 from app.models import Product, SearchQuery
+from app.component_evidence import (
+    builtin_part_state as _shared_builtin_part_state,
+    builtin_part_state_from_text as _shared_builtin_part_state_from_text,
+)
 from app.sku_resolution import (
     SkuResolution,
     SkuResolutionStatus,
@@ -363,103 +367,16 @@ def _feature_state(product: Product, feature: str) -> bool | None:
     return None
 
 
-_BUILTIN_PART_TARGETS: dict[str, str] = {
-    "насос": r"(?:циркуляционн\w*\s+)?насос",
-    "бак": r"(?:расширительн\w*\s+)?бак",
-    "3-ходовой клапан": r"(?:трех|3)[- ]?ходов\w*\s+клапан",
-    "манометр": r"манометр",
-    "камера": r"камер\w*\s+сгоран",
-    "бойлер": r"(?:накопительн\w*\s+)?бойлер",
-    "группа безопасности": r"групп\w*\s+безопасн",
-}
-
-
 def _builtin_part_state_from_text(text: str, part: str) -> bool | None:
-    """Return a grounded built-in/in-package state without inverting negations.
+    """Compatibility facade over the shared component-evidence parser."""
 
-    Product descriptions commonly mention components that are optional, external,
-    or explicitly absent.  A keyword hit is therefore not evidence of inclusion.
-    """
-    normalized = normalize_text(text)
-    canonical = normalize_text(part)
-    target = _BUILTIN_PART_TARGETS.get(canonical)
-    if not target:
-        return None
-
-    negative_patterns = (
-        # ``не входит в комплект поставки`` is package evidence, not proof
-        # that a component is absent from inside the assembled product.  Only
-        # explicit construction wording is allowed to establish False here.
-        rf"(?:\bбез\b|"
-        rf"\bне\s+встроен\w*\b|\bне\s+предусмотрен\w*\b|"
-        rf"\bотсутств\w*\b)(?:\s+\w+){{0,5}}\s+{target}",
-        rf"{target}(?:\s+\w+){{0,8}}\s+(?:\bнет\b|\bне\s+встроен\w*\b|"
-        rf"\bне\s+предусмотрен\w*\b|\bотсутств\w*\b)",
-        rf"{target}(?:[^.!?]{{0,140}})(?:приобрета\w*|поставля\w*)\s+отдельно",
-        rf"(?:приобрета\w*|поставля\w*)\s+отдельно(?:[^.!?]{{0,100}}){target}",
-    )
-    if any(re.search(pattern, normalized) for pattern in negative_patterns):
-        return False
-
-    positive_patterns: dict[str, tuple[str, ...]] = {
-        "насос": (
-            r"встроен\w*\s+(?:циркуляционн\w*\s+)?насос",
-            r"(?:циркуляционн\w*\s+)?насос[^.!?]{0,45}встроен",
-        ),
-        "бак": (
-            r"встроенн\w*[^.!?]{0,100}(?:расширительн\w*\s+)?бак",
-            r"(?:расширительн\w*\s+)?бак[^.!?]{0,45}встроен",
-        ),
-        "3-ходовой клапан": (
-            r"встроенн\w*[^.!?]{0,35}(?:трех|3)[- ]?ходов\w*\s+клапан",
-        ),
-        "манометр": (
-            r"встроенн\w*[^.!?]{0,45}манометр",
-        ),
-        "камера": (r"закрыт\w*\s+камер\w*\s+сгоран",),
-        "бойлер": (
-            r"встроенн\w*\s+(?:накопительн\w*\s+)?бойлер",
-            r"(?:накопительн\w*\s+)?бойлер[^.!?]{0,45}встроен",
-        ),
-        "группа безопасности": (
-            r"встроенн\w*[^.!?]{0,45}групп\w*\s+безопасн",
-            r"(?:полный\s+)?комплект\s+гидравлическ\w*\s+безопасн",
-        ),
-    }
-    if any(
-        re.search(pattern, normalized)
-        for pattern in positive_patterns.get(canonical, ())
-    ):
-        return True
-    return None
+    return _shared_builtin_part_state_from_text(text, part)
 
 
 def _builtin_part_state(product: Product, part: str) -> bool | None:
-    card_text = " ".join(
-        [
-            product.name,
-            product.description or "",
-            " ".join(
-                f"{key} {value}"
-                for key, value in product.attributes_normalized.items()
-            ),
-        ]
-    )
-    states = [_builtin_part_state_from_text(card_text, part)]
-    if product.documents:
-        states.extend(
-            _builtin_part_state_from_text(document.text, part)
-            for document in product.documents
-        )
-    elif product.docs_text:
-        # Backwards compatibility for old caches without structured sources.
-        states.append(_builtin_part_state_from_text(product.docs_text, part))
-    grounded = {state for state in states if state is not None}
-    if len(grounded) != 1:
-        # No evidence or a source conflict: fail closed instead of allowing an
-        # arbitrary concatenation order to choose the answer.
-        return None
-    return grounded.pop()
+    """Compatibility facade over the shared component-evidence reader."""
+
+    return _shared_builtin_part_state(product, part)
 
 
 def _builtin_part_confirmed(product: Product, part: str) -> bool:

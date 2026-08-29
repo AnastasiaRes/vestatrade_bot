@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.answer_v2.contracts import AnswerSourceSnapshot, CatalogAnswerProduct
+from app.answer_v2.sources import build_answer_source_snapshot
 from app.catalog_v2.contracts import (
     CatalogFact,
     CatalogProductRole,
@@ -8,6 +9,8 @@ from app.catalog_v2.contracts import (
     FactProvenance,
     ProductKind,
 )
+from app.catalog_v2.normalization import normalize_catalog_product
+from app.catalog_v2.registry import ProductContractRegistry
 from app.config import get_settings
 from app.cutover_v2.contracts import V2TurnCandidate
 from app.cutover_v2.product_fact import build_v2_product_fact_candidate
@@ -510,6 +513,93 @@ def test_numeric_sku_without_marker_resolves_to_the_exact_catalogue_product() ->
     assert evidence.request.product_ref.canonical_sku == "2202210"
     assert evidence.request.predicate == "circuits"
     assert evidence.value == "1"
+
+
+def test_builtin_pump_question_uses_only_the_resolved_boiler_document() -> None:
+    boiler = _product(
+        "2202210",
+        "Котел электрический Arderia E9, 9 кВт",
+        {},
+        "arderias-e9.pdf",
+    )
+    boiler.documents = [
+        ProductDocument(
+            filename="arderias-e9.pdf",
+            document_kind="passport",
+            text="В конструкции котла предусмотрен встроенный циркуляционный насос.",
+        )
+    ]
+    passport = _StubPassport(quote="этот вызов не нужен")
+    service = _service([boiler], passport)
+
+    evidence = service.evaluate(
+        "Есть ли в котле 2202210 встроенный насос?",
+        SessionState(session_id="builtin-pump-fact"),
+    )
+
+    assert evidence is not None
+    assert evidence.status == ProductFactStatus.ANSWERED
+    assert evidence.request.predicate == "integrated_circulation_pump"
+    assert evidence.request.product_ref.canonical_sku == "2202210"
+    assert evidence.value == "есть"
+    assert evidence.source_kind == "passport_document_exact"
+    assert evidence.document == "arderias-e9.pdf"
+    assert passport.calls == []
+    assert "в привязанной документации" in render_product_fact_evidence(evidence).casefold()
+
+
+def test_builtin_pump_question_never_treats_missing_words_as_absence() -> None:
+    boiler = _product(
+        "BOILER-UNKNOWN",
+        "Котел без детального описания",
+        {},
+        "unknown.pdf",
+    )
+    service = _service([boiler], _StubPassport())
+
+    evidence = service.evaluate(
+        "Есть ли в этом котле встроенный насос?",
+        SessionState(
+            session_id="builtin-pump-unknown",
+            product_focus=ProductFocusState(sku=boiler.sku),
+        ),
+    )
+
+    assert evidence is not None
+    assert evidence.status == ProductFactStatus.NOT_FOUND
+    assert evidence.value is None
+    assert evidence.reason_code == "integrated_pump_not_explicitly_confirmed"
+
+
+def test_attached_document_content_is_part_of_the_v2_source_revision() -> None:
+    boiler = _product(
+        "BOILER-SOURCE",
+        "Котел электрический 9 кВт",
+        {"Тип товара": "Котел"},
+        "boiler.pdf",
+    )
+    boiler.documents = [
+        ProductDocument(filename="boiler.pdf", text="Встроенный циркуляционный насос.")
+    ]
+    changed = boiler.model_copy(
+        update={
+            "documents": [
+                ProductDocument(
+                    filename="boiler.pdf",
+                    text="Циркуляционный насос в изделие не встроен.",
+                )
+            ]
+        }
+    )
+    registry = ProductContractRegistry()
+    first = build_answer_source_snapshot(
+        [boiler], [normalize_catalog_product(boiler, registry)]
+    )
+    second = build_answer_source_snapshot(
+        [changed], [normalize_catalog_product(changed, registry)]
+    )
+
+    assert first.source_revision != second.source_revision
 
 
 def test_strict_brand_model_reference_reaches_circuits_fact_without_sku() -> None:

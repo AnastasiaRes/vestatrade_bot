@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.agents.passport_answer import PassportAnswerAgent
 from app.agents.domain_ontology import fact_aliases
 from app.catalog_v2.contracts import CatalogProductSnapshot
+from app.component_evidence import builtin_part_evidence
 from app.config import PROJECT_ROOT, Settings
 from app.diagnostic_telemetry import record_passport_event
 from app.models import Product, SessionState
@@ -93,7 +94,7 @@ class ProductFactEvidence(FrozenModel):
     status: ProductFactStatus
     request: ProductFactRequest
     product_name: str | None = None
-    value: str | int | float | None = None
+    value: str | int | float | bool | None = None
     unit: str | None = None
     source_kind: str | None = None
     document: str | None = None
@@ -324,6 +325,14 @@ FACT_SPECS = (
         attribute_keys=("количество контуров", "контуры"),
         quote_groups=(("контур",),),
     ),
+    FactSpec(
+        predicate="integrated_circulation_pump",
+        label="встроенный циркуляционный насос",
+        unit=None,
+        question_groups=(("насос",), ("встроен", "в котле", "в этом")),
+        attribute_keys=(),
+        quote_groups=(("насос",),),
+    ),
 )
 
 _SEMANTIC_PREDICATE_ALIASES = {
@@ -339,6 +348,9 @@ _SEMANTIC_PREDICATE_ALIASES = {
     "operating_pressure_bar": "radiator_heating_pressure_bar",
     "control_thread": "thermostatic_head_thread",
     "thermostatic_head_thread": "thermostatic_head_thread",
+    "integrated_circulation_pump": "integrated_circulation_pump",
+    "built_in_pump": "integrated_circulation_pump",
+    "builtin_pump": "integrated_circulation_pump",
 }
 
 _CARD_FACT_LABELS = {
@@ -507,6 +519,14 @@ class ProductFactEvidenceService:
                 document_scope=documents,
             )
 
+        if predicate == "integrated_circulation_pump":
+            return self._integrated_circulation_pump_evidence(
+                products,
+                request,
+                product_name=product_name,
+                document_scope=documents,
+            )
+
         spec = next((item for item in FACT_SPECS if item.predicate == predicate), None)
         if spec is None:
             # A normalized card fact is already tied to the exact product,
@@ -645,6 +665,71 @@ class ProductFactEvidenceService:
             verifier_status=passport.verifier_status,
             reason_code=reason,
             document_scope=documents,
+        )
+
+    @staticmethod
+    def _integrated_circulation_pump_evidence(
+        products: list[Product],
+        request: ProductFactRequest,
+        *,
+        product_name: str,
+        document_scope: tuple[str, ...],
+    ) -> ProductFactEvidence:
+        """Answer one boiler-component question from exact, attached sources.
+
+        This does not use absence of a document phrase as an absence verdict.
+        A mapped document is inspected only for the resolved product and wins
+        as the displayed source when it agrees with the current catalogue card.
+        """
+
+        if len(products) != 1:
+            return ProductFactEvidence(
+                status=ProductFactStatus.AMBIGUOUS,
+                request=request,
+                product_name=product_name,
+                verifier_status="not_run",
+                reason_code="integrated_pump_requires_single_product",
+                document_scope=document_scope,
+            )
+        evidence = builtin_part_evidence(products[0], "насос")
+        if evidence.source_conflict:
+            return ProductFactEvidence(
+                status=ProductFactStatus.REJECTED,
+                request=request,
+                product_name=product_name,
+                verifier_status="source_conflict",
+                reason_code="integrated_pump_card_document_conflict",
+                document_scope=document_scope,
+            )
+        if evidence.state is None:
+            return ProductFactEvidence(
+                status=ProductFactStatus.NOT_FOUND,
+                request=request,
+                product_name=product_name,
+                verifier_status="not_run",
+                reason_code="integrated_pump_not_explicitly_confirmed",
+                document_scope=document_scope,
+            )
+        return ProductFactEvidence(
+            status=ProductFactStatus.ANSWERED,
+            request=request,
+            product_name=product_name,
+            value="есть" if evidence.state else "нет",
+            source_kind=(
+                "passport_document_exact"
+                if evidence.source_kind == "passport"
+                else "catalog_card_exact"
+            ),
+            document=evidence.document,
+            section=evidence.section,
+            quote=evidence.excerpt,
+            verifier_status=(
+                "document_text_exact"
+                if evidence.source_kind == "passport"
+                else "catalog_card_exact"
+            ),
+            reason_code="integrated_pump_explicit_component_evidence",
+            document_scope=document_scope,
         )
 
     def resolve_reference(
@@ -834,6 +919,17 @@ class ProductFactEvidenceService:
             return "selection_power_rationale"
         if any(marker in text for marker in ("подойдет", "подойдёт", "совместим")):
             return "compatibility_boundary"
+        if "насос" in text and any(
+            marker in text
+            for marker in (
+                "встроен",
+                "внутри",
+                "в котле",
+                "в этом",
+                "комплект",
+            )
+        ):
+            return "integrated_circulation_pump"
         if (
             "по монтаж" in text
             or "между присоедин" in text
@@ -1097,6 +1193,16 @@ def render_product_fact_evidence(evidence: ProductFactEvidence) -> str:
             and evidence.source_kind == "passport_and_catalog_card"
         ):
             answer += f" По паспорту: «{evidence.quote}»"
+            source = evidence.document
+            if evidence.section:
+                source += f", {evidence.section.rstrip('.')}"
+            answer += f". Источник: {source}."
+        elif (
+            evidence.quote
+            and evidence.document
+            and evidence.source_kind == "passport_document_exact"
+        ):
+            answer += f" В привязанной документации: «{evidence.quote}»"
             source = evidence.document
             if evidence.section:
                 source += f", {evidence.section.rstrip('.')}"

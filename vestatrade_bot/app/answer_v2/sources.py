@@ -154,6 +154,18 @@ def build_answer_source_snapshot(
                         )
                         for issue in identity.fact_issues
                     ),
+                    *(
+                        "\x1d".join(
+                            (
+                                document.filename,
+                                document.document_kind,
+                                hashlib.sha256(
+                                    document.text.encode("utf-8")
+                                ).hexdigest(),
+                            )
+                        )
+                        for document in product.documents
+                    ),
                 )
             )
         )

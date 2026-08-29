@@ -211,6 +211,9 @@ class SellerPolicy:
         selections.extend(related_selections)
         explanations = [task for task in current_tasks if task.act == TaskAct.EXPLAIN]
         comparisons = [task for task in current_tasks if task.act == TaskAct.COMPARE]
+        compatibilities = [
+            task for task in current_tasks if task.act == TaskAct.COMPATIBILITY
+        ]
         calculations = [task for task in current_tasks if task.act == TaskAct.CALCULATE]
         handoffs = [task for task in current_tasks if task.act == TaskAct.HANDOFF]
 
@@ -241,6 +244,21 @@ class SellerPolicy:
                     )
                 )
             ]
+
+        # Compatibility is a two-sided relationship request.  It owns the
+        # turn before a generic information request or one-product direct
+        # fact can reduce it to an answer about only one side.
+        if compatibilities:
+            return self._single(
+                NextActionKind.CHECK_COMPATIBILITY,
+                compatibilities[0].task_id,
+                "explicit_compatibility_request",
+                task_ids,
+                state,
+                secondary=self._selection_action(
+                    state, selections[0], readiness_by_task
+                ) if selections else None,
+            )
 
         current_information_requests = tuple(
             request
