@@ -1802,6 +1802,21 @@ _SHOW_ACTION_ALIAS_PATTERN = "|".join(
     re.escape(alias).replace(r"\ ", r"\s+")
     for alias in sorted(action_aliases("show"), key=len, reverse=True)
 )
+_CALCULATE_ACTION_ALIAS_PATTERN = "|".join(
+    re.escape(alias).replace(r"\ ", r"\s+")
+    for alias in sorted(action_aliases("calculate"), key=len, reverse=True)
+)
+_EXPLICIT_CALCULATION_RE = re.compile(
+    rf"(?iu)(?<![\w-])(?:{_CALCULATE_ACTION_ALIAS_PATTERN})(?![\w-])"
+)
+# The modifier-coverage gate checks product evidence syntactically.  A count
+# in a total-price request is commercial input, not a hidden characteristic of
+# the product.  This deliberately recognises only an explicit count/length
+# unit; dimensions such as 20 mm remain subject to the ordinary gate.
+_CALCULATION_QUANTITY_IN_EVIDENCE_RE = re.compile(
+    r"(?iu)\b\d+(?:[.,]\d+)?\s*(?:шт(?:\.|\b|ук\w*)|штук\w*|"
+    r"единиц\w*|м(?:етр(?:а|ов)?)?\b|метр\w*)"
+)
 _EXPLICIT_SHOW_SELECTION_RE = re.compile(
     r"(?iu)(?<![\w-])(?:"
     r"(?:покаж(?:ите|и-ка|и|ы)|подбер(?:ите|и)|предлож(?:ите|и)|выда(?:йте|й))"
@@ -5179,6 +5194,11 @@ def validate_product_modifier_coverage(
             exempt_spans.extend(
                 match.span() for match in _STRUCTURED_MODEL_NUMBER_RE.finditer(evidence)
             )
+        quantity_spans = (
+            [match.span() for match in _CALCULATION_QUANTITY_IN_EVIDENCE_RE.finditer(evidence)]
+            if CustomerAct.CALCULATE in understanding.acts
+            else []
+        )
         constraint_numeric_anchors = {
             token
             for constraint in understanding.constraints
@@ -5195,9 +5215,14 @@ def validate_product_modifier_coverage(
                 start >= exempt_start and end <= exempt_end
                 for exempt_start, exempt_end in exempt_spans
             )
+            inside_calculation_quantity = any(
+                start >= quantity_start and end <= quantity_end
+                for quantity_start, quantity_end in quantity_spans
+            )
             if (
                 token.isdigit()
                 and not inside_model_designation
+                and not inside_calculation_quantity
                 and token not in constraint_numeric_anchors
             ):
                 missing.append(token)
@@ -5688,6 +5713,17 @@ def repair_grounded_semantic_payload(
     ):
         normalized_acts.append(CustomerAct.COMPARE.value)
         changes.append("visible_scope_compare_action_recovered")
+
+    # Preserve an explicit total-price request even if the model reduced it to
+    # a generic product question.  This only creates a typed action; product
+    # scope, quantity, price basis and arithmetic remain the responsibility of
+    # the grounded calculation request/result gates.
+    if (
+        _EXPLICIT_CALCULATION_RE.search(current_message) is not None
+        and CustomerAct.CALCULATE.value not in normalized_acts
+    ):
+        normalized_acts.append(CustomerAct.CALCULATE.value)
+        changes.append("explicit_calculation_action_recovered")
 
     # ``Какой котёл смотреть?`` is a selection request, not a question about a
     # property of an individual product.  Do not infer a catalogue family from

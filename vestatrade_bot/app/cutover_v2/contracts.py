@@ -15,6 +15,7 @@ from app.catalog_v2.contracts import (
     SelectionResult,
 )
 from app.comparison_v2.contracts import ComparisonRequest, ComparisonResult
+from app.calculation_v2.contracts import CalculationRequest, CalculationResult
 from app.dialogue_v2.contracts import DialogueStateV2, NextActionKind, TaskAct
 from app.models import ChatResponse
 
@@ -180,6 +181,8 @@ class V2TurnCandidate(FrozenModel):
     selection_result: SelectionResult | None = None
     comparison_request: ComparisonRequest | None = None
     comparison_result: ComparisonResult | None = None
+    calculation_request: CalculationRequest | None = None
+    calculation_result: CalculationResult | None = None
     semantic_accepted: bool = False
     contracts_resolved: bool = False
     external_side_effect_started: bool = False

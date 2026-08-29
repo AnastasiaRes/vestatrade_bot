@@ -511,6 +511,7 @@ def test_future_actions_are_preserved_in_semantic_delta() -> None:
     expectations = {
         "Сравни первый и второй": "compare",
         "Посчитай стоимость двадцати штук": "calculate",
+        "Сколько будет стоить 20 шт. первого?": "calculate",
         "Почему именно такая мощность?": "rationale",
         "Эти два товара совместимы?": "compatibility",
         "Собери проект котельной": "project",
@@ -872,6 +873,35 @@ def test_numeric_article_in_product_mention_is_not_forced_into_a_fact() -> None:
     )
 
     validate_product_modifier_coverage(frame)
+
+
+def test_calculation_quantity_in_product_reference_is_not_a_product_modifier() -> None:
+    frame = TurnUnderstanding.model_validate(
+        {
+            **_candidate(acts=("calculate",)),
+            "operation": "continue",
+            "products": [
+                {
+                    "text": "первый",
+                    "canonical_type": "ball_valve",
+                    "category": "valves",
+                    "role": "target",
+                    "evidence": "20 шт. первого",
+                }
+            ],
+        }
+    )
+
+    validate_product_modifier_coverage(frame)
+
+
+def test_explicit_total_price_phrase_recovers_calculate_action() -> None:
+    frame, changes = _repair(
+        "Сколько будет стоить 20 шт. первого?", acts=("explain",)
+    )
+
+    assert {item.value for item in frame.acts} >= {"calculate"}
+    assert "explicit_calculation_action_recovered" in changes
 
 
 def test_ordered_multiple_typed_targets_are_preserved_as_project_intent() -> None:

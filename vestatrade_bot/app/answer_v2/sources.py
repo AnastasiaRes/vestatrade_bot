@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Iterable
 
-from app.catalog_v2.contracts import CatalogProductSnapshot
+from app.catalog_v2.contracts import CatalogFact, CatalogProductSnapshot, FactProvenance
 from app.catalog_v2.contracts import CatalogPlanningResult
 from app.commerce_v2.contracts import CommercePlanningResult
 from app.dialogue_v2.contracts import DialogueStateV2
@@ -21,6 +22,36 @@ from .contracts import (
     SolutionPlanEvidence,
     VerifiedCapabilityFact,
 )
+
+
+def _commercial_price_facts(product: Product) -> tuple[CatalogFact, ...]:
+    """Expose only an explicit price basis from a feed description.
+
+    The raw description remains outside the V2 source snapshot.  A typed fact
+    is emitted only where the feed itself says that its catalogue price is per
+    linear metre; this is the sole safe basis for a metre × price calculation.
+    """
+
+    description = str(product.description or "")
+    normalized = " ".join(description.casefold().replace("ё", "е").split())
+    per_metre = bool(
+        re.search(r"цен\w*\s+(?:одного\s+)?(?:погонн\w*\s+)?метр\w*", normalized)
+        or "приведена цена погонного метра" in normalized
+    )
+    if not per_metre:
+        return ()
+    return (
+        CatalogFact(
+            name="price_unit",
+            value="m",
+            provenance=FactProvenance(
+                source="description",
+                source_field="description",
+                raw_value="цена погонного метра",
+                parser="commercial_price_basis_v1",
+            ),
+        ),
+    )
 
 
 def build_verified_business_capability_facts(
@@ -65,6 +96,7 @@ def build_answer_source_snapshot(
         identity = classified.get(product.sku)
         if identity is None:
             continue
+        facts = (*identity.facts, *_commercial_price_facts(product))
         records.append(
             CatalogAnswerProduct(
                 sku=product.sku,
@@ -78,7 +110,7 @@ def build_answer_source_snapshot(
                 url=product.url or None,
                 image_url=product.image_url or None,
                 updated_at=product.updated_at,
-                facts=identity.facts,
+                facts=facts,
                 fact_issues=identity.fact_issues,
             )
         )
@@ -108,7 +140,7 @@ def build_answer_source_snapshot(
                                 fact.provenance.parser,
                             )
                         )
-                        for fact in identity.facts
+                        for fact in facts
                     ),
                     *(
                         "\x1d".join(

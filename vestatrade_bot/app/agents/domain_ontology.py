@@ -1061,7 +1061,16 @@ ACTION_ALIAS_ONTOLOGY: tuple[dict[str, Any], ...] = (
     },
     {
         "action": "calculate",
-        "aliases": ["посчитай", "рассчитай", "сколько выйдет", "итоговая стоимость"],
+        # This is a total-price phrase, unlike a bare price check.  The
+        # calculation executor still requires an explicit quantity and a
+        # grounded product scope before it can act.
+        "aliases": [
+            "посчитай",
+            "рассчитай",
+            "сколько выйдет",
+            "сколько будет стоить",
+            "итоговая стоимость",
+        ],
     },
     {
         "action": "rationale",

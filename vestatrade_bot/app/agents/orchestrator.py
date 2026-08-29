@@ -34,6 +34,11 @@ from app.answer_v2.sources import (
 )
 from app.catalog_v2.contracts import ProductKind, SelectionResultStatus
 from app.catalog_v2.normalization import build_catalog_snapshot
+from app.calculation_v2.service import (
+    build_calculation_request,
+    build_calculation_result,
+    validate_calculation_result,
+)
 from app.comparison_v2.service import (
     build_comparison_request,
     build_comparison_result,
@@ -53,6 +58,7 @@ from app.dialogue_v2.contracts import DialogueStateV2, NextActionKind, TurnMetad
 from app.dialogue_v2.controller import DialogueControllerV2, DialogueV2Outcome
 from app.dialogue_v2.reducer import record_response_delivery
 from app.cutover_v2.assembler import build_v2_turn_candidate
+from app.cutover_v2.calculation import build_v2_calculation_candidate
 from app.cutover_v2.comparison import build_v2_comparison_candidate
 from app.cutover_v2.product_fact import build_v2_product_fact_candidate
 from app.cutover_v2.contracts import (
@@ -1255,6 +1261,61 @@ class ChatOrchestrator:
             }
         )
 
+    def _maybe_build_v2_calculation_candidate(
+        self,
+        message: str,
+        before_turn: SessionState,
+        outcome: DialogueV2Outcome,
+        base_candidate: Any,
+        *,
+        session_id: str,
+        turn_id: str,
+    ) -> Any:
+        """Give CALCULATE a source-bound quantity × price seam.
+
+        It intentionally does not call Legacy response composition or search
+        the catalogue.  An explicit SKU is resolved by the existing strict
+        resolver; otherwise only already delivered V2 cards are eligible.
+        """
+
+        snapshot = self.answer_source_snapshot_v2
+        if snapshot is None:
+            return base_candidate
+        request = build_calculation_request(
+            outcome,
+            before_turn,
+            snapshot,
+            original_utterance=message,
+        )
+        if request is None:
+            return base_candidate
+        result = validate_calculation_result(
+            request,
+            build_calculation_result(request, snapshot),
+            snapshot,
+        )
+        candidate = build_v2_calculation_candidate(
+            outcome,
+            base_candidate,
+            result,
+            snapshot,
+            session_id=session_id,
+            turn_id=turn_id,
+        )
+        if candidate is not None:
+            return candidate.model_copy(update={"calculation_request": request})
+        return base_candidate.model_copy(
+            update={
+                "calculation_request": request,
+                "calculation_result": result,
+                "rejection_reason_codes": tuple(
+                    dict.fromkeys(
+                        (*base_candidate.rejection_reason_codes, *result.reason_codes)
+                    )
+                ),
+            }
+        )
+
     def _stage6_runtime(
         self,
         before_turn: SessionState,
@@ -1481,6 +1542,7 @@ class ChatOrchestrator:
         candidate_summary = None
         selection_delivery = None
         comparison_delivery = None
+        calculation_delivery = None
         if candidate is not None:
             candidate_summary = candidate.model_dump(
                 mode="json",
@@ -1500,6 +1562,16 @@ class ChatOrchestrator:
                     mode="json"
                 )
                 comparison_delivery["customer_visible_scope_preserved"] = bool(
+                    commit is not None
+                    and commit.committed
+                    and candidate.response is not None
+                    and not candidate.response.products
+                )
+            if candidate.calculation_result is not None:
+                calculation_delivery = candidate.calculation_result.model_dump(
+                    mode="json"
+                )
+                calculation_delivery["customer_visible_scope_preserved"] = bool(
                     commit is not None
                     and commit.committed
                     and candidate.response is not None
@@ -1539,6 +1611,7 @@ class ChatOrchestrator:
             "candidate": candidate_summary,
             "selection_delivery": selection_delivery,
             "comparison_delivery": comparison_delivery,
+            "calculation_delivery": calculation_delivery,
             "arbitration": arbitration,
             "commit": commit,
             "parity": parity,
@@ -1686,6 +1759,16 @@ class ChatOrchestrator:
                                                 message,
                                                 before_turn,
                                                 semantic,
+                                                live_v2_outcome,
+                                                live_candidate,
+                                                session_id=session_id,
+                                                turn_id=turn_id,
+                                            )
+                                        )
+                                        live_candidate = (
+                                            self._maybe_build_v2_calculation_candidate(
+                                                message,
+                                                before_turn,
                                                 live_v2_outcome,
                                                 live_candidate,
                                                 session_id=session_id,
@@ -1965,6 +2048,16 @@ class ChatOrchestrator:
                                             message,
                                             before_turn,
                                             semantic,
+                                            v2_outcome,
+                                            shadow_candidate,
+                                            session_id=session_id,
+                                            turn_id=turn_id,
+                                        )
+                                    )
+                                    shadow_candidate = (
+                                        self._maybe_build_v2_calculation_candidate(
+                                            message,
+                                            before_turn,
                                             v2_outcome,
                                             shadow_candidate,
                                             session_id=session_id,

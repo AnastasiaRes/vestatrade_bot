@@ -214,6 +214,34 @@ class SellerPolicy:
         calculations = [task for task in current_tasks if task.act == TaskAct.CALCULATE]
         handoffs = [task for task in current_tasks if task.act == TaskAct.HANDOFF]
 
+        # A total-price request can legitimately carry a broad CHECK_PRICE
+        # interpretation as well ("сколько выйдет за 20 шт.").  Treating the
+        # latter as a regular card fact would discard the explicit arithmetic
+        # task and return only a unit price.  This is intentionally narrow:
+        # only CHECK_PRICE from the same turn/goal yields to CALCULATE; every
+        # other direct product fact keeps its established priority.
+        if calculations:
+            calculation_goal_ids = {
+                task.target_goal_id
+                for task in calculations
+                if task.target_goal_id is not None
+            }
+            calculation_turns = {task.source_turn for task in calculations}
+            direct = [
+                task
+                for task in direct
+                if not (
+                    task.act == TaskAct.CHECK_PRICE
+                    and (
+                        (
+                            task.target_goal_id is not None
+                            and task.target_goal_id in calculation_goal_ids
+                        )
+                        or task.source_turn in calculation_turns
+                    )
+                )
+            ]
+
         current_information_requests = tuple(
             request
             for request in state.information_requests

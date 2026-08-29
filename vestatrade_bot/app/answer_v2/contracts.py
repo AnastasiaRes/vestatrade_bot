@@ -136,6 +136,7 @@ class NextStepKind(str, Enum):
     RECOMMEND_ONE = "recommend_one"
     CONTINUE_WITH_CONFIRMED_FACTS = "continue_with_confirmed_facts"
     COMPARE_CANDIDATES = "compare_candidates"
+    CALCULATE_CATALOGUE_AMOUNT = "calculate_catalogue_amount"
     PRESENT_ANALOG_DIFFERENCES = "present_analog_differences"
     OFFER_VERIFIABLE_EXTERNAL_STEP = "offer_verifiable_external_step"
     STATE_CAPABILITY_BOUNDARY = "state_capability_boundary"

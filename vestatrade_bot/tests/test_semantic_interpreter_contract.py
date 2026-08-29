@@ -1223,8 +1223,17 @@ def test_numeric_modifier_inside_product_mention_is_recovered_from_typed_unit() 
 
     assert result.status == "accepted"
     assert result.understanding is not None
-    assert len(result.understanding.constraints) == 1
-    constraint = result.understanding.constraints[0]
+    # Fuel is independently grounded and intentionally retained.  The
+    # invariant under test is that the numeric modifier becomes exactly one
+    # power fact, rather than that it is the only fact in the turn.
+    assert {
+        (item.name, item.value) for item in result.understanding.constraints
+    } >= {("boiler_type", "gas")}
+    power_constraints = [
+        item for item in result.understanding.constraints if item.name == "power_kw"
+    ]
+    assert len(power_constraints) == 1
+    constraint = power_constraints[0]
     assert constraint.name == "power_kw"
     assert constraint.value == 35
     assert constraint.unit == "кВт"
@@ -1626,7 +1635,10 @@ def test_numeric_physical_fact_cannot_be_copied_without_current_number() -> None
 
     assert result.status == "accepted"
     assert result.understanding is not None
-    assert result.understanding.constraints == []
+    assert [item.name for item in result.understanding.constraints] == [
+        "boiler_type"
+    ]
+    assert all(item.name != "power_kw" for item in result.understanding.constraints)
     assert "constraint_numeric_value_not_in_evidence_dropped" in (
         result.structural_repairs
     )
@@ -3267,8 +3279,11 @@ def test_model_identifier_does_not_exempt_real_power_unit_anchor() -> None:
 
     assert result.status == "accepted"
     assert result.understanding is not None
-    assert result.understanding.constraints[0].name == "power_kw"
-    assert result.understanding.constraints[0].value == 35
+    power_constraints = [
+        item for item in result.understanding.constraints if item.name == "power_kw"
+    ]
+    assert len(power_constraints) == 1
+    assert power_constraints[0].value == 35
 
 
 def test_explicit_power_range_collapses_model_endpoint_facts() -> None:
@@ -3322,8 +3337,11 @@ def test_explicit_power_range_collapses_model_endpoint_facts() -> None:
 
     assert result.status == "accepted"
     assert result.understanding is not None
-    assert len(result.understanding.constraints) == 1
-    constraint = result.understanding.constraints[0]
+    power_constraints = [
+        item for item in result.understanding.constraints if item.name == "power_kw"
+    ]
+    assert len(power_constraints) == 1
+    constraint = power_constraints[0]
     assert constraint.name == "power_kw"
     assert constraint.value == "10–15"
     assert constraint.unit == "кВт"
@@ -3435,7 +3453,10 @@ def test_string_numeric_value_without_current_evidence_is_dropped() -> None:
 
     assert result.status == "accepted"
     assert result.understanding is not None
-    assert result.understanding.constraints == []
+    assert [item.name for item in result.understanding.constraints] == [
+        "boiler_type"
+    ]
+    assert all(item.name != "power_kw" for item in result.understanding.constraints)
     assert "constraint_numeric_value_not_in_evidence_dropped" in (
         result.structural_repairs
     )
@@ -3483,7 +3504,10 @@ def test_numeric_range_is_rejected_for_discrete_circuit_count() -> None:
 
     assert result.status == "accepted"
     assert result.understanding is not None
-    assert result.understanding.constraints == []
+    assert [item.name for item in result.understanding.constraints] == [
+        "boiler_type"
+    ]
+    assert all(item.name != "circuits" for item in result.understanding.constraints)
     assert "constraint_numeric_range_not_allowed_dropped" in (
         result.structural_repairs
     )
@@ -3534,7 +3558,10 @@ def test_string_numeric_unit_must_be_present_in_current_evidence() -> None:
 
     assert result.status == "accepted"
     assert result.understanding is not None
-    assert result.understanding.constraints == []
+    assert [item.name for item in result.understanding.constraints] == [
+        "boiler_type"
+    ]
+    assert all(item.name != "power_kw" for item in result.understanding.constraints)
     assert "constraint_numeric_unit_not_in_evidence_dropped" in (
         result.structural_repairs
     )

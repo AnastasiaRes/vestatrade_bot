@@ -43,7 +43,7 @@ _PREDICATE_LABELS = {
 # Identity fields are useful for source gates but are not meaningful comparison
 # dimensions.  Brand may be shown as a factual difference, but it must not be
 # presented as the customer's deciding technical criterion.
-_NON_COMPARABLE_COMMON_FACTS = frozenset({"sku"})
+_NON_COMPARABLE_COMMON_FACTS = frozenset({"sku", "price_unit"})
 _NON_DECIDING_PREDICATES = frozenset({"sku", "brand"})
 _PREDICATE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("price", ("дешев", "цен", "стоим")),
