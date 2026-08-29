@@ -389,6 +389,24 @@ class SellerPolicy:
                 blocking_facts=self._blocking_facts(state),
             )
 
+        # A typed comparison is an explicit user action.  The semantic frame
+        # may also carry a broad ``explain`` candidate for wording such as
+        # "какой дешевле"; that incomplete secondary interpretation must not
+        # send the user back into Selection instead of comparing the cards
+        # they already saw.  Fully typed direct fact requests were handled
+        # above through ``pending_information_requests`` / ``direct``.
+        if comparisons:
+            return self._single(
+                NextActionKind.COMPARE,
+                comparisons[0].task_id,
+                "explicit_comparison_request",
+                task_ids,
+                state,
+                secondary=self._selection_action(
+                    state, selections[0], readiness_by_task
+                ) if selections else None,
+            )
+
         if explanations:
             # A bare ``explain`` task says neither what information the
             # customer wants nor whether it concerns their installation or
@@ -443,18 +461,6 @@ class SellerPolicy:
                 "explanation_missing_typed_information_request",
                 task_ids,
                 state,
-            )
-
-        if comparisons:
-            return self._single(
-                NextActionKind.COMPARE,
-                comparisons[0].task_id,
-                "explicit_comparison_request",
-                task_ids,
-                state,
-                secondary=self._selection_action(
-                    state, selections[0], readiness_by_task
-                ) if selections else None,
             )
 
         if calculations:
@@ -593,6 +599,7 @@ class SellerPolicy:
                 NextActionKind.ANSWER_DIRECT_QUESTION,
                 NextActionKind.ANSWER_VERIFIED_COMMERCE_QUESTION,
                 NextActionKind.REPORT_COMMERCE_EXECUTION_STATUS,
+                NextActionKind.COMPARE,
                 NextActionKind.WAIT_FOR_SEMANTIC_UNDERSTANDING,
             }:
                 return action, False

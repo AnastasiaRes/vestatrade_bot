@@ -441,6 +441,11 @@ class AnswerPlanSummary(FrozenModel):
     information_unavailable_outputs: tuple[RequestedInformationOutput, ...] = ()
     information_reason_codes: tuple[str, ...] = ()
     presented_candidates: tuple[PresentedCandidateSummary, ...] = ()
+    # These coordinates exist only after a validated V2 selection was actually
+    # delivered.  They bind later Compare turns to the exact visible scope and
+    # immutable catalogue snapshot, not to a rendered answer string.
+    selection_id: str | None = None
+    catalog_revision: str | None = None
     source_turn: int = Field(ge=0)
 
 

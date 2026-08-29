@@ -364,6 +364,11 @@ class SessionState(BaseModel):
     v2_sticky_assignment_id: str | None = None
     v2_migration_cell_id: str | None = None
     v2_last_products: list[ProductCard] = Field(default_factory=list)
+    # V2-only customer-visible selection identity.  It is deliberately kept
+    # apart from the legacy result signature so a V2 compare never treats a
+    # legacy or stale card list as a proved V2 scope.
+    v2_selection_id: str | None = None
+    v2_source_revision: str | None = None
     idempotent_responses: list[IdempotentResponseRecord] = Field(default_factory=list)
 
     @property

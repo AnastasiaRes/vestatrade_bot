@@ -2836,6 +2836,12 @@ def record_answer_shadow(
                 )
             )
         )
+        previous_summary = reduction.state.answer_plan_summary
+        preserve_visible_selection = bool(
+            not plan.products
+            and previous_presented_candidates
+            and previous_summary is not None
+        )
         summary = AnswerPlanSummary(
             plan_id=plan.plan_id,
             semantic_signature=plan.semantic_signature,
@@ -2872,6 +2878,12 @@ def record_answer_shadow(
                 )
                 if plan.products
                 else previous_presented_candidates
+            ),
+            selection_id=(
+                previous_summary.selection_id if preserve_visible_selection else None
+            ),
+            catalog_revision=(
+                previous_summary.catalog_revision if preserve_visible_selection else None
             ),
             source_turn=reduction.state.turn_number,
         )
@@ -2926,6 +2938,8 @@ def record_response_delivery(
     response_digest: str,
     delivery_id: str,
     live_epoch_id: str,
+    selection_id: str | None = None,
+    catalog_revision: str | None = None,
 ) -> ReductionResult:
     """Commit a selected V2 response without treating old shadow turns as delivered."""
 
@@ -2969,7 +2983,14 @@ def record_response_delivery(
     )
     if plan_matches_summary:
         summary = summary.model_copy(
-            update={"delivery_status": ShadowDeliveryStatus.COMMITTED_TO_SESSION}
+            update={
+                "delivery_status": ShadowDeliveryStatus.COMMITTED_TO_SESSION,
+                # Only a delivered SelectionResult supplies these fields.
+                # Direct product facts and comparisons preserve the previous
+                # selection identity rather than creating a phantom scope.
+                "selection_id": selection_id or summary.selection_id,
+                "catalog_revision": catalog_revision or summary.catalog_revision,
+            }
         )
     tasks = list(state.tasks)
     task_stack = state.task_stack

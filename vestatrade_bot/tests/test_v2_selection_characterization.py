@@ -832,6 +832,8 @@ def test_committed_selection_atomically_updates_customer_visible_scope(
     assert [item.sku for item in stored.v2_last_products] == [valve.sku]
     assert stored.shown_product_skus == [valve.sku]
     assert stored.shown_result_signature == candidate.selection_result.selection_id
+    assert stored.v2_selection_id == candidate.selection_result.selection_id
+    assert stored.v2_source_revision == candidate.selection_result.catalog_revision
     assert stored.product_focus is not None
     assert stored.product_focus.sku == valve.sku
     assert stored.live_dialogue_state_v2 is not None

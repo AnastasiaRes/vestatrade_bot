@@ -32,8 +32,13 @@ from app.answer_v2.sources import (
     build_answer_source_snapshot,
     build_verified_business_capability_facts,
 )
-from app.catalog_v2.contracts import ProductKind
+from app.catalog_v2.contracts import ProductKind, SelectionResultStatus
 from app.catalog_v2.normalization import build_catalog_snapshot
+from app.comparison_v2.service import (
+    build_comparison_request,
+    build_comparison_result,
+    validate_comparison_result,
+)
 from app.commerce_v2.context import build_commerce_context_snapshot
 from app.commerce_v2.registry import build_capability_snapshot
 from app.diagnostic_telemetry import (
@@ -48,6 +53,7 @@ from app.dialogue_v2.contracts import DialogueStateV2, NextActionKind, TurnMetad
 from app.dialogue_v2.controller import DialogueControllerV2, DialogueV2Outcome
 from app.dialogue_v2.reducer import record_response_delivery
 from app.cutover_v2.assembler import build_v2_turn_candidate
+from app.cutover_v2.comparison import build_v2_comparison_candidate
 from app.cutover_v2.product_fact import build_v2_product_fact_candidate
 from app.cutover_v2.contracts import (
     EarlyControlOutcome,
@@ -1067,6 +1073,17 @@ class ChatOrchestrator:
         semantic_repairs = set(
             getattr(semantic_delta, "semantic_repairs", ())
         )
+        action_plan = outcome.next_action_plan
+        if (
+            "compare" in current_actions
+            or (
+                action_plan is not None
+                and action_plan.primary.kind == NextActionKind.COMPARE
+            )
+        ):
+            # Compare has its own evidence boundary.  A fact detector must
+            # never turn an explicit comparison into a one-product answer.
+            return base_candidate
         # Explicit show commands own the turn before any pending
         # questionnaire fact.  Without this guard a stale decision question
         # can make ProductFactEvidenceService treat «Что есть?» as a request
@@ -1082,7 +1099,6 @@ class ChatOrchestrator:
         ):
             return base_candidate
 
-        action_plan = outcome.next_action_plan
         action = action_plan.primary if action_plan is not None else None
         # Do not make product-fact delivery depend on the planner choosing one
         # particular action label.  The semantic LLM can legitimately describe
@@ -1154,6 +1170,66 @@ class ChatOrchestrator:
             turn_id=turn_id,
         )
         return candidate or base_candidate
+
+    def _maybe_build_v2_comparison_candidate(
+        self,
+        message: str,
+        before_turn: SessionState,
+        outcome: DialogueV2Outcome,
+        base_candidate: Any,
+        *,
+        session_id: str,
+        turn_id: str,
+    ) -> Any:
+        """Give a typed Compare action the deterministic visible-card seam."""
+
+        request = build_comparison_request(
+            outcome,
+            before_turn,
+            original_utterance=message,
+        )
+        if request is None:
+            return base_candidate
+        snapshot = self.answer_source_snapshot_v2
+        if snapshot is None:
+            return base_candidate
+        result = validate_comparison_result(
+            request,
+            build_comparison_result(
+                request,
+                snapshot,
+                visible_cards=(
+                    before_turn.v2_last_products
+                    if before_turn.v2_last_products
+                    else before_turn.last_products
+                ),
+            ),
+            snapshot,
+        )
+        # Keep the typed request in the candidate even on rejection: Shadow
+        # telemetry can then distinguish no scope, stale scope, and a gate
+        # rejection without exposing a V2 response.
+        candidate = build_v2_comparison_candidate(
+            outcome,
+            base_candidate,
+            result,
+            snapshot,
+            session_id=session_id,
+            turn_id=turn_id,
+        )
+        if candidate is not None:
+            return candidate.model_copy(update={"comparison_request": request})
+        return base_candidate.model_copy(
+            update={
+                "comparison_request": request,
+                "comparison_result": result,
+                "rejection_reason_codes": tuple(
+                    dict.fromkeys(
+                        (*base_candidate.rejection_reason_codes, *result.reason_codes)
+                    )
+                ),
+            }
+        )
 
     def _stage6_runtime(
         self,
@@ -1253,6 +1329,20 @@ class ChatOrchestrator:
             response_digest=candidate.response_digest,
             delivery_id=delivery_id,
             live_epoch_id=live_epoch_id,
+            selection_id=(
+                candidate.selection_result.selection_id
+                if candidate.selection_result is not None
+                and candidate.selection_result.status == SelectionResultStatus.SHOWN
+                and candidate.selection_result.outcome_gate_passed
+                else None
+            ),
+            catalog_revision=(
+                candidate.selection_result.catalog_revision
+                if candidate.selection_result is not None
+                and candidate.selection_result.status == SelectionResultStatus.SHOWN
+                and candidate.selection_result.outcome_gate_passed
+                else None
+            ),
         )
         selected = before_turn.model_copy(deep=True)
         selected.live_dialogue_state_v2 = delivery.state
@@ -1291,13 +1381,13 @@ class ChatOrchestrator:
                     characteristics={},
                 )
             )
+        selection_result = candidate.selection_result
         if cards:
             selected.v2_last_products = cards
             # History and the presentation cache contain only cards that were
             # actually delivered after the source and outcome gates above.
             selected.last_products = cards
             selected.shown_product_skus = [card.sku for card in cards]
-            selection_result = candidate.selection_result
             selected.shown_result_signature = (
                 selection_result.selection_id
                 if selection_result is not None
@@ -1318,6 +1408,13 @@ class ChatOrchestrator:
             elif selection_result is not None:
                 # A list supports ordinal references but has no single "этот".
                 selected.product_focus = None
+            if (
+                selection_result is not None
+                and selection_result.status == SelectionResultStatus.SHOWN
+                and selection_result.outcome_gate_passed
+            ):
+                selected.v2_selection_id = selection_result.selection_id
+                selected.v2_source_revision = selection_result.catalog_revision
         self._append_history(selected, message, candidate.response.answer)
         self._record_idempotent_response(
             selected,
@@ -1359,6 +1456,7 @@ class ChatOrchestrator:
     ) -> dict[str, Any]:
         candidate_summary = None
         selection_delivery = None
+        comparison_delivery = None
         if candidate is not None:
             candidate_summary = candidate.model_dump(
                 mode="json",
@@ -1372,6 +1470,16 @@ class ChatOrchestrator:
                     commit is not None
                     and commit.committed
                     and candidate.selection_result.status.value == "shown"
+                )
+            if candidate.comparison_result is not None:
+                comparison_delivery = candidate.comparison_result.model_dump(
+                    mode="json"
+                )
+                comparison_delivery["customer_visible_scope_preserved"] = bool(
+                    commit is not None
+                    and commit.committed
+                    and candidate.response is not None
+                    and not candidate.response.products
                 )
         return {
             "schema_version": "1.0",
@@ -1406,6 +1514,7 @@ class ChatOrchestrator:
             "decision": decision,
             "candidate": candidate_summary,
             "selection_delivery": selection_delivery,
+            "comparison_delivery": comparison_delivery,
             "arbitration": arbitration,
             "commit": commit,
             "parity": parity,
@@ -1537,6 +1646,16 @@ class ChatOrchestrator:
                                                 if before_turn.product_focus is not None
                                                 else None
                                             ),
+                                        )
+                                        live_candidate = (
+                                            self._maybe_build_v2_comparison_candidate(
+                                                message,
+                                                before_turn,
+                                                live_v2_outcome,
+                                                live_candidate,
+                                                session_id=session_id,
+                                                turn_id=turn_id,
+                                            )
                                         )
                                         live_candidate = (
                                             self._maybe_build_v2_product_fact_candidate(
@@ -1806,6 +1925,16 @@ class ChatOrchestrator:
                                             if before_turn.product_focus is not None
                                             else None
                                         ),
+                                    )
+                                    shadow_candidate = (
+                                        self._maybe_build_v2_comparison_candidate(
+                                            message,
+                                            before_turn,
+                                            v2_outcome,
+                                            shadow_candidate,
+                                            session_id=session_id,
+                                            turn_id=turn_id,
+                                        )
                                     )
                                     shadow_candidate = (
                                         self._maybe_build_v2_product_fact_candidate(

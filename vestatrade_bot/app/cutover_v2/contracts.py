@@ -14,6 +14,7 @@ from app.catalog_v2.contracts import (
     SelectionRequest,
     SelectionResult,
 )
+from app.comparison_v2.contracts import ComparisonRequest, ComparisonResult
 from app.dialogue_v2.contracts import DialogueStateV2, NextActionKind, TaskAct
 from app.models import ChatResponse
 
@@ -177,6 +178,8 @@ class V2TurnCandidate(FrozenModel):
     response_product_roles: tuple[CatalogProductRole, ...] = ()
     selection_request: SelectionRequest | None = None
     selection_result: SelectionResult | None = None
+    comparison_request: ComparisonRequest | None = None
+    comparison_result: ComparisonResult | None = None
     semantic_accepted: bool = False
     contracts_resolved: bool = False
     external_side_effect_started: bool = False
