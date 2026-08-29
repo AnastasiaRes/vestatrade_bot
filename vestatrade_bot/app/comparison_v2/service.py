@@ -37,7 +37,14 @@ _PREDICATE_LABELS = {
     "connection_pattern": "тип резьбового соединения",
     "connection_size": "размер соединения",
     "material": "материал",
+    "brand": "бренд",
 }
+
+# Identity fields are useful for source gates but are not meaningful comparison
+# dimensions.  Brand may be shown as a factual difference, but it must not be
+# presented as the customer's deciding technical criterion.
+_NON_COMPARABLE_COMMON_FACTS = frozenset({"sku"})
+_NON_DECIDING_PREDICATES = frozenset({"sku", "brand"})
 _PREDICATE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("price", ("дешев", "цен", "стоим")),
     ("availability", ("налич", "остат", "склад")),
@@ -193,7 +200,9 @@ def _dimension_from_products(
                 continue
             source = _source_ref(product, predicate, ComparisonSourceKind.CATALOG_STOCK, revision, field_name="stock_status", raw_value=product.stock_status)
             sources.append(source)
-            values.append(ComparisonValue(sku=product.sku, predicate=predicate, value=product.stock_status, unit=("шт." if product.stock_qty is not None else None), source_ref_ids=(source.source_ref_id,)))
+            # Stock status and stock quantity are different predicates.  Do
+            # not attach ``шт.`` to a textual status such as "в наличии".
+            values.append(ComparisonValue(sku=product.sku, predicate=predicate, value=product.stock_status, source_ref_ids=(source.source_ref_id,)))
     else:
         for product in products:
             fact = _exact_fact(product, predicate)
@@ -229,7 +238,10 @@ def _common_fact_predicates(products: tuple[CatalogAnswerProduct, ...]) -> tuple
         names = {
             fact.name
             for fact in product.facts
-            if _exact_fact(product, fact.name) is not None
+            if (
+                fact.name not in _NON_COMPARABLE_COMMON_FACTS
+                and _exact_fact(product, fact.name) is not None
+            )
         }
         common = names if common is None else common.intersection(names)
     return tuple(sorted(common or ()))
@@ -312,8 +324,12 @@ def build_comparison_result(
     generic_request = not request.requested_predicates and request.criterion is None
     question = None
     if generic_request:
-        labels = ", ".join(item.label for item in proved[:3])
-        question = f"Какой критерий для вас решающий: {labels}?"
+        decision_dimensions = tuple(
+            item for item in proved if item.predicate not in _NON_DECIDING_PREDICATES
+        )
+        if decision_dimensions:
+            labels = ", ".join(item.label for item in decision_dimensions[:3])
+            question = f"Какой критерий для вас решающий: {labels}?"
     return ComparisonResult(status=ComparisonResultStatus.COMPARED, task_id=request.task_id, goal_id=request.goal_id, selection_id=request.selection_id, compared_skus=request.ordered_skus, requested_predicates=request.requested_predicates, dimensions=tuple(dimensions), sources=tuple(sources), missing_data=tuple(dict.fromkeys(missing)), recommendation=recommendation, deciding_question=question, source_revision=source_snapshot.source_revision, reason_codes=("comparison_from_customer_visible_v2_scope",))
 
 

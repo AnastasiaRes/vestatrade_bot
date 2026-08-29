@@ -100,6 +100,22 @@ def test_product_models_dimensions_and_identifiers_are_not_pii() -> None:
     assert redact_pii_for_model(source) == source
 
 
+def test_engineering_area_is_not_mistaken_for_a_named_square_address() -> None:
+    source = "Площадь всё-таки 100 квадратов. Нужен котёл."
+
+    assert redact_pii_for_model(source) == source
+
+
+def test_named_square_address_stays_redacted_with_a_stricter_marker() -> None:
+    source = "Доставка на площадь Ленина, дом 10, кв. 2."
+
+    redacted = redact_pii_for_model(source)
+    assert "Ленина" not in redacted
+    assert "10" not in redacted
+    assert "кв. 2" not in redacted
+    assert "[address redacted]" in redacted
+
+
 def test_redaction_is_idempotent() -> None:
     source = (
         "Recipient: Jane Doe; Moscow, 12 Main Street, apartment 5; "

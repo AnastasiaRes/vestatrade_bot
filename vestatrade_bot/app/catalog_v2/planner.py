@@ -137,7 +137,27 @@ def _stable_id(prefix: str, *parts: object) -> str:
 
 def _constraints(
     assessment: TaskReadinessAssessment,
+    contract: ProductContract,
 ) -> tuple[tuple[SearchConstraint, ...], tuple[SearchConstraint, ...]]:
+    known_names = {
+        item.name
+        for item in (
+            *assessment.confirmed_hard_facts,
+            *assessment.confirmed_soft_facts,
+        )
+        if item.status == "known" and item.value is not None
+    }
+    definitions = {item.name: item for item in contract.fact_definitions}
+
+    def enforce_on_candidate(item: ReadinessFact) -> bool:
+        definition = definitions.get(item.name)
+        primary = (
+            definition.candidate_required_when_missing
+            if definition is not None
+            else None
+        )
+        return primary is None or primary not in known_names
+
     hard = tuple(
         SearchConstraint(
             name=item.name,
@@ -147,7 +167,11 @@ def _constraints(
             polarity=item.polarity,
         )
         for item in assessment.confirmed_hard_facts
-        if item.status == "known" and item.value is not None
+        if (
+            item.status == "known"
+            and item.value is not None
+            and enforce_on_candidate(item)
+        )
     )
     soft = tuple(
         SearchConstraint(
@@ -158,7 +182,11 @@ def _constraints(
             polarity=item.polarity,
         )
         for item in assessment.confirmed_soft_facts
-        if item.status == "known" and item.value is not None
+        if (
+            item.status == "known"
+            and item.value is not None
+            and enforce_on_candidate(item)
+        )
     )
     return hard, soft
 
@@ -288,14 +316,19 @@ def _assess_candidate(
         )
 
     for constraint in hard:
-        actual = fact_map.get(constraint.name)
+        definition = definitions.get(constraint.name)
+        candidate_fact_name = (
+            definition.candidate_fact_name
+            if definition is not None and definition.candidate_fact_name
+            else constraint.name
+        )
+        actual = fact_map.get(candidate_fact_name)
         if constraint.name == "operating_pressure_bar" and exclusively_cold_water:
             actual = fact_map.get("cold_water_pressure_bar") or actual
         if actual is None:
             missing_hard.append(constraint.name)
             continue
         provenance.append(actual.provenance)
-        definition = definitions.get(constraint.name)
         same = _same_value(
             definition.comparison if definition else ComparisonMode.EXACT,
             constraint.name,
@@ -307,12 +340,17 @@ def _assess_candidate(
         (matched_hard if same else mismatched_hard).append(constraint.name)
 
     for constraint in soft:
-        actual = fact_map.get(constraint.name)
+        definition = definitions.get(constraint.name)
+        candidate_fact_name = (
+            definition.candidate_fact_name
+            if definition is not None and definition.candidate_fact_name
+            else constraint.name
+        )
+        actual = fact_map.get(candidate_fact_name)
         if actual is None:
             mismatched_soft.append(constraint.name)
             continue
         provenance.append(actual.provenance)
-        definition = definitions.get(constraint.name)
         same = _same_value(
             definition.comparison if definition else ComparisonMode.EXACT,
             constraint.name,
@@ -385,7 +423,7 @@ def _make_search_plan(
     *,
     in_stock_required: bool = False,
 ) -> CatalogSearchPlan:
-    hard, soft = _constraints(assessment)
+    hard, soft = _constraints(assessment, contract)
     sku_resolution = None
     required_sku_constraints = tuple(
         item
@@ -571,7 +609,7 @@ def _search_plan_signature(
 ) -> tuple[object, ...]:
     """Identity of catalogue work, excluding the act-specific task id."""
 
-    hard, soft = _constraints(assessment)
+    hard, soft = _constraints(assessment, contract)
     return (
         assessment.goal_id or assessment.task_id,
         contract.contract_id,

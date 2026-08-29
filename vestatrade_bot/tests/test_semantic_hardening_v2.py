@@ -3,6 +3,7 @@ from __future__ import annotations
 from app.agents.semantic_interpreter import (
     TurnUnderstanding,
     repair_grounded_semantic_payload,
+    validate_product_modifier_coverage,
 )
 
 
@@ -80,6 +81,207 @@ def test_short_pipe_fragments_bind_to_existing_pipe_goal() -> None:
     frame, _ = _repair("Для батарей, 90 градусов", state=state)
     assert _facts(frame)["pipe_service"] == ("heating", None)
     assert _facts(frame)["operating_temperature_c"] == (90, "c")
+
+
+def test_pipe_pressure_anchor_is_canonicalized_in_an_active_pipe_context() -> None:
+    candidate = _candidate()
+    candidate["constraints"] = [
+        {
+            "name": "operating_pressure_bar",
+            "value": "6 бар",
+            "unit": "бар",
+            "status": "known",
+            "polarity": "required",
+            "applies_to_product": None,
+            "evidence": "давление 6 бар",
+        }
+    ]
+    repaired, _ = repair_grounded_semantic_payload(
+        candidate,
+        "Подача 90 °C, давление 6 бар",
+        authoritative_product_hints=(
+            {"canonical_type": "pipe", "category": "pipes"},
+        ),
+        authoritative_dialogue_state=_active_state("pipe", "pipes"),
+    )
+    frame = TurnUnderstanding.model_validate(repaired)
+
+    assert _facts(frame)["operating_pressure_bar"] == (6, "bar")
+
+
+def test_explicit_radiator_material_corrects_an_earlier_unknown() -> None:
+    candidate = _candidate()
+    candidate["constraints"] = [
+        {
+            "name": "material",
+            "value": None,
+            "unit": None,
+            "status": "unknown",
+            "polarity": "required",
+            "applies_to_product": None,
+            "evidence": "Материал пока не знаю",
+        }
+    ]
+
+    repaired, changes = repair_grounded_semantic_payload(
+        candidate,
+        "Нужен биметаллический.",
+        authoritative_dialogue_state=_active_state("radiator", "radiators"),
+    )
+    frame = TurnUnderstanding.model_validate(repaired)
+
+    assert _facts(frame)["material"] == ("биметалл", None)
+    assert "radiator_material_recovered_from_explicit_alias" in changes
+
+
+def test_unknown_valve_pattern_does_not_erase_a_known_connection_size() -> None:
+    candidate = _candidate()
+    candidate["answers_pending_question"] = True
+    candidate["constraints"] = [
+        {
+            "name": "connection_size",
+            "value": None,
+            "unit": None,
+            "status": "unknown",
+            "polarity": "required",
+            "applies_to_product": None,
+            "evidence": "Тип резьбы пока не знаю",
+        }
+    ]
+    state = _active_state("ball_valve", "valves")
+    state["pending_decision_question"] = {"fact_name": "connection_pattern"}
+
+    repaired, changes = repair_grounded_semantic_payload(
+        candidate,
+        "Тип резьбы пока не знаю.",
+        authoritative_product_hints=(
+            {"canonical_type": "ball_valve", "category": "valves"},
+        ),
+        authoritative_dialogue_state=state,
+    )
+    frame = TurnUnderstanding.model_validate(repaired)
+
+    assert [(item.name, item.status.value) for item in frame.constraints] == [
+        ("connection_pattern", "unknown")
+    ]
+    assert "valve_thread_type_unknown_rebound_to_pattern" in changes
+
+
+def test_mounting_length_anchor_canonicalizes_a_numeric_string() -> None:
+    candidate = _candidate()
+    candidate["constraints"] = [
+        {
+            "name": "mounting_length_mm",
+            "value": "180",
+            "unit": "мм",
+            "status": "known",
+            "polarity": "required",
+            "applies_to_product": None,
+            "evidence": "Монтажная длина 180 мм",
+        }
+    ]
+
+    repaired, _ = repair_grounded_semantic_payload(
+        candidate,
+        "Монтажная длина 180 мм.",
+        authoritative_product_hints=(
+            {"canonical_type": "circulation_pump", "category": "pumps"},
+        ),
+        authoritative_dialogue_state=_active_state("circulation_pump", "pumps"),
+    )
+    frame = TurnUnderstanding.model_validate(repaired)
+
+    assert _facts(frame)["mounting_length_mm"] == (180, "mm")
+
+
+def test_boiler_area_anchor_is_customer_requirement_not_power() -> None:
+    repaired, _ = repair_grounded_semantic_payload(
+        _candidate(),
+        "Для газового котла дом 150 квадратных метров.",
+        authoritative_product_hints=(
+            {"canonical_type": "gas_boiler", "category": "boilers"},
+        ),
+        authoritative_dialogue_state=_active_state("gas_boiler", "boilers"),
+    )
+    frame = TurnUnderstanding.model_validate(repaired)
+
+    assert _facts(frame)["area_m2"] == (150, "m2")
+    assert "power_kw" not in _facts(frame)
+    assert "circuits" not in _facts(frame)
+
+
+def test_pending_boiler_dhw_answer_recovers_two_circuits() -> None:
+    candidate = _candidate()
+    candidate["answers_pending_question"] = True
+    repaired, changes = repair_grounded_semantic_payload(
+        candidate,
+        "Нужна ещё горячая вода.",
+        authoritative_product_hints=(
+            {"canonical_type": "gas_boiler", "category": "boilers"},
+        ),
+        authoritative_dialogue_state=_active_state("gas_boiler", "boilers"),
+    )
+    frame = TurnUnderstanding.model_validate(repaired)
+
+    assert _facts(frame)["circuits"] == (2, None)
+    assert "boiler_circuits_recovered_from_closed_alias" in changes
+
+
+def test_short_boiler_fuel_and_circuit_reply_recovers_both_facts() -> None:
+    candidate = _candidate()
+    candidate["answers_pending_question"] = True
+    repaired, changes = repair_grounded_semantic_payload(
+        candidate,
+        "Газовый, только отопление.",
+        authoritative_dialogue_state=_active_state("boiler", "boilers"),
+    )
+    frame = TurnUnderstanding.model_validate(repaired)
+
+    assert _facts(frame)["boiler_type"] == ("gas", None)
+    assert _facts(frame)["circuits"] == (1, None)
+    assert "boiler_type_recovered_from_closed_alias" in changes
+
+
+def test_explicit_boiler_circuit_count_recovers_without_confusing_power() -> None:
+    repaired, changes = repair_grounded_semantic_payload(
+        _candidate(),
+        "Нужен котёл на два контура.",
+        authoritative_product_hints=(
+            {"canonical_type": "gas_boiler", "category": "boilers"},
+        ),
+        authoritative_dialogue_state=_active_state("gas_boiler", "boilers"),
+    )
+    frame = TurnUnderstanding.model_validate(repaired)
+
+    assert _facts(frame)["circuits"] == (2, None)
+    assert "boiler_circuits_recovered_from_closed_alias" in changes
+
+
+def test_radiator_center_distance_anchor_canonicalizes_a_numeric_string() -> None:
+    candidate = _candidate()
+    candidate["constraints"] = [
+        {
+            "name": "center_distance_mm",
+            "value": "500",
+            "unit": "мм",
+            "status": "known",
+            "polarity": "required",
+            "applies_to_product": None,
+            "evidence": "межосевым расстоянием 500 мм",
+        }
+    ]
+
+    repaired, _ = repair_grounded_semantic_payload(
+        candidate,
+        "Нужен радиатор с межосевым расстоянием 500 мм.",
+        authoritative_product_hints=(
+            {"canonical_type": "radiator", "category": "radiators"},
+        ),
+        authoritative_dialogue_state=_active_state("radiator", "radiators"),
+    )
+    frame = TurnUnderstanding.model_validate(repaired)
+
+    assert _facts(frame)["center_distance_mm"] == (500, "mm")
 
 
 def test_pipe_service_phrase_drops_model_radiator_false_positive() -> None:
@@ -491,6 +693,48 @@ def test_generic_show_discards_only_stale_pending_information_request() -> None:
     assert "generic_show_stale_information_request_removed" in changes
 
 
+def test_unknown_pending_answer_cannot_become_a_spurious_fact_question() -> None:
+    candidate = _candidate(acts=("explain",))
+    candidate["operation"] = "refine"
+    candidate["answers_pending_question"] = True
+    candidate["constraints"] = [
+        {
+            "name": "operating_temperature_c",
+            "value": None,
+            "unit": None,
+            "status": "unknown",
+            "polarity": "required",
+            "applies_to_product": None,
+            "evidence": "Температуру сейчас не знаю",
+        }
+    ]
+    candidate["information_requests"] = [
+        {
+            "fact_name": "operating_temperature_c",
+            "purpose": "value",
+            "requested_outputs": ["explanation"],
+            "output_relation": "all",
+            "source_kind": "any_verified",
+            "act": "explain",
+            "subject_scope": "customer_goal",
+            "applies_to_product": None,
+            "evidence": "Температуру сейчас не знаю",
+        }
+    ]
+
+    repaired, changes = repair_grounded_semantic_payload(
+        candidate,
+        "Температуру сейчас не знаю.",
+        authoritative_dialogue_state=_active_state("pipe", "pipes"),
+    )
+    frame = TurnUnderstanding.model_validate(repaired)
+
+    assert frame.information_requests == []
+    assert frame.acts == []
+    assert frame.constraints[0].status.value == "unknown"
+    assert "pending_terminal_answer_spurious_information_request_removed" in changes
+
+
 def test_generic_show_anchor_overrides_model_ambiguous_strategy() -> None:
     candidate = _candidate(acts=("find",))
     candidate["operation"] = "new"
@@ -533,3 +777,133 @@ def test_availability_wording_is_selection_when_product_is_not_yet_shown() -> No
         assert frame.selection_strategy is not None
         assert frame.selection_strategy.kind.value == "continue_with_confirmed_facts"
         assert "generic_show_anchor_forced_continue" in changes
+
+
+def test_plural_difference_question_preserves_compare_alongside_broad_explain() -> None:
+    from app.semantic_v2.bridge import build_semantic_turn_delta
+
+    frame = TurnUnderstanding.model_validate(
+        {
+            **_candidate(acts=("explain",)),
+            "operation": "continue",
+        }
+    )
+
+    delta, gate = build_semantic_turn_delta(
+        frame,
+        message="А чем они отличаются?",
+        turn_id="compare-plural",
+    )
+
+    assert gate.accepted is True
+    assert {item.action for item in delta.action_candidates} >= {"fact", "compare"}
+    compare = next(item for item in delta.action_candidates if item.action == "compare")
+    assert compare.downstream_action == "compare"
+    assert compare.evidence == "чем они отличаются"
+
+
+def test_visible_scope_natural_difference_question_repairs_raw_act_to_compare() -> None:
+    candidate = _candidate(acts=("explain",))
+    candidate["operation"] = "continue"
+
+    repaired, changes = repair_grounded_semantic_payload(
+        candidate,
+        "А чем они отличаются?",
+        shown_product_cards=("VT.217.N.04", "VT.214.N.04"),
+        authoritative_dialogue_state=_active_state("ball_valve", "valves"),
+    )
+    frame = TurnUnderstanding.model_validate(repaired)
+
+    assert [item.value for item in frame.acts] == ["explain", "compare"]
+    assert "visible_scope_compare_action_recovered" in changes
+
+
+def test_generic_typed_product_question_recovers_selection_not_product_fact() -> None:
+    candidate = _candidate(acts=("select", "explain"))
+    candidate["products"] = [
+        {
+            "text": "газовый котёл",
+            "canonical_type": "gas_boiler",
+            "category": "boilers",
+            "role": "target",
+            "evidence": "газовый котёл",
+        }
+    ]
+    candidate["information_requests"] = [
+        {
+            "fact_name": "power_kw",
+            "purpose": "value",
+            "requested_outputs": ["explanation"],
+            "output_relation": "all",
+            "source_kind": None,
+            "act": "explain",
+            "subject_scope": "customer_goal",
+            "applies_to_product": 0,
+            "evidence": "Какой смотреть",
+        }
+    ]
+
+    repaired, changes = repair_grounded_semantic_payload(
+        candidate,
+        "Дом 150 м², хочу газовый котёл. Какой смотреть?",
+    )
+    frame = TurnUnderstanding.model_validate(repaired)
+
+    assert [item.value for item in frame.acts] == ["select"]
+    assert frame.information_requests == []
+    assert "generic_typed_product_selection_explain_dropped" in changes
+
+
+def test_numeric_article_in_product_mention_is_not_forced_into_a_fact() -> None:
+    frame = TurnUnderstanding.model_validate(
+        {
+            **_candidate(acts=("explain",)),
+            "operation": "continue",
+            "products": [
+                {
+                    "text": "Arderia E9 2202210",
+                    "canonical_type": "electric boiler",
+                    "category": "boilers",
+                    "role": "target",
+                    "evidence": "Arderia E9 2202210",
+                }
+            ],
+        }
+    )
+
+    validate_product_modifier_coverage(frame)
+
+
+def test_ordered_multiple_typed_targets_are_preserved_as_project_intent() -> None:
+    from app.semantic_v2.bridge import build_semantic_turn_delta
+
+    frame = TurnUnderstanding.model_validate(
+        {
+            **_candidate(acts=("select",)),
+            "products": [
+                {
+                    "text": "труба",
+                    "canonical_type": "pipe",
+                    "category": "pipes",
+                    "role": "target",
+                    "evidence": "труба",
+                },
+                {
+                    "text": "насос",
+                    "canonical_type": "circulation pump",
+                    "category": "pumps",
+                    "role": "target",
+                    "evidence": "насос",
+                },
+            ],
+        }
+    )
+
+    delta, gate = build_semantic_turn_delta(
+        frame,
+        message="Сначала нужна труба, потом насос.",
+        turn_id="ordered-project",
+    )
+
+    assert gate.accepted is True
+    assert any(item.action == "project" and item.downstream_action is None for item in delta.action_candidates)

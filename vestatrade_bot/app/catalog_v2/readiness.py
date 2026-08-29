@@ -207,6 +207,7 @@ def _canonical_unit(definition, fact: ConstraintFactV2) -> str | None:
         "head_m": "m",
         "angle_deg": "deg",
         "power_kw": "kW",
+        "area_m2": "m2",
         "power_w": "W",
         "flow": "l/h",
         "percent": "%",
@@ -352,37 +353,94 @@ def assess_task_readiness(
         ):
             missing.append(definition.name)
 
+    # A source-backed proxy can safely narrow cards without proving final
+    # suitability.  It satisfies the required-alternative contract so that
+    # the dialogue can progress, but must not promote the result to
+    # ``EXACT_READY``.  This is intentionally declarative in the registry;
+    # no product-family arithmetic belongs in readiness.
+    preliminary_proxy_alternatives = tuple(
+        alternative
+        for definition in required
+        if definition.name not in known_names
+        for alternative in required_alternatives.get(definition.name, ())
+        if alternative in known_names
+        and definition_by_name.get(alternative) is not None
+        and definition_by_name[alternative].preliminary_only_for_exact
+    )
+
     unavailable = tuple(dict.fromkeys((*unknown, *refused, *deferred)))
+
+    # A preliminary result is not a permission to show every item of the
+    # resolved product kind.  Contracts declare one or more small ``any-of``
+    # identity groups that must have a known member before cards can be shown.
+    # This keeps a user who cannot answer a later confirmation question moving
+    # forward, while still failing closed for a request such as just «нужна
+    # труба» or an unknown system type.
+    missing_preliminary_identity: list[str] = []
+    unavailable_preliminary_groups: list[tuple[str, ...]] = []
+    # A resolved SKU is a stronger identity anchor than any product-family
+    # requirement.  Do not make an explicitly named item disappear merely
+    # because an old task carried incomplete selection slots.
+    anchor_groups = (
+        () if "sku" in known_names else product_contract.preliminary_identity_fact_groups
+    )
+    for raw_group in anchor_groups:
+        group = tuple(
+            name for name in raw_group if name in definition_by_name
+        )
+        if not group or any(name in known_names for name in group):
+            continue
+        still_askable = tuple(name for name in group if name not in terminal_names)
+        if still_askable:
+            missing_preliminary_identity.append(still_askable[0])
+        else:
+            unavailable_preliminary_groups.append(group)
+
+    unresolved_for_preliminary = tuple(dict.fromkeys((*missing, *unavailable)))
+    can_show_preliminary = (
+        not missing_preliminary_identity
+        and not unavailable_preliminary_groups
+        and all(
+            definition_by_name[name].preliminary_allowed_without
+            for name in unresolved_for_preliminary
+            if name in definition_by_name
+        )
+    )
     continue_with_confirmed_facts = any(
         item.task_id == customer_task.task_id
         and item.kind == SelectionControlKind.CONTINUE_WITH_CONFIRMED_FACTS
         for item in dialogue_state.selection_controls
     )
+    # An explicit terminal answer («не знаю», «уточню позже», «не хочу
+    # сообщать») is a real decision by the customer.  Once identity anchors
+    # are known, it may end the questionnaire and authorise a safe preliminary
+    # result without requiring a second phrase such as «покажите по остальному».
+    terminal_fact_allows_preliminary = bool(unavailable)
     if conflicts:
         status = ReadinessStatus.BLOCKED
         question = None
         reasons = ("conflicting_contract_facts",)
+    elif missing_preliminary_identity:
+        status = ReadinessStatus.NEEDS_DECISION_FACT
+        question = missing_preliminary_identity[0]
+        reasons = ("preliminary_identity_fact_missing",)
+    elif unavailable_preliminary_groups:
+        status = ReadinessStatus.BLOCKED
+        question = None
+        reasons = ("preliminary_identity_fact_unavailable",)
     elif missing:
-        if continue_with_confirmed_facts:
-            unresolved = tuple(dict.fromkeys((*missing, *unavailable)))
-            can_preview = all(
-                definition_by_name[name].preliminary_allowed_without
-                for name in unresolved
-                if name in definition_by_name
-            )
-            status = (
-                ReadinessStatus.PRELIMINARY_READY
-                if can_preview
-                else ReadinessStatus.BLOCKED
-            )
+        if can_show_preliminary and (
+            continue_with_confirmed_facts or terminal_fact_allows_preliminary
+        ):
+            status = ReadinessStatus.PRELIMINARY_READY
             question = None
             reasons = (
-                "customer_requested_confirmed_facts_only",
                 (
-                    "preliminary_path_allowed"
-                    if can_preview
-                    else "honest_boundary_required"
+                    "terminal_fact_triggers_safe_preliminary_path"
+                    if terminal_fact_allows_preliminary
+                    else "customer_requested_confirmed_facts_only"
                 ),
+                "preliminary_path_allowed",
             )
         else:
             status = ReadinessStatus.NEEDS_DECISION_FACT
@@ -395,20 +453,26 @@ def assess_task_readiness(
             )
             reasons = ("decision_changing_fact_missing",)
     elif unavailable:
-        can_preview = all(
-            definition_by_name[name].preliminary_allowed_without
-            for name in unavailable
-            if name in definition_by_name
-        )
         status = (
             ReadinessStatus.PRELIMINARY_READY
-            if can_preview
+            if can_show_preliminary
             else ReadinessStatus.BLOCKED
         )
         question = None
         reasons = (
             "unavailable_fact_not_reasked",
-            "preliminary_path_allowed" if can_preview else "honest_boundary_required",
+            (
+                "preliminary_path_allowed"
+                if can_show_preliminary
+                else "honest_boundary_required"
+            ),
+        )
+    elif preliminary_proxy_alternatives:
+        status = ReadinessStatus.PRELIMINARY_READY
+        question = None
+        reasons = (
+            "required_fact_satisfied_by_preliminary_source_backed_proxy",
+            "preliminary_path_allowed",
         )
     elif catalog_unverifiable:
         status = ReadinessStatus.PRELIMINARY_READY
@@ -441,6 +505,10 @@ def assess_task_readiness(
         deferred_facts=tuple(deferred),
         conflicting_facts=tuple(conflicts),
         catalog_unverifiable_facts=tuple(catalog_unverifiable),
+        missing_preliminary_identity_facts=tuple(missing_preliminary_identity),
+        unavailable_preliminary_identity_groups=tuple(
+            unavailable_preliminary_groups
+        ),
         recommended_question_fact=question,
         learn_method_code=learn,
         reason_codes=reasons,

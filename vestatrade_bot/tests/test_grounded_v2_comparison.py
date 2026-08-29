@@ -3,6 +3,7 @@ from __future__ import annotations
 from app.answer_v2.contracts import AnswerSourceSnapshot, CatalogAnswerProduct
 from app.catalog_v2.contracts import CatalogFact, CatalogProductRole, FactProvenance, ProductKind
 from app.comparison_v2.contracts import ComparisonResultStatus
+from app.comparison_v2.renderer import render_comparison_result
 from app.comparison_v2.service import (
     build_comparison_request,
     build_comparison_result,
@@ -220,6 +221,36 @@ def test_cheapest_result_is_a_proved_price_conclusion_not_free_recommendation() 
     assert result.recommendation is not None
     assert result.recommendation.sku == "PUMP-130"
     assert result.recommendation.reason_code == "lowest_confirmed_price"
+    rendered = render_comparison_result(
+        result,
+        names={item.sku: item.name for item in snapshot.products},
+    )
+    assert "дешевле Насос PUMP-130 (PUMP-130) — 4500 ₽" in rendered
+    assert "None" not in rendered
+    assert "Какой критерий" not in rendered
+
+
+def test_generic_compare_hides_identity_dimension_and_uses_human_criteria() -> None:
+    snapshot = _snapshot()
+    outcome = _outcome()
+    session = _session(snapshot)
+    request = build_comparison_request(outcome, session, original_utterance="Сравните их")
+    assert request is not None
+    result = validate_comparison_result(
+        request,
+        build_comparison_result(request, snapshot, visible_cards=session.v2_last_products),
+        snapshot,
+    )
+
+    rendered = render_comparison_result(
+        result,
+        names={item.sku: item.name for item in snapshot.products},
+    )
+
+    assert result.outcome_gate_passed is True
+    assert "• Sku:" not in rendered
+    assert "None" not in rendered
+    assert "Какой критерий для вас решающий: цена, наличие, монтажная длина?" in rendered
 
 
 def test_single_visible_card_gets_one_subject_clarification() -> None:
@@ -380,7 +411,7 @@ def test_comparison_candidate_preserves_selection_scope_and_never_reissues_cards
     assert candidate.eligible_for_delivery is True
     assert candidate.response is not None
     assert candidate.response.products == []
-    assert "Сравниваю показанные варианты" in candidate.response.answer
+    assert "Сравнение показанных вариантов" in candidate.response.answer
     assert candidate.state_after.answer_plan_summary is not None
     assert candidate.state_after.answer_plan_summary.selection_id == "selection-v1"
     assert [item.sku for item in candidate.state_after.answer_plan_summary.presented_candidates] == [

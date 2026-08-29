@@ -71,6 +71,7 @@ _SCALAR_NUMERIC_FACT_NAMES = frozenset(
         "max_head_m",
         "max_flow_l_h",
         "power_kw",
+        "declared_heated_area_m2",
         "center_distance_mm",
         "heat_output_w",
         "suction_depth_m",
@@ -98,6 +99,9 @@ _UNIT_LABEL_ALIASES = {
     "л/мин": "l/min",
     "м3/ч": "m3/h",
     "м³/ч": "m3/h",
+    "м2": "m2",
+    "м²": "m2",
+    "m²": "m2",
     "мкм": "um",
     "°с": "c",
     "℃": "c",
@@ -289,6 +293,7 @@ def _structured_fact(name: str, raw: object, field: str) -> CatalogFact | None:
         "max_head_m": "m",
         "max_flow_l_h": "l/h",
         "power_kw": "kW",
+        "declared_heated_area_m2": "m2",
         "center_distance_mm": "mm",
         "heat_output_w": "W",
         "suction_depth_m": "m",
@@ -915,6 +920,26 @@ def _generic_facts(
     if "straight_or_angle" in parsers:
         shape = "angle" if "углов" in name_norm else "straight" if "прям" in name_norm else None
         result.append(_fact("valve_shape", shape, source="name", field="name", raw=name, parser="straight_or_angle"))
+
+    if "handle_type" in parsers:
+        match = re.search(
+            r"(?:рукоятк[а-я]*\s+бабочк[а-я]*|стальн[а-я]*\s+рукоятк[а-я]*)",
+            name,
+            re.IGNORECASE,
+        )
+        if match:
+            # The value is the exact explicit title fragment, rather than an
+            # inferred engineering classification of the handle.
+            result.append(
+                _fact(
+                    "handle_type",
+                    match.group(0),
+                    source="name",
+                    field="name",
+                    raw=match.group(0),
+                    parser="explicit_valve_handle_title",
+                )
+            )
 
     if "metric_thread" in parsers:
         match = re.search(r"\bм\s*(\d{1,2})\s*[xх]\s*(\d+(?:[.,]\d+)?)", description, re.I)

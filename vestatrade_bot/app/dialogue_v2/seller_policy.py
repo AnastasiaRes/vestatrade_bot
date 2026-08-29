@@ -61,6 +61,7 @@ class SellerPolicy:
         *,
         semantic_available: bool = True,
         policy_enabled: bool = True,
+        ordered_multi_goal: bool = False,
         readiness_assessments: Iterable[TaskReadinessAssessment] = (),
         commerce_readiness_assessments: Iterable[
             CommerceReadinessAssessment
@@ -71,6 +72,7 @@ class SellerPolicy:
             state,
             semantic_available=semantic_available,
             policy_enabled=policy_enabled,
+            ordered_multi_goal=ordered_multi_goal,
             readiness_assessments=readiness_assessments,
             commerce_readiness_assessments=commerce_readiness_assessments,
         )
@@ -82,6 +84,7 @@ class SellerPolicy:
         *,
         semantic_available: bool = True,
         policy_enabled: bool = True,
+        ordered_multi_goal: bool = False,
         readiness_assessments: Iterable[TaskReadinessAssessment] = (),
         commerce_readiness_assessments: Iterable[
             CommerceReadinessAssessment
@@ -426,6 +429,11 @@ class SellerPolicy:
                     selections[0],
                     readiness_by_task,
                 )
+                independent_selection_goals = {
+                    task.target_goal_id
+                    for task in selections
+                    if task.target_goal_id is not None
+                }
                 secondary = (
                     self._selection_action(
                         state,
@@ -433,6 +441,10 @@ class SellerPolicy:
                         readiness_by_task,
                     )
                     if len(selections) > 1
+                    and (
+                        not ordered_multi_goal
+                        or len(independent_selection_goals) <= 1
+                    )
                     else None
                 )
                 return NextActionPlan(
@@ -443,6 +455,12 @@ class SellerPolicy:
                             (
                                 "bare_explanation_deferred_missing_typed_information_request",
                                 primary.reason_code,
+                                *(
+                                    ("ordered_multi_goal_first_task_only",)
+                                    if ordered_multi_goal
+                                    and len(independent_selection_goals) > 1
+                                    else ()
+                                ),
                                 *(
                                     (secondary.reason_code,)
                                     if secondary is not None
@@ -498,6 +516,18 @@ class SellerPolicy:
             primary = self._selection_action(
                 state, selections[0], readiness_by_task
             )
+            # An explicitly ordered multi-goal request needs one result per
+            # turn: SelectionResult has one contract/product kind and one
+            # customer-visible scope.  Rendering two independent goals in the
+            # same response would mix categories and make the outcome gate
+            # (correctly) reject it.  The reducer has already retained the
+            # sibling task with the customer's source-order priority, so the
+            # controller sets ``ordered_multi_goal`` only for that case.
+            independent_selection_goals = {
+                task.target_goal_id
+                for task in selections
+                if task.target_goal_id is not None
+            }
             secondary = (
                 self._selection_action(
                     state,
@@ -505,6 +535,10 @@ class SellerPolicy:
                     readiness_by_task,
                 )
                 if len(selections) > 1
+                and (
+                    not ordered_multi_goal
+                    or len(independent_selection_goals) <= 1
+                )
                 else None
             )
             return NextActionPlan(
@@ -512,9 +546,15 @@ class SellerPolicy:
                 secondary=secondary,
                 reason_codes=tuple(
                     dict.fromkeys(
-                        (
-                            primary.reason_code,
-                            *(
+                            (
+                                primary.reason_code,
+                                *(
+                                    ("ordered_multi_goal_first_task_only",)
+                                    if ordered_multi_goal
+                                    and len(independent_selection_goals) > 1
+                                    else ()
+                                ),
+                                *(
                                 (
                                     secondary.reason_code,
                                     "additional_customer_action_preserved",

@@ -337,6 +337,14 @@ class DialogueControllerV2:
         plan = self.policy.decide(
             reduction.state,
             policy_enabled=policy_enabled,
+            ordered_multi_goal=any(
+                item.action == "project"
+                for item in (
+                    semantic_result.semantic_delta.action_candidates
+                    if semantic_result.semantic_delta is not None
+                    else ()
+                )
+            ),
             readiness_assessments=readiness,
             commerce_readiness_assessments=commerce_readiness,
             strategy_directives=strategy_directives,

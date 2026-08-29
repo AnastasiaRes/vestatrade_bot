@@ -54,6 +54,32 @@ def _grounded_span(message: str, aliases: Iterable[str]) -> str | None:
     return None
 
 
+def _ordered_multi_goal_evidence(
+    frame: TurnUnderstanding,
+    message: str,
+) -> str | None:
+    """Recognize an explicit order only after LLM has typed two targets.
+
+    This is deliberately not a second product classifier.  The LLM remains
+    responsible for extracting the product targets; this narrow anchor merely
+    preserves the customer's explicit ``сначала … потом`` ordering as the
+    future-facing PROJECT action, while the existing reducer executes the
+    first typed Selection task.
+    """
+
+    target_count = sum(
+        1 for product in frame.products if product.role == ProductRole.TARGET
+    )
+    if target_count < 2:
+        return None
+    match = re.search(
+        r"\bсначала\b[\s\S]{0,240}\b(?:потом|затем)\b",
+        message,
+        flags=re.IGNORECASE,
+    )
+    return match.group(0) if match is not None else None
+
+
 def _actions(frame: TurnUnderstanding, message: str) -> tuple[SemanticActionCandidate, ...]:
     actions: list[SemanticActionCandidate] = []
     seen: set[str] = set()
@@ -119,6 +145,16 @@ def _actions(frame: TurnUnderstanding, message: str) -> tuple[SemanticActionCand
             )
         )
         seen.add(action)
+    ordered_multi_goal = _ordered_multi_goal_evidence(frame, message)
+    if ordered_multi_goal is not None and "project" not in seen:
+        actions.append(
+            SemanticActionCandidate(
+                action="project",
+                downstream_action=None,
+                confidence=1.0,
+                evidence=ordered_multi_goal,
+            )
+        )
     return tuple(actions)
 
 
@@ -149,6 +185,7 @@ def _canonical_fact_value(
         return "heating"
 
     numeric_predicates = {
+        "area_m2",
         "diameter_mm",
         "operating_temperature_c",
         "duty_point_head_m",
@@ -186,6 +223,8 @@ def _canonical_fact_unit(predicate: str, unit: str | None) -> str | None:
     canonical = normalize_unit_label(unit)
     if predicate in {"duty_point_flow_l_h", "max_flow_l_h"} and canonical == "m3/h":
         return "l/h"
+    if predicate == "area_m2" and canonical in {"m2", "м2", "m²", "м²"}:
+        return "m2"
     return canonical
 
 

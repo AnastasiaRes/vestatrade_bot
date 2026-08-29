@@ -344,10 +344,20 @@ def _candidate_is_presentable(
     }
     hard_constraint_names = {item.name for item in search_plan.hard_constraints}
     product = source_snapshot.product(candidate.sku)
+    contract = ProductContractRegistry().get(search_plan.contract_id)
+    allowed_product_kinds = (
+        set(contract.candidate_kinds or (contract.product_kind,))
+        if contract is not None
+        else {search_plan.product_kind}
+    )
     return bool(
         candidate.status != CandidateStatus.REJECTED
         and candidate.sku in allowed_candidate_skus
-        and candidate.product_kind == search_plan.product_kind
+        # A generic contract deliberately searches a closed set of more
+        # specific catalogue kinds (for example boiler → gas/electric boiler).
+        # The catalogue planner has already restricted that set; rejecting it
+        # here made a fully verified generic selection render an empty promise.
+        and candidate.product_kind in allowed_product_kinds
         and candidate.role == search_plan.requested_role
         and not candidate.mismatched_hard_facts
         and not any(
@@ -1125,6 +1135,14 @@ def build_answer_plan(
             hard_constraint_names = {
                 item.name for item in search_plan.hard_constraints
             }
+            contract = typed_contract_by_task.get(search_plan.task_id)
+            if contract is None:
+                contract = contract_registry.get(search_plan.contract_id)
+            allowed_product_kinds = (
+                set(contract.candidate_kinds or (contract.product_kind,))
+                if contract is not None
+                else {search_plan.product_kind}
+            )
             for candidate in search_plan.candidate_assessments:
                 if candidate.status == CandidateStatus.REJECTED:
                     continue
@@ -1138,7 +1156,7 @@ def build_answer_plan(
                     )
                     continue
                 if (
-                    candidate.product_kind != search_plan.product_kind
+                    candidate.product_kind not in allowed_product_kinds
                     or candidate.role != search_plan.requested_role
                 ):
                     rejected.append(

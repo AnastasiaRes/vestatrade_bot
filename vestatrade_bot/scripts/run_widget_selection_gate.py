@@ -68,6 +68,66 @@ SCENARIOS: tuple[dict[str, Any], ...] = (
         ),
         "selection_turn": 1,
     },
+    {
+        "id": "ppr_progressive_unknown",
+        "turns": (
+            "Нужна ППР 25 на отопление.",
+            "Температуру сейчас не знаю.",
+            "Подача 90 °C, давление 6 бар. Покажите подходящие варианты.",
+        ),
+        "preliminary_turn": 2,
+        "selection_turn": 3,
+    },
+    {
+        "id": "pump_progressive_unknown",
+        "turns": (
+            "Нужен циркуляционный насос на отопление, напор 4 м.",
+            "Монтажную длину пока не знаю.",
+            "Монтажная длина 180 мм. Покажите варианты.",
+        ),
+        "preliminary_turn": 2,
+        "selection_turn": 3,
+    },
+    {
+        "id": "valves_progressive_unknown",
+        "turns": (
+            "Нужен шаровой кран BASE 1/2.",
+            "Тип резьбы пока не знаю.",
+            "Обе резьбы внутренние. Покажите варианты.",
+        ),
+        "preliminary_turn": 2,
+        "selection_turn": 3,
+    },
+    {
+        "id": "sewer_progressive_unknown",
+        "turns": (
+            "Нужна канализационная труба от дома до септика.",
+            "Диаметр пока не знаю.",
+            "Диаметр 110 мм. Покажите варианты.",
+        ),
+        "preliminary_turn": 2,
+        "selection_turn": 3,
+    },
+    {
+        "id": "radiator_progressive_unknown",
+        "turns": (
+            "Нужен радиатор с межосевым расстоянием 500 мм.",
+            "Материал пока не знаю.",
+            "Нужен биметаллический. Покажите варианты.",
+        ),
+        "preliminary_turn": 2,
+        "selection_turn": 3,
+    },
+    {
+        "id": "boiler_progressive_unknown",
+        "turns": (
+            "Нужен газовый котёл 24 кВт.",
+            "Количество контуров пока не знаю.",
+            "Нужен двухконтурный с закрытой камерой. Покажите варианты.",
+        ),
+        "preliminary_turn": 2,
+        "selection_turn": 3,
+    },
 )
 
 
@@ -271,6 +331,96 @@ def _checks(run: dict[str, Any]) -> list[dict[str, Any]]:
                 ("named_status_shown", selection.get("status") == "shown"),
             )
         )
+    elif scenario == "ppr_progressive_unknown":
+        preliminary_turn = turns[1]
+        preliminary_response = preliminary_turn["result"].get("response") or {}
+        preliminary_cards = preliminary_response.get("products") or []
+        preliminary = (preliminary_turn.get("telemetry") or {}).get("selection") or {}
+        applied_facts = {
+            str(item.get("name")): item
+            for item in (selection.get("applied_facts") or [])
+        }
+        checks.extend(
+            (
+                ("preliminary_owner_v2", (preliminary_turn.get("telemetry") or {}).get("owner") == "v2"),
+                ("preliminary_cards_delivered", bool(preliminary_cards)),
+                ("preliminary_outcome_gate_passed", bool(preliminary.get("outcome_gate_passed"))),
+                ("no_repeated_temperature_question", "параметр «рабочая температура»" not in str(preliminary_response.get("answer") or "").casefold()),
+                ("refined_cards_delivered", bool(products)),
+                ("new_selection_after_refinement", preliminary.get("selection_id") != selection.get("selection_id")),
+                ("temperature_saved_for_refined_search", applied_facts.get("operating_temperature_c", {}).get("value") == 90),
+                ("pressure_saved_for_refined_search", applied_facts.get("operating_pressure_bar", {}).get("value") == 6),
+            )
+        )
+    elif scenario in {
+        "pump_progressive_unknown",
+        "valves_progressive_unknown",
+        "sewer_progressive_unknown",
+        "radiator_progressive_unknown",
+        "boiler_progressive_unknown",
+    }:
+        preliminary_turn = turns[1]
+        preliminary_response = preliminary_turn["result"].get("response") or {}
+        preliminary_cards = preliminary_response.get("products") or []
+        preliminary = (preliminary_turn.get("telemetry") or {}).get("selection") or {}
+        applied_facts = {
+            str(item.get("name")): item
+            for item in (selection.get("applied_facts") or [])
+        }
+        checks.extend(
+            (
+                ("preliminary_owner_v2", (preliminary_turn.get("telemetry") or {}).get("owner") == "v2"),
+                ("preliminary_cards_delivered", bool(preliminary_cards)),
+                ("preliminary_outcome_gate_passed", bool(preliminary.get("outcome_gate_passed"))),
+                ("preliminary_state_updated", bool(preliminary.get("customer_visible_state_updated"))),
+                ("refined_cards_delivered", bool(products)),
+                ("refined_state_updated", bool(selection.get("customer_visible_state_updated"))),
+            )
+        )
+        if scenario == "pump_progressive_unknown":
+            checks.extend(
+                (
+                    ("typed_circulation_pump", selection.get("product_kind") == "circulation_pump"),
+                    ("head_saved_for_refined_search", applied_facts.get("duty_point_head_m", {}).get("value") == 4),
+                    ("mounting_length_saved_for_refined_search", applied_facts.get("mounting_length_mm", {}).get("value") == 180),
+                )
+            )
+        elif scenario == "valves_progressive_unknown":
+            checks.extend(
+                (
+                    ("typed_ball_valve", selection.get("product_kind") == "ball_valve"),
+                    ("only_internal_internal", all(".n." in sku.casefold() for sku in skus)),
+                    ("pattern_saved_for_refined_search", applied_facts.get("connection_pattern", {}).get("value") == "female_female"),
+                )
+            )
+        elif scenario == "sewer_progressive_unknown":
+            checks.extend(
+                (
+                    ("typed_external_sewer", selection.get("product_kind") == "sewer_pipe"),
+                    ("no_ppr_cards", all(not sku.casefold().startswith("vtp.") for sku in skus)),
+                    ("scope_saved_for_refined_search", applied_facts.get("sewer_scope", {}).get("value") == "external"),
+                    ("diameter_saved_for_refined_search", applied_facts.get("diameter_mm", {}).get("value") == 110),
+                )
+            )
+        elif scenario == "radiator_progressive_unknown":
+            checks.extend(
+                (
+                    ("typed_radiator", selection.get("product_kind") == "radiator"),
+                    ("only_requested_bimetal", skus == ["RBM-0210-050006"]),
+                    ("center_distance_saved", applied_facts.get("center_distance_mm", {}).get("value") == 500),
+                    ("material_saved", applied_facts.get("material", {}).get("value") == "биметалл"),
+                )
+            )
+        elif scenario == "boiler_progressive_unknown":
+            checks.extend(
+                (
+                    ("typed_gas_boiler", selection.get("product_kind") == "gas_boiler"),
+                    ("only_requested_boiler", skus == ["3636151"]),
+                    ("power_saved", applied_facts.get("power_kw", {}).get("value") == 24),
+                    ("circuits_saved", applied_facts.get("circuits", {}).get("value") == 2),
+                    ("closed_chamber_saved", applied_facts.get("combustion_chamber", {}).get("value") == "closed"),
+                )
+            )
     checks.extend(
         (
             ("cards_equal_gate_order", skus == (selection.get("ordered_skus") or [])),
@@ -332,6 +482,12 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--telemetry-path", type=Path, required=True)
     parser.add_argument("--modes", default="v2_preview")
+    parser.add_argument(
+        "--scenario",
+        action="append",
+        dest="scenario_ids",
+        help="Run only one or more named scenarios; repeat the flag if needed.",
+    )
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--timeout", type=float, default=300.0)
     parser.add_argument("--pause", type=float, default=0.5)
@@ -348,10 +504,17 @@ def main() -> int:
         "runs": [],
     }
     run_id = uuid.uuid4().hex[:10]
-    total = len(modes) * len(SCENARIOS) * args.repetitions
+    scenarios = tuple(
+        item
+        for item in SCENARIOS
+        if not args.scenario_ids or item["id"] in set(args.scenario_ids)
+    )
+    if not scenarios:
+        raise SystemExit("no requested scenario")
+    total = len(modes) * len(scenarios) * args.repetitions
     completed = 0
     for mode in modes:
-        for scenario in SCENARIOS:
+        for scenario in scenarios:
             for repetition in range(1, args.repetitions + 1):
                 session_id = f"selection-{run_id}-{mode}-{scenario['id']}-r{repetition}"
                 run = {

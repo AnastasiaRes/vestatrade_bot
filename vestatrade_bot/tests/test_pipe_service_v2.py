@@ -570,7 +570,7 @@ def test_ppr_unknown_diameter_still_asks_missing_service_first() -> None:
     assert assessment.unknown_facts == ("diameter_mm",)
 
 
-def test_terminal_diameter_does_not_skip_later_pipe_questions() -> None:
+def test_unknown_preliminary_identity_diameter_blocks_broad_pipe_cards() -> None:
     assessment = _ppr_readiness(
         [
             _constraint("pipe_service", "горячая вода"),
@@ -578,29 +578,29 @@ def test_terminal_diameter_does_not_skip_later_pipe_questions() -> None:
         ]
     )
 
-    assert assessment.status == ReadinessStatus.NEEDS_DECISION_FACT
-    assert assessment.recommended_question_fact == "operating_temperature_c"
+    assert assessment.status == ReadinessStatus.BLOCKED
+    assert assessment.recommended_question_fact is None
     assert assessment.unknown_facts == ("diameter_mm",)
 
 
-def test_explicit_confirmed_facts_control_skips_all_remaining_pipe_questions() -> None:
+def test_confirmed_facts_control_cannot_bypass_missing_pipe_identity() -> None:
     assessment = _ppr_readiness(
         [_constraint("diameter_mm", None, status="unknown")],
         continue_with_confirmed_facts=True,
     )
 
-    assert assessment.status == ReadinessStatus.PRELIMINARY_READY
-    assert assessment.recommended_question_fact is None
+    assert assessment.status == ReadinessStatus.NEEDS_DECISION_FACT
+    assert assessment.recommended_question_fact == "pipe_service"
     assert assessment.missing_decision_facts == (
         "pipe_service",
         "operating_temperature_c",
         "operating_pressure_bar",
     )
     assert assessment.unknown_facts == ("diameter_mm",)
-    assert "customer_requested_confirmed_facts_only" in assessment.reason_codes
+    assert "preliminary_identity_fact_missing" in assessment.reason_codes
 
 
-def test_unknown_temperature_with_missing_pressure_asks_pressure_next() -> None:
+def test_unknown_temperature_starts_safe_preliminary_instead_of_asking_pressure() -> None:
     assessment = _ppr_readiness(
         [
             _constraint("pipe_service", "горячая вода"),
@@ -614,9 +614,10 @@ def test_unknown_temperature_with_missing_pressure_asks_pressure_next() -> None:
         ]
     )
 
-    assert assessment.status == ReadinessStatus.NEEDS_DECISION_FACT
-    assert assessment.recommended_question_fact == "operating_pressure_bar"
+    assert assessment.status == ReadinessStatus.PRELIMINARY_READY
+    assert assessment.recommended_question_fact is None
     assert assessment.unknown_facts == ("operating_temperature_c",)
+    assert "terminal_fact_triggers_safe_preliminary_path" in assessment.reason_codes
 
 
 def test_terminal_temperature_and_pressure_allow_preliminary_search() -> None:
@@ -703,10 +704,10 @@ def test_ppr_and_pex_require_service_diameter_temperature_and_pressure() -> None
                 _constraint("operating_temperature_c", None, status="unknown"),
             ],
             False,
-            ReadinessStatus.NEEDS_DECISION_FACT,
-            "operating_pressure_bar",
-            NextActionKind.ASK_DECISION_CHANGING_QUESTION,
-            False,
+            ReadinessStatus.PRELIMINARY_READY,
+            None,
+            NextActionKind.SHOW_PRELIMINARY_OPTIONS,
+            True,
         ),
         (
             [

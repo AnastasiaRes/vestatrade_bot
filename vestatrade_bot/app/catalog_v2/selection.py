@@ -7,6 +7,11 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
 from app.answer_v2.contracts import AnswerSourceSnapshot
+from app.sku_resolution import (
+    SkuResolutionStatus,
+    extract_explicit_sku_tokens,
+    resolve_catalog_sku,
+)
 from app.dialogue_v2.contracts import (
     ConstraintFactV2,
     ConstraintPolarity,
@@ -30,12 +35,116 @@ from .contracts import (
     SelectionConstraintDisposition,
     SelectionFactInput,
     SelectionProductCard,
+    SelectionPresentationGroup,
     SelectionRequest,
     SelectionRequestAction,
     SelectionResult,
     SelectionResultStatus,
     PresentedSelectionProduct,
+    SelectionSourceConflict,
 )
+
+
+_PRESENTATION_FACT_LABELS = {
+    "connection_pattern": "тип резьбы",
+    "connection_size": "размер соединения",
+    "diameter_mm": "диаметр",
+    "secondary_diameter_mm": "второй диаметр",
+    "mounting_length_mm": "монтажная длина",
+    "operating_temperature_c": "рабочая температура",
+    "operating_pressure_bar": "рабочее давление",
+    "max_head_m": "напор",
+    "max_flow_l_h": "расход",
+    "power_kw": "мощность",
+    "area_m2": "отапливаемая площадь",
+    "declared_heated_area_m2": "заявленная отапливаемая площадь",
+    "pipe_service": "назначение трубы",
+    "reinforcement": "тип армирования",
+    "sewer_scope": "участок канализации",
+    "material": "материал",
+    "boiler_type": "тип котла",
+    "circuits": "количество контуров",
+    "combustion_chamber": "камера сгорания",
+    "center_distance_mm": "межосевое расстояние",
+}
+
+_PRESENTATION_VALUES = {
+    "female_female": "ВР/ВР — внутренняя/внутренняя",
+    "female_male": "ВР/НР — внутренняя/наружная",
+    "male_female": "НР/ВР — наружная/внутренняя",
+    "male_male": "НР/НР — наружная/наружная",
+    "glass_fiber": "стекловолокно",
+    "aluminium": "алюминий",
+    "unreinforced": "без армирования",
+    "heating": "отопление",
+    "cold_water": "холодная вода",
+    "hot_water": "горячая вода",
+    "internal": "внутренняя канализация",
+    "external": "наружная канализация",
+    "gas": "газовый",
+    "electric": "электрический",
+    "closed": "закрытая",
+    "open": "открытая",
+}
+
+
+def _presentation_label(fact_name: str) -> str:
+    return _PRESENTATION_FACT_LABELS.get(fact_name, fact_name.replace("_", " "))
+
+
+def _presentation_value(value: object, unit: str | None) -> str:
+    raw = _PRESENTATION_VALUES.get(str(value), str(value))
+    if unit:
+        return f"{raw} {unit}"
+    return raw
+
+
+def _exact_source_fact(source, fact_name: str):
+    if any(item.name == fact_name for item in source.fact_issues):
+        return None
+    facts = tuple(item for item in source.facts if item.name == fact_name)
+    distinct = {(str(item.value), item.unit) for item in facts}
+    return facts[0] if len(distinct) == 1 and facts else None
+
+
+def _preliminary_groups(
+    cards: tuple[SelectionProductCard, ...],
+    source_snapshot: AnswerSourceSnapshot,
+    fact_names: tuple[str, ...],
+) -> tuple[SelectionPresentationGroup, ...]:
+    """Group only on an unknown fact with an exact value for every card.
+
+    Missing or ambiguous values are intentionally not rendered as a group: a
+    visual heading must never make an unproved property look like a fact.
+    """
+
+    groups: list[SelectionPresentationGroup] = []
+    for fact_name in fact_names:
+        by_value: dict[tuple[str, str | None], list[str]] = {}
+        complete = True
+        for card in cards:
+            source = source_snapshot.product(card.sku)
+            fact = _exact_source_fact(source, fact_name) if source is not None else None
+            if fact is None:
+                complete = False
+                break
+            key = (str(fact.value), fact.unit)
+            by_value.setdefault(key, []).append(card.sku)
+        if not complete or len(by_value) < 2:
+            continue
+        for value, skus in by_value.items():
+            groups.append(
+                SelectionPresentationGroup(
+                    fact_name=fact_name,
+                    label=_presentation_label(fact_name),
+                    value=_presentation_value(*value),
+                    card_skus=tuple(skus),
+                )
+            )
+        # One fact is enough for a readable grouping.  Multiple independent
+        # headings would duplicate the same cards and obscure the choice.
+        break
+    return tuple(groups)
 from .registry import ProductContractRegistry
 from .registry import normalize_identity
 
@@ -56,7 +165,7 @@ def bind_exact_named_product(
     state: DialogueStateV2,
     catalog_snapshot: tuple[Any, ...],
 ) -> DialogueStateV2:
-    """Bind one exact full catalogue name to SKU and kind, never fuzzily.
+    """Bind an explicit SKU or exact full catalogue name, never fuzzily.
 
     The semantic layer supplies current-turn evidence; this adapter performs a
     read-only exact normalized identity lookup in the existing source snapshot.
@@ -88,10 +197,28 @@ def bind_exact_named_product(
         ):
             if evidence_identity.startswith(prefix):
                 exact_name_inputs.add(evidence_identity[len(prefix) :].strip())
-        matches = tuple(
-            item
-            for item in catalog_snapshot
-            if normalize_identity(item.name) in exact_name_inputs
+        # SKU resolution has priority over a stale or overly broad semantic
+        # product kind.  A numeric article is still only an identity candidate
+        # until the shared resolver proves an exact/unique catalogue match.
+        sku_matches = []
+        for token in extract_explicit_sku_tokens(goal.evidence):
+            resolution = resolve_catalog_sku(token, catalog_snapshot)
+            if resolution.status in {
+                SkuResolutionStatus.EXACT,
+                SkuResolutionStatus.UNIQUE_PREFIX,
+            }:
+                sku_matches.extend(resolution.candidates)
+        unique_sku_matches = tuple(
+            {item.sku: item for item in sku_matches}.values()
+        )
+        matches = (
+            unique_sku_matches
+            if len(unique_sku_matches) == 1
+            else tuple(
+                item
+                for item in catalog_snapshot
+                if normalize_identity(item.name) in exact_name_inputs
+            )
         )
         if len(matches) != 1:
             continue
@@ -120,7 +247,11 @@ def bind_exact_named_product(
                     polarity=ConstraintPolarity.REQUIRED,
                     strength=ConstraintStrength.HARD,
                     evidence=goal.evidence,
-                    source="catalog_exact_name_resolution",
+                    source=(
+                        "catalog_exact_sku_resolution"
+                        if unique_sku_matches
+                        else "catalog_exact_name_resolution"
+                    ),
                     confidence=goal.confidence,
                     goal_id=goal.goal_id,
                     source_turn=state.turn_number,
@@ -322,6 +453,75 @@ def _applied_filter(constraint: SearchConstraint) -> SelectionConstraintDisposit
     )
 
 
+def _source_backed_power_area_conflicts(
+    request: SelectionRequest,
+    cards: tuple[SelectionProductCard, ...],
+    source_snapshot: AnswerSourceSnapshot,
+) -> tuple[SelectionSourceConflict, ...]:
+    """Expose an explicit power/coverage contradiction without calculating.
+
+    ``area_m2`` is deliberately omitted from candidate filtering when the
+    customer has stated a design power: it must not be treated as a power
+    formula.  A shown exact-power card can nevertheless have a manufacturer
+    declared heated area below the customer's stated building area.  That is
+    enough to prevent an exact recommendation, but not enough to invent a
+    replacement power or silently discard the expressly requested model.
+    """
+
+    known = {
+        fact.name: fact
+        for fact in request.known_facts
+        if fact.status == "known" and fact.value is not None
+    }
+    customer_area = known.get("area_m2")
+    customer_power = known.get("power_kw")
+    if customer_area is None or customer_power is None:
+        return ()
+    if not isinstance(customer_area.value, (int, float)) or isinstance(
+        customer_area.value,
+        bool,
+    ):
+        return ()
+
+    conflicts: list[SelectionSourceConflict] = []
+    for card in cards:
+        source = source_snapshot.product(card.sku)
+        if source is None or any(
+            issue.name == "declared_heated_area_m2"
+            for issue in source.fact_issues
+        ):
+            continue
+        values = tuple(
+            fact
+            for fact in source.facts
+            if fact.name == "declared_heated_area_m2"
+        )
+        if len(values) != 1:
+            continue
+        coverage = values[0]
+        if not isinstance(coverage.value, (int, float)) or isinstance(
+            coverage.value,
+            bool,
+        ):
+            continue
+        if float(coverage.value) >= float(customer_area.value):
+            continue
+        conflicts.append(
+            SelectionSourceConflict(
+                customer_fact_name="area_m2",
+                customer_value=customer_area.value,
+                customer_unit=customer_area.unit,
+                card_sku=card.sku,
+                card_fact_name="declared_heated_area_m2",
+                card_value=coverage.value,
+                card_unit=coverage.unit,
+                source_field=coverage.provenance.source_field,
+                reason_code="declared_coverage_below_customer_area_with_explicit_power",
+            )
+        )
+    return tuple(conflicts)
+
+
 def build_selection_result(
     request: SelectionRequest,
     outcome: DialogueV2Outcome,
@@ -335,11 +535,21 @@ def build_selection_result(
         raise ValueError("selection request no longer matches dialogue outcome")
     _task, _resolution, readiness, search = selected
     public_products = tuple(response_products)
+    contract = ProductContractRegistry().get(request.contract_id)
+    allowed_product_kinds = (
+        set(contract.candidate_kinds or (contract.product_kind,))
+        if contract is not None
+        else {request.product_kind}
+    )
     cards: list[SelectionProductCard] = []
     card_gate_failed = False
     for public in public_products:
         source = source_snapshot.product(str(public.sku))
-        if source is None or source.product_kind != request.product_kind:
+        # A generic request can validly resolve to a contract-declared subtype
+        # (for example boiler → gas/electric boiler).  Do not weaken this
+        # source gate beyond that explicit contract set: the SKU, source
+        # revision and every public card field still must match exactly.
+        if source is None or source.product_kind not in allowed_product_kinds:
             card_gate_failed = True
             continue
         if any(
@@ -464,6 +674,43 @@ def build_selection_result(
         reason = "selection_outcome_missing_cards_or_subject_reason"
 
     ordered_skus = tuple(item.sku for item in cards)
+    source_backed_conflicts = _source_backed_power_area_conflicts(
+        request,
+        tuple(cards),
+        source_snapshot,
+    )
+    if status == SelectionResultStatus.SHOWN and source_backed_conflicts:
+        reason = "source_backed_power_area_conflict_preliminary"
+    is_preliminary = bool(
+        cards
+        and (
+            readiness.status == ReadinessStatus.PRELIMINARY_READY
+            or source_backed_conflicts
+        )
+    )
+    preliminary_fact_names = tuple(
+        dict.fromkeys(
+            (
+                *(
+                    item.name
+                    for item in request.known_facts
+                    if item.status in {"unknown", "refused", "deferred"}
+                ),
+                *readiness.unknown_facts,
+                *readiness.refused_facts,
+                *readiness.deferred_facts,
+            )
+        )
+    )
+    presentation_groups = (
+        _preliminary_groups(
+            tuple(cards),
+            source_snapshot,
+            preliminary_fact_names,
+        )
+        if is_preliminary and not source_backed_conflicts
+        else ()
+    )
     selection_id = hashlib.sha256(
         "\x1f".join(
             (
@@ -472,6 +719,7 @@ def build_selection_result(
                 request.catalog_revision,
                 status.value,
                 missing_critical or "",
+                reason,
                 *ordered_skus,
             )
         ).encode("utf-8")
@@ -502,6 +750,10 @@ def build_selection_result(
         candidates_after_filters=len(allowed_skus),
         ordered_skus=ordered_skus,
         cards=tuple(cards),
+        is_preliminary=is_preliminary,
+        preliminary_fact_names=preliminary_fact_names,
+        presentation_groups=presentation_groups,
+        source_backed_conflicts=source_backed_conflicts,
         excluded_candidate_reason_codes=exclusions,
         catalog_revision=request.catalog_revision,
         outcome_gate_passed=gate_passed,

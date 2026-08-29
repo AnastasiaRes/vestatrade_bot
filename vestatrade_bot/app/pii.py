@@ -85,9 +85,13 @@ _EXPLICIT_CLAUSE_NAME_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ``площадь`` is intentionally absent here.  In an engineering dialogue it is
+# normally a quantity (``Площадь всё-таки 100 м²``), and the former broad
+# address expression consequently routed ordinary revisions away from V2.
+# Named squares still have a dedicated, stricter expression below.
 _RU_STREET_MARKER = (
     r"(?:ул(?:ица)?\.?|проспект|переулок|проезд|набережная|шоссе|"
-    r"бульвар|аллея|площадь)"
+    r"бульвар|аллея)"
 )
 _ADDRESS_NUMBER = r"(?:№\s*)?\d[0-9A-Za-zА-Яа-яЁё/\-]{0,15}"
 _STANDALONE_UNIT_NUMBER = r"(?:№\s*)?\d{1,5}[A-Za-zА-Яа-яЁё]?"
@@ -111,6 +115,18 @@ _RU_STREET_ADDRESS_RE = re.compile(
     rf"(?P<address>\b{_RU_STREET_MARKER}\s+{_RU_STREET_NAME}"
     rf"\s*,?\s*(?:д(?:ом)?\.?\s*)?{_ADDRESS_NUMBER}"
     rf"(?:\s*,?\s*{_RU_ADDRESS_UNIT})*)",
+    re.IGNORECASE,
+)
+
+# An abbreviated square is an unambiguous address marker.  The fully written
+# form is accepted only with an explicit house designator: this preserves
+# address redaction for ``площадь Ленина, дом 10`` without treating a product
+# requirement such as ``Площадь 100 квадратов`` as an address.
+_RU_SQUARE_ADDRESS_RE = re.compile(
+    rf"(?P<address>\b(?:"
+    rf"пл\.?\s+{_RU_STREET_NAME}\s*,?\s*(?:д(?:ом)?\.?\s*)?{_ADDRESS_NUMBER}"
+    rf"|площадь\s+{_RU_STREET_NAME}\s*,?\s*(?:д(?:ом)?\.?\s*){_ADDRESS_NUMBER}"
+    rf")(?:\s*,?\s*{_RU_ADDRESS_UNIT})*)",
     re.IGNORECASE,
 )
 
@@ -242,6 +258,7 @@ def redact_pii_for_model(text: str) -> str:
     redacted = _EXPLICIT_TITLE_NAME_RE.sub(_redact_explicit_name, redacted)
     redacted = _EXPLICIT_CLAUSE_NAME_RE.sub(_redact_explicit_name, redacted)
     redacted = _RU_STREET_ADDRESS_RE.sub(_redact_address, redacted)
+    redacted = _RU_SQUARE_ADDRESS_RE.sub(_redact_address, redacted)
     redacted = _EN_STREET_ADDRESS_RE.sub(_redact_address, redacted)
     redacted = _LABELED_ADDRESS_RE.sub(_redact_labeled_address, redacted)
     return _STANDALONE_ADDRESS_UNIT_RE.sub(_redact_address, redacted)

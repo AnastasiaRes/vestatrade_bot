@@ -182,6 +182,37 @@ def test_feed100_is_fully_and_explicitly_covered(catalog) -> None:
     assert all(item.role != CatalogProductRole.UNKNOWN for item in catalog)
 
 
+def test_every_feed100_contract_requires_a_safe_preliminary_identity_anchor(catalog) -> None:
+    """A generic ``show what you have`` command must never expose a whole kind.
+
+    Exact readiness may ask for more facts.  This smaller invariant protects
+    progressive selection: each covered product kind still has at least one
+    required fact that cannot be silently omitted for a preliminary card set.
+    """
+
+    registry = ProductContractRegistry()
+    feed_kinds = {
+        item.product_kind
+        for item in catalog
+        if item.product_kind != ProductKind.UNSUPPORTED
+    }
+    missing_anchors = {
+        kind.value
+        for kind in feed_kinds
+        if not registry.for_kind(kind).preliminary_identity_fact_groups
+    }
+
+    assert missing_anchors == set()
+    for kind in feed_kinds:
+        contract = registry.for_kind(kind)
+        assert contract is not None
+        known_fact_names = {fact.name for fact in contract.fact_definitions}
+        assert all(
+            group and set(group) <= known_fact_names
+            for group in contract.preliminary_identity_fact_groups
+        )
+
+
 def test_machine_readable_feed100_audit_matches_fixture(catalog) -> None:
     audit = json.loads(
         (Path(__file__).parents[1] / "reports/stage3_feed100_contract_audit.json").read_text()
@@ -270,7 +301,7 @@ def test_pump_types_do_not_mix(kind, expected) -> None:
     assert _planning(outcome).contract_resolutions[0].product_kind == expected
 
 
-def test_unknown_refused_and_deferred_are_preliminary_not_reasked() -> None:
+def test_unavailable_circulation_anchor_asks_for_remaining_safe_alternative() -> None:
     constraints = [
         _fact("connection_diameter", status="unknown"),
         _fact("max_head_m", status="refused"),
@@ -280,12 +311,13 @@ def test_unknown_refused_and_deferred_are_preliminary_not_reasked() -> None:
         _semantic([_product("циркуляционный насос", "pumps")], constraints)
     )
     assessment = _planning(outcome).readiness_assessments[0]
-    assert assessment.status == ReadinessStatus.PRELIMINARY_READY
+    assert assessment.status == ReadinessStatus.NEEDS_DECISION_FACT
     assert assessment.unknown_facts == ("diameter_mm",)
     assert assessment.refused_facts == ("max_head_m",)
     assert assessment.deferred_facts == ("mounting_length_mm",)
-    assert assessment.recommended_question_fact is None
-    assert outcome.next_action_plan.primary.kind != NextActionKind.ASK_DECISION_CHANGING_QUESTION
+    assert assessment.recommended_question_fact == "duty_point_head_m"
+    assert assessment.unavailable_preliminary_identity_groups == ()
+    assert outcome.next_action_plan.primary.kind == NextActionKind.ASK_DECISION_CHANGING_QUESTION
 
 
 def test_pressure_in_metres_is_a_pump_head_alias_but_bar_is_not() -> None:
@@ -414,7 +446,7 @@ def test_explicit_numeric_range_is_preserved_and_compared_as_an_interval() -> No
 
     outcome = _run(
         _semantic(
-            [_product("gas_boiler", "boilers")],
+            [_product("boiler", "boilers")],
             [
                 _fact("boiler_type", "gas", None),
                 _fact("power_kw", "10–15", "kW"),
@@ -605,11 +637,138 @@ def test_gas_boiler_chamber_is_canonical_and_non_catalog_questions_do_not_block(
     assert {fact.name for fact in assessment.confirmed_hard_facts} == {
         "boiler_type",
         "power_kw",
+        "area_m2",
         "circuits",
         "combustion_chamber",
     }
     plan = _planning(outcome).search_plans[0]
     assert plan.eligible_skus == ("2201375",)
+    # The area is useful customer context, but a named design power stays the
+    # direct exact selector.  A card without a declared coverage must not make
+    # that already exact power selection silently become preliminary.
+    assert "area_m2" not in {item.name for item in plan.hard_constraints}
+
+
+def test_boiler_area_is_a_source_backed_preliminary_proxy_not_a_power_formula() -> None:
+    snapshot = build_catalog_snapshot(
+        [
+            Product(
+                sku="gas-short",
+                name="Котёл газовый 12 кВт одноконтурный",
+                category_path="Котельное оборудование",
+                stock_qty=3,
+                attributes_normalized={
+                    "тип товара": "Котёл",
+                    "тип котла": "Газовый",
+                    "мощность, квт": "12",
+                    "количество контуров": "Одноконтурный",
+                    "отапливаемая площадь, м²": "120",
+                },
+            ),
+            Product(
+                sku="gas-coverage-160",
+                name="Котёл газовый 16 кВт одноконтурный",
+                category_path="Котельное оборудование",
+                stock_qty=3,
+                attributes_normalized={
+                    "тип товара": "Котёл",
+                    "тип котла": "Газовый",
+                    "мощность, квт": "16",
+                    "количество контуров": "Одноконтурный",
+                    "отапливаемая площадь, м²": "160",
+                },
+            ),
+            Product(
+                sku="gas-coverage-240",
+                name="Котёл газовый 24 кВт одноконтурный",
+                category_path="Котельное оборудование",
+                stock_qty=3,
+                attributes_normalized={
+                    "тип товара": "Котёл",
+                    "тип котла": "Газовый",
+                    "мощность, квт": "24",
+                    "количество контуров": "Одноконтурный",
+                    "отапливаемая площадь, м²": "240",
+                },
+            ),
+            Product(
+                sku="electric-coverage-240",
+                name="Котёл электрический 24 кВт одноконтурный",
+                category_path="Котельное оборудование",
+                stock_qty=3,
+                attributes_normalized={
+                    "тип товара": "Котёл",
+                    "тип котла": "Электрический",
+                    "мощность, квт": "24",
+                    "количество контуров": "Одноконтурный",
+                    "отапливаемая площадь, м²": "240",
+                },
+            ),
+        ]
+    )
+    outcome = _run(
+        _semantic(
+            [_product("boiler", "boilers")],
+            [
+                _fact("boiler_type", "gas", None),
+                _fact("area_m2", 150, "m2"),
+                _fact("circuits", 1, None),
+            ],
+        ),
+        snapshot,
+    )
+
+    assessment = _planning(outcome).readiness_assessments[0]
+    assert assessment.status == ReadinessStatus.PRELIMINARY_READY
+    assert assessment.reason_codes == (
+        "required_fact_satisfied_by_preliminary_source_backed_proxy",
+        "preliminary_path_allowed",
+    )
+    plan = _planning(outcome).search_plans[0]
+    assert {item.name for item in plan.hard_constraints} >= {
+        "boiler_type",
+        "area_m2",
+        "circuits",
+    }
+    assert plan.eligible_skus == ("gas-coverage-160", "gas-coverage-240")
+    short = next(item for item in plan.candidate_assessments if item.sku == "gas-short")
+    electric = next(
+        item for item in plan.candidate_assessments if item.sku == "electric-coverage-240"
+    )
+    assert "area_m2" in short.mismatched_hard_facts
+    assert "boiler_type" in electric.mismatched_hard_facts
+
+
+def test_boiler_area_first_asks_fuel_then_circuits() -> None:
+    controller = DialogueControllerV2()
+    first = controller.run(
+        None,
+        _semantic(
+            [_product("boiler", "boilers")],
+            [_fact("area_m2", 150, "m2")],
+        ),
+        TurnMetadata(turn_id="boiler-area-1"),
+        product_contracts_enabled=True,
+        catalog_planner_enabled=True,
+    )
+    assert first.next_action_plan.primary.kind == NextActionKind.ASK_DECISION_CHANGING_QUESTION
+    assert first.next_action_plan.primary.fact_name == "boiler_type"
+
+    second = controller.run(
+        first.state_after,
+        _semantic(
+            [],
+            [
+                _fact("boiler_type", "gas", None)
+                | {"applies_to_product": None},
+            ],
+        ),
+        TurnMetadata(turn_id="boiler-area-2"),
+        product_contracts_enabled=True,
+        catalog_planner_enabled=True,
+    )
+    assert second.next_action_plan.primary.kind == NextActionKind.ASK_DECISION_CHANGING_QUESTION
+    assert second.next_action_plan.primary.fact_name == "circuits"
 
 
 def test_bare_product_explanation_waits_without_catalogue_guess() -> None:
@@ -2078,3 +2237,23 @@ def test_generic_primary_and_secondary_dimension_parsers_remain_distinct() -> No
 
     assert facts["diameter_mm"] == 50
     assert facts["secondary_diameter_mm"] == 32
+
+
+def test_ball_valve_handle_is_a_typed_card_fact_only_when_explicit_in_title() -> None:
+    snapshot = build_catalog_snapshot(
+        [
+            Product(
+                sku="VT.217.N.04",
+                name='Кран шаровой BASE, рукоятка бабочка 1/2" вн.-вн.',
+                category_path="Водозапорная арматура",
+                attributes_normalized={"тип товара": "Кран шаровой"},
+            )
+        ]
+    )
+
+    handle = next(item for item in snapshot[0].facts if item.name == "handle_type")
+
+    assert snapshot[0].product_kind == ProductKind.BALL_VALVE
+    assert handle.value == "рукоятка бабочка"
+    assert handle.provenance.source == "name"
+    assert handle.provenance.raw_value == "рукоятка бабочка"

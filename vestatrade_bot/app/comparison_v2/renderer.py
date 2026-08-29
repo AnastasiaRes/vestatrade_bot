@@ -6,7 +6,25 @@ from .contracts import ComparisonResult, ComparisonResultStatus
 
 
 def _value(value: object, unit: str | None) -> str:
-    return f"{value} {unit}".strip()
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    if unit == "RUB":
+        return f"{value} ₽"
+    return f"{value} {unit}".strip() if unit else str(value)
+
+
+def _reference_list(result: ComparisonResult, names: dict[str, str]) -> list[str]:
+    return [
+        f"{index}. {names.get(sku, sku)} ({sku})"
+        for index, sku in enumerate(result.compared_skus, start=1)
+    ]
+
+
+def _dimension_values(dimension, ordinal_by_sku: dict[str, int]) -> str:
+    return "; ".join(
+        f"{ordinal_by_sku.get(item.sku, item.sku)} — {_value(item.value, item.unit)}"
+        for item in dimension.values
+    )
 
 
 def render_comparison_result(result: ComparisonResult, *, names: dict[str, str]) -> str:
@@ -22,23 +40,37 @@ def render_comparison_result(result: ComparisonResult, *, names: dict[str, str])
     if result.status == ComparisonResultStatus.REJECTED:
         return "Не могу безопасно сравнить эти карточки: их подтверждённый состав или версия каталога уже не совпадают. Покажите варианты заново."
 
-    lines = ["Сравниваю показанные варианты по подтверждённым карточкам:"]
+    ordinal_by_sku = {
+        sku: index for index, sku in enumerate(result.compared_skus, start=1)
+    }
+    if result.recommendation is not None:
+        winner = result.recommendation.sku
+        price_dimension = next(
+            (item for item in result.dimensions if item.predicate == "price"),
+            None,
+        )
+        price = next(
+            (item for item in (price_dimension.values if price_dimension else ()) if item.sku == winner),
+            None,
+        )
+        if price is not None:
+            return (
+                f"Из показанных дешевле {names.get(winner, winner)} ({winner}) — "
+                f"{_value(price.value, price.unit)}."
+            )
+
+    lines = ["Сравнение показанных вариантов:", *_reference_list(result, names)]
     for dimension in result.dimensions:
         if not dimension.values:
             continue
-        values = "; ".join(
-            f"{names.get(item.sku, item.sku)} ({item.sku}) — {_value(item.value, item.unit)}"
-            for item in dimension.values
+        lines.append(
+            f"• {dimension.label.capitalize()}: "
+            f"{_dimension_values(dimension, ordinal_by_sku)}."
         )
-        lines.append(f"• {dimension.label}: {values}.")
         if dimension.missing_skus:
             lines.append("  Для части позиций значение в карточке не подтверждено.")
     if result.missing_data:
         lines.append("Не хватает подтверждённых данных по: " + ", ".join(result.missing_data) + ".")
-    if result.recommendation is not None:
-        lines.append(
-            f"По критерию «самая низкая цена» дешевле {names.get(result.recommendation.sku, result.recommendation.sku)} ({result.recommendation.sku})."
-        )
-    elif result.deciding_question:
+    if result.deciding_question:
         lines.append(result.deciding_question)
     return "\n".join(lines)

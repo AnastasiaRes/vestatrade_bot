@@ -116,10 +116,23 @@ class ChatProductSummary(BaseModel):
     image_url: str | None = None
 
 
+class ChatProductGroup(BaseModel):
+    """A verified visual grouping for cards already delivered in this response.
+
+    The API deliberately carries only customer-visible SKU references.  It is
+    not another search result and therefore cannot introduce a product outside
+    the delivery/outcome gate.
+    """
+
+    label: str = Field(min_length=1, max_length=240)
+    product_skus: list[str] = Field(min_length=1, max_length=12)
+
+
 class ChatResponse(BaseModel):
     session_id: str
     answer: str
     products: list[ChatProductSummary] = Field(default_factory=list)
+    product_groups: list[ChatProductGroup] = Field(default_factory=list)
     need_handoff: bool = False
     handoff_status: str = "none"
     handoff_ticket_id: str | None = None

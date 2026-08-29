@@ -42,6 +42,20 @@ class SkuResolution(Generic[SkuItem]):
 
 _SKU_GROUP_RE = re.compile(r"[a-zа-я]+|\d+", flags=re.IGNORECASE)
 
+# A catalogue article can be a structured vendor identifier (``VT.1500``) or
+# a pure numeric article (``2202210``).  The latter must be long enough that a
+# measurement such as ``9 кВт`` or ``150 м²`` cannot accidentally become a
+# product identity.  This helper only extracts *candidates*; callers must
+# still pass each candidate through ``resolve_catalog_sku`` before treating it
+# as a product reference.
+_EXPLICIT_STRUCTURED_SKU_RE = re.compile(
+    r"(?<![a-zа-я0-9])"
+    r"(?:[a-zа-я]{1,8}[.\-]\d+(?:[.\-][a-zа-я0-9]+){0,5})"
+    r"(?![a-zа-я0-9])",
+    re.IGNORECASE,
+)
+_EXPLICIT_NUMERIC_SKU_RE = re.compile(r"(?<!\d)\d{6,}(?!\d)")
+
 # Customers often read Latin vendor prefixes by their Russian letter names.
 # The mapping deliberately applies only while comparing an alphabetic SKU
 # segment and cannot turn ordinary prose into a SKU on its own.
@@ -77,6 +91,21 @@ def sku_segments(value: object) -> tuple[str, ...]:
     normalized = unicodedata.normalize("NFKC", html.unescape(str(value or "")))
     normalized = normalized.casefold().replace("ё", "е")
     return tuple(_SKU_GROUP_RE.findall(normalized))
+
+
+def extract_explicit_sku_tokens(text: object) -> tuple[str, ...]:
+    """Return literal SKU-shaped spans without resolving them.
+
+    Keeping extraction beside the canonical resolver prevents the semantic,
+    selection and ProductFact paths from disagreeing about whether a numeric
+    article is even eligible for exact identity lookup.  A returned token is
+    never proof that a product exists.
+    """
+
+    source = str(text or "")
+    tokens = [match.group(0).strip() for match in _EXPLICIT_STRUCTURED_SKU_RE.finditer(source)]
+    tokens.extend(match.group(0) for match in _EXPLICIT_NUMERIC_SKU_RE.finditer(source))
+    return tuple(dict.fromkeys(token for token in tokens if token))
 
 
 def _segments_equal(left: str, right: str) -> bool:

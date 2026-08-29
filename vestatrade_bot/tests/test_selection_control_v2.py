@@ -15,6 +15,10 @@ from app.catalog_v2.readiness import assess_task_readiness
 from app.catalog_v2.registry import DEFAULT_CONTRACTS, ProductContractRegistry
 from app.dialogue_v2.contracts import (
     AnswerPlanSummary,
+    ConstraintFactV2,
+    ConstraintPolarity,
+    ConstraintStatus,
+    ConstraintStrength,
     CustomerTask,
     DialogueStateV2,
     NextActionKind,
@@ -99,6 +103,33 @@ def _pipe_state(*, with_delivered_question: bool = False) -> DialogueStateV2:
         active_goal_id=goal.goal_id,
         answer_plan_summary=answer_summary,
         applied_turn_ids=("turn-1",),
+    )
+
+
+def _pipe_fact(
+    name: str,
+    value: object | None = None,
+    *,
+    status: ConstraintStatus = ConstraintStatus.KNOWN,
+    unit: str | None = None,
+    source_turn: int = 1,
+) -> ConstraintFactV2:
+    """Build a fact attached to the only product task in ``_pipe_state``."""
+
+    return ConstraintFactV2(
+        fact_id=f"fact-{name}-{status.value}-{source_turn}",
+        name=name,
+        value=value if status == ConstraintStatus.KNOWN else None,
+        unit=unit,
+        status=status,
+        polarity=ConstraintPolarity.REQUIRED,
+        strength=ConstraintStrength.HARD,
+        evidence=f"{name}-{status.value}",
+        source="test",
+        confidence=1.0,
+        goal_id="goal-pipe",
+        task_id="task-pipe",
+        source_turn=source_turn,
     )
 
 
@@ -594,7 +625,7 @@ def test_pending_pipe_fact_status_survives_held_out_word_order(
     assert result.understanding.answers_pending_question is True
 
 
-def test_mixed_status_and_known_value_is_not_treated_as_unknown_group() -> None:
+def test_mixed_status_preserves_a_separate_explicit_known_value() -> None:
     evidence = "Температуру не знаю и давление 6 бар"
     payload = _new_pipe_payload()
     payload["constraints"] = [
@@ -616,7 +647,10 @@ def test_mixed_status_and_known_value_is_not_treated_as_unknown_group() -> None:
 
     assert result.status == "accepted"
     assert result.understanding is not None
-    assert result.understanding.constraints == []
+    assert [
+        (item.name, item.value, item.unit, item.status.value)
+        for item in result.understanding.constraints
+    ] == [("operating_pressure_bar", 6, "bar", "known")]
     assert any(
         item.kind == "constraint_non_known_fact_unresolved"
         for item in result.understanding.ambiguities
@@ -1368,7 +1402,7 @@ def test_semantic_context_exposes_only_the_committed_typed_pending_question() ->
     }
 
 
-def test_control_changes_missing_fact_question_to_preliminary_search() -> None:
+def test_control_does_not_bypass_preliminary_identity_facts() -> None:
     state_before = _pipe_state(with_delivered_question=True)
     contract = next(
         item for item in DEFAULT_CONTRACTS if item.contract_id == "pipe.ppr.v1"
@@ -1385,49 +1419,197 @@ def test_control_changes_missing_fact_question_to_preliminary_search() -> None:
     )
     task_after = reduction.state.tasks[0]
     after = assess_task_readiness(reduction.state, task_after, contract)
+    assert [item.event_type for item in reduction.events].count(
+        "selection_control_registered"
+    ) == 1
+    assert reduction.state.selection_controls[0].task_id == task_after.task_id
+    assert task_after.last_addressed_turn == reduction.state.turn_number
+    assert after.status == ReadinessStatus.NEEDS_DECISION_FACT
+    assert after.recommended_question_fact == "pipe_service"
+    assert "preliminary_identity_fact_missing" in after.reason_codes
+
+
+def test_control_allows_preliminary_search_after_identity_facts_are_known() -> None:
+    state_before = _pipe_state(with_delivered_question=True).model_copy(
+        update={
+            "constraints": (
+                _pipe_fact("pipe_service", "heating"),
+                _pipe_fact("diameter_mm", 25, unit="mm"),
+            )
+        }
+    )
+    contract = next(
+        item for item in DEFAULT_CONTRACTS if item.contract_id == "pipe.ppr.v1"
+    )
+    reduction = reduce_dialogue_state(
+        state_before,
+        _continue_control(),
+        TurnMetadata(turn_id="turn-safe-preliminary"),
+    )
+    task = reduction.state.tasks[0]
+    assessment = assess_task_readiness(reduction.state, task, contract)
     plan = SellerPolicy().decide(
         reduction.state,
-        readiness_assessments=(after,),
+        readiness_assessments=(assessment,),
     )
     catalog_plan = plan_catalog_search(
         reduction.state,
         plan,
-        (after,),
+        (assessment,),
         build_catalog_snapshot(
             (
                 Product(
-                    sku="PIPE-20",
-                    name="Труба PN 20, 20 MM",
-                    category_path="Трубы",
-                ),
-                Product(
                     sku="PIPE-25",
-                    name="Труба PN 20, 25 MM",
+                    name="Труба PP-R PN 20, 25 MM",
                     category_path="Трубы",
+                    description="Для отопления.",
                 ),
             )
         ),
         ProductContractRegistry(),
     )
 
-    assert [item.event_type for item in reduction.events].count(
-        "selection_control_registered"
-    ) == 1
-    assert reduction.state.selection_controls[0].task_id == task_after.task_id
-    assert task_after.last_addressed_turn == reduction.state.turn_number
-    assert after.status == ReadinessStatus.PRELIMINARY_READY
-    assert after.recommended_question_fact is None
-    assert "customer_requested_confirmed_facts_only" in after.reason_codes
+    assert assessment.status == ReadinessStatus.PRELIMINARY_READY
+    assert assessment.recommended_question_fact is None
+    assert "customer_requested_confirmed_facts_only" in assessment.reason_codes
     assert plan.primary.kind == NextActionKind.SHOW_PRELIMINARY_OPTIONS
     assert catalog_plan.search_plans[0].eligible_skus == ()
-    assert set(catalog_plan.search_plans[0].unverified_skus) == {
-        "PIPE-20",
-        "PIPE-25",
-    }
-    assert all(
-        "required_customer_fact_unavailable" in item.reason_codes
-        for item in catalog_plan.search_plans[0].candidate_assessments
+    assert catalog_plan.search_plans[0].unverified_skus == ("PIPE-25",)
+
+
+def test_unknown_noncritical_fact_switches_to_safe_preliminary_without_control() -> None:
+    """One unavailable confirmation fact stops the questionnaire, not the task."""
+
+    state = _pipe_state().model_copy(
+        update={
+            "turn_number": 2,
+            "constraints": (
+                _pipe_fact("pipe_service", "heating", source_turn=1),
+                _pipe_fact("diameter_mm", 25, unit="mm", source_turn=1),
+                _pipe_fact(
+                    "operating_temperature_c",
+                    status=ConstraintStatus.UNKNOWN,
+                    source_turn=2,
+                ),
+            ),
+        }
     )
+    contract = next(
+        item for item in DEFAULT_CONTRACTS if item.contract_id == "pipe.ppr.v1"
+    )
+    task = state.tasks[0]
+
+    assessment = assess_task_readiness(state, task, contract)
+    plan = SellerPolicy().decide(state, readiness_assessments=(assessment,))
+
+    assert assessment.status == ReadinessStatus.PRELIMINARY_READY
+    assert assessment.unknown_facts == ("operating_temperature_c",)
+    # The remaining pressure rating is deliberately not asked after the
+    # customer has made clear that exact confirmation is currently impossible.
+    assert assessment.missing_decision_facts == ("operating_pressure_bar",)
+    assert assessment.recommended_question_fact is None
+    assert "terminal_fact_triggers_safe_preliminary_path" in assessment.reason_codes
+    assert plan.primary.kind == NextActionKind.SHOW_PRELIMINARY_OPTIONS
+
+
+def test_known_follow_up_restores_exact_readiness_without_losing_prior_facts() -> None:
+    state = _pipe_state().model_copy(
+        update={
+            "turn_number": 2,
+            "constraints": (
+                _pipe_fact("pipe_service", "heating", source_turn=1),
+                _pipe_fact("diameter_mm", 25, unit="mm", source_turn=1),
+                _pipe_fact(
+                    "operating_temperature_c",
+                    status=ConstraintStatus.UNKNOWN,
+                    source_turn=2,
+                ),
+            ),
+        }
+    )
+    continuation = TurnUnderstanding.model_validate(
+        {
+            "schema_version": "1.3",
+            "language": "ru",
+            "operation": "continue",
+            "acts": ["find"],
+            "products": [],
+            "constraints": [
+                {
+                    "name": "operating_temperature_c",
+                    "value": 90,
+                    "unit": "C",
+                    "status": "known",
+                    "polarity": "required",
+                    "applies_to_product": None,
+                    "evidence": "90 °C",
+                },
+                {
+                    "name": "operating_pressure_bar",
+                    "value": 6,
+                    "unit": "bar",
+                    "status": "known",
+                    "polarity": "required",
+                    "applies_to_product": None,
+                    "evidence": "6 бар",
+                },
+            ],
+            "references": [],
+            "ambiguities": [],
+            "workflow_controls": [],
+            "selection_controls": [],
+            "selection_strategy": {"kind": "standard", "evidence": None},
+            "information_requests": [],
+            "answers_pending_question": False,
+            "confidence": 0.98,
+        }
+    )
+    reduction = reduce_dialogue_state(
+        state,
+        continuation,
+        TurnMetadata(turn_id="pipe-known-ratings"),
+    )
+    task = reduction.state.tasks[0]
+    contract = next(
+        item for item in DEFAULT_CONTRACTS if item.contract_id == "pipe.ppr.v1"
+    )
+    assessment = assess_task_readiness(reduction.state, task, contract)
+    active = {
+        item.name: item
+        for item in reduction.state.constraints
+        if item.active and item.goal_id == "goal-pipe"
+    }
+
+    assert assessment.status == ReadinessStatus.EXACT_READY
+    assert active["pipe_service"].value == "heating"
+    assert active["diameter_mm"].value == 25
+    assert active["operating_temperature_c"].value == 90
+    assert active["operating_pressure_bar"].value == 6
+
+
+def test_unknown_preliminary_identity_fact_blocks_cards_instead_of_broadening() -> None:
+    state = _pipe_state().model_copy(
+        update={
+            "turn_number": 2,
+            "constraints": (
+                _pipe_fact("diameter_mm", 25, unit="mm", source_turn=1),
+                _pipe_fact(
+                    "pipe_service",
+                    status=ConstraintStatus.UNKNOWN,
+                    source_turn=2,
+                ),
+            ),
+        }
+    )
+    contract = next(
+        item for item in DEFAULT_CONTRACTS if item.contract_id == "pipe.ppr.v1"
+    )
+
+    assessment = assess_task_readiness(state, state.tasks[0], contract)
+
+    assert assessment.status == ReadinessStatus.BLOCKED
+    assert assessment.unknown_facts == ("pipe_service",)
+    assert "preliminary_identity_fact_unavailable" in assessment.reason_codes
 
 
 def test_find_without_control_still_asks_decision_fact() -> None:
@@ -1445,7 +1627,7 @@ def test_find_without_control_still_asks_decision_fact() -> None:
 
 
 @pytest.mark.parametrize("act", ["find", "select"])
-def test_first_turn_control_allows_preliminary_for_discovery_acts(
+def test_first_turn_control_still_requires_preliminary_identity_fact(
     act: str,
 ) -> None:
     understanding = TurnUnderstanding.model_validate(
@@ -1496,9 +1678,9 @@ def test_first_turn_control_allows_preliminary_for_discovery_acts(
 
     assert task.act.value == act
     assert reduction.state.selection_controls[0].task_id == task.task_id
-    assert assessment.status == ReadinessStatus.PRELIMINARY_READY
-    assert assessment.recommended_question_fact is None
-    assert "customer_requested_confirmed_facts_only" in assessment.reason_codes
+    assert assessment.status == ReadinessStatus.NEEDS_DECISION_FACT
+    assert assessment.recommended_question_fact == "pipe_service"
+    assert "preliminary_identity_fact_missing" in assessment.reason_codes
 
 
 def test_select_without_control_still_asks_decision_fact() -> None:

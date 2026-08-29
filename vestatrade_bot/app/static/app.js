@@ -21,7 +21,7 @@ function apiUrl(path) {
   return `${apiBase}${path}`;
 }
 
-function appendMessage(role, text, products = []) {
+function appendMessage(role, text, products = [], productGroups = []) {
   const article = document.createElement("article");
   article.className = `message ${role}`;
 
@@ -41,10 +41,7 @@ function appendMessage(role, text, products = []) {
   bubble.textContent = text;
 
   if (products.length) {
-    const grid = document.createElement("div");
-    grid.className = "products";
-    products.forEach((product) => grid.appendChild(renderProduct(product)));
-    bubble.appendChild(grid);
+    bubble.appendChild(renderProductGroups(products, productGroups));
   }
 
   article.appendChild(avatar);
@@ -101,6 +98,36 @@ function renderProduct(product) {
   return card;
 }
 
+function renderProductGroups(products, groups) {
+  const grid = document.createElement("div");
+  grid.className = "products";
+  const bySku = new Map(products.map((product) => [String(product.sku || ""), product]));
+  const rendered = new Set();
+  (Array.isArray(groups) ? groups : []).forEach((group) => {
+    const members = (Array.isArray(group.product_skus) ? group.product_skus : [])
+      .map((sku) => bySku.get(String(sku)))
+      .filter((product) => product && !rendered.has(String(product.sku || "")));
+    if (!members.length) return;
+    const section = document.createElement("section");
+    section.className = "product-group";
+    if (group.label) {
+      const title = document.createElement("p");
+      title.className = "product-group-title";
+      title.textContent = String(group.label);
+      section.appendChild(title);
+    }
+    members.forEach((product) => {
+      rendered.add(String(product.sku || ""));
+      section.appendChild(renderProduct(product));
+    });
+    grid.appendChild(section);
+  });
+  products
+    .filter((product) => !rendered.has(String(product.sku || "")))
+    .forEach((product) => grid.appendChild(renderProduct(product)));
+  return grid;
+}
+
 function escapeHtml(value) {
   return String(value)
     .replaceAll("&", "&amp;")
@@ -141,7 +168,7 @@ async function sendMessage(text) {
       throw new Error(data.detail || "Ошибка ответа сервера");
     }
     typing.remove();
-    appendMessage("bot", data.answer, data.products || []);
+    appendMessage("bot", data.answer, data.products || [], data.product_groups || []);
     if (debugBox) {
       debugBox.textContent = JSON.stringify(data.debug || {}, null, 2);
     }

@@ -476,6 +476,19 @@
         margin-top: 10px;
       }
 
+      .product-group {
+        display: grid;
+        gap: 6px;
+      }
+
+      .product-group-title {
+        margin: 4px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+        line-height: 1.3;
+      }
+
       .product-card {
         display: grid;
         grid-template-columns: auto minmax(0, 1fr);
@@ -817,7 +830,14 @@
           throw new Error(payload.detail || "сервер не принял запрос");
         }
         typing.remove();
-        appendMessage(messages, config, "bot", payload.answer || "Не удалось сформировать ответ.", payload.products || []);
+        appendMessage(
+          messages,
+          config,
+          "bot",
+          payload.answer || "Не удалось сформировать ответ.",
+          payload.products || [],
+          payload.product_groups || [],
+        );
         setHealthStatus("ok");
       } catch (error) {
         typing.remove();
@@ -869,7 +889,7 @@
     }
   }
 
-  function appendMessage(container, config, role, text, products = []) {
+  function appendMessage(container, config, role, text, products = [], productGroups = []) {
     const article = document.createElement("article");
     article.className = `message ${role}`;
 
@@ -891,10 +911,7 @@
     bubble.appendChild(textNode);
 
     if (products.length) {
-      const grid = document.createElement("div");
-      grid.className = "products";
-      products.forEach((product) => grid.appendChild(renderProduct(product)));
-      bubble.appendChild(grid);
+      bubble.appendChild(renderProductGroups(products, productGroups));
     }
 
     article.appendChild(avatar);
@@ -989,6 +1006,38 @@
 
     card.appendChild(info);
     return card;
+  }
+
+  function renderProductGroups(products, groups) {
+    const grid = document.createElement("div");
+    grid.className = "products";
+    const bySku = new Map(products.map((product) => [String(product.sku || ""), product]));
+    const rendered = new Set();
+
+    (Array.isArray(groups) ? groups : []).forEach((group) => {
+      const members = (Array.isArray(group.product_skus) ? group.product_skus : [])
+        .map((sku) => bySku.get(String(sku)))
+        .filter((product) => product && !rendered.has(String(product.sku || "")));
+      if (!members.length) return;
+      const section = document.createElement("section");
+      section.className = "product-group";
+      if (group.label) {
+        const title = document.createElement("p");
+        title.className = "product-group-title";
+        title.textContent = String(group.label);
+        section.appendChild(title);
+      }
+      members.forEach((product) => {
+        rendered.add(String(product.sku || ""));
+        section.appendChild(renderProduct(product));
+      });
+      grid.appendChild(section);
+    });
+
+    products
+      .filter((product) => !rendered.has(String(product.sku || "")))
+      .forEach((product) => grid.appendChild(renderProduct(product)));
+    return grid;
   }
 
   function renderQuickMessages(container, config, onPick) {

@@ -103,6 +103,25 @@ class ContractFactDefinition(FrozenModel):
     preliminary_allowed_without: bool = True
     comparison: ComparisonMode = ComparisonMode.EXACT
     catalog_fields: tuple[str, ...] = ()
+    # A customer requirement and a scalar declared by a catalogue card can
+    # have different meanings while still being compared deterministically.
+    # For example, the heated area of a building is a customer requirement;
+    # ``declared_heated_area_m2`` is a manufacturer/card property of a model.
+    # Keeping the projection explicit prevents the reducer from treating a
+    # product rating as if the customer had supplied it.
+    candidate_fact_name: str | None = None
+    # Some customer facts are safe source-backed proxies for an otherwise
+    # required product fact, but only when that primary fact is absent.  The
+    # boiler's heated building area is the first such case: it is compared to
+    # a model's declared coverage only when the customer has not supplied a
+    # project/design power.  This avoids silently adding a second, unrelated
+    # filter to an already exact selection.
+    candidate_required_when_missing: str | None = None
+    # A fact may make a catalogue shortlist meaningful without being an
+    # engineering calculation.  If it is used as the only alternative for a
+    # required fact, readiness remains preliminary even though every
+    # individual card comparison is source-backed.
+    preliminary_only_for_exact: bool = False
     general_parsers: tuple[str, ...] = ()
     learn_method_code: str | None = None
     catalog_verifiable: bool = True
@@ -127,6 +146,11 @@ class ProductContract(FrozenModel):
     candidate_kinds: tuple[ProductKind, ...] = ()
     alternative_kinds: tuple[ProductKind, ...] = ()
     required_fact_alternatives: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    # Each group is an ``any-of`` set of facts that makes a preliminary
+    # catalogue result meaningful and safe enough to show.  Exact readiness
+    # may still require more facts.  A group is deliberately owned by the
+    # existing product contract rather than by a parallel dialogue taxonomy.
+    preliminary_identity_fact_groups: tuple[tuple[str, ...], ...] = ()
 
 
 class ContractResolutionStatus(str, Enum):
@@ -215,6 +239,11 @@ class TaskReadinessAssessment(FrozenModel):
     deferred_facts: tuple[str, ...] = ()
     conflicting_facts: tuple[str, ...] = ()
     catalog_unverifiable_facts: tuple[str, ...] = ()
+    # These fields explain why a broad preliminary search is either allowed
+    # or fail-closed.  They are diagnostic metadata; candidate filtering stays
+    # in the existing catalogue planner.
+    missing_preliminary_identity_facts: tuple[str, ...] = ()
+    unavailable_preliminary_identity_groups: tuple[tuple[str, ...], ...] = ()
     recommended_question_fact: str | None = None
     learn_method_code: str | None = None
     reason_codes: tuple[str, ...] = ()
@@ -394,6 +423,39 @@ class SelectionProductCard(FrozenModel):
     image_url: str | None = None
 
 
+class SelectionPresentationGroup(FrozenModel):
+    """A source-checked grouping for preliminary cards.
+
+    A group may only reference cards already included in ``SelectionResult``.
+    Its fact value is intentionally presentation metadata, not a new search
+    constraint or a customer fact.
+    """
+
+    fact_name: str
+    label: str
+    value: str
+    card_skus: tuple[str, ...] = Field(min_length=1, max_length=12)
+
+
+class SelectionSourceConflict(FrozenModel):
+    """A customer requirement contradicted by a fact on a shown card.
+
+    The conflict is presentation metadata derived from the same immutable
+    source snapshot as the card.  It never weakens search constraints or turns
+    a source value into a calculated suitability verdict.
+    """
+
+    customer_fact_name: str
+    customer_value: str | int | float | bool
+    customer_unit: str | None = None
+    card_sku: str
+    card_fact_name: str
+    card_value: str | int | float | bool
+    card_unit: str | None = None
+    source_field: str
+    reason_code: str
+
+
 class SelectionResult(FrozenModel):
     schema_version: Literal["1.0"] = CATALOG_CONTRACT_SCHEMA_VERSION
     status: SelectionResultStatus
@@ -413,6 +475,10 @@ class SelectionResult(FrozenModel):
     candidates_after_filters: int = Field(default=0, ge=0)
     ordered_skus: tuple[str, ...] = ()
     cards: tuple[SelectionProductCard, ...] = ()
+    is_preliminary: bool = False
+    preliminary_fact_names: tuple[str, ...] = ()
+    presentation_groups: tuple[SelectionPresentationGroup, ...] = ()
+    source_backed_conflicts: tuple[SelectionSourceConflict, ...] = ()
     excluded_candidate_reason_codes: dict[str, tuple[str, ...]] = Field(
         default_factory=dict
     )

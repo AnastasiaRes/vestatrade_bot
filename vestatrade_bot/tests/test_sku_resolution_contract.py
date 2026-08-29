@@ -28,7 +28,11 @@ from app.dialogue_v2.contracts import TurnMetadata
 from app.dialogue_v2.controller import DialogueControllerV2
 from app.feed_loader import FeedLoader
 from app.models import Product, SearchQuery
-from app.sku_resolution import SkuResolutionStatus, resolve_catalog_sku
+from app.sku_resolution import (
+    SkuResolutionStatus,
+    extract_explicit_sku_tokens,
+    resolve_catalog_sku,
+)
 
 
 FEED100 = Path(__file__).parents[1] / "data/feed_showcase_100_2026-06-14.xml"
@@ -100,6 +104,13 @@ def test_partial_sku_resolver_never_uses_character_prefix_or_plain_substring() -
         resolve_catalog_sku("ABC-12345", products).status
         == SkuResolutionStatus.NONE
     )
+
+
+def test_explicit_sku_token_extraction_keeps_numeric_articles_out_of_measurements() -> None:
+    assert extract_explicit_sku_tokens(
+        "У котла Arderia E9 2202210 сколько контуров?"
+    ) == ("2202210",)
+    assert extract_explicit_sku_tokens("Дом 150 м2, котёл 9 кВт") == ()
 
 
 def test_duplicate_exact_catalogue_identity_fails_closed() -> None:

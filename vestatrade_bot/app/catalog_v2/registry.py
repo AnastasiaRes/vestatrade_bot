@@ -54,6 +54,9 @@ def _fact(
     preliminary: bool = True,
     comparison: ComparisonMode = ComparisonMode.NUMERIC,
     fields: tuple[str, ...] = (),
+    candidate_fact_name: str | None = None,
+    candidate_required_when_missing: str | None = None,
+    preliminary_only_for_exact: bool = False,
     parsers: tuple[str, ...] = (),
     learn: str | None = None,
     catalog_verifiable: bool = True,
@@ -64,6 +67,7 @@ def _fact(
         "head_m": {"m": 1.0, "cm": 0.01},
         "angle_deg": {"deg": 1.0, "°": 1.0},
         "power_kw": {"kw": 1.0, "квт": 1.0, "w": 0.001, "вт": 0.001},
+        "area_m2": {"m2": 1.0, "м2": 1.0, "m²": 1.0, "м²": 1.0},
         "power_w": {"w": 1.0, "вт": 1.0, "kw": 1000.0, "квт": 1000.0},
         "flow": {"l/h": 1.0, "л/ч": 1.0, "l/min": 60.0, "л/мин": 60.0, "m3/h": 1000.0, "м3/ч": 1000.0},
         "percent": {"%": 1.0, "percent": 1.0, "процент": 1.0},
@@ -92,6 +96,9 @@ def _fact(
         preliminary_allowed_without=preliminary,
         comparison=comparison,
         catalog_fields=fields,
+        candidate_fact_name=candidate_fact_name,
+        candidate_required_when_missing=candidate_required_when_missing,
+        preliminary_only_for_exact=preliminary_only_for_exact,
         general_parsers=parsers,
         learn_method_code=learn,
         catalog_verifiable=catalog_verifiable,
@@ -235,6 +242,14 @@ VALVE_SHAPE = _fact(
     fields=("форма корпуса", "тип конструкции"),
     parsers=("straight_or_angle",),
 )
+HANDLE_TYPE = _fact(
+    "handle_type",
+    aliases=("handle", "lever", "ручка", "рукоятка", "бабочка"),
+    value_type=FactValueType.TEXT,
+    strength=FactStrength.SOFT,
+    comparison=ComparisonMode.EXACT,
+    parsers=("handle_type",),
+)
 CONTROL_THREAD = _fact(
     "control_thread",
     aliases=("head_thread", "thermostatic_thread", "connection_thread"),
@@ -322,6 +337,41 @@ POWER_KW = _fact(
     parsers=("power_kw",),
     learn="calculate_heat_loss_or_read_project_power",
 )
+# ``area_m2`` belongs to the customer's heating task, not to the product
+# itself.  It is intentionally not a universal power calculation: the
+# planner compares it only with the documented coverage field of each exact
+# card.  It consequently authorises a preliminary result, never an exact
+# engineering recommendation.
+BUILDING_AREA = _fact(
+    "area_m2",
+    aliases=(
+        "heated_area_m2",
+        "building_area_m2",
+        "heating_area_m2",
+        "area",
+        "площадь",
+        "отапливаемая площадь",
+    ),
+    unit_family="area_m2",
+    strength=FactStrength.HARD,
+    decision=True,
+    comparison=ComparisonMode.MINIMUM_RATING,
+    candidate_fact_name="declared_heated_area_m2",
+    candidate_required_when_missing="power_kw",
+    # The customer's area is not a model attribute.  It is nevertheless
+    # verifiable against the explicitly mapped declared model coverage.  When
+    # it substitutes for an absent power, the selection stays preliminary and
+    # never becomes a heat-loss calculation.
+    preliminary_only_for_exact=True,
+    learn="calculate_heat_loss_or_read_project_power",
+)
+DECLARED_HEATED_AREA = _fact(
+    "declared_heated_area_m2",
+    unit_family="area_m2",
+    strength=FactStrength.SOFT,
+    comparison=ComparisonMode.MINIMUM_RATING,
+    fields=("отапливаемая площадь, м²",),
+)
 FUEL_TYPE = _fact(
     "boiler_type",
     aliases=(
@@ -354,6 +404,10 @@ CIRCUITS = _fact(
         "functionality",
         "functions",
         "контуры",
+        "контур",
+        "количество контуров",
+        "сколько контуров",
+        "число контуров",
         "функциональность",
     ),
     required=True,
@@ -458,6 +512,14 @@ PIPE_OPERATING_PRESSURE = OPERATING_PRESSURE.model_copy(
         "required_for_exact": True,
         "decision_changing": True,
         "learn_method_code": "identify_pipe_operating_pressure",
+        # ``docs_loader`` writes the proven operating-class value from a pipe
+        # passport under this precise field.  It is a conservative heating
+        # rating, not a PN inference, and must be visible to the same typed
+        # catalogue path that consumes ordinary feed attributes.
+        "catalog_fields": (
+            *OPERATING_PRESSURE.catalog_fields,
+            "рабочее давление, радиаторное отопление, бар",
+        ),
         "general_parsers": tuple(
             dict.fromkeys(
                 (*OPERATING_PRESSURE.general_parsers, "pipe_operating_point")
@@ -636,6 +698,7 @@ def _contract(
     candidates: tuple[ProductKind, ...] = (),
     invariants: tuple[str, ...] = (),
     required_alternatives: tuple[tuple[str, tuple[str, ...]], ...] = (),
+    preliminary_identity_fact_groups: tuple[tuple[str, ...], ...] = (),
 ) -> ProductContract:
     return ProductContract(
         contract_id=contract_id,
@@ -650,6 +713,7 @@ def _contract(
         analog_invariants=("product_kind", *invariants),
         candidate_kinds=candidates or (kind,),
         required_fact_alternatives=required_alternatives,
+        preliminary_identity_fact_groups=preliminary_identity_fact_groups,
     )
 
 
@@ -687,6 +751,7 @@ DEFAULT_CONTRACTS: tuple[ProductContract, ...] = (
         catalog_types=("труба",),
         catalog_categories=("трубы",),
         invariants=("diameter_mm",),
+        preliminary_identity_fact_groups=(("pipe_service",), ("diameter_mm",)),
     ),
     _contract(
         "pipe.ppr.v1", ProductKind.PIPE, "pipes",
@@ -702,6 +767,7 @@ DEFAULT_CONTRACTS: tuple[ProductContract, ...] = (
             MATERIAL,
         ),
         catalog_categories=("трубы",), invariants=("diameter_mm",),
+        preliminary_identity_fact_groups=(("pipe_service",), ("diameter_mm",)),
     ),
     _contract(
         "pipe.sewer.v1", ProductKind.SEWER_PIPE, "sewer",
@@ -709,6 +775,7 @@ DEFAULT_CONTRACTS: tuple[ProductContract, ...] = (
         BASE, (DIAMETER, LENGTH, SEWER_SCOPE),
         catalog_types=("труба",), catalog_categories=("канализационные системы",),
         invariants=("diameter_mm", "sewer_scope"),
+        preliminary_identity_fact_groups=(("sewer_scope",),),
     ),
     _contract(
         "fitting.elbow.v1", ProductKind.ELBOW, "fittings",
@@ -716,6 +783,7 @@ DEFAULT_CONTRACTS: tuple[ProductContract, ...] = (
         COMPONENT, (DIAMETER, ANGLE, CONNECTION_SIZE),
         catalog_types=("угольник",), catalog_categories=("фитинги",),
         invariants=("diameter_mm",),
+        preliminary_identity_fact_groups=(("diameter_mm",),),
     ),
     _contract(
         "sewer.elbow.v1", ProductKind.SEWER_ELBOW, "sewer",
@@ -723,18 +791,21 @@ DEFAULT_CONTRACTS: tuple[ProductContract, ...] = (
         COMPONENT, (DIAMETER, ANGLE, SEWER_SCOPE),
         catalog_types=("отвод",), catalog_categories=("канализационные системы",),
         invariants=("diameter_mm", "sewer_scope"),
+        preliminary_identity_fact_groups=(("sewer_scope",), ("diameter_mm",)),
     ),
     _contract(
         "sewer.tee.v1", ProductKind.TEE, "sewer",
         ("tee", "sewer tee", "тройник", "канализационный тройник"),
         COMPONENT, (DIAMETER, SECONDARY_DIAMETER, ANGLE, SEWER_SCOPE),
         catalog_types=("тройник",), invariants=("diameter_mm", "secondary_diameter_mm"),
+        preliminary_identity_fact_groups=(("sewer_scope",), ("diameter_mm",)),
     ),
     _contract(
         "sewer.coupling.v1", ProductKind.COUPLING, "sewer",
         ("coupling", "sewer coupling", "муфта", "ремонтная муфта"),
         COMPONENT, (DIAMETER, SEWER_SCOPE), catalog_types=("муфта",),
         catalog_categories=("канализационные системы",), invariants=("diameter_mm",),
+        preliminary_identity_fact_groups=(("sewer_scope",), ("diameter_mm",)),
     ),
     _contract(
         "fitting.reducing_coupling.v1", ProductKind.REDUCING_COUPLING, "fittings",
@@ -742,6 +813,7 @@ DEFAULT_CONTRACTS: tuple[ProductContract, ...] = (
         COMPONENT, (DIAMETER, SECONDARY_DIAMETER, MATERIAL),
         catalog_types=("муфта",), catalog_categories=("фитинги",),
         invariants=("diameter_mm", "secondary_diameter_mm"),
+        preliminary_identity_fact_groups=(("diameter_mm",), ("secondary_diameter_mm",)),
     ),
     _contract(
         "valve.ball.v1", ProductKind.BALL_VALVE, "valves",
@@ -755,17 +827,20 @@ DEFAULT_CONTRACTS: tuple[ProductContract, ...] = (
             OPERATING_TEMPERATURE,
             OPERATING_PRESSURE,
             VALVE_SHAPE,
+            HANDLE_TYPE,
             MATERIAL,
         ),
         catalog_types=("кран шаровой", "кран шаровой угловой"),
         catalog_categories=("водозапорная арматура",),
         invariants=("connection_size", "connection_pattern", "port_count"),
+        preliminary_identity_fact_groups=(("connection_size",),),
     ),
     _contract(
         "radiator.thermostatic_head.v1", ProductKind.THERMOSTATIC_HEAD, "radiator_fittings",
         ("thermostatic head", "thermostat head", "термоголовка", "термостатическая головка"),
         COMPONENT, (CONTROL_THREAD,), catalog_categories=("арматура для радиаторов",),
         invariants=("control_thread",),
+        preliminary_identity_fact_groups=(("control_thread",),),
     ),
     _contract(
         "radiator.valve.v1", ProductKind.RADIATOR_VALVE, "radiator_fittings",
@@ -773,12 +848,14 @@ DEFAULT_CONTRACTS: tuple[ProductContract, ...] = (
         COMPONENT, (CONNECTION_SIZE, VALVE_SHAPE, CONTROL_THREAD),
         catalog_categories=("арматура для радиаторов",),
         invariants=("connection_size",),
+        preliminary_identity_fact_groups=(("connection_size",),),
     ),
     _contract(
         "radiator.valve_kit.v1", ProductKind.RADIATOR_VALVE_KIT, "radiator_fittings",
         ("radiator valve kit", "thermostatic kit", "комплект терморегулирования", "комплект радиаторной арматуры"),
         COMPONENT, (CONNECTION_SIZE, VALVE_SHAPE),
         catalog_categories=("арматура для радиаторов",), invariants=("connection_size",),
+        preliminary_identity_fact_groups=(("connection_size",),),
     ),
     _contract(
         "pump.generic.v1", ProductKind.PUMP, "pumps",
@@ -789,6 +866,7 @@ DEFAULT_CONTRACTS: tuple[ProductContract, ...] = (
         candidates=(ProductKind.CIRCULATION_PUMP, ProductKind.DHW_CIRCULATION_PUMP,
                     ProductKind.BOREHOLE_PUMP, ProductKind.DRAINAGE_PUMP,
                     ProductKind.PUMP_STATION),
+        preliminary_identity_fact_groups=(("pump_type",),),
     ),
     _contract(
         "pump.circulation.v1", ProductKind.CIRCULATION_PUMP, "pumps",
@@ -800,24 +878,30 @@ DEFAULT_CONTRACTS: tuple[ProductContract, ...] = (
         invariants=("diameter_mm", "mounting_length_mm", "coolant_type",
                     "glycol_concentration_percent"),
         required_alternatives=(("max_head_m", ("duty_point_head_m",)),),
+        preliminary_identity_fact_groups=(
+            ("diameter_mm", "max_head_m", "duty_point_head_m", "mounting_length_mm"),
+        ),
     ),
     _contract(
         "pump.dhw_circulation.v1", ProductKind.DHW_CIRCULATION_PUMP, "pumps",
         ("dhw circulation pump", "гвс насос", "насос рециркуляции гвс"),
         BASE, (MAX_HEAD, MOUNTING_LENGTH), catalog_types=("насос",),
         invariants=("mounting_length_mm",),
+        preliminary_identity_fact_groups=(("max_head_m", "mounting_length_mm"),),
     ),
     _contract(
         "pump.borehole.v1", ProductKind.BOREHOLE_PUMP, "pumps",
         ("borehole pump", "submersible borehole pump", "скважинный насос"),
         BASE, (MAX_HEAD, MAX_FLOW), catalog_categories=("насосное оборудование",),
         invariants=("max_head_m",),
+        preliminary_identity_fact_groups=(("max_head_m", "max_flow_l_h"),),
     ),
     _contract(
         "pump.drainage.v1", ProductKind.DRAINAGE_PUMP, "pumps",
         ("drainage pump", "дренажный насос"), BASE, (MAX_HEAD, MAX_FLOW),
         catalog_categories=("насосное оборудование", "прокачиваем скидки"),
         invariants=("max_head_m",),
+        preliminary_identity_fact_groups=(("max_head_m", "max_flow_l_h"),),
     ),
     _contract(
         "pump.station.v1", ProductKind.PUMP_STATION, "pumps",
@@ -826,25 +910,32 @@ DEFAULT_CONTRACTS: tuple[ProductContract, ...] = (
                required=True, decision=True, fields=("глубина всасывания, м",),
                learn="measure_suction_depth"), MAX_HEAD, MAX_FLOW),
         catalog_types=("насосная станция",), invariants=("suction_depth_m",),
+        preliminary_identity_fact_groups=(("suction_depth_m", "max_head_m"),),
     ),
     _contract(
         "boiler.generic.v1", ProductKind.BOILER, "boilers",
         ("boiler", "котел", "котел отопления"), BASE,
-        (FUEL_TYPE, POWER_KW, CIRCUITS, CHAMBER),
+        (FUEL_TYPE, POWER_KW, BUILDING_AREA, CIRCUITS, CHAMBER, DECLARED_HEATED_AREA),
         candidates=(ProductKind.GAS_BOILER, ProductKind.ELECTRIC_BOILER),
         invariants=("boiler_type", "circuits"),
+        required_alternatives=(("power_kw", ("area_m2",)),),
+        preliminary_identity_fact_groups=(("boiler_type",), ("power_kw", "area_m2")),
     ),
     _contract(
         "boiler.gas.v1", ProductKind.GAS_BOILER, "boilers",
         ("gas boiler", "газовый котел"), BASE,
-        (SPECIALIZED_FUEL_TYPE, POWER_KW, CIRCUITS, CHAMBER),
+        (SPECIALIZED_FUEL_TYPE, POWER_KW, BUILDING_AREA, CIRCUITS, CHAMBER, DECLARED_HEATED_AREA),
         catalog_types=("котел",), invariants=("boiler_type", "circuits"),
+        required_alternatives=(("power_kw", ("area_m2",)),),
+        preliminary_identity_fact_groups=(("power_kw", "area_m2"),),
     ),
     _contract(
         "boiler.electric.v1", ProductKind.ELECTRIC_BOILER, "boilers",
         ("electric boiler", "электрический котел", "электрокотел"), BASE,
-        (SPECIALIZED_FUEL_TYPE, POWER_KW, CIRCUITS), catalog_types=("котел",),
+        (SPECIALIZED_FUEL_TYPE, POWER_KW, BUILDING_AREA, CIRCUITS, DECLARED_HEATED_AREA), catalog_types=("котел",),
         invariants=("boiler_type", "circuits"),
+        required_alternatives=(("power_kw", ("area_m2",)),),
+        preliminary_identity_fact_groups=(("power_kw", "area_m2"),),
     ),
     _contract(
         "radiator.v1", ProductKind.RADIATOR, "radiators",
@@ -852,6 +943,7 @@ DEFAULT_CONTRACTS: tuple[ProductContract, ...] = (
         (RADIATOR_MATERIAL, CENTER_DISTANCE, CONNECTION_SIZE, HEAT_OUTPUT),
         catalog_types=("радиатор отопления",), catalog_categories=("радиаторы отопления",),
         invariants=("material", "center_distance_mm"),
+        preliminary_identity_fact_groups=(("center_distance_mm", "heat_output_w"),),
     ),
     _contract(
         "filter.water.v1", ProductKind.FILTER, "filters",
@@ -870,6 +962,7 @@ DEFAULT_CONTRACTS: tuple[ProductContract, ...] = (
         catalog_types=("фильтр", "фильтр косой"),
         catalog_categories=("фильтры",),
         invariants=("filter_method", "connection_size"),
+        preliminary_identity_fact_groups=(("filter_method",),),
     ),
 )
 

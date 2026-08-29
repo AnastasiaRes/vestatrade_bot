@@ -36,7 +36,7 @@ from .domain_ontology import (
 )
 
 
-SEMANTIC_PROMPT_VERSION = "turn-understanding-v1.19"
+SEMANTIC_PROMPT_VERSION = "turn-understanding-v1.21"
 SEMANTIC_INTERPRETER_PROMPT = """
 Ты — семантический интерпретатор одного нового сообщения покупателя магазина
 инженерной сантехники. Верни только JSON по переданной схеме.
@@ -63,6 +63,21 @@ SEMANTIC_INTERPRETER_PROMPT = """
   предмет или требуемый результат неоднозначны;
 - вопрос о характеристике текущего или уже показанного товара — explain и
   продолжение текущей цели; это не новый подбор и не unknown-ограничение;
+- если last_committed_presentation содержит минимум две карточки, фразы
+  «чем они отличаются», «в чём разница», «какие отличия» и «сравните их» —
+  это compare по уже показанным карточкам, а не explain и не возвращение к
+  анкете; не выбирай победителя без явно названного критерия;
+- «какой/какую ... смотреть, подобрать, посоветовать» о ещё не определённом
+  типе товара — select, а не explain: вопрос о характеристике требует
+  одновременно предмета и характеристики;
+- длинная реплика может содержать несколько независимых target-товаров.
+  Сохрани все target в порядке покупателя и не теряй действие select/find.
+  «сначала ... затем/потом ...» задаёт порядок этих задач; не смешивай их
+  характеристики и не превращай вторую цель в контекст первой;
+- точный длинный числовой артикул внутри явно названного товара (например
+  2202210) — это product identity, а не техническая характеристика. Не
+  придумывай ему constraint; дальнейшая проверка существования артикула
+  выполняется вне тебя по каталогу;
 - явное разрешение ослабить ранее заданное условие сохрани как refine/correct
   и preferred-ограничение, а не как новое обязательное required-условие;
 - явную просьбу продолжить подбор только по уже подтверждённым данным, не
@@ -784,6 +799,7 @@ def _normalize_evidence(value: str) -> str:
 
 
 _SOURCE_TOKEN_RE = re.compile(r"[^\W_]+", flags=re.UNICODE)
+_NUMERIC_ARTICLE_TOKEN_RE = re.compile(r"(?<!\d)\d{6,}(?!\d)")
 _NUMERIC_LITERAL_RE = re.compile(r"(?<![\w])\d+(?:[.,]\d+)?(?![\w])")
 _NUMERIC_STRING_SCALAR_RE = re.compile(
     r"^\s*(?P<value>[-+]?\d+(?:[.,]\d+)?)\s*(?P<unit>.*?)\s*$",
@@ -1081,6 +1097,12 @@ _POWER_RANGE_ANCHOR_RE = re.compile(
     r"(?P<unit>к\s*вт|kw)(?![\w])",
     flags=re.IGNORECASE,
 )
+_AREA_ANCHOR_RE = re.compile(
+    r"(?<![\w])(?P<value>\d+(?:[.,]\d+)?)\s*"
+    r"(?P<unit>(?:м|m)\s*[²2]|кв\.?\s*(?:м|m)|"
+    r"квадрат\w*(?:\s+(?:м|m)етр\w*)?)(?![\w])",
+    flags=re.IGNORECASE,
+)
 _FLOW_ANCHOR_RE = re.compile(
     r"(?<![\w])(?P<value>\d+(?:[.,]\d+)?)\s*"
     r"(?P<unit>л\s*/\s*мин(?:ут\w*)?|л\s*/\s*ч|м\s*[³3]\s*/\s*ч|"
@@ -1109,6 +1131,24 @@ _HEAD_ANCHOR_RES = (
         r"(?P<value>\d+(?:[.,]\d+)?)\s*(?P<unit>м|m)(?![\w])",
         flags=re.IGNORECASE,
     ),
+)
+_MOUNTING_LENGTH_ANCHOR_RE = re.compile(
+    r"\b(?:монтажн\w*\s+длин\w*|монтажн\w*\s+размер\w*|"
+    r"длин\w*\s+между\s+(?:присоединени\w*|патрубк\w*))\s*[:=]?\s*"
+    r"(?P<value>\d+(?:[.,]\d+)?)\s*(?P<unit>мм|mm)\b",
+    flags=re.IGNORECASE,
+)
+_RADIATOR_CENTER_DISTANCE_ANCHOR_RE = re.compile(
+    r"\b(?:межосев\w*\s+(?:расстояни\w*|размер\w*)|"
+    r"расстояни\w*\s+между\s+осями)\s*[:=]?\s*"
+    r"(?P<value>\d+(?:[.,]\d+)?)\s*(?P<unit>мм|mm)\b",
+    flags=re.IGNORECASE,
+)
+_PIPE_PRESSURE_ANCHOR_RE = re.compile(
+    r"\b(?:рабоч\w*\s+)?давлен\w*\s*[:=]?\s*"
+    r"(?P<value>\d+(?:[.,]\d+)?)\s*"
+    r"(?P<unit>бар(?:а|ов)?|bar(?:s)?)\b",
+    flags=re.IGNORECASE,
 )
 _PIPE_DIAMETER_ANCHOR_RES = (
     re.compile(
@@ -1773,6 +1813,21 @@ _EXPLICIT_SHOW_SELECTION_RE = re.compile(
     rf"{_SHOW_ACTION_ALIAS_PATTERN}"
     r")"
 )
+_VISIBLE_SCOPE_COMPARE_RE = re.compile(
+    r"(?iu)(?:"
+    r"\bсравн\w*\b|"
+    r"\bчем\s+(?:(?:они|эти|показанн\w*)\s+)?отлич\w*\b|"
+    r"\bв\s+ч[её]м\s+(?:разниц\w*|отлич\w*)\b|"
+    r"\bкакие\s+отлич\w*\b|"
+    r"\b(?:какой|какая)\s+из\s+(?:них|показанн\w*)\s+"
+    r"(?:дешев\w*|дороже|лучше)\b|"
+    r"\bчто\s+лучше\b"
+    r")"
+)
+_GENERIC_PRODUCT_SELECTION_QUESTION_RE = re.compile(
+    r"(?iu)\b(?:какой|какую|какие)\b[\s\S]{0,96}?"
+    r"\b(?:смотреть|подобрать|выбрать|посоветовать)\w*\b"
+)
 _PPR_RE = re.compile(
     r"(?iu)(?<![\w-])(?:ппр|pp[-\s]?r|пп[эе]ровск\w*|полипропилен\w*)(?![\w-])"
 )
@@ -2111,7 +2166,6 @@ def _recover_bounded_selection_category_and_facts(
         if item.get("role") == ProductRole.TARGET.value
     ]
     target_index = target_indexes[0] if len(target_indexes) == 1 else None
-
     sku_tokens = [
         match.group(0)
         for match in _MIXED_IDENTIFIER_TOKEN_RE.finditer(current_message)
@@ -2276,10 +2330,162 @@ def _recover_bounded_selection_category_and_facts(
         normalized_message = _normalize_evidence(current_message)
         for alias in sorted(aliases, key=len, reverse=True):
             normalized_alias = _normalize_evidence(alias)
-            if normalized_alias and normalized_alias in normalized_message:
+            if not normalized_alias:
+                continue
+            # Closed numeric aliases such as ``1`` for a boiler circuit must
+            # be whole literals.  A substring match against ``150 м²`` would
+            # otherwise invent an unrelated one-circuit requirement.
+            if normalized_alias.isdecimal():
+                match = re.search(
+                    rf"(?<![\w]){re.escape(alias)}(?![\w])",
+                    current_message,
+                    flags=re.IGNORECASE,
+                )
+                if match is not None:
+                    return match.group(0)
+                continue
+            if normalized_alias in normalized_message:
                 match = re.search(re.escape(alias), current_message, flags=re.IGNORECASE)
                 return match.group(0) if match is not None else alias
         return None
+
+    radiator_target = bool(
+        product_types.intersection({"radiator", "heating radiator"})
+        or ProductCategory.RADIATORS.value in product_categories
+        or active_category == ProductCategory.RADIATORS.value
+        or active_type.casefold() in {"radiator", "heating radiator"}
+    )
+    if radiator_target:
+        material_matches = [
+            (value, ontology_evidence(closed_value_aliases("radiator", "material", value)))
+            for value in ("биметалл", "aluminium", "сталь")
+        ]
+        grounded_materials = [
+            (value, evidence)
+            for value, evidence in material_matches
+            if evidence is not None
+        ]
+        if len(grounded_materials) == 1:
+            material, evidence = grounded_materials[0]
+            # An explicit material is a correction of a prior unknown, not a
+            # competing requirement.  It is only recovered inside an already
+            # typed radiator task and from an approved exact alias.
+            constraints[:] = [
+                item
+                for item in constraints
+                if _normalize_schema_identifier(item.get("name")) != "material"
+            ]
+            _append_known_constraint(
+                constraints,
+                name="material",
+                value=material,
+                evidence=str(evidence),
+                applies_to_product=target_index,
+            )
+            changes.append("radiator_material_recovered_from_explicit_alias")
+
+    boiler_target = bool(
+        product_types.intersection({"boiler", "gas_boiler", "electric_boiler"})
+        or ProductCategory.BOILERS.value in product_categories
+        or active_category == ProductCategory.BOILERS.value
+        or active_type.casefold() in {"boiler", "gas_boiler", "electric_boiler"}
+    )
+    if boiler_target:
+        # A short reply to the just asked fuel question (``Газовый, только
+        # отопление``) carries two independent closed ontology facts.  The
+        # LLM occasionally retained the circuit fact and dropped the fuel
+        # fact, which made the policy ask the same question again.  Recover a
+        # fuel type only inside an established boiler task and only from a
+        # closed value alias; it cannot classify an arbitrary mention of gas
+        # as a boiler requirement.
+        grounded_boiler_types = [
+            (
+                value,
+                ontology_evidence(closed_value_aliases("boiler", "boiler_type", value)),
+            )
+            for value in ("gas", "electric", "solid_fuel")
+        ]
+        grounded_boiler_types = [
+            (value, evidence)
+            for value, evidence in grounded_boiler_types
+            if evidence is not None
+        ]
+        if (
+            len(grounded_boiler_types) == 1
+            and not _has_constraint_name(
+                constraints,
+                {"boiler_type", "fuel_type", "boiler_fuel_type"},
+            )
+        ):
+            boiler_type, evidence = grounded_boiler_types[0]
+            _append_known_constraint(
+                constraints,
+                name="boiler_type",
+                value=boiler_type,
+                evidence=str(evidence),
+                applies_to_product=target_index,
+            )
+            changes.append("boiler_type_recovered_from_closed_alias")
+
+        # The registry also contains compact aliases ("1", "2", "one", "two")
+        # for structured model output.  They are not safe linguistic evidence on
+        # their own: "2 кВт" is power, not a two-circuit requirement.  Likewise,
+        # bare "ГВС" may describe nearby equipment rather than the customer's
+        # demand.  Only an unambiguous circuit phrase may trigger deterministic
+        # recovery; the schema validator remains responsible for every other
+        # candidate proposed by the LLM.
+        unsafe_standalone_circuit_aliases = {
+            "1",
+            "2",
+            "one",
+            "two",
+            "один",
+            "два",
+            "гвс",
+            "с гвс",
+        }
+
+        def grounded_circuit_evidence(value: int) -> str | None:
+            aliases = tuple(
+                alias
+                for alias in closed_value_aliases("boiler", "circuits", value)
+                if _normalize_evidence(alias)
+                not in unsafe_standalone_circuit_aliases
+            )
+            return ontology_evidence(aliases)
+
+        grounded_circuits = [
+            (
+                value,
+                grounded_circuit_evidence(value),
+            )
+            for value in (1, 2)
+        ]
+        grounded_circuits = [
+            (value, evidence)
+            for value, evidence in grounded_circuits
+            if evidence is not None
+        ]
+        if len(grounded_circuits) == 1:
+            circuits, evidence = grounded_circuits[0]
+            # A direct answer to the pending contour question is a confirmed
+            # customer requirement, not an explanation of how to determine
+            # it.  Resolve it only in an established boiler task and from a
+            # closed ontology alias; an unrelated pipe's hot-water service
+            # therefore cannot create a boiler fact.
+            constraints[:] = [
+                item
+                for item in constraints
+                if _normalize_schema_identifier(item.get("name")) != "circuits"
+            ]
+            _append_known_constraint(
+                constraints,
+                name="circuits",
+                value=circuits,
+                evidence=str(evidence),
+                applies_to_product=target_index,
+            )
+            changes.append("boiler_circuits_recovered_from_closed_alias")
 
     spoken_diameter = _SPOKEN_PIPE_DIAMETER_RE.search(current_message)
     if (
@@ -2449,6 +2655,22 @@ def _recover_bounded_selection_category_and_facts(
         or ProductCategory.VALVES.value in product_categories
         or active_category == ProductCategory.VALVES.value
     )
+    if valve_target and re.search(r"\bтип\s+резьб\w*\b", current_message, re.IGNORECASE):
+        terminal_statuses = {
+            ConstraintStatus.UNKNOWN.value,
+            ConstraintStatus.REFUSED.value,
+            ConstraintStatus.DEFERRED.value,
+        }
+        for item in constraints:
+            if (
+                _normalize_schema_identifier(item.get("name")) == "connection_size"
+                and item.get("status") in terminal_statuses
+            ):
+                # «Тип резьбы» names the two-port pattern, not the already
+                # known nominal size.  The explicit phrase is narrow enough
+                # to repair this recurrent model label drift safely.
+                item["name"] = "connection_pattern"
+                changes.append("valve_thread_type_unknown_rebound_to_pattern")
     connection_pair = _INTERNAL_INTERNAL_RE.search(current_message)
     connection_ontology_evidence = ontology_evidence(
         closed_value_aliases("ball_valve", "connection_pattern", "female_female")
@@ -3697,6 +3919,13 @@ def _product_family(item: dict[str, Any]) -> str | None:
         return "boiler"
     if "котел" in canonical_type or "котёл" in canonical_type:
         return "boiler"
+    if category == ProductCategory.RADIATORS.value or canonical_type in {
+        "radiator",
+        "heating_radiator",
+    }:
+        return "radiator"
+    if "радиатор" in canonical_type:
+        return "radiator"
     if category == ProductCategory.PIPES.value and (
         canonical_type in {"pipe", "pex_pipe", "труба"}
         or "pex" in canonical_type
@@ -4393,6 +4622,8 @@ def _typed_numeric_anchors(current_message: str) -> list[dict[str, Any]]:
         ):
             continue
         add(match, family="boiler", name="power_kw")
+    for match in _AREA_ANCHOR_RE.finditer(current_message):
+        add(match, family="boiler", name="area_m2", unit_override="m2")
     for match in _FLOW_ANCHOR_RE.finditer(current_message):
         add(
             match,
@@ -4436,6 +4667,15 @@ def _typed_numeric_anchors(current_message: str) -> list[dict[str, Any]]:
                     else "duty_point_head_m"
                 ),
             )
+    for match in _MOUNTING_LENGTH_ANCHOR_RE.finditer(current_message):
+        add(match, family="pump", name="mounting_length_mm", unit_override="mm")
+    for match in _RADIATOR_CENTER_DISTANCE_ANCHOR_RE.finditer(current_message):
+        add(match, family="radiator", name="center_distance_mm", unit_override="mm")
+    for match in _PIPE_PRESSURE_ANCHOR_RE.finditer(current_message):
+        # A bare pressure is intentionally attached only in a confirmed pipe
+        # context by ``_anchor_binding``.  The same number may instead mean
+        # an inlet pressure or a valve rating in another product family.
+        add(match, family="pipe", name="operating_pressure_bar", unit_override="bar")
     for pattern in _PIPE_DIAMETER_ANCHOR_RES:
         for match in pattern.finditer(current_message):
             add(match, family="pipe", name="diameter_mm")
@@ -4469,6 +4709,14 @@ def _constraint_name_matches_anchor(name: str, anchor_name: str) -> bool:
         return normalized in {"power", "power_kw", "boiler_power_kw"} or (
             "мощ" in normalized
         )
+    if anchor_name == "area_m2":
+        return normalized in {
+            "area",
+            "area_m2",
+            "heated_area_m2",
+            "building_area_m2",
+            "heating_area_m2",
+        } or "площад" in normalized
     if anchor_name in {"max_flow_l_h", "duty_point_flow_l_h"}:
         return "flow" in normalized or "расход" in normalized or "подач" in normalized
     if anchor_name in {"max_head_m", "duty_point_head_m"}:
@@ -4918,6 +5166,15 @@ def validate_product_modifier_coverage(
             for match in _MIXED_IDENTIFIER_TOKEN_RE.finditer(evidence)
             if "." in match.group(0)
         )
+        # A six-or-more digit literal inside an explicit product mention is a
+        # possible numeric catalogue article, not an engineering value that
+        # the semantic model must arbitrarily assign to a constraint.  This is
+        # only a syntactic exemption: the shared SKU resolver still has to
+        # confirm an exact item before any state, retrieval or answer uses it.
+        exempt_spans.extend(
+            match.span()
+            for match in _NUMERIC_ARTICLE_TOKEN_RE.finditer(evidence)
+        )
         if _LATIN_WORD_RE.search(evidence):
             exempt_spans.extend(
                 match.span() for match in _STRUCTURED_MODEL_NUMBER_RE.finditer(evidence)
@@ -5190,6 +5447,55 @@ def _repair_information_requests(
     return normalized
 
 
+def _discard_spurious_information_requests_for_pending_terminal_answer(
+    repaired_turn: dict[str, Any],
+    current_message: str,
+    changes: list[str],
+) -> None:
+    """Keep a customer's ``I don't know`` answer out of the fact-answer path.
+
+    A terminal answer to a question we just asked is a state update, not a
+    request to explain the missing fact.  Otherwise an LLM can register a
+    fabricated ``explain`` request for the same fact; seller policy correctly
+    gives that request priority and the safe preliminary-selection path never
+    receives its SelectionResult/outcome gate.
+
+    An explicit question still wins.  This rule therefore only removes an
+    information request when the turn both records an answer to a pending
+    question and contains a typed unknown/refused/deferred fact without any
+    direct-question anchor.
+    """
+
+    if not repaired_turn.get("answers_pending_question"):
+        return
+    if _DIRECT_QUESTION_RE.search(current_message):
+        return
+    constraints = repaired_turn.get("constraints")
+    terminal_statuses = {
+        ConstraintStatus.UNKNOWN.value,
+        ConstraintStatus.REFUSED.value,
+        ConstraintStatus.DEFERRED.value,
+    }
+    has_terminal_fact = bool(
+        isinstance(constraints, list)
+        and any(
+            isinstance(item, dict)
+            and str(getattr(item.get("status"), "value", item.get("status")))
+            in terminal_statuses
+            for item in constraints
+        )
+    )
+    if not has_terminal_fact or not repaired_turn.get("information_requests"):
+        return
+    repaired_turn["information_requests"] = []
+    repaired_turn["acts"] = [
+        str(getattr(item, "value", item))
+        for item in (repaired_turn.get("acts") or [])
+        if str(getattr(item, "value", item)) != CustomerAct.EXPLAIN.value
+    ]
+    changes.append("pending_terminal_answer_spurious_information_request_removed")
+
+
 def repair_grounded_semantic_payload(
     raw: Any,
     current_message: str,
@@ -5368,6 +5674,53 @@ def repair_grounded_semantic_payload(
     ):
         normalized_acts.append(CustomerAct.EXPLAIN.value)
         changes.append("typed_characteristic_question_explain_act_added")
+
+    # The model sometimes labels a natural comparison as a broad explanation.
+    # That is not an interchangeable downstream action: Compare is only safe
+    # when it is bound to cards that were actually delivered in this session.
+    # With that scope and an unambiguous current-turn phrase we can repair the
+    # action before the reducer creates its task, while leaving product choice,
+    # values and any recommendation to the existing comparison evidence gate.
+    if (
+        len(shown_product_cards) >= 2
+        and _VISIBLE_SCOPE_COMPARE_RE.search(current_message) is not None
+        and CustomerAct.COMPARE.value not in normalized_acts
+    ):
+        normalized_acts.append(CustomerAct.COMPARE.value)
+        changes.append("visible_scope_compare_action_recovered")
+
+    # ``Какой котёл смотреть?`` is a selection request, not a question about a
+    # property of an individual product.  Do not infer a catalogue family from
+    # raw wording here: this repair is allowed only after the semantic model
+    # has already supplied a typed target.  It prevents a spurious Explain
+    # task from routing an otherwise valid first selection to the product-fact
+    # boundary, where a SKU would correctly be required but be unhelpful.
+    has_typed_target = any(
+        isinstance(item, dict)
+        and str(item.get("role") or "") == ProductRole.TARGET.value
+        and _product_family(item) is not None
+        for item in normalized_products
+    )
+    if (
+        has_typed_target
+        and _GENERIC_PRODUCT_SELECTION_QUESTION_RE.search(current_message)
+        is not None
+    ):
+        if CustomerAct.SELECT.value not in normalized_acts:
+            normalized_acts.append(CustomerAct.SELECT.value)
+            changes.append("generic_typed_product_selection_action_recovered")
+        # A frame that put this generic selection in an information-request
+        # slot contains no predicate to answer.  Dropping that incomplete
+        # Explain act keeps the reducer on the typed Selection path.  The
+        # wording itself is a stronger anchor than a generic ontology alias
+        # such as "котёл", which must not turn this into a product fact.
+        if CustomerAct.EXPLAIN.value in normalized_acts:
+            normalized_acts = [
+                item
+                for item in normalized_acts
+                if item != CustomerAct.EXPLAIN.value
+            ]
+            changes.append("generic_typed_product_selection_explain_dropped")
     repaired["acts"] = list(dict.fromkeys(normalized_acts))
     acts = set(repaired["acts"])
     replacement_requested = bool(
@@ -5401,6 +5754,11 @@ def repair_grounded_semantic_payload(
         raw_products=raw_products,
         normalized_products=normalized_products,
         changes=changes,
+    )
+    _discard_spurious_information_requests_for_pending_terminal_answer(
+        repaired,
+        current_message,
+        changes,
     )
 
     collection_labels = {

@@ -447,6 +447,279 @@ def test_ppr_selection_applies_service_diameter_and_reinforcement() -> None:
     }
 
 
+def test_preliminary_cards_are_replaced_by_stricter_cards_after_later_facts() -> None:
+    """A customer can stop the questionnaire, then refine the same task."""
+
+    suitable = _product(
+        "PPR-25-95",
+        "Труба PP-R 25 MM, 95 °C, 10 бар",
+        "Трубы",
+        attributes={
+            "Максимальная рабочая температура, °С": "95",
+            "Максимальное рабочее давление, бар": "10",
+        },
+        description="Для отопления.",
+    )
+    too_cold = _product(
+        "PPR-25-70",
+        "Труба PP-R 25 MM, 70 °C, 6 бар",
+        "Трубы",
+        attributes={
+            "Максимальная рабочая температура, °С": "70",
+            "Максимальное рабочее давление, бар": "6",
+        },
+        description="Для отопления.",
+    )
+    opening = TurnUnderstanding.model_validate(
+        _frame(
+            operation="new",
+            acts=["find"],
+            products=[
+                {
+                    "text": "ППР",
+                    "canonical_type": "pipe",
+                    "category": "pipes",
+                    "role": "target",
+                    "evidence": "ППР",
+                }
+            ],
+            constraints=[
+                _known("pipe_service", "heating", "на отопление"),
+                _known("diameter_mm", 25, "25 мм", unit="mm"),
+                {
+                    "name": "operating_temperature_c",
+                    "value": None,
+                    "unit": None,
+                    "status": "unknown",
+                    "polarity": "required",
+                    "applies_to_product": 0,
+                    "evidence": "температуру не знаю",
+                },
+            ],
+        )
+    )
+    controller = DialogueControllerV2()
+    preliminary_outcome, sources = _run_v2_turn(
+        controller,
+        None,
+        opening,
+        "progressive-ppr-1",
+        [suitable, too_cold],
+    )
+    preliminary = build_v2_turn_candidate(
+        preliminary_outcome,
+        sources,
+        session_id="progressive-ppr",
+        turn_id="progressive-ppr-1",
+        original_utterance="Нужна ППР 25 на отопление, температуру не знаю",
+    )
+
+    assert preliminary.eligible_for_delivery is True
+    assert preliminary.selection_result is not None
+    assert preliminary.selection_result.status == SelectionResultStatus.SHOWN
+    assert preliminary.selection_result.is_preliminary is True
+    assert preliminary.selection_result.presentation_groups
+    assert preliminary.selection_result.presentation_groups[0].fact_name == (
+        "operating_temperature_c"
+    )
+    assert preliminary.response is not None
+    assert preliminary.response.product_groups
+    assert "Показываю 2 предварительных варианта" in preliminary.response.answer
+    assert set(preliminary.selection_result.ordered_skus) == {
+        suitable.sku,
+        too_cold.sku,
+    }
+
+    refinement = TurnUnderstanding.model_validate(
+        _frame(
+            acts=["find"],
+            constraints=[
+                _known("operating_temperature_c", 90, "90 °C", unit="C")
+                | {"applies_to_product": None},
+                _known("operating_pressure_bar", 6, "6 бар", unit="bar")
+                | {"applies_to_product": None},
+            ],
+        )
+    )
+    exact_outcome, sources = _run_v2_turn(
+        controller,
+        preliminary_outcome.state_after,
+        refinement,
+        "progressive-ppr-2",
+        [suitable, too_cold],
+    )
+    exact = build_v2_turn_candidate(
+        exact_outcome,
+        sources,
+        session_id="progressive-ppr",
+        turn_id="progressive-ppr-2",
+        original_utterance="Подача 90 °C, давление 6 бар",
+    )
+
+    assert exact.eligible_for_delivery is True
+    assert exact.selection_result is not None
+    assert exact.selection_result.status == SelectionResultStatus.SHOWN
+    assert exact.selection_result.ordered_skus == (suitable.sku,)
+    assert exact.selection_result.selection_id != preliminary.selection_result.selection_id
+    assert exact.response is not None
+    assert exact.response.answer == "Нашёл подходящий вариант. Карточка ниже."
+    assert exact.response.product_groups == []
+    active_facts = {
+        fact.name: fact.value
+        for fact in exact_outcome.state_after.constraints
+        if fact.active
+    }
+    assert active_facts["pipe_service"] == "heating"
+    assert active_facts["diameter_mm"] == 25
+    assert active_facts["operating_temperature_c"] == 90
+    assert active_facts["operating_pressure_bar"] == 6
+
+
+def test_boiler_area_delivers_only_source_backed_preliminary_cards() -> None:
+    too_small = _product(
+        "gas-120",
+        "Котёл газовый одноконтурный 12 кВт",
+        "Котельное оборудование",
+        attributes={
+            "Тип товара": "Котёл",
+            "Тип котла": "Газовый",
+            "Мощность, кВт": "12",
+            "Количество контуров": "Одноконтурный",
+            "Отапливаемая площадь, м²": "120",
+        },
+    )
+    suitable = _product(
+        "gas-240",
+        "Котёл газовый одноконтурный 24 кВт",
+        "Котельное оборудование",
+        attributes={
+            "Тип товара": "Котёл",
+            "Тип котла": "Газовый",
+            "Мощность, кВт": "24",
+            "Количество контуров": "Одноконтурный",
+            "Отапливаемая площадь, м²": "240",
+        },
+    )
+    opening = TurnUnderstanding.model_validate(
+        _frame(
+            operation="new",
+            acts=["find"],
+            products=[
+                {
+                    "text": "котёл",
+                    "canonical_type": "boiler",
+                    "category": "boilers",
+                    "role": "target",
+                    "evidence": "котёл",
+                }
+            ],
+            constraints=[
+                _known("boiler_type", "gas", "газовый"),
+                _known("area_m2", 150, "150 квадратов", unit="m2"),
+                _known("circuits", 1, "одноконтурный"),
+            ],
+        )
+    )
+    outcome, sources = _run_v2_turn(
+        DialogueControllerV2(),
+        None,
+        opening,
+        "boiler-area-1",
+        [too_small, suitable],
+    )
+    candidate = build_v2_turn_candidate(
+        outcome,
+        sources,
+        session_id="boiler-area",
+        turn_id="boiler-area-1",
+        original_utterance="Нужен газовый одноконтурный котёл для дома 150 квадратов",
+    )
+
+    assert candidate.eligible_for_delivery is True
+    assert candidate.selection_result is not None
+    assert candidate.selection_result.status == SelectionResultStatus.SHOWN
+    assert candidate.selection_result.is_preliminary is True
+    assert candidate.selection_result.ordered_skus == (suitable.sku,)
+    assert candidate.response is not None
+    assert candidate.response.answer.startswith("Показываю 1 предварительный вариант")
+    assert "Тип котла: газовый" in candidate.response.answer
+    assert "Количество контуров: один контур" in candidate.response.answer
+    assert "заявленная в карточке площадь отопления не меньше 150 м²" in candidate.response.answer
+    assert "не окончательная рекомендация" in candidate.response.answer
+
+
+def test_explicit_boiler_power_with_too_small_declared_area_stays_preliminary() -> None:
+    boiler = _product(
+        "electric-9",
+        "Котёл электрический Arderia E9 9 кВт одноконтурный",
+        "Котельное оборудование",
+        attributes={
+            "Тип товара": "Котёл",
+            "Тип котла": "Электрический",
+            "Мощность, кВт": "9",
+            "Количество контуров": "Одноконтурный",
+            "Отапливаемая площадь, м²": "90",
+        },
+    )
+    opening = TurnUnderstanding.model_validate(
+        _frame(
+            operation="new",
+            acts=["find"],
+            products=[
+                {
+                    "text": "электрический котёл",
+                    "canonical_type": "electric_boiler",
+                    "category": "boilers",
+                    "role": "target",
+                    "evidence": "электрический котёл",
+                }
+            ],
+            constraints=[
+                _known("boiler_type", "electric", "электрический"),
+                _known("power_kw", 9, "9 кВт", unit="kW"),
+                _known("area_m2", 150, "150 м²", unit="m2"),
+                _known("circuits", 1, "только отопление"),
+            ],
+        )
+    )
+    outcome, sources = _run_v2_turn(
+        DialogueControllerV2(),
+        None,
+        opening,
+        "boiler-power-area-conflict",
+        [boiler],
+    )
+    candidate = build_v2_turn_candidate(
+        outcome,
+        sources,
+        session_id="boiler-power-area-conflict",
+        turn_id="boiler-power-area-conflict",
+        original_utterance=(
+            "Нужен электрический котёл 9 кВт для дома 150 м², только отопление"
+        ),
+    )
+
+    assert candidate.eligible_for_delivery is True
+    assert candidate.selection_result is not None
+    assert candidate.selection_result.status == SelectionResultStatus.SHOWN
+    assert candidate.selection_result.is_preliminary is True
+    assert candidate.selection_result.reason_code == (
+        "source_backed_power_area_conflict_preliminary"
+    )
+    assert len(candidate.selection_result.source_backed_conflicts) == 1
+    conflict = candidate.selection_result.source_backed_conflicts[0]
+    assert (conflict.card_sku, conflict.customer_value, conflict.card_value) == (
+        "electric-9",
+        150,
+        90,
+    )
+    assert candidate.response is not None
+    assert "Мощность: 9 кВт" in candidate.response.answer
+    assert "заявленная площадь отопления 90 м²" in candidate.response.answer
+    assert "не подтверждает пригодность котла" in candidate.response.answer
+    assert "Нашёл подходящий вариант" not in candidate.response.answer
+
+
 def test_base_internal_internal_selection_keeps_connection_pattern() -> None:
     target = _product(
         "VT.214.N.04",

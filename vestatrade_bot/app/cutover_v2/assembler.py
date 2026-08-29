@@ -20,6 +20,7 @@ from app.dialogue_v2.contracts import TaskAct
 from app.models import ChatProductSummary, ChatResponse
 
 from .contracts import V2TurnCandidate
+from .selection import preliminary_product_groups, render_selection_result
 
 
 _NON_DELIVERABLE_ANSWER_STATUSES = frozenset(
@@ -159,6 +160,22 @@ def build_v2_turn_candidate(
         )
         if not selection_result.outcome_gate_passed:
             reasons.append(selection_result.reason_code)
+        elif response is not None and selection_result.status.value == "shown":
+            # The ordinary Stage 5 renderer repeats every card as prose even
+            # though the widget already presents their names, prices and
+            # availability. This renderer consumes only the checked
+            # SelectionResult and preserves the exact delivered cards and
+            # ordering accepted by the outcome gate.
+            response = response.model_copy(
+                update={
+                    "answer": render_selection_result(selection_result),
+                    "product_groups": (
+                        preliminary_product_groups(selection_result)
+                        if selection_result.is_preliminary
+                        else []
+                    ),
+                }
+            )
 
     catalog = outcome.catalog_planning
     resolutions = catalog.contract_resolutions if catalog is not None else ()

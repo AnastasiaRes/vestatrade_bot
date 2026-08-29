@@ -86,11 +86,42 @@ def build_answer_source_snapshot(
             "\x1f".join(
                 (
                     product.sku,
+                    product.name,
                     product.updated_at,
                     str(product.price),
+                    str(product.currency),
                     product.stock_status,
                     str(product.stock_qty),
                     str(product.url),
+                    str(product.image_url),
+                    identity.product_kind.value,
+                    identity.role.value,
+                    *(
+                        "\x1d".join(
+                            (
+                                fact.name,
+                                str(fact.value),
+                                str(fact.unit),
+                                fact.provenance.source,
+                                fact.provenance.source_field,
+                                fact.provenance.raw_value,
+                                fact.provenance.parser,
+                            )
+                        )
+                        for fact in identity.facts
+                    ),
+                    *(
+                        "\x1d".join(
+                            (
+                                issue.name,
+                                issue.provenance.source,
+                                issue.provenance.source_field,
+                                issue.provenance.raw_value,
+                                issue.provenance.parser,
+                            )
+                        )
+                        for issue in identity.fact_issues
+                    ),
                 )
             )
         )

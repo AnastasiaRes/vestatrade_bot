@@ -858,6 +858,28 @@ def test_two_products_create_two_linked_tasks_instead_of_last_product_wins() -> 
     assert active_task.target_goal_id == result.state.active_goal_id
 
 
+def test_independent_selection_goals_execute_only_the_first_task_per_turn() -> None:
+    result = _reduce(
+        None,
+        _turn(
+            operation="new",
+            acts=["select"],
+            products=[
+                _product("pipe", "pipes"),
+                _product("circulation_pump", "pumps"),
+            ],
+        ),
+        "ordered-pipe-then-pump",
+    )
+
+    plan = SellerPolicy().decide(result.state, ordered_multi_goal=True)
+
+    assert plan.primary.task_id == result.state.tasks[0].task_id
+    assert plan.secondary is None
+    assert "ordered_multi_goal_first_task_only" in plan.reason_codes
+    assert result.state.tasks[1].status == TaskStatus.PENDING
+
+
 def test_named_alternative_refocuses_retained_task_without_becoming_context() -> None:
     initial = _reduce(
         None,

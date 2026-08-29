@@ -87,7 +87,10 @@ from app.models import (
 )
 from app.openrouter_client import OpenRouterClient
 from app.pii import redact_pii_for_model
-from app.product_fact_evidence import ProductFactEvidenceService
+from app.product_fact_evidence import (
+    ProductFactEvidenceService,
+    ProductReferenceKind,
+)
 from app.session_store import SessionStore, build_session_store
 from app.sku_resolution import SkuResolutionStatus
 
@@ -689,6 +692,15 @@ class ChatOrchestrator:
             ttl_seconds=self.settings.session_ttl_seconds,
             lock_timeout_seconds=self.settings.session_lock_timeout_seconds,
         )
+        # V2 normalizes the same mutable ``Product`` records that the legacy
+        # path and the Passport Agent use.  Documentation-derived attributes
+        # must be attached *before* either V2 snapshot is built: otherwise a
+        # cold start can answer a direct passport fact but cannot use that same
+        # verified rating while selecting cards.  ``reload_products`` already
+        # has this order; keep construction consistent with reload.
+        self.docs_attached = 0
+        if products:
+            self.docs_attached = load_docs_for_products(products, self._docs_dirs())
         self.intent_router = IntentRouterAgent(
             self.llm_client,
             catalog_brands=[
@@ -764,13 +776,11 @@ class ChatOrchestrator:
         self._session_locks: dict[str, RLock] = {}
         self.handoff = HandoffAgent()
         self.products_loaded_from = "injected" if products is not None else "none"
-        self.docs_attached = 0
-        if products:
-            self.docs_attached = load_docs_for_products(products, self._docs_dirs())
         self.product_fact_evidence = ProductFactEvidenceService(
             self.settings,
             self.llm_client,
             self.search_agent.products,
+            catalog_snapshot=self.catalog_snapshot_v2,
         )
 
     def _docs_dirs(self) -> list[Any]:
@@ -789,6 +799,9 @@ class ChatOrchestrator:
                 or self._qa_v2_resources_enabled()
             ):
                 self.catalog_snapshot_v2 = build_catalog_snapshot(products)
+            self.product_fact_evidence.set_catalog_snapshot(
+                self.catalog_snapshot_v2
+            )
             if (
                 self._stage5_shadow_enabled()
                 or self._stage6_pipeline_enabled()
@@ -1131,6 +1144,17 @@ class ChatOrchestrator:
             semantic_fact_name=semantic_fact_name,
         )
         if evidence is None:
+            return base_candidate
+        if (
+            evidence.request.product_ref.kind == ProductReferenceKind.UNRESOLVED
+            and current_actions.intersection({"select", "show"})
+        ):
+            # A generic selection request may be phrased as a question
+            # ("какой котёл смотреть?").  It has no concrete product scope,
+            # so the ProductFact boundary cannot own it.  Keep the native V2
+            # selection candidate rather than replacing it with a misleading
+            # request for SKU.  A truly unscoped product-fact question without
+            # Selection still follows the existing safe ambiguity path.
             return base_candidate
         normalized_message = " ".join(message.casefold().replace("ё", "е").split())
         base_supported_direct_request = bool(

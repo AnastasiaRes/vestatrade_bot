@@ -368,6 +368,18 @@ CONSTRAINT_FACT_ONTOLOGY: dict[str, tuple[dict[str, Any], ...]] = {
             "aliases": ["мощность", "кВт"],
         },
         {
+            "name": "area_m2",
+            "meaning": "heated building area stated by the customer, in square metres",
+            "aliases": [
+                "площадь",
+                "отапливаемая площадь",
+                "квадратные метры",
+                "квадраты",
+                "м2",
+                "м²",
+            ],
+        },
+        {
             "name": "circuits",
             "meaning": "one heating circuit or heating plus DHW",
             "aliases": ["одноконтурный", "двухконтурный", "отопление и ГВС"],
@@ -397,6 +409,12 @@ CONSTRAINT_FACT_ONTOLOGY: dict[str, tuple[dict[str, Any], ...]] = {
                         "двухконтурный",
                         "два контура",
                         "отопление и ГВС",
+                        "горячая вода",
+                        "горячей воды",
+                        "для горячей воды",
+                        "горячее водоснабжение",
+                        "нужна горячая вода",
+                        "нужна ещё горячая вода",
                         "dual circuit",
                     ],
                 },
@@ -414,6 +432,40 @@ CONSTRAINT_FACT_ONTOLOGY: dict[str, tuple[dict[str, Any], ...]] = {
                 {
                     "value": "closed",
                     "aliases": ["closed", "закрытая", "закрытая камера"],
+                },
+            ],
+        },
+    ),
+    "radiator": (
+        {
+            "name": "center_distance_mm",
+            "meaning": "radiator centre-to-centre connection distance",
+            "aliases": [
+                "межосевое расстояние",
+                "межосевой размер",
+                "между осями",
+            ],
+        },
+        {
+            "name": "material",
+            "meaning": "radiator body material",
+            "aliases": ["материал", "материал радиатора"],
+            "closed_values": [
+                {
+                    "value": "биметалл",
+                    "aliases": [
+                        "биметалл",
+                        "биметаллический",
+                        "биметаллическая",
+                    ],
+                },
+                {
+                    "value": "aluminium",
+                    "aliases": ["aluminium", "aluminum", "алюминий", "алюминиевый"],
+                },
+                {
+                    "value": "сталь",
+                    "aliases": ["сталь", "стальной", "стальная"],
                 },
             ],
         },
@@ -816,6 +868,11 @@ CONSTRAINT_FACT_ONTOLOGY: dict[str, tuple[dict[str, Any], ...]] = {
             "meaning": "explicit number of outlet ports",
             "aliases": ["выход", "выхода"],
         },
+        {
+            "name": "handle_type",
+            "meaning": "explicit handle wording in the valve title",
+            "aliases": ["ручка", "рукоятка", "бабочка", "рычаг"],
+        },
     ),
 }
 CONSTRAINT_FACT_ONTOLOGY["gas_boiler"] = CONSTRAINT_FACT_ONTOLOGY["boiler"]
@@ -978,11 +1035,29 @@ CAPABILITY_CONSTRAINT_ONTOLOGY: tuple[dict[str, Any], ...] = (
 ACTION_ALIAS_ONTOLOGY: tuple[dict[str, Any], ...] = (
     {
         "action": "fact",
-        "aliases": ["какой", "какая", "сколько миллиметров", "характеристика"],
+        # Bare interrogatives are not an action.  In particular, "какой
+        # котёл смотреть" starts a selection and must not be promoted to a
+        # direct product fact before a product/predicate exists.
+        "aliases": [
+            "какая характеристика",
+            "какое значение",
+            "сколько миллиметров",
+            "характеристика",
+        ],
     },
     {
         "action": "compare",
-        "aliases": ["сравни", "сравните", "чем отличается", "что лучше"],
+        "aliases": [
+            "сравни",
+            "сравните",
+            "чем отличается",
+            "чем они отличаются",
+            "в чем разница",
+            "в чём разница",
+            "какие отличия",
+            "есть отличия",
+            "что лучше",
+        ],
     },
     {
         "action": "calculate",

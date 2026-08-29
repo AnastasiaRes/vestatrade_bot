@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 from app.answer_v2.contracts import AnswerSourceSnapshot, CatalogAnswerProduct
-from app.catalog_v2.contracts import CatalogProductRole, ProductKind
+from app.catalog_v2.contracts import (
+    CatalogFact,
+    CatalogProductRole,
+    CatalogProductSnapshot,
+    FactProvenance,
+    ProductKind,
+)
 from app.config import get_settings
 from app.cutover_v2.contracts import V2TurnCandidate
 from app.cutover_v2.product_fact import build_v2_product_fact_candidate
@@ -123,7 +129,56 @@ def test_ordinal_product_fact_is_bound_to_customer_visible_card() -> None:
     rendered = render_product_fact_evidence(evidence)
     assert "180 мм" in rendered
     assert "VRS.254.18.0" in rendered
-    assert "VRS-0725.pdf" in rendered
+
+
+def test_explicit_card_title_fact_answers_without_passport_search() -> None:
+    valve = _product(
+        "VT.217.N.04",
+        'Кран шаровой BASE, рукоятка бабочка 1/2" вн.-вн.',
+        {"Тип товара": "Кран шаровой"},
+        "VT.217.pdf",
+    )
+    snapshot = CatalogProductSnapshot(
+        sku=valve.sku,
+        name=valve.name,
+        category=valve.category_path,
+        product_kind=ProductKind.BALL_VALVE,
+        role=CatalogProductRole.COMPONENT,
+        facts=(
+            CatalogFact(
+                name="handle_type",
+                value="рукоятка бабочка",
+                provenance=FactProvenance(
+                    source="name",
+                    source_field="name",
+                    raw_value="рукоятка бабочка",
+                    parser="explicit_valve_handle_title",
+                ),
+            ),
+        ),
+    )
+    passport = _StubPassport()
+    settings = get_settings().model_copy(update={"embeddings_enabled": True})
+    service = ProductFactEvidenceService(
+        settings,
+        _NoopClient(),
+        [valve],
+        passport_service=passport,  # type: ignore[arg-type]
+        catalog_snapshot=(snapshot,),
+    )
+    session = SessionState(session_id="valve", last_products=[_card(valve)])
+
+    evidence = service.evaluate("Какая ручка у первого?", session)
+
+    assert evidence is not None
+    assert evidence.status == ProductFactStatus.ANSWERED
+    assert evidence.request.predicate == "handle_type"
+    assert evidence.request.product_ref.kind == ProductReferenceKind.ORDINAL
+    assert evidence.value == "рукоятка бабочка"
+    assert evidence.source_kind == "catalog_card"
+    assert evidence.verifier_status == "catalog_snapshot_exact"
+    assert passport.calls == []
+    assert "Тип ручки — рукоятка бабочка" in render_product_fact_evidence(evidence)
 
 
 def test_wilo_range_is_not_silently_narrowed_to_180() -> None:
@@ -432,3 +487,48 @@ def test_verified_fact_overrides_planner_wait_action_for_explicit_predicate() ->
         candidate.state_after.answer_plan_summary.information_fulfilled_outputs
         == (RequestedInformationOutput.EXPLANATION,)
     )
+
+
+def test_numeric_sku_without_marker_resolves_to_the_exact_catalogue_product() -> None:
+    boiler = _product(
+        "2202210",
+        "Котел электрический Arderia E9, 9 кВт",
+        {"количество контуров": "1"},
+        "arderias-e9.pdf",
+    )
+    boiler.brand = "Arderia"
+    service = _service([boiler], _StubPassport(quote="паспорт не потребовался"))
+
+    evidence = service.evaluate(
+        "У котла Arderia E9 2202210 сколько контуров?",
+        SessionState(session_id="numeric-article"),
+    )
+
+    assert evidence is not None
+    assert evidence.status == ProductFactStatus.ANSWERED
+    assert evidence.request.product_ref.kind == ProductReferenceKind.EXACT_SKU
+    assert evidence.request.product_ref.canonical_sku == "2202210"
+    assert evidence.request.predicate == "circuits"
+    assert evidence.value == "1"
+
+
+def test_strict_brand_model_reference_reaches_circuits_fact_without_sku() -> None:
+    boiler = _product(
+        "2202210",
+        "Котел электрический Arderia E9, 9 кВт",
+        {"количество контуров": "1"},
+        "arderias-e9.pdf",
+    )
+    boiler.brand = "Arderia"
+    service = _service([boiler], _StubPassport(quote="паспорт не потребовался"))
+
+    evidence = service.evaluate(
+        "У котла Arderia E9 сколько контуров?",
+        SessionState(session_id="named-model"),
+    )
+
+    assert evidence is not None
+    assert evidence.status == ProductFactStatus.ANSWERED
+    assert evidence.request.product_ref.kind == ProductReferenceKind.NAMED_PRODUCT
+    assert evidence.request.product_ref.canonical_sku == "2202210"
+    assert evidence.request.predicate == "circuits"
