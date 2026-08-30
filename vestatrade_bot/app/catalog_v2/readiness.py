@@ -11,6 +11,7 @@ from app.dialogue_v2.contracts import (
     CustomerTask,
     DialogueStateV2,
     SelectionControlKind,
+    TaskAct,
 )
 
 from .contracts import (
@@ -406,8 +407,29 @@ def assess_task_readiness(
     # are known, it may end the questionnaire and authorise a safe preliminary
     # result without requiring a second phrase such as "покажите по остальному".
     terminal_fact_allows_preliminary = bool(unavailable)
+    # A circulation-pump contract may opt into showing a labelled preliminary
+    # shortlist as soon as its own safety groups (here: a real duty point) are
+    # known.  The registry keeps this deliberately family-specific; a bare
+    # pump or another product kind continues through the normal questionnaire.
+    auto_preliminary_requested = (
+        product_contract.auto_preliminary_when_safety_facts_known
+        and customer_task.act in {TaskAct.FIND, TaskAct.SELECT}
+        # This is an opening-turn convenience, not an implicit permission to
+        # skip a later installation question after the dialogue has already
+        # entered the ordinary exact-selection funnel.
+        and customer_task.origin_turn == dialogue_state.turn_number
+        # Do not let the auto path turn its own missing safety data into the
+        # next question.  Without both flow and head the ordinary exact path
+        # retains control and asks exactly the established missing fact.
+        and all(
+            any(name in known_names for name in group)
+            for group in product_contract.preliminary_required_fact_groups
+        )
+    )
     preliminary_requested = (
-        continue_with_confirmed_facts or terminal_fact_allows_preliminary
+        continue_with_confirmed_facts
+        or terminal_fact_allows_preliminary
+        or auto_preliminary_requested
     )
 
     # Unlike identity anchors above, these safety groups must never block an
@@ -461,15 +483,15 @@ def assess_task_readiness(
         question = None
         reasons = ("preliminary_identity_fact_unavailable",)
     elif missing:
-        if can_show_preliminary and (
-            continue_with_confirmed_facts or terminal_fact_allows_preliminary
-        ):
+        if can_show_preliminary and preliminary_requested:
             status = ReadinessStatus.PRELIMINARY_READY
             question = None
             reasons = (
                 (
                     "terminal_fact_triggers_safe_preliminary_path"
                     if terminal_fact_allows_preliminary
+                    else "safety_facts_trigger_safe_preliminary_path"
+                    if auto_preliminary_requested
                     else "customer_requested_confirmed_facts_only"
                 ),
                 "preliminary_path_allowed",

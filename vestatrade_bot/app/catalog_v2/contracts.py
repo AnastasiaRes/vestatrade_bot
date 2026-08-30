@@ -160,6 +160,11 @@ class ProductContract(FrozenModel):
     # may still require more facts.  A group is deliberately owned by the
     # existing product contract rather than by a parallel dialogue taxonomy.
     preliminary_identity_fact_groups: tuple[tuple[str, ...], ...] = ()
+    # Some product families can safely show a clearly labelled preliminary
+    # shortlist as soon as their declared preliminary safety groups are
+    # satisfied.  This is deliberately opt-in: it must not turn every
+    # incomplete catalogue request into a broad result.
+    auto_preliminary_when_safety_facts_known: bool = False
 
 
 class ContractResolutionStatus(str, Enum):

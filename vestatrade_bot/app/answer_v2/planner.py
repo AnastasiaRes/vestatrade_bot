@@ -640,6 +640,60 @@ def _catalog_fact_is_unambiguous_for_display(fact: CatalogFact) -> bool:
     )
 
 
+def _requested_radiator_area(search_plan: CatalogSearchPlan) -> float | None:
+    """Return one typed room-area constraint, never infer it from prose."""
+
+    matching = tuple(
+        item
+        for item in (*search_plan.hard_constraints, *search_plan.soft_constraints)
+        if item.name == "area_m2"
+        and isinstance(item.value, (int, float))
+        and not isinstance(item.value, bool)
+    )
+    if len(matching) != 1:
+        return None
+    value = float(matching[0].value)
+    return value if math.isfinite(value) else None
+
+
+def _radiator_declared_area_order(
+    search_plan: CatalogSearchPlan,
+    candidate: CandidateAssessment,
+    source_snapshot: AnswerSourceSnapshot,
+) -> tuple[int, float]:
+    """Put the closest source-backed adequate radiator before larger ones.
+
+    The catalogue planner has already ruled out undersized cards.  This is
+    only a deterministic presentation tie-breaker for a stated room area; it
+    does not calculate heat loss or reinterpret a product fact as a customer
+    requirement.
+    """
+
+    if search_plan.product_kind != ProductKind.RADIATOR:
+        return (0, 0.0)
+    requested = _requested_radiator_area(search_plan)
+    source = source_snapshot.product(candidate.sku)
+    if requested is None or source is None:
+        return (1, math.inf)
+    if any(issue.name == "declared_heated_area_m2" for issue in source.fact_issues):
+        return (1, math.inf)
+    facts = tuple(
+        item
+        for item in source.facts
+        if item.name == "declared_heated_area_m2"
+        and _catalog_fact_is_unambiguous_for_display(item)
+        and isinstance(item.value, (int, float))
+        and not isinstance(item.value, bool)
+    )
+    values = {float(item.value) for item in facts}
+    if len(values) != 1:
+        return (1, math.inf)
+    declared = next(iter(values))
+    if not math.isfinite(declared) or declared < requested:
+        return (1, math.inf)
+    return (0, declared - requested)
+
+
 def _presentable_candidate_shortlist(
     search_plans: tuple[CatalogSearchPlan, ...],
     source_snapshot: AnswerSourceSnapshot,
@@ -696,6 +750,9 @@ def _presentable_candidate_shortlist(
                 sorted(
                     options,
                     key=lambda item: (
+                        *_radiator_declared_area_order(
+                            item[0], item[1], source_snapshot
+                        ),
                         0
                         if _has_positive_stock(source_snapshot, item[1].sku)
                         else 1,

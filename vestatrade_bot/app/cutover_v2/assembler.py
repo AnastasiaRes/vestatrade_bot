@@ -20,7 +20,11 @@ from app.dialogue_v2.contracts import TaskAct
 from app.models import ChatProductSummary, ChatResponse
 
 from .contracts import ProductScopeEffect, V2TurnCandidate
-from .selection import preliminary_product_groups, render_selection_result
+from .selection import (
+    preliminary_product_groups,
+    render_selection_no_match,
+    render_selection_result,
+)
 
 
 _NON_DELIVERABLE_ANSWER_STATUSES = frozenset(
@@ -176,6 +180,13 @@ def build_v2_turn_candidate(
                     ),
                 }
             )
+        elif response is not None and selection_result.status.value == "no_match":
+            # A checked no-match has no customer-visible cards or scope to
+            # update.  Some families nevertheless have a concise factual
+            # explanation that is clearer than the generic capability copy.
+            no_match_answer = render_selection_no_match(selection_result)
+            if no_match_answer is not None:
+                response = response.model_copy(update={"answer": no_match_answer})
 
     catalog = outcome.catalog_planning
     resolutions = catalog.contract_resolutions if catalog is not None else ()

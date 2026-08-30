@@ -810,6 +810,177 @@ def test_preview_radiator_room_area_is_only_a_source_backed_preliminary_proxy(
     assert applied_facts["area_m2"] == 16
 
 
+def test_preview_circulation_pump_with_duty_point_shows_preliminary_cards_immediately(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Flow and head are enough for a labelled pump shortlist before DN.
+
+    DN and mounting length deliberately remain missing on the checked
+    SelectionResult.  The UX improvement must not make the cards look like a
+    confirmed installation match.
+    """
+
+    pump = _product(
+        "PUMP-25-4",
+        "Насос циркуляционный 25/4",
+        "Насосное оборудование",
+        attributes={"Тип товара": "Насос"},
+    )
+    settings = _preview_settings(tmp_path)
+    bot = ChatOrchestrator(settings=settings, products=[pump])
+    understanding = _frame(
+        product={
+            "text": "циркуляционный насос",
+            "canonical_type": "circulation pump",
+            "category": "pumps",
+            "role": "target",
+            "evidence": "циркуляционный насос",
+        },
+        constraints=[
+            _known("duty_point_flow_l_h", 1.5, "расход 1,5 м3/ч", unit="m3/h"),
+            _known("duty_point_head_m", 4, "напор 4 м", unit="m"),
+        ],
+    )
+    monkeypatch.setattr(
+        bot.semantic_interpreter,
+        "interpret",
+        lambda _message, _before: _semantic(understanding),
+    )
+
+    response = _preview_response(
+        bot,
+        session_id="v2-pump-auto-preliminary",
+        turn_id="v2-pump-auto-preliminary-1",
+        message="Нужен циркуляционный насос: расход 1,5 м3/ч, напор 4 м",
+    )
+
+    assert [item.sku for item in response.products] == [pump.sku]
+    assert "предваритель" in response.answer.lower()
+    trace = _assert_v2_owner(settings)
+    selection = trace["cutover_v2"]["selection_delivery"]
+    assert selection["status"] == "shown"
+    assert selection["is_preliminary"] is True
+    assert set(selection["preliminary_fact_names"]) >= {
+        "diameter_mm",
+        "mounting_length_mm",
+    }
+
+
+def test_preview_radiator_no_match_names_missing_declared_coverage_plainly(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """A smaller radiator is not silently offered as a room-area match."""
+
+    too_small = _product(
+        "RADIATOR-12",
+        "Радиатор биметаллический 6 секций",
+        "Радиаторы отопления",
+        attributes={
+            "Тип товара": "Радиатор отопления",
+            "Площадь обогрева, м2": "12",
+        },
+    )
+    settings = _preview_settings(tmp_path)
+    bot = ChatOrchestrator(settings=settings, products=[too_small])
+    understanding = _frame(
+        product={
+            "text": "радиатор",
+            "canonical_type": "radiator",
+            "category": "radiators",
+            "role": "target",
+            "evidence": "радиатор",
+        },
+        constraints=[_known("area_m2", 16, "комната 16 м²", unit="m2")],
+        show=True,
+    )
+    monkeypatch.setattr(
+        bot.semantic_interpreter,
+        "interpret",
+        lambda _message, _before: _semantic(understanding),
+    )
+
+    response = _preview_response(
+        bot,
+        session_id="v2-radiator-no-match",
+        turn_id="v2-radiator-no-match-1",
+        message="Нужен радиатор для комнаты 16 м². Покажите варианты",
+    )
+
+    assert response.products == []
+    assert response.answer == (
+        "В каталоге нет радиатора с заявленной площадью обогрева от 16 м².\n"
+        "Радиаторы с меньшей заявленной площадью не показываю как подходящие."
+    )
+    trace = _assert_v2_owner(settings)
+    selection = trace["cutover_v2"]["selection_delivery"]
+    assert selection["status"] == "no_match"
+    assert selection["outcome_gate_passed"] is True
+    assert selection["ordered_skus"] == []
+
+
+def test_preview_radiators_are_sorted_by_closest_adequate_declared_coverage(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Closest sufficient coverage wins before the old lexical tie-breaker."""
+
+    larger = _product(
+        "A-RADIATOR-20",
+        "Радиатор биметаллический 10 секций",
+        "Радиаторы отопления",
+        attributes={
+            "Тип товара": "Радиатор отопления",
+            "Площадь обогрева, м2": "20",
+        },
+    )
+    closest = _product(
+        "Z-RADIATOR-16",
+        "Радиатор биметаллический 8 секций",
+        "Радиаторы отопления",
+        attributes={
+            "Тип товара": "Радиатор отопления",
+            "Площадь обогрева, м2": "16",
+        },
+    )
+    settings = _preview_settings(tmp_path)
+    bot = ChatOrchestrator(settings=settings, products=[larger, closest])
+    understanding = _frame(
+        product={
+            "text": "радиатор",
+            "canonical_type": "radiator",
+            "category": "radiators",
+            "role": "target",
+            "evidence": "радиатор",
+        },
+        constraints=[_known("area_m2", 16, "комната 16 м²", unit="m2")],
+        show=True,
+    )
+    monkeypatch.setattr(
+        bot.semantic_interpreter,
+        "interpret",
+        lambda _message, _before: _semantic(understanding),
+    )
+
+    response = _preview_response(
+        bot,
+        session_id="v2-radiator-nearest-area",
+        turn_id="v2-radiator-nearest-area-1",
+        message="Нужен радиатор для комнаты 16 м². Покажите варианты",
+    )
+
+    assert [item.sku for item in response.products] == [
+        closest.sku,
+        larger.sku,
+    ]
+    assert "соединению" not in response.answer.lower()
+    assert "материал" in response.answer.lower()
+    trace = _assert_v2_owner(settings)
+    selection = trace["cutover_v2"]["selection_delivery"]
+    assert selection["ordered_skus"] == [closest.sku, larger.sku]
+
+
 def test_preview_bare_radiator_starts_with_physical_size_not_material(
     tmp_path,
     monkeypatch,

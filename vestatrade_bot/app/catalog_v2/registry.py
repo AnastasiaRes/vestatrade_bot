@@ -732,6 +732,7 @@ def _contract(
     preliminary_identity_fact_groups: tuple[tuple[str, ...], ...] = (),
     availability_analog_relaxable_facts: tuple[str, ...] = (),
     preliminary_required_fact_groups: tuple[tuple[str, ...], ...] = (),
+    auto_preliminary_when_safety_facts_known: bool = False,
 ) -> ProductContract:
     return ProductContract(
         contract_id=contract_id,
@@ -749,6 +750,9 @@ def _contract(
         preliminary_identity_fact_groups=preliminary_identity_fact_groups,
         availability_analog_relaxable_facts=availability_analog_relaxable_facts,
         preliminary_required_fact_groups=preliminary_required_fact_groups,
+        auto_preliminary_when_safety_facts_known=(
+            auto_preliminary_when_safety_facts_known
+        ),
     )
 
 
@@ -925,6 +929,10 @@ DEFAULT_CONTRACTS: tuple[ProductContract, ...] = (
             ("duty_point_flow_l_h",),
             ("max_head_m", "duty_point_head_m"),
         ),
+        # Flow and head describe a meaningful preliminary hydraulic target.
+        # DN and mounting length still remain mandatory before the customer
+        # can treat a card as a confirmed installation match.
+        auto_preliminary_when_safety_facts_known=True,
     ),
     _contract(
         "pump.dhw_circulation.v1", ProductKind.DHW_CIRCULATION_PUMP, "pumps",

@@ -7,7 +7,12 @@ selection outcome gate.
 
 from __future__ import annotations
 
-from app.catalog_v2.contracts import SelectionFactInput, SelectionResult
+from app.catalog_v2.contracts import (
+    ProductKind,
+    SelectionFactInput,
+    SelectionResult,
+    SelectionResultStatus,
+)
 from app.models import ChatProductGroup
 from app.v2_presentation import format_public_fact_value, public_fact_label
 
@@ -49,6 +54,44 @@ def preliminary_product_groups(result: SelectionResult) -> list[ChatProductGroup
         )
         for item in result.presentation_groups
     ]
+
+
+def render_selection_no_match(result: SelectionResult) -> str | None:
+    """Render a small family-specific explanation for a checked no-match.
+
+    The V2 selection outcome gate already proves that there are no cards for
+    the unchanged typed filters.  This function only makes that result easier
+    to understand; it never inspects the catalogue or suggests a smaller
+    radiator as suitable.
+    """
+
+    if result.status != SelectionResultStatus.NO_MATCH:
+        raise ValueError("no-match renderer requires a checked no-match")
+    if result.product_kind != ProductKind.RADIATOR:
+        return None
+    area = next(
+        (
+            fact
+            for fact in result.applied_facts
+            if (
+                fact.name == "area_m2"
+                and fact.status == "known"
+                and isinstance(fact.value, (int, float))
+                and not isinstance(fact.value, bool)
+            )
+        ),
+        None,
+    )
+    if area is None:
+        return None
+    return "\n".join(
+        (
+            "В каталоге нет радиатора с заявленной площадью обогрева "
+            f"от {_fact_value(area)}.",
+            "Радиаторы с меньшей заявленной площадью не показываю "
+            "как подходящие.",
+        )
+    )
 
 
 def render_selection_result(result: SelectionResult) -> str:
@@ -168,8 +211,8 @@ def render_selection_result(result: SelectionResult) -> str:
             return "\n".join(lines)
         lines.append(
             f"Параметр «{grouped_fact}» пока не подтверждён, поэтому карточки "
-            "разделены по его указанному значению. Перед покупкой выберите "
-            "группу, соответствующую вашему соединению."
+            "разделены по его указанному значению. Если этот параметр важен "
+            "для выбора, напишите нужный вариант."
         )
     elif result.preliminary_fact_names:
         labels = ", ".join(f"«{_label(item)}»" for item in result.preliminary_fact_names[:2])
