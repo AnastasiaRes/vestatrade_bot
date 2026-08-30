@@ -29,6 +29,7 @@ from .contracts import (
     ContractResolution,
     ContractResolutionStatus,
     FactStrength,
+    PassportFlowHeadEvaluation,
     ProductContract,
     ProductKind,
     ReadinessFact,
@@ -40,6 +41,7 @@ from .contracts import (
 )
 from .normalization import (
     normalize_fact_value,
+    normalize_unit_label,
     parse_numeric_choice_value,
     parse_numeric_range_value,
 )
@@ -152,6 +154,8 @@ def _constraints(
 
     def enforce_on_candidate(item: ReadinessFact) -> bool:
         definition = definitions.get(item.name)
+        if definition is not None and not definition.candidate_filterable:
+            return False
         primary = (
             definition.candidate_required_when_missing
             if definition is not None
@@ -281,6 +285,103 @@ def _catalog_availability(
     return CatalogAvailabilityStatus.UNKNOWN
 
 
+def _constraint_scalar_in_contract_unit(
+    constraint: SearchConstraint,
+    contract: ProductContract,
+) -> float | None:
+    """Return one unambiguous scalar in a contract's canonical unit.
+
+    Search constraints are normally canonicalised by readiness already.  This
+    adapter nevertheless checks the declared conversion map instead of
+    assuming a unit from a raw user phrase.  A range, a choice, a boolean, or
+    an unknown unit cannot prove one point on a Q/H table.
+    """
+
+    if isinstance(constraint.value, bool) or not isinstance(
+        constraint.value, (int, float)
+    ):
+        return None
+    definition = next(
+        (item for item in contract.fact_definitions if item.name == constraint.name),
+        None,
+    )
+    if definition is None:
+        return None
+    numeric = float(constraint.value)
+    if not math.isfinite(numeric) or numeric < 0:
+        return None
+    unit = normalize_unit_label(constraint.unit or "")
+    if not unit:
+        return None
+    factor = definition.unit_conversions.get(unit)
+    if factor is None:
+        return None
+    converted = numeric * factor
+    return converted if math.isfinite(converted) and converted >= 0 else None
+
+
+def _borehole_exact_passport_qh_evaluation(
+    product: CatalogProductSnapshot,
+    contract: ProductContract,
+    hard: tuple[SearchConstraint, ...],
+) -> tuple[PassportFlowHeadEvaluation | None, tuple[str, ...]]:
+    """Check a borehole duty only at one exact manufacturer-table flow.
+
+    The existing maximum-flow and maximum-head filters retain their role as a
+    preliminary envelope.  This narrow supplemental check rejects a card
+    when an exact passport table point disproves the requested duty.  It never
+    interpolates between rows and never turns a preliminary selection into a
+    system-design verdict.
+    """
+
+    if product.product_kind != ProductKind.BOREHOLE_PUMP:
+        return None, ()
+    if any(issue.name == "flow_head_curve" for issue in product.fact_issues):
+        return None, ("passport_qh_source_conflict",)
+    by_name = {
+        item.name: item
+        for item in hard
+        if item.polarity == "required"
+    }
+    requested_flow = _constraint_scalar_in_contract_unit(
+        by_name.get("required_flow_l_h"), contract
+    ) if by_name.get("required_flow_l_h") is not None else None
+    required_head = _constraint_scalar_in_contract_unit(
+        by_name.get("required_head_m"), contract
+    ) if by_name.get("required_head_m") is not None else None
+    if requested_flow is None or required_head is None:
+        return None, ()
+    point = next(
+        (
+            item
+            for item in product.flow_head_points
+            if math.isclose(item.flow_l_h, requested_flow, abs_tol=1e-9)
+        ),
+        None,
+    )
+    if point is None:
+        return None, ("passport_qh_exact_flow_not_listed",)
+    status = (
+        "clears_required_head"
+        if point.head_m >= required_head
+        else "below_required_head"
+    )
+    return (
+        PassportFlowHeadEvaluation(
+            sku=product.sku,
+            requested_flow_l_h=requested_flow,
+            required_head_m=required_head,
+            passport_point=point,
+            status=status,
+        ),
+        (
+            "passport_qh_exact_table_point_clears_required_head"
+            if status == "clears_required_head"
+            else "passport_qh_exact_table_point_below_required_head",
+        ),
+    )
+
+
 def _assess_candidate(
     product: CatalogProductSnapshot,
     contract: ProductContract,
@@ -295,6 +396,7 @@ def _assess_candidate(
     matched_hard: list[str] = []
     mismatched_hard: list[str] = []
     missing_hard: list[str] = []
+    missing_required_evidence: list[str] = []
     matched_soft: list[str] = []
     mismatched_soft: list[str] = []
     provenance = []
@@ -328,6 +430,8 @@ def _assess_candidate(
             actual = fact_map.get("cold_water_pressure_bar") or actual
         if actual is None:
             missing_hard.append(constraint.name)
+            if definition is not None and definition.candidate_evidence_required:
+                missing_required_evidence.append(constraint.name)
             continue
         provenance.append(actual.provenance)
         same = _same_value(
@@ -362,9 +466,30 @@ def _assess_candidate(
             same = not same
         (matched_soft if same else mismatched_soft).append(constraint.name)
 
-    if mismatched_hard:
+    passport_qh_evaluation, passport_qh_reasons = (
+        _borehole_exact_passport_qh_evaluation(product, contract, hard)
+    )
+    passport_qh_rejects_candidate = (
+        passport_qh_evaluation is not None
+        and passport_qh_evaluation.status == "below_required_head"
+    )
+    passport_qh_source_conflict = "passport_qh_source_conflict" in passport_qh_reasons
+
+    if (
+        mismatched_hard
+        or missing_required_evidence
+        or passport_qh_rejects_candidate
+        or passport_qh_source_conflict
+    ):
         status = CandidateStatus.REJECTED
-        reasons = ("hard_constraint_mismatch",)
+        if passport_qh_rejects_candidate or passport_qh_source_conflict:
+            reasons = passport_qh_reasons
+        else:
+            reasons = (
+                "catalogue_required_rating_missing"
+                if missing_required_evidence and not mismatched_hard
+                else "hard_constraint_mismatch",
+            )
     elif missing_hard:
         status = CandidateStatus.UNVERIFIED
         reasons = ("catalogue_hard_fact_missing",)
@@ -413,7 +538,8 @@ def _assess_candidate(
         mismatched_soft_facts=tuple(mismatched_soft),
         relaxations=relaxations,
         provenance=tuple(dict.fromkeys(provenance)),
-        reason_codes=reasons,
+        passport_flow_head_evaluation=passport_qh_evaluation,
+        reason_codes=tuple(dict.fromkeys((*reasons, *passport_qh_reasons))),
     )
 
 

@@ -54,6 +54,8 @@ def _fact(
     preliminary: bool = True,
     comparison: ComparisonMode = ComparisonMode.NUMERIC,
     fields: tuple[str, ...] = (),
+    candidate_filterable: bool = True,
+    candidate_evidence_required: bool = False,
     candidate_fact_name: str | None = None,
     candidate_required_when_missing: str | None = None,
     preliminary_only_for_exact: bool = False,
@@ -96,6 +98,8 @@ def _fact(
         preliminary_allowed_without=preliminary,
         comparison=comparison,
         catalog_fields=fields,
+        candidate_filterable=candidate_filterable,
+        candidate_evidence_required=candidate_evidence_required,
         candidate_fact_name=candidate_fact_name,
         candidate_required_when_missing=candidate_required_when_missing,
         preliminary_only_for_exact=preliminary_only_for_exact,
@@ -308,6 +312,120 @@ MAX_FLOW = _fact(
     unit_family="flow",
     strength=FactStrength.SOFT,
     fields=("макс. производительность, л/ч",),
+)
+# The borehole contract deliberately distinguishes the customer's required
+# duty from catalogue *maximum* ratings. A maximum head/flow can reject a
+# clearly insufficient pump, but it does not prove the working point on a
+# manufacturer's Q/H curve; readiness therefore stays preliminary.
+BOREHOLE_REQUIRED_HEAD = _fact(
+    "required_head_m",
+    aliases=("head_m", "required_head", "расчётный напор", "нужный напор"),
+    unit_family="head_m",
+    required=True,
+    decision=True,
+    preliminary=False,
+    comparison=ComparisonMode.MINIMUM_RATING,
+    candidate_fact_name="max_head_m",
+    candidate_evidence_required=True,
+    catalog_verifiable=False,
+    learn="calculate_borehole_required_head",
+)
+BOREHOLE_REQUIRED_FLOW = _fact(
+    "required_flow_l_h",
+    aliases=(
+        "required_flow_m3_h",
+        "required_flow_l_min",
+        "flow",
+        "flow_rate",
+        "требуемый расход",
+        "нужный расход",
+    ),
+    unit_family="flow",
+    required=True,
+    decision=True,
+    preliminary=False,
+    comparison=ComparisonMode.MINIMUM_RATING,
+    candidate_fact_name="max_flow_l_h",
+    candidate_evidence_required=True,
+    catalog_verifiable=False,
+    learn="confirm_borehole_required_flow",
+)
+# Source-only card ratings. They stay distinct from the customer requirements
+# above, yet make their existing feed extractors available to the common
+# catalogue snapshot builder.
+BOREHOLE_CATALOG_MAX_HEAD = MAX_HEAD.model_copy(
+    update={
+        "required_for_exact": False,
+        "decision_changing": False,
+        "candidate_filterable": False,
+    }
+)
+BOREHOLE_CATALOG_MAX_FLOW = MAX_FLOW.model_copy(
+    update={
+        "required_for_exact": False,
+        "decision_changing": False,
+        "candidate_filterable": False,
+    }
+)
+
+# These inputs exist in the same contract to make their semantic meaning and
+# units canonical. They are never catalogue filters: the shared deterministic
+# hydraulic adapter converts them into ``required_head_m`` or asks for the one
+# next missing input.
+BOREHOLE_WATER_LEVEL = _fact(
+    "dynamic_water_level_m",
+    aliases=("уровень воды", "динамический уровень"),
+    unit_family="length_m",
+    catalog_verifiable=False,
+    candidate_filterable=False,
+    learn="measure_dynamic_water_level",
+)
+BOREHOLE_STATIC_WATER_LEVEL = _fact(
+    "static_water_level_m",
+    aliases=("статический уровень",),
+    unit_family="length_m",
+    catalog_verifiable=False,
+    candidate_filterable=False,
+    learn="measure_static_water_level",
+)
+BOREHOLE_LIFT_HEIGHT = _fact(
+    "lift_height_m",
+    aliases=("высота подъёма", "подъём до дома", "высота до верхней точки"),
+    unit_family="length_m",
+    catalog_verifiable=False,
+    candidate_filterable=False,
+    learn="measure_borehole_lift_height",
+)
+BOREHOLE_HORIZONTAL_RUN = _fact(
+    "horizontal_run_m",
+    aliases=("длина трассы", "горизонтальная трасса", "от скважины до дома"),
+    unit_family="length_m",
+    catalog_verifiable=False,
+    candidate_filterable=False,
+    learn="measure_borehole_horizontal_run",
+)
+BOREHOLE_REQUIRED_PRESSURE = _fact(
+    "required_pressure_bar",
+    aliases=("давление в доме", "требуемое давление", "нужное давление"),
+    unit_family="pressure_bar",
+    catalog_verifiable=False,
+    candidate_filterable=False,
+    learn="confirm_borehole_required_pressure",
+)
+BOREHOLE_DISCHARGE_DIAMETER = _fact(
+    "discharge_diameter_mm",
+    aliases=("диаметр напорной трубы", "диаметр трубы от насоса"),
+    unit_family="length_mm",
+    catalog_verifiable=False,
+    candidate_filterable=False,
+    learn="measure_borehole_discharge_diameter",
+)
+BOREHOLE_DISCHARGE_SDR = _fact(
+    "discharge_sdr",
+    aliases=("sdr трубы", "sdr"),
+    catalog_verifiable=False,
+    candidate_filterable=False,
+    learn="read_borehole_discharge_sdr",
 )
 DUTY_POINT_HEAD = _fact(
     "duty_point_head_m",
@@ -944,9 +1062,23 @@ DEFAULT_CONTRACTS: tuple[ProductContract, ...] = (
     _contract(
         "pump.borehole.v1", ProductKind.BOREHOLE_PUMP, "pumps",
         ("borehole pump", "submersible borehole pump", "скважинный насос"),
-        BASE, (MAX_HEAD, MAX_FLOW), catalog_categories=("насосное оборудование",),
-        invariants=("max_head_m",),
-        preliminary_identity_fact_groups=(("max_head_m", "max_flow_l_h"),),
+        BASE,
+        (
+            BOREHOLE_REQUIRED_HEAD,
+            BOREHOLE_REQUIRED_FLOW,
+            BOREHOLE_CATALOG_MAX_HEAD,
+            BOREHOLE_CATALOG_MAX_FLOW,
+            BOREHOLE_WATER_LEVEL,
+            BOREHOLE_STATIC_WATER_LEVEL,
+            BOREHOLE_LIFT_HEIGHT,
+            BOREHOLE_HORIZONTAL_RUN,
+            BOREHOLE_REQUIRED_PRESSURE,
+            BOREHOLE_DISCHARGE_DIAMETER,
+            BOREHOLE_DISCHARGE_SDR,
+        ),
+        catalog_categories=("насосное оборудование",),
+        invariants=("required_head_m", "required_flow_l_h"),
+        preliminary_identity_fact_groups=(("required_head_m", "required_flow_l_h"),),
     ),
     _contract(
         "pump.drainage.v1", ProductKind.DRAINAGE_PUMP, "pumps",

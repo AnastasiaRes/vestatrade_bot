@@ -37,6 +37,35 @@ class ProductDocument(BaseModel):
     binding_value: str | None = None
 
 
+class ProductDocumentFact(BaseModel):
+    """A scalar fact deterministically verified inside one bound document.
+
+    This is deliberately separate from ``attributes_normalized``.  The feed
+    must not be rewritten merely because a passport has a useful table, and a
+    downstream V2 gate must retain the document, model scope and exact
+    fragment that prove the value.
+    """
+
+    name: str
+    value: str | int | float | bool
+    unit: str | None = None
+    document: str
+    section: str
+    evidence: str = Field(min_length=1, max_length=500)
+    parser: str
+
+
+class ProductDocumentFlowHeadPoint(BaseModel):
+    """One exact Q/H table point bound to a product model in a document."""
+
+    flow_l_h: float = Field(ge=0)
+    head_m: float = Field(ge=0)
+    document: str
+    section: str
+    evidence: str = Field(min_length=1, max_length=500)
+    parser: str
+
+
 class Product(BaseModel):
     sku: str
     name: str
@@ -54,6 +83,14 @@ class Product(BaseModel):
     # instruction supports a fact.  The default makes old cached Product JSON
     # (which only contains ``docs_text``) fully backwards compatible.
     documents: list[ProductDocument] = Field(default_factory=list)
+    # Narrow, document-derived scalar facts that passed a deterministic
+    # model/row check.  They are projected into the V2 source snapshot with
+    # passport provenance; raw document text is never used as a catalogue
+    # filter by itself.
+    document_facts: list[ProductDocumentFact] = Field(default_factory=list)
+    document_flow_head_points: list[ProductDocumentFlowHeadPoint] = Field(
+        default_factory=list
+    )
     docs_text: str | None = None
     updated_at: str = Field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()

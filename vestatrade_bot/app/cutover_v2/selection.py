@@ -67,6 +67,42 @@ def render_selection_no_match(result: SelectionResult) -> str | None:
 
     if result.status != SelectionResultStatus.NO_MATCH:
         raise ValueError("no-match renderer requires a checked no-match")
+    if result.product_kind == ProductKind.BOREHOLE_PUMP:
+        below_point = next(
+            (
+                item
+                for item in result.passport_flow_head_evidence
+                if item.status == "below_required_head"
+            ),
+            None,
+        )
+        if below_point is not None:
+            point = below_point.passport_point
+            return "\n".join(
+                (
+                    "По точной точке Q/H в паспорте для насоса "
+                    f"{below_point.sku}: при расходе "
+                    f"{below_point.requested_flow_l_h:g} л/ч указан напор "
+                    f"{point.head_m:g} м, а для вашего запроса нужно "
+                    f"{below_point.required_head_m:g} м.",
+                    "Не показываю эту модель даже как предварительно "
+                    "подходящую.",
+                )
+            )
+        missing_ratings = any(
+            "catalogue_required_rating_missing" in reason_codes
+            for reason_codes in result.excluded_candidate_reason_codes.values()
+        )
+        if missing_ratings:
+            return "\n".join(
+                (
+                    "В каталоге нет скважинного насоса с одновременно "
+                    "подтверждёнными максимальными напором и расходом под "
+                    "ваши исходные данные.",
+                    "Не показываю модель с неполными характеристиками как "
+                    "предварительно подходящую.",
+                )
+            )
     if result.product_kind != ProductKind.RADIATOR:
         return None
     area = next(
@@ -200,6 +236,32 @@ def render_selection_result(result: SelectionResult) -> str:
             f"{_fact_value(area)}. Это ориентир для предварительной выдачи, "
             "а не расчёт теплопотерь и не окончательная рекомендация."
         )
+    if result.product_kind == ProductKind.BOREHOLE_PUMP:
+        card_skus = {card.sku for card in result.cards}
+        exact_points = tuple(
+            item
+            for item in result.passport_flow_head_evidence
+            if item.status == "clears_required_head" and item.sku in card_skus
+        )
+        for exact_point in exact_points:
+            point = exact_point.passport_point
+            lines.append(
+                "В паспорте есть точная точка Q/H для "
+                f"{exact_point.sku}: при расходе "
+                f"{exact_point.requested_flow_l_h:g} л/ч указан напор "
+                f"{point.head_m:g} м — не ниже требуемых "
+                f"{exact_point.required_head_m:g} м."
+            )
+        lines.append(
+            "Подтверждённая точка относится только к указанному расходу. "
+            "Это не гидравлический расчёт системы: перед покупкой нужно "
+            "сверить условия монтажа и рабочую точку по кривой производителя."
+            if exact_points
+            else "Расчёт напора предварительный: карточки отсеивают только насосы с "
+            "недостаточными заявленными максимумами. Перед покупкой рабочую "
+            "точку по расходу и напору нужно сверить с кривой производителя."
+        )
+        return "\n".join(lines)
     if result.presentation_groups:
         grouped_fact = result.presentation_groups[0].label
         if grouped_fact == "количество контуров":

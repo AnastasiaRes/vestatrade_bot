@@ -103,6 +103,18 @@ class ContractFactDefinition(FrozenModel):
     preliminary_allowed_without: bool = True
     comparison: ComparisonMode = ComparisonMode.EXACT
     catalog_fields: tuple[str, ...] = ()
+    # Some facts are necessary to derive a customer requirement but do not
+    # describe a property of a catalogue card. Keep them in the one product
+    # contract so semantic validation and readiness can see them, while
+    # preventing the search planner from treating e.g. a route length as a
+    # product filter.
+    candidate_filterable: bool = True
+    # Some safety-critical requirements may be compared to a card only when
+    # the corresponding catalogue rating is explicitly present. A missing Q/H
+    # maximum for a borehole pump is not an "unverified alternative" that may
+    # be shown to a buyer: it cannot prove the pump clears even this limited
+    # preliminary boundary.
+    candidate_evidence_required: bool = False
     # A customer requirement and a scalar declared by a catalogue card can
     # have different meanings while still being compared deterministically.
     # For example, the heated area of a building is a customer requirement;
@@ -183,10 +195,15 @@ class ContractResolution(FrozenModel):
 
 
 class FactProvenance(FrozenModel):
-    source: Literal["attribute", "name", "description", "identity"]
+    source: Literal["attribute", "name", "description", "identity", "passport"]
     source_field: str
     raw_value: str = Field(max_length=500)
     parser: str
+    # Kept separately from ``source_field`` so a renderer or evidence gate
+    # does not have to parse a display string to recover the exact passport
+    # and its scoped table/section.
+    source_document: str | None = None
+    source_section: str | None = None
 
 
 class CatalogFact(FrozenModel):
@@ -204,6 +221,28 @@ class CatalogFactIssue(FrozenModel):
     provenance: FactProvenance
 
 
+class CatalogFlowHeadPoint(FrozenModel):
+    """An exact manufacturer Q/H table point, never an interpolated value."""
+
+    flow_l_h: float = Field(ge=0)
+    head_m: float = Field(ge=0)
+    provenance: FactProvenance
+
+
+class PassportFlowHeadEvaluation(FrozenModel):
+    """A source-backed check of one exact Q/H table point.
+
+    This deliberately models a single row of a manufacturer table.  It is
+    neither an interpolation nor a hydraulic-system calculation.
+    """
+
+    sku: str
+    requested_flow_l_h: float = Field(ge=0)
+    required_head_m: float = Field(ge=0)
+    passport_point: CatalogFlowHeadPoint
+    status: Literal["clears_required_head", "below_required_head"]
+
+
 class CatalogProductSnapshot(FrozenModel):
     sku: str
     name: str
@@ -218,6 +257,7 @@ class CatalogProductSnapshot(FrozenModel):
     stock_qty: int | None = None
     facts: tuple[CatalogFact, ...] = ()
     fact_issues: tuple[CatalogFactIssue, ...] = ()
+    flow_head_points: tuple[CatalogFlowHeadPoint, ...] = ()
     unsupported_reason: str | None = None
 
 
@@ -317,6 +357,10 @@ class CandidateAssessment(FrozenModel):
     # pass.  It is never inferred from a generic relaxed candidate.
     availability_analog: bool = False
     provenance: tuple[FactProvenance, ...] = ()
+    # Present only when the exact requested flow is a verified table point.
+    # It proves that point of the curve, not that the entire installation is
+    # engineered correctly.
+    passport_flow_head_evaluation: PassportFlowHeadEvaluation | None = None
     reason_codes: tuple[str, ...] = ()
 
 
@@ -505,6 +549,7 @@ class SelectionResult(FrozenModel):
     availability_analog: bool = False
     availability_analog_differences: tuple[CatalogRelaxation, ...] = ()
     source_backed_conflicts: tuple[SelectionSourceConflict, ...] = ()
+    passport_flow_head_evidence: tuple[PassportFlowHeadEvaluation, ...] = ()
     excluded_candidate_reason_codes: dict[str, tuple[str, ...]] = Field(
         default_factory=dict
     )

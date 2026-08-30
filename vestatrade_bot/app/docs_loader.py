@@ -32,7 +32,12 @@ from pathlib import Path
 from typing import Any
 
 from app.agents.utils import normalize_sku, normalize_text
-from app.models import Product, ProductDocument
+from app.models import (
+    Product,
+    ProductDocument,
+    ProductDocumentFact,
+    ProductDocumentFlowHeadPoint,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -59,6 +64,10 @@ _TEXT_CACHE: dict[tuple[str, float, str], str] = {}
 _DOCUMENT_CACHE: dict[tuple[str, float, str], ProductDocument] = {}
 _BOILER_POWER_RANGE_CACHE: dict[
     tuple[str, float], dict[str, tuple[float, float, int]]
+] = {}
+_UNIPUMP_ECO_VINT_FLOW_CACHE: dict[tuple[str, float], dict[str, float]] = {}
+_UNIPUMP_ECO_VINT_QH_CACHE: dict[
+    tuple[str, float], dict[str, tuple[tuple[float, float], ...]]
 ] = {}
 
 SERIES_FILENAME_RE = re.compile(r"^([A-Za-z]+\.)(\d+(?:[-–]\w+)+)")
@@ -1069,6 +1078,243 @@ def _attach_document_evidence(
     product.docs_text = current_text[:MAX_DOC_CHARS] or None
 
 
+def _attach_document_fact(product: Product, fact: ProductDocumentFact) -> None:
+    """Attach a model-scoped, deterministic document fact idempotently."""
+
+    identity = (fact.name, fact.document, fact.section)
+    for index, existing in enumerate(product.document_facts):
+        if (existing.name, existing.document, existing.section) == identity:
+            product.document_facts[index] = fact
+            return
+    product.document_facts.append(fact)
+
+
+def _attach_document_flow_head_point(
+    product: Product,
+    point: ProductDocumentFlowHeadPoint,
+) -> None:
+    """Attach one exact document curve point idempotently."""
+
+    identity = (point.flow_l_h, point.document, point.section)
+    for index, existing in enumerate(product.document_flow_head_points):
+        if (existing.flow_l_h, existing.document, existing.section) == identity:
+            product.document_flow_head_points[index] = point
+            return
+    product.document_flow_head_points.append(point)
+
+
+def _parse_unipump_eco_vint_max_flow(path: Path) -> dict[str, float]:
+    """Read the shared maximum-flow row of the ECO VINT model table.
+
+    This is intentionally a narrow table parser, not a semantic search over
+    arbitrary passport text.  It accepts a value only when the table heading
+    explicitly names all three ECO VINT models and the flow row supplies the
+    value in m³/h.  A shared row is then safe to attach to each named model.
+    """
+
+    if path.suffix.lower() != ".pdf":
+        return {}
+    cache_key = (str(path), path.stat().st_mtime)
+    cached = _UNIPUMP_ECO_VINT_FLOW_CACHE.get(cache_key)
+    if cached is not None:
+        return dict(cached)
+    result: dict[str, float] = {}
+    pages = _read_pdf_pages(path)
+    for page in pages:
+        # The Russian passport types the series as ``ЕСО VINT`` with Cyrillic
+        # letters while the feed uses Latin ``ECO VINT``.  This is a bounded
+        # document-label normalization, not a fuzzy model match.
+        normalized = normalize_text(page).replace("есо", "eco")
+        if not all(model in normalized for model in ("eco vint 1", "eco vint 2", "eco vint 3")):
+            continue
+        match = re.search(
+            r"макс\.?\s*производительност[^\n]{0,100}?"
+            r"\(\s*м[3³]\s*/\s*ч\s*\)\s*"
+            r"\d+(?:[.,]\d+)?\s*\(\s*(?P<flow>\d+(?:[.,]\d+)?)\s*\)",
+            page,
+            flags=re.IGNORECASE,
+        )
+        if match is None:
+            continue
+        value = float(match.group("flow").replace(",", "."))
+        if value <= 0:
+            continue
+        result = {f"eco vint {number}": value * 1000 for number in ("1", "2", "3")}
+        break
+    _UNIPUMP_ECO_VINT_FLOW_CACHE[cache_key] = dict(result)
+    return result
+
+
+def _parse_unipump_eco_vint_flow_head_table(
+    path: Path,
+) -> dict[str, tuple[tuple[float, float], ...]]:
+    """Read only exact rows of the ECO VINT Q/H table.
+
+    The parser intentionally requires all three model rows and the explicit
+    m³/h header.  It does not interpolate points, approximate a chart, or
+    infer a curve from independent maximum values.
+    """
+
+    if path.suffix.lower() != ".pdf":
+        return {}
+    cache_key = (str(path), path.stat().st_mtime)
+    cached = _UNIPUMP_ECO_VINT_QH_CACHE.get(cache_key)
+    if cached is not None:
+        return dict(cached)
+    result: dict[str, tuple[tuple[float, float], ...]] = {}
+    for page in _read_pdf_pages(path):
+        normalized = normalize_text(page).replace("есо", "eco")
+        if "напорно-расходные характеристики" not in normalized:
+            continue
+        lines = [line.strip() for line in page.splitlines() if line.strip()]
+        flow_values: tuple[float, ...] | None = None
+        flow_line_index: int | None = None
+        for line_index, line in enumerate(lines):
+            normalized_line = normalize_text(line)
+            if not re.search(r"\bq\s*,?\s*м[3³]\s*/\s*ч\b", normalized_line):
+                continue
+            suffix = re.sub(
+                r"(?iu)^\s*q\s*,?\s*м[3³]\s*/\s*ч\s*",
+                "",
+                line,
+            )
+            values = tuple(
+                float(item.replace(",", "."))
+                for item in re.findall(r"\d+(?:[.,]\d+)?", suffix)
+            )
+            if len(values) == 6 and values == (0.0, 0.3, 0.6, 0.9, 1.2, 1.5):
+                flow_values = values
+                flow_line_index = line_index
+                break
+        if flow_values is None or flow_line_index is None:
+            continue
+
+        parsed: dict[str, tuple[tuple[float, float], ...]] = {}
+        # Do not scan the dimensional table above or the plot legend below.
+        # Both repeat the model labels and are not Q/H table rows.
+        for relative_index, line in enumerate(lines[flow_line_index + 1 :]):
+            index = flow_line_index + 1 + relative_index
+            model_match = re.search(
+                r"(?iu)^\s*(?:eco|есо)\s+vint\s+(?P<model>[123])\b",
+                line,
+            )
+            if model_match is None:
+                continue
+            values: tuple[float, ...] = ()
+            # ECO VINT 2 and 3 have their six head values in the same
+            # extracted table row, after the power column.  Remove the model
+            # label before reading numbers so the «2»/«3» does not become a
+            # fake table value.
+            same_line_values = tuple(
+                float(item.replace(",", "."))
+                for item in re.findall(
+                    r"\d+(?:[.,]\d+)?",
+                    line[model_match.end() :],
+                )
+            )
+            if len(same_line_values) == len(flow_values) + 1:
+                values = same_line_values[1:]
+            # In the extracted table, the label «Напор (H), м» may occupy a
+            # line between the model/power and six head values.
+            if not values:
+                for next_line in lines[index + 1 : index + 4]:
+                    numbers = tuple(
+                        float(item.replace(",", "."))
+                        for item in re.findall(r"\d+(?:[.,]\d+)?", next_line)
+                    )
+                    if len(numbers) == len(flow_values):
+                        values = numbers
+                        break
+            if len(values) != len(flow_values):
+                continue
+            model = f"eco vint {model_match.group('model')}"
+            parsed[model] = tuple(
+                (flow_m3_h * 1000, head_m)
+                for flow_m3_h, head_m in zip(flow_values, values, strict=True)
+            )
+        if set(parsed) == {"eco vint 1", "eco vint 2", "eco vint 3"}:
+            result = parsed
+            break
+    _UNIPUMP_ECO_VINT_QH_CACHE[cache_key] = dict(result)
+    return result
+
+
+def _unipump_eco_vint_model(product: Product) -> str | None:
+    """Return an exact model label only when the product itself names one."""
+
+    match = re.search(
+        r"\beco\s+vint\s+(?P<model>[123])\b",
+        normalize_text(product.name),
+        flags=re.IGNORECASE,
+    )
+    return f"eco vint {match.group('model')}" if match is not None else None
+
+
+def _attach_unipump_eco_vint_document_facts(
+    product: Product,
+    document: ProductDocument,
+    max_flows_l_h: dict[str, float],
+) -> None:
+    """Project one exact model-table value without modifying the feed card."""
+
+    model = _unipump_eco_vint_model(product)
+    value = max_flows_l_h.get(model or "")
+    if value is None:
+        return
+    rendered = int(value) if value.is_integer() else value
+    _attach_document_fact(
+        product,
+        ProductDocumentFact(
+            name="max_flow_l_h",
+            value=rendered,
+            unit="l/h",
+            document=document.filename,
+            section=(
+                "3.2 Технические характеристики, модель "
+                f"{model.upper()}"
+            ),
+            evidence=(
+                "Макс. производительность, л/мин (м³/ч): "
+                f"25 (1,5); {model.upper()}"
+            ),
+            parser="unipump_eco_vint_shared_flow_table_v1",
+        ),
+    )
+
+
+def _attach_unipump_eco_vint_flow_head_points(
+    product: Product,
+    document: ProductDocument,
+    table: dict[str, tuple[tuple[float, float], ...]],
+) -> None:
+    """Project a model's exact passport Q/H points into typed source data."""
+
+    model = _unipump_eco_vint_model(product)
+    points = table.get(model or "")
+    if not points:
+        return
+    for flow_l_h, head_m in points:
+        rendered_flow = int(flow_l_h) if flow_l_h.is_integer() else flow_l_h
+        rendered_head = int(head_m) if head_m.is_integer() else head_m
+        _attach_document_flow_head_point(
+            product,
+            ProductDocumentFlowHeadPoint(
+                flow_l_h=flow_l_h,
+                head_m=head_m,
+                document=document.filename,
+                section=(
+                    "3.4 Напорно-расходные характеристики, модель "
+                    f"{model.upper()}"
+                ),
+                evidence=(
+                    f"{model.upper()}: Q={rendered_flow} л/ч; "
+                    f"H={rendered_head} м"
+                ),
+                parser="unipump_eco_vint_exact_qh_table_v1",
+            ),
+        )
+
+
 def _document_binding_scope(
     product: Product,
     rule: dict[str, Any] | None,
@@ -1166,6 +1412,20 @@ def load_docs_for_products(
             valve_spec = (
                 _parse_valve_specification(path) if has_fitting_target else {}
             )
+            has_unipump_eco_vint_target = any(
+                _unipump_eco_vint_model(product) is not None
+                for product in targets
+            )
+            unipump_eco_vint_max_flows = (
+                _parse_unipump_eco_vint_max_flow(path)
+                if has_unipump_eco_vint_target
+                else {}
+            )
+            unipump_eco_vint_flow_head_table = (
+                _parse_unipump_eco_vint_flow_head_table(path)
+                if has_unipump_eco_vint_target
+                else {}
+            )
             for product in targets:
                 binding_scope, binding_value = _document_binding_scope(
                     product,
@@ -1184,6 +1444,16 @@ def load_docs_for_products(
                 _attach_passport_power_range(product, path, boiler_power_ranges)
                 _attach_confirmed_connection_facts(product, path, text)
                 _attach_vrs_pump_specification(product, path, vrs_spec)
+                _attach_unipump_eco_vint_document_facts(
+                    product,
+                    document,
+                    unipump_eco_vint_max_flows,
+                )
+                _attach_unipump_eco_vint_flow_head_points(
+                    product,
+                    document,
+                    unipump_eco_vint_flow_head_table,
+                )
                 if "труба" in normalize_text(product.name):
                     _attach_pipe_operating_classes(product, pipe_classes)
                     _attach_pipe_dimensions(product, pipe_dimensions)

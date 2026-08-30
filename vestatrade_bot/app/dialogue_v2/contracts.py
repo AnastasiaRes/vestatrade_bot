@@ -622,6 +622,15 @@ class ConstraintCorrected(StateEventBase):
     name: str
 
 
+class ConstraintInvalidated(StateEventBase):
+    """A deterministic derivative became stale after its source facts changed."""
+
+    event_type: Literal["constraint_invalidated"] = "constraint_invalidated"
+    fact_id: str
+    name: str
+    reason_code: str
+
+
 class ConstraintMarkedUnknown(StateEventBase):
     event_type: Literal["constraint_marked_unknown"] = "constraint_marked_unknown"
     fact_id: str
@@ -914,6 +923,7 @@ ReducerEvent: TypeAlias = (
     | ProductGoalCorrected
     | ConstraintAdded
     | ConstraintCorrected
+    | ConstraintInvalidated
     | ConstraintMarkedUnknown
     | ConstraintRefused
     | ConstraintDeferred

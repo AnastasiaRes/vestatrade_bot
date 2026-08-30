@@ -47,6 +47,7 @@ def _frame(
     products: list[dict[str, object]] | None = None,
     constraints: list[dict[str, object]] | None = None,
     show: str | None = None,
+    answers_pending_question: bool = False,
 ) -> TurnUnderstanding:
     payload: dict[str, object] = {
         "schema_version": "1.3",
@@ -61,7 +62,7 @@ def _frame(
         "selection_controls": [],
         "selection_strategy": {"kind": "standard", "evidence": None},
         "information_requests": [],
-        "answers_pending_question": False,
+        "answers_pending_question": answers_pending_question,
         "confidence": 0.99,
     }
     if show is not None:
@@ -392,3 +393,340 @@ def test_catalog_bound_numeric_and_slash_sku_keep_v2_ownership_and_report_stock(
     assert traces[0]["cutover_v2"]["offer_fact_delivery"]["value"] == "нет в наличии"
     assert traces[1]["cutover_v2"]["offer_fact_delivery"]["sku"] == "68/2/8"
     assert traces[1]["cutover_v2"]["offer_fact_delivery"]["value"] == 6_828
+
+
+def test_returned_goal_receives_its_pending_answer_without_valve_fact_leakage(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """A paused boiler task keeps its question and facts after a valve detour.
+
+    This is a protected-Preview migration of the historical "switch while a
+    question is pending" failures.  The important boundary is not matching
+    the old slots dictionary: a fact from the return turn must bind to the
+    reactivated boiler goal, whereas the valve facts remain on their own goal.
+    """
+
+    boiler = _product(
+        "GAS-24",
+        "Котёл газовый 24 кВт одноконтурный",
+        "Котельное оборудование",
+        price=54_000,
+        attributes={
+            "Тип товара": "Котёл",
+            "Тип котла": "Газовый",
+            "Количество контуров": "Одноконтурный",
+            "Мощность, кВт": "24",
+            "Отапливаемая площадь, м²": "240",
+        },
+    )
+    valve = _product(
+        "VALVE-ONE",
+        "Кран шаровой BASE 1/2 вн-вн",
+        "Водозапорная арматура",
+        price=452,
+        attributes={
+            "Тип товара": "Кран шаровой",
+            "Диаметр подключения, дюйм": "1/2",
+            "Тип резьбы": "С внутренней резьбой (ff)",
+        },
+    )
+    settings = _preview_settings(tmp_path)
+    bot = ChatOrchestrator(settings=settings, products=[boiler, valve])
+
+    opening = _frame(
+        operation="new",
+        acts=["find"],
+        products=[
+            {
+                "text": "котёл",
+                "canonical_type": "boiler",
+                "category": "boilers",
+                "role": "target",
+                "evidence": "котёл",
+            }
+        ],
+        constraints=[_known("area_m2", 150, "дом 150 м²", unit="m2")],
+    )
+    fuel = _frame(
+        operation="continue",
+        acts=["find"],
+        constraints=[
+            {
+                **_known("boiler_type", "gas", "газовый"),
+                "applies_to_product": None,
+            }
+        ],
+        answers_pending_question=True,
+    )
+    valve_selection = _frame(
+        operation="new",
+        acts=["find"],
+        products=[
+            {
+                "text": "кран BASE",
+                "canonical_type": "ball valve",
+                "category": "valves",
+                "role": "target",
+                "evidence": "кран BASE",
+            }
+        ],
+        constraints=[
+            _known("connection_size", "1/2", "1/2"),
+            _known("connection_pattern", "female_female", "вн-вн"),
+        ],
+        show="Покажите краны",
+    )
+    returned_circuits = _frame(
+        operation="continue",
+        acts=["find"],
+        constraints=[
+            {
+                **_known("circuits", 1, "ГВС не нужна"),
+                "applies_to_product": None,
+            }
+        ],
+        show="Вернёмся к котлу, ГВС не нужна — покажите варианты",
+        answers_pending_question=True,
+    )
+    frames = iter((opening, fuel, valve_selection, returned_circuits))
+
+    def interpret(message: str, before):
+        return _semantic(
+            next(frames),
+            goal_reactivation=resolve_goal_reactivation(
+                message,
+                before.live_dialogue_state_v2 or before.dialogue_state_v2,
+            ),
+        )
+
+    monkeypatch.setattr(bot.semantic_interpreter, "interpret", interpret)
+    session_id = "v2-history-pending-return"
+    first = bot.handle_chat(
+        session_id,
+        "Нужен котёл для дома 150 м²",
+        client_turn_id="v2-history-pending-return-1",
+        qa_mode=DialogueQAMode.V2_PREVIEW,
+    )
+    second = bot.handle_chat(
+        session_id,
+        "Газовый",
+        client_turn_id="v2-history-pending-return-2",
+        qa_mode=DialogueQAMode.V2_PREVIEW,
+    )
+    valves = bot.handle_chat(
+        session_id,
+        "Теперь нужны краны BASE 1/2 вн-вн, покажите",
+        client_turn_id="v2-history-pending-return-3",
+        qa_mode=DialogueQAMode.V2_PREVIEW,
+    )
+    returned = bot.handle_chat(
+        session_id,
+        "Вернёмся к котлу, ГВС не нужна — покажите варианты",
+        client_turn_id="v2-history-pending-return-4",
+        qa_mode=DialogueQAMode.V2_PREVIEW,
+    )
+
+    assert first.products == []
+    assert "газовый или электрический" in first.answer.lower()
+    assert second.products == []
+    assert "горяч" in second.answer.lower()
+    assert [item.sku for item in valves.products] == ["VALVE-ONE"]
+    assert [item.sku for item in returned.products] == ["GAS-24"]
+
+    state = bot.sessions.snapshot(session_id).live_dialogue_state_v2
+    assert state is not None
+    boiler_goal = next(
+        item for item in state.product_goals if item.category.value == "boilers"
+    )
+    valve_goal = next(
+        item for item in state.product_goals if item.category.value == "valves"
+    )
+    assert state.active_goal_id == boiler_goal.goal_id
+    boiler_facts = {
+        item.name: item.value
+        for item in state.constraints
+        if item.active and item.goal_id == boiler_goal.goal_id
+    }
+    valve_facts = {
+        item.name: item.value
+        for item in state.constraints
+        if item.active and item.goal_id == valve_goal.goal_id
+    }
+    assert boiler_facts.items() >= {
+        "area_m2": 150,
+        "boiler_type": "gas",
+        "circuits": 1,
+    }.items()
+    assert "connection_size" not in boiler_facts
+    assert valve_facts.items() >= {
+        "connection_size": "1/2",
+        "connection_pattern": "female_female",
+    }.items()
+
+    traces = [
+        json.loads(line)
+        for line in settings.diagnostic_trace_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert [
+        trace["cutover_v2"]["decision"]["owner_candidate"] for trace in traces
+    ] == ["v2", "v2", "v2", "v2"]
+    assert traces[-1]["cutover_v2"]["selection_delivery"]["ordered_skus"] == [
+        "GAS-24"
+    ]
+
+
+def test_explicit_correction_replaces_only_the_named_goal_fact_in_preview(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """An explicit correction replaces area, never fuel or circuit facts.
+
+    The gate protects monotonic V2 memory at the delivery boundary: facts
+    absent from the correction survive, but the old area no longer influences
+    the refreshed customer-visible selection.
+    """
+
+    smaller = _product(
+        "GAS-18",
+        "Котёл газовый 18 кВт одноконтурный",
+        "Котельное оборудование",
+        price=47_000,
+        attributes={
+            "Тип товара": "Котёл",
+            "Тип котла": "Газовый",
+            "Количество контуров": "Одноконтурный",
+            "Мощность, кВт": "18",
+            "Отапливаемая площадь, м²": "180",
+        },
+    )
+    larger = _product(
+        "GAS-24",
+        "Котёл газовый 24 кВт одноконтурный",
+        "Котельное оборудование",
+        price=54_000,
+        attributes={
+            "Тип товара": "Котёл",
+            "Тип котла": "Газовый",
+            "Количество контуров": "Одноконтурный",
+            "Мощность, кВт": "24",
+            "Отапливаемая площадь, м²": "240",
+        },
+    )
+    settings = _preview_settings(tmp_path)
+    bot = ChatOrchestrator(settings=settings, products=[smaller, larger])
+
+    opening = _frame(
+        operation="new",
+        acts=["find"],
+        products=[
+            {
+                "text": "котёл",
+                "canonical_type": "boiler",
+                "category": "boilers",
+                "role": "target",
+                "evidence": "котёл",
+            }
+        ],
+        constraints=[_known("area_m2", 150, "дом 150 м²", unit="m2")],
+    )
+    fuel = _frame(
+        operation="continue",
+        acts=["find"],
+        constraints=[
+            {
+                **_known("boiler_type", "gas", "газовый"),
+                "applies_to_product": None,
+            }
+        ],
+        answers_pending_question=True,
+    )
+    circuits = _frame(
+        operation="continue",
+        acts=["find"],
+        constraints=[
+            {
+                **_known("circuits", 1, "только отопление"),
+                "applies_to_product": None,
+            }
+        ],
+        show="Покажите варианты",
+        answers_pending_question=True,
+    )
+    corrected_area = _frame(
+        operation="correct",
+        acts=["find"],
+        constraints=[
+            {
+                **_known("area_m2", 240, "точнее, 240 м²", unit="m2"),
+                "applies_to_product": None,
+            }
+        ],
+        show="Площадь всё-таки 240 м², покажите варианты",
+    )
+    frames = iter((opening, fuel, circuits, corrected_area))
+    monkeypatch.setattr(
+        bot.semantic_interpreter,
+        "interpret",
+        lambda _message, _before: _semantic(next(frames)),
+    )
+
+    session_id = "v2-history-explicit-correction"
+    bot.handle_chat(
+        session_id,
+        "Нужен котёл для дома 150 м²",
+        client_turn_id="v2-history-explicit-correction-1",
+        qa_mode=DialogueQAMode.V2_PREVIEW,
+    )
+    bot.handle_chat(
+        session_id,
+        "Газовый",
+        client_turn_id="v2-history-explicit-correction-2",
+        qa_mode=DialogueQAMode.V2_PREVIEW,
+    )
+    before_correction = bot.handle_chat(
+        session_id,
+        "Только отопление, покажите варианты",
+        client_turn_id="v2-history-explicit-correction-3",
+        qa_mode=DialogueQAMode.V2_PREVIEW,
+    )
+    corrected = bot.handle_chat(
+        session_id,
+        "Площадь всё-таки 240 м², покажите варианты",
+        client_turn_id="v2-history-explicit-correction-4",
+        qa_mode=DialogueQAMode.V2_PREVIEW,
+    )
+
+    assert [item.sku for item in before_correction.products] == ["GAS-18", "GAS-24"]
+    assert [item.sku for item in corrected.products] == ["GAS-24"]
+    state = bot.sessions.snapshot(session_id).live_dialogue_state_v2
+    assert state is not None
+    active = {
+        item.name: item.value
+        for item in state.constraints
+        if item.active and item.goal_id == state.active_goal_id
+    }
+    assert active.items() >= {
+        "area_m2": 240,
+        "boiler_type": "gas",
+        "circuits": 1,
+    }.items()
+    assert sum(
+        item.active and item.name == "area_m2" and item.goal_id == state.active_goal_id
+        for item in state.constraints
+    ) == 1
+
+    traces = [
+        json.loads(line)
+        for line in settings.diagnostic_trace_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(traces) == 4
+    assert all(
+        trace["cutover_v2"]["decision"]["owner_candidate"] == "v2"
+        for trace in traces
+    )
+    assert traces[-1]["cutover_v2"]["selection_delivery"]["ordered_skus"] == [
+        "GAS-24"
+    ]

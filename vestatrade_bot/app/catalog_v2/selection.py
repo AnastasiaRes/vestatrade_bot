@@ -62,6 +62,20 @@ def _exact_source_fact(source, fact_name: str):
     return facts[0] if len(distinct) == 1 and facts else None
 
 
+def _source_has_flow_head_evaluation(source, evaluation) -> bool:
+    """Verify that a planner's Q/H point is still in this source snapshot."""
+
+    if source is None:
+        return False
+    point = evaluation.passport_point
+    return any(
+        item.flow_l_h == point.flow_l_h
+        and item.head_m == point.head_m
+        and item.provenance == point.provenance
+        for item in source.flow_head_points
+    )
+
+
 def _preliminary_groups(
     cards: tuple[SelectionProductCard, ...],
     source_snapshot: AnswerSourceSnapshot,
@@ -574,6 +588,21 @@ def build_selection_result(
 
     candidate_assessments = search.candidate_assessments if search is not None else ()
     candidate_by_sku = {item.sku: item for item in candidate_assessments}
+    passport_flow_head_evidence = tuple(
+        item.passport_flow_head_evaluation
+        for item in candidate_assessments
+        if item.passport_flow_head_evaluation is not None
+    )
+    if any(
+        not _source_has_flow_head_evaluation(
+            source_snapshot.product(evaluation.sku),
+            evaluation,
+        )
+        for evaluation in passport_flow_head_evidence
+    ):
+        # Evidence used to reject or present a pump must belong to precisely
+        # this immutable source snapshot.  Do not render a stale curve point.
+        card_gate_failed = True
     allowed_skus = (
         tuple(
             dict.fromkeys(
@@ -633,6 +662,19 @@ def build_selection_result(
                         reason_codes=candidate.reason_codes,
                     )
                 )
+        if "passport_qh_exact_flow_not_listed" in candidate.reason_codes:
+            # The candidate remains a preliminary envelope match, but the
+            # delivery record must make the absence of an exact table proof
+            # observable.  This is not a newly missing customer fact and does
+            # not alter the displayed cards.
+            dispositions.append(
+                SelectionConstraintDisposition(
+                    disposition="unverified",
+                    fact_name="flow_head_curve",
+                    candidate_sku=candidate.sku,
+                    reason_codes=("passport_qh_exact_flow_not_listed",),
+                )
+            )
 
     availability_analog = bool(
         cards
@@ -754,6 +796,18 @@ def build_selection_result(
                 missing_critical or "",
                 reason,
                 *ordered_skus,
+                *(
+                    "\x1e".join(
+                        (
+                            evaluation.sku,
+                            str(evaluation.requested_flow_l_h),
+                            str(evaluation.required_head_m),
+                            str(evaluation.passport_point.head_m),
+                            evaluation.status,
+                        )
+                    )
+                    for evaluation in passport_flow_head_evidence
+                ),
             )
         ).encode("utf-8")
     ).hexdigest()[:32]
@@ -789,6 +843,7 @@ def build_selection_result(
         availability_analog=availability_analog,
         availability_analog_differences=availability_analog_differences,
         source_backed_conflicts=source_backed_conflicts,
+        passport_flow_head_evidence=passport_flow_head_evidence,
         excluded_candidate_reason_codes=exclusions,
         catalog_revision=request.catalog_revision,
         outcome_gate_passed=gate_passed,

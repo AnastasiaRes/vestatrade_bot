@@ -70,6 +70,7 @@ from .contracts import (
     ConstraintCorrected,
     ConstraintDeferred,
     ConstraintFactV2,
+    ConstraintInvalidated,
     ConstraintMarkedUnknown,
     ConstraintPolarity,
     ConstraintRefused,
@@ -2294,6 +2295,121 @@ def reduce_dialogue_state(
         rejected_proposals=tuple(rejected),
         progress=progress,
         conflicts=tuple(conflicts),
+    )
+
+
+def record_deterministic_derived_constraint(
+    reduction: ReductionResult,
+    turn_metadata: TurnMetadata,
+    *,
+    name: str,
+    value: str | int | float | bool | None,
+    unit: str | None,
+    goal_id: str | None,
+    task_id: str | None,
+    evidence: str,
+    source: str,
+    reason_code: str,
+) -> ReductionResult:
+    """Append or invalidate one non-LLM fact through the state boundary.
+
+    Deterministic adapters (currently the borehole hydraulic calculation) may
+    derive a requirement from already accepted facts. They cannot mutate a
+    state directly or replace an explicit customer fact. ``value=None`` is an
+    explicit invalidation of an earlier value emitted by the same adapter.
+    """
+
+    matching = tuple(
+        fact
+        for fact in reduction.state.constraints
+        if fact.active
+        and fact.name == name
+        and fact.goal_id == goal_id
+        and fact.source == source
+    )
+    active = matching[-1] if matching else None
+    if value is None:
+        if active is None:
+            return reduction
+        constraints = tuple(
+            fact.model_copy(update={"active": False})
+            if fact.fact_id == active.fact_id
+            else fact
+            for fact in reduction.state.constraints
+        )
+        event = ConstraintInvalidated(
+            turn_id=turn_metadata.turn_id,
+            turn_number=reduction.state.turn_number,
+            fact_id=active.fact_id,
+            name=name,
+            reason_code=reason_code,
+        )
+        return reduction.model_copy(
+            update={
+                "state": reduction.state.model_copy(update={"constraints": constraints}),
+                "events": (*reduction.events, event),
+            }
+        )
+
+    if (
+        active is not None
+        and active.value == value
+        and active.unit == unit
+        and active.evidence == evidence
+    ):
+        return reduction
+
+    fact_id = _stable_id(
+        "derived_fact",
+        turn_metadata.turn_id,
+        task_id,
+        goal_id,
+        name,
+        value,
+        unit,
+        source,
+    )
+    derived = ConstraintFactV2(
+        fact_id=fact_id,
+        name=name,
+        value=value,
+        unit=unit,
+        status=ConstraintStatus.KNOWN,
+        polarity=ConstraintPolarity.REQUIRED,
+        strength=ConstraintStrength.HARD,
+        evidence=_short_evidence(evidence),
+        source=source,
+        confidence=1.0,
+        goal_id=goal_id,
+        task_id=task_id,
+        source_turn=reduction.state.turn_number,
+        replaces_fact_id=active.fact_id if active is not None else None,
+    )
+    constraints = tuple(
+        fact.model_copy(update={"active": False})
+        if active is not None and fact.fact_id == active.fact_id
+        else fact
+        for fact in reduction.state.constraints
+    ) + (derived,)
+    event_args = {
+        "turn_id": turn_metadata.turn_id,
+        "turn_number": reduction.state.turn_number,
+        "fact_id": derived.fact_id,
+        "name": name,
+    }
+    event = (
+        ConstraintCorrected(
+            **event_args,
+            replaced_fact_id=active.fact_id,
+        )
+        if active is not None
+        else ConstraintAdded(**event_args)
+    )
+    return reduction.model_copy(
+        update={
+            "state": reduction.state.model_copy(update={"constraints": constraints}),
+            "events": (*reduction.events, event),
+        }
     )
 
 

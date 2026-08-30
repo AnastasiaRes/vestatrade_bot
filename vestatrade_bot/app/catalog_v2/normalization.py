@@ -11,6 +11,7 @@ from app.models import Product
 from .contracts import (
     CatalogFact,
     CatalogFactIssue,
+    CatalogFlowHeadPoint,
     CatalogProductSnapshot,
     FactProvenance,
     ProductKind,
@@ -246,6 +247,8 @@ def _fact(
     raw: object,
     parser: str,
     unit: str | None = None,
+    source_document: str | None = None,
+    source_section: str | None = None,
 ) -> CatalogFact | None:
     if value is None or value == "":
         return None
@@ -258,6 +261,8 @@ def _fact(
             source_field=field,
             raw_value=str(raw)[:500],
             parser=parser,
+            source_document=source_document,
+            source_section=source_section,
         ),
     )
 
@@ -1022,6 +1027,7 @@ def normalize_catalog_product(
     contract = registry.for_kind(kind)
     facts: list[CatalogFact] = []
     fact_issues: list[CatalogFactIssue] = []
+    flow_head_points: list[CatalogFlowHeadPoint] = []
     facts.append(_fact("sku", product.sku, source="identity", field="sku", raw=product.sku, parser="catalog_identity"))
     brand = _fact(
         "brand",
@@ -1110,6 +1116,82 @@ def normalize_catalog_product(
             )
         )
 
+    # A passport table may safely supplement a missing card rating only after
+    # its parser has proved the exact model/row.  It never rewrites the feed:
+    # a conflicting card value becomes a source issue and is unusable by both
+    # Selection and ProductFact until reconciled.
+    for document_fact in product.document_facts:
+        if contract is None or not any(
+            definition.name == document_fact.name
+            for definition in contract.fact_definitions
+        ):
+            continue
+        matching = [item for item in facts if item.name == document_fact.name]
+        document_catalog_fact = _fact(
+            document_fact.name,
+            document_fact.value,
+            unit=document_fact.unit,
+            source="passport",
+            field=document_fact.name,
+            raw=document_fact.evidence,
+            parser=document_fact.parser,
+            source_document=document_fact.document,
+            source_section=document_fact.section,
+        )
+        if document_catalog_fact is None:
+            continue
+        if not matching:
+            facts.append(document_catalog_fact)
+            continue
+        known_values = {(str(item.value), item.unit) for item in matching}
+        if (str(document_catalog_fact.value), document_catalog_fact.unit) not in known_values:
+            fact_issues.append(
+                CatalogFactIssue(
+                    name=document_fact.name,
+                    provenance=document_catalog_fact.provenance,
+                )
+            )
+
+    # Q/H points are a relation rather than ordinary scalar attributes. They
+    # can only come from an exact model row in a document. A conflict at one
+    # flow is fail-closed: the planner will never choose between sources.
+    points_by_flow: dict[float, CatalogFlowHeadPoint] = {}
+    conflicting_flows: set[float] = set()
+    for document_point in product.document_flow_head_points:
+        point = CatalogFlowHeadPoint(
+            flow_l_h=float(document_point.flow_l_h),
+            head_m=float(document_point.head_m),
+            provenance=FactProvenance(
+                source="passport",
+                source_field="flow_head_curve",
+                raw_value=document_point.evidence,
+                parser=document_point.parser,
+                source_document=document_point.document,
+                source_section=document_point.section,
+            ),
+        )
+        previous = points_by_flow.get(point.flow_l_h)
+        if previous is None:
+            points_by_flow[point.flow_l_h] = point
+        elif previous.head_m != point.head_m:
+            conflicting_flows.add(point.flow_l_h)
+    for flow_l_h in conflicting_flows:
+        points_by_flow.pop(flow_l_h, None)
+        fact_issues.append(
+            CatalogFactIssue(
+                name="flow_head_curve",
+                provenance=FactProvenance(
+                    source="passport",
+                    source_field="flow_head_curve",
+                    raw_value=f"conflicting document points at Q={flow_l_h:g} l/h",
+                    parser="document_flow_head_conflict",
+                ),
+            )
+        )
+    flow_head_points.extend(
+        points_by_flow[item] for item in sorted(points_by_flow)
+    )
+
     unique: dict[str, CatalogFact] = {}
     for fact in facts:
         unique.setdefault(fact.name, fact)
@@ -1128,6 +1210,7 @@ def normalize_catalog_product(
                 for item in fact_issues
             }.values()
         ),
+        flow_head_points=tuple(flow_head_points),
         unsupported_reason=unsupported,
     )
 

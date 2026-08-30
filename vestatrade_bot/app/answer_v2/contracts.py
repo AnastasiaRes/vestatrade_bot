@@ -11,6 +11,7 @@ from app.catalog_v2.contracts import (
     CandidateStatus,
     CatalogFact,
     CatalogFactIssue,
+    CatalogFlowHeadPoint,
     CatalogProductRole,
     CatalogRelaxation,
     ProductKind,
@@ -421,6 +422,7 @@ class CatalogAnswerProduct(FrozenModel):
     updated_at: str | None = None
     facts: tuple[CatalogFact, ...] = ()
     fact_issues: tuple[CatalogFactIssue, ...] = ()
+    flow_head_points: tuple[CatalogFlowHeadPoint, ...] = ()
 
 
 class ConstraintAnswerEvidence(FrozenModel):

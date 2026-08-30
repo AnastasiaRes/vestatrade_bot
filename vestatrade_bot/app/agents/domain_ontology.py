@@ -332,6 +332,74 @@ CONSTRAINT_FACT_ONTOLOGY: dict[str, tuple[dict[str, Any], ...]] = {
             "aliases": ["процент гликоля", "концентрация гликоля"],
         },
     ),
+    "borehole_pump": (
+        {
+            "name": "dynamic_water_level_m",
+            "meaning": "dynamic water level from ground surface in metres; static level is an accepted less precise alternative",
+            "aliases": [
+                "динамический уровень",
+                "уровень воды",
+                "вода стоит на глубине",
+                "зеркало воды",
+            ],
+        },
+        {
+            "name": "static_water_level_m",
+            "meaning": "static water level from ground surface in metres",
+            "aliases": ["статический уровень", "статическое зеркало воды"],
+        },
+        {
+            "name": "lift_height_m",
+            "meaning": "vertical lift from water level to the highest outlet in metres",
+            "aliases": [
+                "высота подъёма",
+                "подъём до дома",
+                "высота до верхней точки",
+            ],
+        },
+        {
+            "name": "horizontal_run_m",
+            "meaning": "horizontal discharge-route length in metres",
+            "aliases": [
+                "длина трассы",
+                "горизонтальная трасса",
+                "от скважины до дома",
+            ],
+        },
+        {
+            "name": "required_pressure_bar",
+            "meaning": "required outlet pressure in bar, not pump head in metres",
+            "aliases": [
+                "давление в доме",
+                "нужное давление",
+                "требуемое давление",
+            ],
+        },
+        {
+            "name": "required_flow_l_h",
+            "meaning": "required water flow; retain stated units and do not call it maximum pump flow",
+            "aliases": ["требуемый расход", "нужный расход", "расход воды"],
+        },
+        {
+            "name": "discharge_diameter_mm",
+            "meaning": "discharge-pipe diameter in millimetres; outer PE diameter needs SDR to derive an internal diameter",
+            "aliases": [
+                "диаметр напорной трубы",
+                "труба от насоса",
+                "выходная труба",
+            ],
+        },
+        {
+            "name": "discharge_sdr",
+            "meaning": "PE discharge-pipe SDR when its stated diameter is outer",
+            "aliases": ["SDR", "sdr трубы"],
+        },
+        {
+            "name": "required_head_m",
+            "meaning": "explicit calculated system head in metres; never confuse it with pressure in bar or a pump maximum rating",
+            "aliases": ["расчётный напор", "нужный напор", "напор по расчёту"],
+        },
+    ),
     "boiler": (
         {
             "name": "boiler_type",

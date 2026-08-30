@@ -30,6 +30,9 @@ _FACT_LABELS = {
     "control_thread": "посадочная резьба термоголовки",
     "declared_heated_area_m2": "заявленная отапливаемая площадь",
     "diameter_mm": "диаметр",
+    "discharge_diameter_mm": "диаметр напорной трубы",
+    "discharge_sdr": "SDR напорной трубы",
+    "dynamic_water_level_m": "динамический уровень воды",
     "duty_point_flow_l_h": "расход в рабочей точке",
     "duty_point_head_m": "напор в рабочей точке",
     "filter_method": "тип фильтрации",
@@ -41,6 +44,11 @@ _FACT_LABELS = {
     "material": "материал",
     "max_flow_l_h": "максимальный расход",
     "max_head_m": "максимальный напор",
+    "required_head_m": "расчётный напор",
+    "required_flow_l_h": "требуемый расход",
+    "required_pressure_bar": "давление в доме",
+    "horizontal_run_m": "длина горизонтальной трассы",
+    "lift_height_m": "высота подъёма",
     "maximum_operating_temperature_c": "максимальная рабочая температура",
     "micron_rating_um": "тонкость фильтрации",
     "mounting_length_mm": "монтажная длина",
@@ -228,6 +236,33 @@ _CLARIFICATION_PRESENTATIONS = {
         "на старом насосе или в его паспорте.",
         include_learn_instruction=False,
     ),
+    "dynamic_water_level_m": ClarificationPresentation(
+        "На какой глубине от поверхности находится уровень воды при работе "
+        "насоса? Если известен только статический уровень, тоже напишите его.",
+        include_learn_instruction=False,
+    ),
+    "lift_height_m": ClarificationPresentation(
+        "На сколько метров нужно поднять воду от уровня в скважине до самой "
+        "высокой точки разбора?",
+        include_learn_instruction=False,
+    ),
+    "horizontal_run_m": ClarificationPresentation(
+        "Какова длина горизонтальной трубы от скважины до дома или точки разбора?",
+        include_learn_instruction=False,
+    ),
+    "required_pressure_bar": ClarificationPresentation(
+        "Какое давление нужно получить в доме, в барах?",
+        include_learn_instruction=False,
+    ),
+    "required_flow_l_h": ClarificationPresentation(
+        "Какой расход воды нужен — например, в литрах в минуту или м³/ч?",
+        include_learn_instruction=False,
+    ),
+    "discharge_diameter_mm": ClarificationPresentation(
+        "Какой диаметр у напорной трубы от насоса? Для ПНД укажите наружный "
+        "диаметр и SDR; если знаете внутренний диаметр, напишите его.",
+        include_learn_instruction=False,
+    ),
     "connection_pattern": ClarificationPresentation(
         "Какая резьба нужна с каждой стороны: внутренняя или наружная?"
     ),
@@ -236,6 +271,8 @@ _CLARIFICATION_PRESENTATIONS = {
         "площадь дома — тогда покажу только предварительные варианты.",
         include_learn_instruction=False,
     ),
+    "max_head_m": ClarificationPresentation("Какой расчётный напор нужен для системы?"),
+    "max_flow_l_h": ClarificationPresentation("Какой расход воды нужен?"),
 }
 
 

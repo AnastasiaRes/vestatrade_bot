@@ -26,6 +26,11 @@ from app.catalog_v2.contracts import (
     CatalogPlanningResult,
     CatalogProductSnapshot,
     ContractResolutionStatus,
+    ReadinessStatus,
+)
+from app.catalog_v2.borehole import (
+    BoreholeHydraulicStatus,
+    derive_borehole_hydraulics,
 )
 from app.catalog_v2.planner import plan_catalog_search
 from app.catalog_v2.readiness import assess_task_readiness
@@ -66,6 +71,7 @@ from .reducer import (
     record_answer_shadow,
     record_catalog_planning,
     record_commerce_planning,
+    record_deterministic_derived_constraint,
     record_policy_decision,
     reduce_dialogue_state,
 )
@@ -233,6 +239,38 @@ class DialogueControllerV2:
                 )
                 for task in tasks
             )
+            borehole_results = tuple(
+                derive_borehole_hydraulics(
+                    reduction.state,
+                    task,
+                    self.contract_registry.get(resolution.contract_id),
+                )
+                for task, resolution in zip(tasks, resolutions, strict=True)
+            )
+            for result in borehole_results:
+                if result.status == BoreholeHydraulicStatus.NOT_APPLICABLE:
+                    continue
+                reduction = record_deterministic_derived_constraint(
+                    reduction,
+                    turn_metadata,
+                    name="required_head_m",
+                    value=(
+                        result.required_head_m
+                        if result.status
+                        == BoreholeHydraulicStatus.DERIVED_PRELIMINARY
+                        else None
+                    ),
+                    unit="m",
+                    goal_id=result.goal_id,
+                    task_id=result.task_id,
+                    evidence=result.evidence,
+                    source="borehole_hydraulic_calculation",
+                    reason_code=(
+                        result.reason_codes[0]
+                        if result.reason_codes
+                        else "borehole_hydraulic_derivative_invalidated"
+                    ),
+                )
             readiness = tuple(
                 assess_task_readiness(
                     reduction.state,
@@ -241,6 +279,39 @@ class DialogueControllerV2:
                     resolution,
                 )
                 for task, resolution in zip(tasks, resolutions, strict=True)
+            )
+            # The generic readiness layer correctly sees a calculated head as
+            # catalogue-unverifiable and therefore preliminary.  Before that
+            # calculation exists, however, its next question must be the
+            # concrete missing hydraulic input rather than an invitation to
+            # invent a ready-made system head.
+            readiness = tuple(
+                assessment.model_copy(
+                    update={
+                        "status": ReadinessStatus.NEEDS_DECISION_FACT,
+                        "missing_decision_facts": tuple(
+                            dict.fromkeys(
+                                (
+                                    *(
+                                        item
+                                        for item in assessment.missing_decision_facts
+                                        if item
+                                        not in {
+                                            "required_head_m",
+                                            "required_flow_l_h",
+                                        }
+                                    ),
+                                    *result.missing_fact_names,
+                                )
+                            )
+                        ),
+                        "recommended_question_fact": result.missing_fact_names[0],
+                        "reason_codes": result.reason_codes,
+                    }
+                )
+                if result.status == BoreholeHydraulicStatus.NEEDS_INPUT
+                else assessment
+                for assessment, result in zip(readiness, borehole_results, strict=True)
             )
         commerce_resolutions = ()
         commerce_workflows = ()

@@ -1085,13 +1085,25 @@ class ProductFactEvidenceService:
         if len(distinct) != 1:
             return None
         snapshot, fact = entries[0]
-        document = (
-            self.settings.feed_file_path.name
-            if self.settings.feed_file_path is not None
-            else self.settings.products_cache_path.name
+        passport_fact = (
+            fact.provenance.source == "passport"
+            and fact.provenance.source_document is not None
         )
-        section = f"товар {snapshot.sku}, {fact.provenance.source_field}"
-        quote = f"{fact.provenance.source_field}: {fact.provenance.raw_value}"
+        document = (
+            fact.provenance.source_document
+            if passport_fact
+            else (
+                self.settings.feed_file_path.name
+                if self.settings.feed_file_path is not None
+                else self.settings.products_cache_path.name
+            )
+        )
+        section = (
+            fact.provenance.source_section
+            if passport_fact
+            else f"товар {snapshot.sku}, {fact.provenance.source_field}"
+        )
+        quote = fact.provenance.raw_value
         record_passport_event(
             event="product_fact_evidence_gate",
             status="accepted",
@@ -1100,8 +1112,14 @@ class ProductFactEvidenceService:
             canonical_sku=request.product_ref.canonical_sku,
             candidate_skus=list(request.product_ref.candidate_skus),
             document_scope=list(document_scope),
-            verifier_status="catalog_snapshot_exact",
-            reason="catalog_snapshot_predicate_scope_and_value_match",
+            verifier_status=(
+                "document_table_exact" if passport_fact else "catalog_snapshot_exact"
+            ),
+            reason=(
+                "passport_table_predicate_model_and_value_match"
+                if passport_fact
+                else "catalog_snapshot_predicate_scope_and_value_match"
+            ),
             source_document=document,
             source_section=section,
             evidence_fragment=quote,
@@ -1112,12 +1130,20 @@ class ProductFactEvidenceService:
             product_name=product_name,
             value=fact.value,
             unit=fact.unit,
-            source_kind="catalog_card",
+            source_kind=(
+                "passport_document_exact" if passport_fact else "catalog_card"
+            ),
             document=document,
             section=section,
             quote=quote,
-            verifier_status="catalog_snapshot_exact",
-            reason_code="catalog_snapshot_predicate_scope_and_value_match",
+            verifier_status=(
+                "document_table_exact" if passport_fact else "catalog_snapshot_exact"
+            ),
+            reason_code=(
+                "passport_table_predicate_model_and_value_match"
+                if passport_fact
+                else "catalog_snapshot_predicate_scope_and_value_match"
+            ),
             document_scope=document_scope,
         )
 

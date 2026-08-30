@@ -112,6 +112,7 @@ def build_answer_source_snapshot(
                 updated_at=product.updated_at,
                 facts=facts,
                 fact_issues=identity.fact_issues,
+                flow_head_points=identity.flow_head_points,
             )
         )
         revision_material.append(
@@ -138,6 +139,8 @@ def build_answer_source_snapshot(
                                 fact.provenance.source_field,
                                 fact.provenance.raw_value,
                                 fact.provenance.parser,
+                                str(fact.provenance.source_document),
+                                str(fact.provenance.source_section),
                             )
                         )
                         for fact in facts
@@ -150,9 +153,26 @@ def build_answer_source_snapshot(
                                 issue.provenance.source_field,
                                 issue.provenance.raw_value,
                                 issue.provenance.parser,
+                                str(issue.provenance.source_document),
+                                str(issue.provenance.source_section),
                             )
                         )
                         for issue in identity.fact_issues
+                    ),
+                    *(
+                        "\x1d".join(
+                            (
+                                str(point.flow_l_h),
+                                str(point.head_m),
+                                point.provenance.source,
+                                point.provenance.source_field,
+                                point.provenance.raw_value,
+                                point.provenance.parser,
+                                str(point.provenance.source_document),
+                                str(point.provenance.source_section),
+                            )
+                        )
+                        for point in identity.flow_head_points
                     ),
                     *(
                         "\x1d".join(

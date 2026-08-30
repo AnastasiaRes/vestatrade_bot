@@ -30378,6 +30378,14 @@ class ChatOrchestrator:
 
         variant = self._SAFETY_NEXT_STEPS.get(intent.intent_type, "")
         if intent.intent_type == "electrical_safety":
+            # A repeated follow-up such as «а через переходник?» may omit the
+            # SKU, but the current guard has already restored the exact prior
+            # safety target and produced a source-backed 380 V boundary.  Do
+            # not replace that fact with the generic repeat template: it
+            # would make the refusal less informative and falsely look as if
+            # the model-specific requirement had been forgotten.
+            if "380" in normalize_text(text):
+                variant = text
             hint = self._electrical_load_hint(session, intent, message)
             if hint:
                 variant = f"{variant} {hint}".strip()
