@@ -172,6 +172,28 @@ class CutoverDecision(FrozenModel):
     fallback_allowed: bool = True
 
 
+class ProductFactDelivery(FrozenModel):
+    """Checked direct-product fact carried across the cutover seam.
+
+    This is deliberately a compact projection of the evidence service result,
+    rather than a second evidence model.  It makes the delivered SKU,
+    predicate and verifier decision observable in V2 telemetry without asking
+    a renderer or an evaluator to recover them from response prose.
+    """
+
+    status: str
+    canonical_sku: str | None = None
+    predicate: str
+    value: str | int | float | bool | None = None
+    unit: str | None = None
+    source_kind: str | None = None
+    document: str | None = None
+    section: str | None = None
+    evidence_fragment: str | None = None
+    verifier_status: str | None = None
+    reason_code: str
+
+
 class V2TurnCandidate(FrozenModel):
     schema_version: Literal["1.0"] = CUTOVER_SCHEMA_VERSION
     turn_id: str
@@ -199,6 +221,7 @@ class V2TurnCandidate(FrozenModel):
     comparison_result: ComparisonResult | None = None
     calculation_request: CalculationRequest | None = None
     calculation_result: CalculationResult | None = None
+    product_fact_delivery: ProductFactDelivery | None = None
     offer_fact_request: OfferFactRequest | None = None
     offer_fact_result: OfferFactResult | None = None
     compatibility_request: CompatibilityRequest | None = None

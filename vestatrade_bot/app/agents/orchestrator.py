@@ -1859,6 +1859,7 @@ class ChatOrchestrator:
         selection_delivery = None
         comparison_delivery = None
         calculation_delivery = None
+        product_fact_delivery = None
         offer_fact_delivery = None
         compatibility_delivery = None
         if candidate is not None:
@@ -1892,6 +1893,16 @@ class ChatOrchestrator:
                     mode="json"
                 )
                 calculation_delivery["customer_visible_scope_preserved"] = bool(
+                    commit is not None
+                    and commit.committed
+                    and candidate.product_scope_effect
+                    == ProductScopeEffect.PRESERVE
+                )
+            if candidate.product_fact_delivery is not None:
+                product_fact_delivery = candidate.product_fact_delivery.model_dump(
+                    mode="json"
+                )
+                product_fact_delivery["customer_visible_scope_preserved"] = bool(
                     commit is not None
                     and commit.committed
                     and candidate.product_scope_effect
@@ -1952,6 +1963,7 @@ class ChatOrchestrator:
             "selection_delivery": selection_delivery,
             "comparison_delivery": comparison_delivery,
             "calculation_delivery": calculation_delivery,
+            "product_fact_delivery": product_fact_delivery,
             "offer_fact_delivery": offer_fact_delivery,
             "compatibility_delivery": compatibility_delivery,
             "arbitration": arbitration,

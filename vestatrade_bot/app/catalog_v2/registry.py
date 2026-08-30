@@ -338,10 +338,11 @@ POWER_KW = _fact(
     learn="calculate_heat_loss_or_read_project_power",
 )
 # ``area_m2`` belongs to the customer's heating task, not to the product
-# itself.  It is intentionally not a universal power calculation: the
-# planner compares it only with the documented coverage field of each exact
-# card.  It consequently authorises a preliminary result, never an exact
-# engineering recommendation.
+# itself.  It can describe a house for a boiler or a room for a radiator; in
+# both cases it is intentionally not a universal power calculation.  The
+# planner compares it only with the documented coverage field of a card.  It
+# consequently authorises a preliminary result, never an exact engineering
+# recommendation.
 BUILDING_AREA = _fact(
     "area_m2",
     aliases=(
@@ -370,7 +371,15 @@ DECLARED_HEATED_AREA = _fact(
     unit_family="area_m2",
     strength=FactStrength.SOFT,
     comparison=ComparisonMode.MINIMUM_RATING,
-    fields=("отапливаемая площадь, м²",),
+    fields=(
+        "отапливаемая площадь, м²",
+        # Radiator cards use a different, but equally explicit, manufacturer
+        # label.  Keeping it in the shared source-fact definition lets the
+        # normalizer preserve provenance instead of a Legacy-only special
+        # case.
+        "площадь обогрева, м²",
+        "площадь обогрева, м2",
+    ),
 )
 FUEL_TYPE = _fact(
     "boiler_type",
@@ -412,6 +421,12 @@ CIRCUITS = _fact(
     ),
     required=True,
     decision=True,
+    # The choice between heating-only and DHW changes the boiler family.
+    # A generic preliminary list cannot safely stand in for that decision:
+    # the current renderer has no separate one-/two-circuit groups.  Keep
+    # area as a declared-coverage preliminary proxy, but require this fact
+    # even when the buyer asks to see options before completing the funnel.
+    preliminary=False,
     fields=("количество контуров",),
     parsers=("circuit_count",),
     learn="decide_heating_only_or_dhw",
@@ -972,10 +987,23 @@ DEFAULT_CONTRACTS: tuple[ProductContract, ...] = (
     _contract(
         "radiator.v1", ProductKind.RADIATOR, "radiators",
         ("radiator", "heating radiator", "радиатор", "радиатор отопления"), BASE,
-        (RADIATOR_MATERIAL, CENTER_DISTANCE, CONNECTION_SIZE, HEAT_OUTPUT),
+        (
+            RADIATOR_MATERIAL,
+            CENTER_DISTANCE,
+            CONNECTION_SIZE,
+            HEAT_OUTPUT,
+            # The source-backed declared coverage of a radiator can narrow a
+            # preliminary card set for a stated room area.  It never replaces
+            # a heat-loss calculation or the physical mounting dimensions.
+            BUILDING_AREA,
+            DECLARED_HEATED_AREA,
+        ),
         catalog_types=("радиатор отопления",), catalog_categories=("радиаторы отопления",),
         invariants=("material", "center_distance_mm"),
-        preliminary_identity_fact_groups=(("center_distance_mm", "heat_output_w"),),
+        # The order also determines the single question for an empty request.
+        # Prefer the physical installation dimension; a stated room area still
+        # satisfies the same any-of group and unlocks only a preliminary list.
+        preliminary_identity_fact_groups=(("center_distance_mm", "heat_output_w", "area_m2"),),
     ),
     _contract(
         "filter.water.v1", ProductKind.FILTER, "filters",

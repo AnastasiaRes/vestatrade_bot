@@ -25,7 +25,7 @@ from app.product_fact_evidence import (
     render_product_fact_evidence,
 )
 
-from .contracts import ProductScopeEffect, V2TurnCandidate
+from .contracts import ProductFactDelivery, ProductScopeEffect, V2TurnCandidate
 
 
 def _stable_id(prefix: str, *parts: object) -> str:
@@ -236,6 +236,19 @@ def build_v2_product_fact_candidate(
         general_semantic_status=outcome.status,
         general_semantic_skip_reason=outcome.skip_reason,
     )
+    delivery = ProductFactDelivery(
+        status=evidence.status.value,
+        canonical_sku=reference.canonical_sku,
+        predicate=evidence.request.predicate,
+        value=evidence.value,
+        unit=evidence.unit,
+        source_kind=evidence.source_kind,
+        document=evidence.document,
+        section=evidence.section,
+        evidence_fragment=evidence.quote,
+        verifier_status=evidence.verifier_status,
+        reason_code=evidence.reason_code,
+    )
     return base_candidate.model_copy(
         update={
             "response": response,
@@ -259,6 +272,7 @@ def build_v2_product_fact_candidate(
             "product_statuses": product_statuses,
             "response_product_kinds": response_kinds,
             "response_product_roles": response_roles,
+            "product_fact_delivery": delivery,
             "product_scope_effect": ProductScopeEffect.PRESERVE,
             "focus_product_sku": (
                 reference.canonical_sku
