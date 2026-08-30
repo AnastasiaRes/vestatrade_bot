@@ -102,6 +102,11 @@ _LEADING_OFFER_FACT_QUESTION_RE = re.compile(
     r"(?iu)^\s*(?:есть\s+ли|есть\s+в\s+наличии|в\s+наличии|"
     r"сколько\s+стоит|какая\s+цена|цена|ссылк\w*)\b"
 )
+_TRAILING_OFFER_FACT_QUESTION_RE = re.compile(
+    r"(?iu)^\s*(?:сколько\s+стоит|какая\s+цена|цена|"
+    r"есть\s+ли\s+(?:он\s+)?в\s+наличии|в\s+наличии|"
+    r"ссылк\w*)\s*$"
+)
 
 # Customers often read Latin vendor prefixes by their Russian letter names.
 # The mapping deliberately applies only while comparing an alphabetic SKU
@@ -166,8 +171,9 @@ def _is_context_bound_identity_span(
     A five-digit number is often an amount, a count or a measurement.  A
     short slash fragment is even more ambiguous (``1/2`` and ``25/6`` are
     normal engineering notation).  We allow such a span only if it is the
-    whole turn or follows an explicit identity label, and reject a nearby unit
-    or amount marker even when a label is present.
+    whole turn, follows an explicit identity label, or is the exact subject
+    of a direct price/stock/link question.  A nearby unit or amount marker is
+    rejected even in those narrow contexts.
     """
 
     before = source[max(0, start - 80):start]
@@ -183,6 +189,15 @@ def _is_context_bound_identity_span(
     # caller's candidate rule) and may only be followed by an offer-fact
     # phrase.  Measurements such as ``25/6`` never enter this branch.
     if not source[:start].strip() and _LEADING_OFFER_FACT_QUESTION_RE.match(after):
+        return True
+    # The equally natural word order is ``Сколько стоит 68/2/8?``.  Treat the
+    # weak token as an identity only when it occupies the rest of that direct
+    # offer question.  The unit/amount check above keeps ``53843 рублей`` out,
+    # and exact-only catalogue resolution below prevents fuzzy interpretation.
+    if (
+        not source[end:].strip(" \t\r\n.,!?;:—–-()[]{}")
+        and _TRAILING_OFFER_FACT_QUESTION_RE.match(before)
+    ):
         return True
     return _SKU_IDENTITY_PREFIX_RE.search(before) is not None
 

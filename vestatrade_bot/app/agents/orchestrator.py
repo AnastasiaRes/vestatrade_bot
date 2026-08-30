@@ -106,6 +106,7 @@ from app.product_fact_evidence import (
     ProductFactEvidenceService,
     ProductReferenceKind,
 )
+from app.offer_fact_v2.contracts import OfferFactStatus
 from app.offer_fact_v2.service import build_offer_fact_request, build_offer_fact_result
 from app.session_store import SessionStore, build_session_store
 from app.sku_resolution import SkuResolutionStatus
@@ -1415,20 +1416,13 @@ class ChatOrchestrator:
         snapshot = self.answer_source_snapshot_v2
         if snapshot is None:
             return base_candidate
-        # This is a recovery seam, not a competing response planner.  A
-        # fully accepted native candidate must retain ownership; otherwise an
-        # already correct canary response could be replaced by a different
-        # direct-fact shape.  A rejected semantic turn is also never repaired
-        # by guessing an offer fact from its surface wording.
-        if (
-            outcome.status != "applied"
-            or (
-                bool(getattr(base_candidate, "semantic_accepted", False))
-                and bool(getattr(base_candidate, "contracts_resolved", False))
-                and bool(getattr(base_candidate, "eligible_for_delivery", False))
-                and getattr(base_candidate, "response", None) is not None
-            )
-        ):
+        # A rejected semantic turn is never repaired by guessing an offer
+        # fact from its surface wording.  An accepted generic direct-answer
+        # plan is different: it can be structurally deliverable while still
+        # lacking the source-bound price/stock/link requested by the buyer.
+        # A resolved OfferFactResult is the more specific evidence-backed
+        # implementation of that action and must take precedence.
+        if outcome.status != "applied":
             return base_candidate
         request = build_offer_fact_request(
             outcome,
@@ -1439,6 +1433,20 @@ class ChatOrchestrator:
         if request is None:
             return base_candidate
         result = build_offer_fact_result(request, snapshot)
+        native_candidate_is_complete = (
+            bool(getattr(base_candidate, "semantic_accepted", False))
+            and bool(getattr(base_candidate, "contracts_resolved", False))
+            and bool(getattr(base_candidate, "eligible_for_delivery", False))
+            and getattr(base_candidate, "response", None) is not None
+        )
+        # Do not let an unbound price word turn a complete selection or other
+        # valid response into a clarification.  Once a product is resolved,
+        # however, the grounded OfferFactResult is authoritative.
+        if (
+            native_candidate_is_complete
+            and result.status != OfferFactStatus.ANSWERED
+        ):
+            return base_candidate
         candidate = build_v2_offer_fact_candidate(
             outcome,
             base_candidate,

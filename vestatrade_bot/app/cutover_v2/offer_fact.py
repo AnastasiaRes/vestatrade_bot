@@ -6,6 +6,7 @@ import hashlib
 import json
 
 from app.answer_v2.contracts import AnswerPlanStatus, AnswerSourceSnapshot
+from app.catalog_v2.contracts import ProductKind
 from app.dialogue_v2.contracts import (
     AnswerPlanSummary,
     NextAction,
@@ -78,7 +79,13 @@ def build_v2_offer_fact_candidate(
                 image_url=product.image_url,
             )
         )
-        product_kinds = (product.product_kind,)
+        # The source snapshot is authoritative for offer fields, but its
+        # product-kind coverage is intentionally incomplete for part of the
+        # feed.  Do not erase a validated semantic kind with ``unsupported``:
+        # doing so can make a previously eligible V2 turn miss its migration
+        # cell solely because it answered a price question.
+        if product.product_kind != ProductKind.UNSUPPORTED:
+            product_kinds = (product.product_kind,)
         roles = (product.role,)
     response = ChatResponse(
         session_id=session_id,

@@ -124,6 +124,7 @@ def test_catalog_bound_sku_anchors_support_exact_numeric_and_slash_articles() ->
 
     numeric = resolve_catalog_sku_anchors("Проверьте цену товара 11677", products)
     slash = resolve_catalog_sku_anchors("SKU 68/2/8", products)
+    slash_price = resolve_catalog_sku_anchors("Сколько стоит 68/2/8?", products)
     bare = resolve_catalog_sku_anchors("53843", products)
     long_numeric = resolve_catalog_sku_anchors(
         "У котла Arderia E9 2202210 сколько контуров?", products
@@ -133,6 +134,9 @@ def test_catalog_bound_sku_anchors_support_exact_numeric_and_slash_articles() ->
         ("11677", "11677", "numeric")
     ]
     assert [(item.text, item.canonical_sku, item.match_kind) for item in slash] == [
+        ("68/2/8", "68/2/8", "slash")
+    ]
+    assert [(item.text, item.canonical_sku, item.match_kind) for item in slash_price] == [
         ("68/2/8", "68/2/8", "slash")
     ]
     assert [(item.text, item.canonical_sku, item.match_kind) for item in bare] == [
@@ -147,6 +151,7 @@ def test_catalog_bound_sku_anchors_reject_amounts_measurements_and_short_slashes
     products = [_product("11677"), _product("53843"), _product("68/2/8")]
 
     assert resolve_catalog_sku_anchors("насос за 53843 рублей", products) == ()
+    assert resolve_catalog_sku_anchors("Сколько стоит 53843 рублей?", products) == ()
     assert resolve_catalog_sku_anchors("бюджет 11677", products) == ()
     assert resolve_catalog_sku_anchors("11677 мм", products) == ()
     assert resolve_catalog_sku_anchors("1/2", products) == ()
