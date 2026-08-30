@@ -953,23 +953,35 @@ def _resume_goal_tasks(
         task for task in tasks
         if task.target_goal_id == goal_id and task.status == TaskStatus.SUSPENDED
     ]
-    active: str | None = None
-    for index, task in enumerate(resumable):
-        status = TaskStatus.IN_PROGRESS if index == 0 else TaskStatus.PENDING
-        _replace_task(
-            tasks,
-            task.model_copy(update={"status": status, "blocking_reason": None}),
+    if not resumable:
+        return None
+    # A return reactivates the old selection backbone, not every historical
+    # one-shot price/explain task.  The current turn will create or readdress a
+    # new direct task when the customer actually asks one.  Reviving all old
+    # tasks used to let an obsolete question win the next policy decision.
+    priority = {TaskAct.FIND: 0, TaskAct.SELECT: 0}
+    selected = min(
+        resumable,
+        key=lambda task: (
+            priority.get(task.act, 1),
+            -(task.last_addressed_turn or task.source_turn),
+            task.task_id,
+        ),
+    )
+    _replace_task(
+        tasks,
+        selected.model_copy(
+            update={"status": TaskStatus.IN_PROGRESS, "blocking_reason": None}
+        ),
+    )
+    events.append(
+        TaskResumed(
+            turn_id=metadata.turn_id,
+            turn_number=turn_number,
+            task_id=selected.task_id,
         )
-        events.append(
-            TaskResumed(
-                turn_id=metadata.turn_id,
-                turn_number=turn_number,
-                task_id=task.task_id,
-            )
-        )
-        if index == 0:
-            active = task.task_id
-    return active
+    )
+    return selected.task_id
 
 
 def _find_return_goal(
@@ -992,9 +1004,9 @@ def _find_return_goal(
                 category,
             ):
                 return goal
-    for goal in reversed(goals):
-        if goal.goal_id in suspended_goal_ids:
-            return goal
+    eligible = [goal for goal in goals if goal.goal_id in suspended_goal_ids]
+    if len(eligible) == 1:
+        return eligible[0]
     return None
 
 
@@ -1002,6 +1014,8 @@ def reduce_dialogue_state(
     previous_state: DialogueStateV2 | None,
     turn_understanding: TurnUnderstanding,
     turn_metadata: TurnMetadata,
+    *,
+    goal_reactivation: GoalReactivationResolution | None = None,
 ) -> ReductionResult:
     """Return a new immutable state from one accepted semantic turn."""
 
@@ -1021,6 +1035,11 @@ def reduce_dialogue_state(
 
     turn_number = previous.turn_number + 1
     operation = turn_understanding.operation.value
+    if goal_reactivation is not None and goal_reactivation.status == "resolved":
+        # Internal goal IDs never come from the semantic model.  A successful
+        # deterministic resolver has stronger authority than an LLM's broad
+        # continue/refine label for an explicit "вернёмся ..." phrase.
+        operation = "return"
     goals = list(previous.product_goals)
     tasks = list(previous.tasks)
     constraints = list(previous.constraints)
@@ -1095,7 +1114,10 @@ def reduce_dialogue_state(
     mention_goal_ids: dict[int, str] = {}
     return_goal: ProductGoal | None = None
     if operation == "return":
-        return_goal = _find_return_goal(goals, tasks, targets)
+        if goal_reactivation is not None and goal_reactivation.status == "resolved":
+            return_goal = _goal_by_id(goals, goal_reactivation.target_goal_id)
+        else:
+            return_goal = _find_return_goal(goals, tasks, targets)
         if return_goal is None:
             rejected.append(
                 RejectedProposal(
@@ -2258,6 +2280,12 @@ def reduce_dialogue_state(
         commerce_planning=previous.commerce_planning,
         answer_plan_summary=previous.answer_plan_summary,
         response_strategy_history=previous.response_strategy_history,
+        delivered_response_strategy_history=(
+            previous.delivered_response_strategy_history
+        ),
+        response_delivery_history=previous.response_delivery_history,
+        delivered_selection_scopes=previous.delivered_selection_scopes,
+        live_epoch_id=previous.live_epoch_id,
         applied_turn_ids=(*previous.applied_turn_ids, turn_metadata.turn_id),
     )
     return ReductionResult(
@@ -2941,10 +2969,15 @@ def record_response_delivery(
     live_epoch_id: str,
     selection_id: str | None = None,
     catalog_revision: str | None = None,
+    selection_goal_id: str | None = None,
+    selection_task_id: str | None = None,
+    selection_ordered_skus: tuple[str, ...] = (),
+    selection_focus_sku: str | None = None,
 ) -> ReductionResult:
     """Commit a selected V2 response without treating old shadow turns as delivered."""
 
     from .contracts import (
+        DeliveredSelectionScope,
         ResponseCommitSucceeded,
         ResponseDeliveryRecord,
         ResponseSelectedForDelivery,
@@ -2976,6 +3009,52 @@ def record_response_delivery(
         live_epoch_id=live_epoch_id,
         source_turn=state.turn_number,
     )
+    delivered_scopes = list(state.delivered_selection_scopes)
+    if any(
+        value is not None
+        for value in (
+            selection_id,
+            catalog_revision,
+            selection_goal_id,
+            selection_task_id,
+        )
+    ) or selection_ordered_skus:
+        if not (
+            selection_id
+            and catalog_revision
+            and selection_goal_id
+            and selection_task_id
+            and selection_ordered_skus
+        ):
+            raise ValueError("incomplete_delivered_selection_scope")
+        scope_id = _stable_id(
+            "delivered_selection_scope",
+            selection_goal_id,
+            selection_task_id,
+            selection_id,
+            catalog_revision,
+            delivery_id,
+        )
+        scope = DeliveredSelectionScope(
+            scope_id=scope_id,
+            goal_id=selection_goal_id,
+            task_id=selection_task_id,
+            selection_id=selection_id,
+            ordered_skus=selection_ordered_skus,
+            catalog_revision=catalog_revision,
+            delivery_id=delivery_id,
+            source_turn=state.turn_number,
+            focus_sku=selection_focus_sku,
+        )
+        # A repeated delivery for the same goal/selection is idempotent, while
+        # a newer shown selection for that goal deliberately becomes its active
+        # historical scope.  Keep a bounded audit trail for older cards.
+        delivered_scopes = [
+            item
+            for item in delivered_scopes
+            if item.scope_id != scope.scope_id
+        ]
+        delivered_scopes.append(scope)
     summary = state.answer_plan_summary
     plan_matches_summary = bool(
         summary is not None
@@ -3132,6 +3211,7 @@ def record_response_delivery(
                 *state.response_delivery_history,
                 record,
             )[-100:],
+            "delivered_selection_scopes": tuple(delivered_scopes[-40:]),
             "live_epoch_id": state.live_epoch_id or live_epoch_id,
         }
     )

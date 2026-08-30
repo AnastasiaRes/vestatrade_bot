@@ -293,6 +293,31 @@ def test_unique_partial_sku_is_a_safe_explicit_calculation_scope() -> None:
     assert result.outcome_gate_passed is True
 
 
+def test_calculation_uses_context_bound_five_digit_and_slash_sku_anchors() -> None:
+    snapshot = AnswerSourceSnapshot(
+        source_revision="source-v1",
+        products=(_product("53843"), _product("68/2/8")),
+    )
+
+    numeric = build_calculation_request(
+        _outcome(),
+        _session(snapshot, ("53843",)),
+        snapshot,
+        original_utterance="Посчитай 2 шт товара 53843",
+    )
+    slash = build_calculation_request(
+        _outcome(),
+        _session(snapshot, ("68/2/8",)),
+        snapshot,
+        original_utterance="Посчитай 2 шт SKU 68/2/8",
+    )
+
+    assert numeric is not None
+    assert numeric.product_ref.canonical_sku == "53843"
+    assert slash is not None
+    assert slash.product_ref.canonical_sku == "68/2/8"
+
+
 def test_metre_calculation_requires_a_confirmed_price_basis() -> None:
     snapshot = _snapshot()
     outcome = _outcome()

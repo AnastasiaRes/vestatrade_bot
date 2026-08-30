@@ -475,6 +475,63 @@ class ResponseDeliveryRecord(FrozenModel):
     source_turn: int = Field(ge=0)
 
 
+class DeliveredSelectionScope(FrozenModel):
+    """An immutable, customer-visible Selection bound to its product goal.
+
+    ``SessionState.v2_last_products`` remains the active UI view for backwards
+    compatibility.  It cannot, however, represent two paused customer goals.
+    This record is the typed history used to resolve later references such as
+    ``первый насос`` after the customer temporarily looked at valves.
+
+    A scope is deliberately created only from a source-checked Selection that
+    was committed to the session.  Shadow candidates, direct facts,
+    comparisons and failed selections cannot create one.
+    """
+
+    scope_id: str
+    goal_id: str
+    task_id: str
+    selection_id: str
+    ordered_skus: tuple[str, ...] = Field(min_length=1, max_length=12)
+    catalog_revision: str
+    delivery_id: str
+    source_turn: int = Field(ge=0)
+    focus_sku: str | None = None
+
+    @model_validator(mode="after")
+    def selection_scope_is_consistent(self) -> "DeliveredSelectionScope":
+        if len(self.ordered_skus) != len(set(self.ordered_skus)):
+            raise ValueError("ordered_skus must be unique")
+        if self.focus_sku is not None and self.focus_sku not in self.ordered_skus:
+            raise ValueError("focus_sku must belong to ordered_skus")
+        return self
+
+
+class GoalReactivationResolution(FrozenModel):
+    """Deterministic interpretation of an explicit return to an old goal.
+
+    The language model may propose a dialogue operation, but it never selects
+    an internal goal identifier.  This resolution is derived only from the
+    current message, the shared ontology and typed suspended state.
+    """
+
+    status: Literal["resolved", "ambiguous", "not_found", "not_requested"]
+    target_goal_id: str | None = None
+    evidence: str | None = Field(default=None, max_length=240)
+    candidate_goal_ids: tuple[str, ...] = ()
+    reason_codes: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def valid_goal_reactivation_resolution(self) -> "GoalReactivationResolution":
+        if self.status == "resolved" and self.target_goal_id is None:
+            raise ValueError("resolved reactivation requires target_goal_id")
+        if self.status != "resolved" and self.target_goal_id is not None:
+            raise ValueError("unresolved reactivation cannot target one goal")
+        if self.status == "ambiguous" and len(self.candidate_goal_ids) < 2:
+            raise ValueError("ambiguous reactivation requires two or more candidates")
+        return self
+
+
 class DialogueStateV2(FrozenModel):
     schema_version: Literal["2.0"] = DIALOGUE_STATE_SCHEMA_VERSION
     turn_number: int = Field(default=0, ge=0)
@@ -499,6 +556,7 @@ class DialogueStateV2(FrozenModel):
     response_strategy_history: tuple[TaskStrategyState, ...] = ()
     delivered_response_strategy_history: tuple[TaskStrategyState, ...] = ()
     response_delivery_history: tuple[ResponseDeliveryRecord, ...] = ()
+    delivered_selection_scopes: tuple[DeliveredSelectionScope, ...] = ()
     live_epoch_id: str | None = None
     applied_turn_ids: tuple[str, ...] = ()
 

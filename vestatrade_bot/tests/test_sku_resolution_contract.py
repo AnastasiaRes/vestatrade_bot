@@ -31,6 +31,7 @@ from app.models import Product, SearchQuery
 from app.sku_resolution import (
     SkuResolutionStatus,
     extract_explicit_sku_tokens,
+    resolve_catalog_sku_anchors,
     resolve_catalog_sku,
 )
 
@@ -111,6 +112,54 @@ def test_explicit_sku_token_extraction_keeps_numeric_articles_out_of_measurement
         "У котла Arderia E9 2202210 сколько контуров?"
     ) == ("2202210",)
     assert extract_explicit_sku_tokens("Дом 150 м2, котёл 9 кВт") == ()
+
+
+def test_catalog_bound_sku_anchors_support_exact_numeric_and_slash_articles() -> None:
+    products = [
+        _product("11677"),
+        _product("53843"),
+        _product("68/2/8"),
+        _product("2202210"),
+    ]
+
+    numeric = resolve_catalog_sku_anchors("Проверьте цену товара 11677", products)
+    slash = resolve_catalog_sku_anchors("SKU 68/2/8", products)
+    bare = resolve_catalog_sku_anchors("53843", products)
+    long_numeric = resolve_catalog_sku_anchors(
+        "У котла Arderia E9 2202210 сколько контуров?", products
+    )
+
+    assert [(item.text, item.canonical_sku, item.match_kind) for item in numeric] == [
+        ("11677", "11677", "numeric")
+    ]
+    assert [(item.text, item.canonical_sku, item.match_kind) for item in slash] == [
+        ("68/2/8", "68/2/8", "slash")
+    ]
+    assert [(item.text, item.canonical_sku, item.match_kind) for item in bare] == [
+        ("53843", "53843", "numeric")
+    ]
+    assert [(item.text, item.canonical_sku, item.match_kind) for item in long_numeric] == [
+        ("2202210", "2202210", "numeric_long")
+    ]
+
+
+def test_catalog_bound_sku_anchors_reject_amounts_measurements_and_short_slashes() -> None:
+    products = [_product("11677"), _product("53843"), _product("68/2/8")]
+
+    assert resolve_catalog_sku_anchors("насос за 53843 рублей", products) == ()
+    assert resolve_catalog_sku_anchors("бюджет 11677", products) == ()
+    assert resolve_catalog_sku_anchors("11677 мм", products) == ()
+    assert resolve_catalog_sku_anchors("1/2", products) == ()
+    assert resolve_catalog_sku_anchors("25/6", products) == ()
+    assert resolve_catalog_sku_anchors("артикул 99999", products) == ()
+
+
+def test_catalog_bound_sku_anchor_keeps_explicit_product_after_a_quantity() -> None:
+    products = [_product("53843")]
+
+    anchors = resolve_catalog_sku_anchors("20 шт товара 53843", products)
+
+    assert [(item.text, item.canonical_sku) for item in anchors] == [("53843", "53843")]
 
 
 def test_duplicate_exact_catalogue_identity_fails_closed() -> None:

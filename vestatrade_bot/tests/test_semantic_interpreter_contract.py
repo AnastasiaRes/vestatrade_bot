@@ -23,7 +23,7 @@ from app.dialogue_v2.contracts import (
     ShadowDeliveryStatus,
     TaskStack,
 )
-from app.models import ProductCard, SessionState
+from app.models import Product, ProductCard, SessionState
 
 
 class SemanticJSONClient:
@@ -164,6 +164,49 @@ def test_contract_accepts_multi_act_target_context_and_unknown_parameter() -> No
     assert result.understanding.constraints[0].status.value == "unknown"
     assert result.understanding.constraints[0].value is None
     assert result.understanding.information_requests == []
+
+
+def test_catalog_bound_numeric_sku_anchor_survives_an_untyped_semantic_candidate() -> None:
+    message = "Проверьте цену и наличие товара 11677"
+    payload = valid_understanding()
+    payload.update(
+        {
+            "acts": ["check_price", "check_stock"],
+            "products": [
+                {
+                    "text": "11677",
+                    "canonical_type": "",
+                    "category": "other",
+                    "role": "target",
+                    "evidence": "11677",
+                }
+            ],
+            "constraints": [],
+            "information_requests": [],
+        }
+    )
+    product = Product(
+        sku="11677",
+        name="Тестовый товар",
+        category_path="Арматура",
+        price=100,
+        stock_status="нет в наличии",
+        stock_qty=0,
+        url="https://example.test/11677",
+    )
+
+    result = SemanticInterpreter(
+        SemanticJSONClient(payload),
+        catalog_products=[product],
+    ).interpret(message, SessionState(session_id="catalog-bound-five-digit-sku"))
+
+    assert result.status == "accepted"
+    assert result.understanding is not None
+    assert result.understanding.products[0].canonical_type == "catalog_product"
+    assert [(item.name, item.value) for item in result.understanding.constraints] == [
+        ("sku", "11677")
+    ]
+    assert "catalog_bound_sku_product_scope_recovered" in result.structural_repairs
 
 
 def test_information_request_captures_decision_relevance_of_mounting_length() -> None:

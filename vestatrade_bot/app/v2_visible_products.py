@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from app.dialogue_v2.contracts import DialogueStateV2
 from app.models import SessionState
 
 
@@ -115,6 +116,24 @@ class VisibleProductReference:
         return self.canonical_sku is not None
 
 
+@dataclass(frozen=True)
+class TurnProductContext:
+    """The only goal-scoped V2 card context a capability may consume.
+
+    The context is read-only.  It tells the caller whether an ordinal can be
+    resolved for the active goal without letting a later response overwrite
+    the order or identity of any delivered Selection.
+    """
+
+    goal_id: str | None = None
+    scope: CustomerVisibleProductScope = CustomerVisibleProductScope()
+    reason_code: str = "active_goal_selection_scope_missing"
+
+    @property
+    def is_valid(self) -> bool:
+        return self.goal_id is not None and self.scope.is_valid
+
+
 def customer_visible_v2_scope(session: SessionState) -> CustomerVisibleProductScope:
     """Read the versioned V2 selection without falling back to Legacy cards."""
 
@@ -149,6 +168,51 @@ def customer_visible_v2_scope(session: SessionState) -> CustomerVisibleProductSc
         source_revision=session.v2_source_revision,
         focus_sku=session.product_focus.sku if session.product_focus else None,
         reason_code="customer_visible_v2_scope_valid",
+    )
+
+
+def turn_product_context(
+    state: DialogueStateV2 | None,
+    *,
+    source_revision: str | None,
+) -> TurnProductContext:
+    """Return the committed Selection belonging to the active V2 goal.
+
+    There is intentionally no fallback to the latest global session cards.
+    A caller that is processing a reactivated goal must either get that goal's
+    committed scope at the same source revision or fail closed.  Normal turns
+    without an active historical scope can still use the existing global scope
+    through ``customer_visible_v2_scope`` while older sessions migrate.
+    """
+
+    if state is None or state.active_goal_id is None:
+        return TurnProductContext(reason_code="active_goal_missing")
+    matching = [
+        item
+        for item in state.delivered_selection_scopes
+        if item.goal_id == state.active_goal_id
+    ]
+    if not matching:
+        return TurnProductContext(
+            goal_id=state.active_goal_id,
+            reason_code="active_goal_selection_scope_missing",
+        )
+    scope_record = max(matching, key=lambda item: (item.source_turn, item.scope_id))
+    if source_revision is not None and scope_record.catalog_revision != source_revision:
+        return TurnProductContext(
+            goal_id=state.active_goal_id,
+            reason_code="active_goal_selection_scope_stale_revision",
+        )
+    return TurnProductContext(
+        goal_id=state.active_goal_id,
+        scope=CustomerVisibleProductScope(
+            ordered_skus=scope_record.ordered_skus,
+            selection_id=scope_record.selection_id,
+            source_revision=scope_record.catalog_revision,
+            focus_sku=scope_record.focus_sku,
+            reason_code="active_goal_customer_visible_v2_scope",
+        ),
+        reason_code="active_goal_customer_visible_v2_scope",
     )
 
 

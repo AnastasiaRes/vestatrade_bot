@@ -624,6 +624,36 @@ def test_numeric_sku_without_marker_resolves_to_the_exact_catalogue_product() ->
     assert evidence.value == "1"
 
 
+def test_context_bound_five_digit_and_slash_skus_use_the_same_product_fact_resolver() -> None:
+    numeric = _product(
+        "11677",
+        "Термостатический клапан",
+        {"количество контуров": "1"},
+        "numeric.pdf",
+    )
+    slash = _product(
+        "68/2/8",
+        "Тестовый товар со slash-SKU",
+        {"количество контуров": "2"},
+        "slash.pdf",
+    )
+    service = _service([numeric, slash], _StubPassport(quote="паспорт не потребовался"))
+
+    numeric_evidence = service.evaluate(
+        "У товара 11677 сколько контуров?",
+        SessionState(session_id="five-digit-product-fact"),
+    )
+    slash_evidence = service.evaluate(
+        "У SKU 68/2/8 сколько контуров?",
+        SessionState(session_id="slash-product-fact"),
+    )
+
+    assert numeric_evidence is not None
+    assert numeric_evidence.request.product_ref.canonical_sku == "11677"
+    assert slash_evidence is not None
+    assert slash_evidence.request.product_ref.canonical_sku == "68/2/8"
+
+
 def test_builtin_pump_question_uses_only_the_resolved_boiler_document() -> None:
     boiler = _product(
         "2202210",

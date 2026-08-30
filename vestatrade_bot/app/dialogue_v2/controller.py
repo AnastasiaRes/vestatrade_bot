@@ -175,6 +175,7 @@ class DialogueControllerV2:
             state_before,
             reducer_input,
             turn_metadata,
+            goal_reactivation=semantic_result.goal_reactivation,
         )
         if product_contracts_enabled and catalog_snapshot:
             reduction = reduction.model_copy(

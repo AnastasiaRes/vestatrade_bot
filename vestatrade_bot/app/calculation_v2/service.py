@@ -10,7 +10,10 @@ from app.answer_v2.contracts import AnswerSourceSnapshot, CatalogAnswerProduct
 from app.dialogue_v2.contracts import NextActionKind, TaskAct
 from app.dialogue_v2.controller import DialogueV2Outcome
 from app.models import SessionState
-from app.sku_resolution import SkuResolutionStatus, extract_explicit_sku_tokens, resolve_catalog_sku
+from app.sku_resolution import (
+    SkuResolutionStatus,
+    resolve_catalog_sku_anchors,
+)
 from app.v2_visible_products import (
     customer_visible_v2_scope,
     has_deictic_product_reference,
@@ -112,14 +115,18 @@ def _calculation_task(outcome: DialogueV2Outcome):
 
 
 def _explicit_reference(message: str, snapshot: AnswerSourceSnapshot) -> CalculationProductReference | None:
-    resolved: list[tuple[str, object]] = []
-    ambiguous: list[tuple[str, object]] = []
-    for token in dict.fromkeys(extract_explicit_sku_tokens(message)):
-        candidate = resolve_catalog_sku(token, snapshot.products)
-        if candidate.status in {SkuResolutionStatus.EXACT, SkuResolutionStatus.UNIQUE_PREFIX}:
-            resolved.append((token, candidate))
-        elif candidate.status == SkuResolutionStatus.AMBIGUOUS_PREFIX:
-            ambiguous.append((token, candidate))
+    anchors = resolve_catalog_sku_anchors(message, snapshot.products)
+    resolved = [
+        (anchor.text, anchor.resolution)
+        for anchor in anchors
+        if anchor.resolution.status
+        in {SkuResolutionStatus.EXACT, SkuResolutionStatus.UNIQUE_PREFIX}
+    ]
+    ambiguous = [
+        (anchor.text, anchor.resolution)
+        for anchor in anchors
+        if anchor.resolution.status == SkuResolutionStatus.AMBIGUOUS_PREFIX
+    ]
     if len(resolved) == 1:
         token, result = resolved[0]
         return CalculationProductReference(

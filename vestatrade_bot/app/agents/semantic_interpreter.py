@@ -22,10 +22,13 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 from app.catalog_v2.normalization import parse_pump_designation
 from app.catalog_v2.registry import DEFAULT_CONTRACTS
+from app.dialogue_v2.contracts import GoalReactivationResolution
+from app.dialogue_v2.reactivation import resolve_goal_reactivation
 from app.models import SessionState
 from app.openrouter_client import OpenRouterClient
 from app.pii import redact_pii_for_model
 from app.semantic_v2.contracts import SemanticGateResult, SemanticTurnDeltaV1
+from app.sku_resolution import CatalogSkuAnchor, resolve_catalog_sku_anchors
 
 from .domain_ontology import (
     RANGE_CAPABLE_CONSTRAINT_FACTS,
@@ -794,6 +797,7 @@ class SemanticInterpretationResult(StrictModel):
     understanding: TurnUnderstanding | None = None
     semantic_delta: SemanticTurnDeltaV1 | None = None
     semantic_gate: SemanticGateResult | None = None
+    goal_reactivation: GoalReactivationResolution | None = None
     rejection_reason: str | None = None
     fallback_reason: str | None = None
 
@@ -2183,6 +2187,7 @@ def _recover_bounded_selection_category_and_facts(
     constraints: list[dict[str, Any]],
     authoritative_state: dict[str, Any] | None,
     changes: list[str],
+    catalog_sku_anchors: tuple[CatalogSkuAnchor[Any], ...] = (),
 ) -> None:
     """Recover a small closed vocabulary of unambiguous selection facts.
 
@@ -2228,13 +2233,37 @@ def _recover_bounded_selection_category_and_facts(
         if item.get("role") == ProductRole.TARGET.value
     ]
     target_index = target_indexes[0] if len(target_indexes) == 1 else None
-    sku_tokens = [
+    # The LLM can omit a canonical type for a valid article, especially for
+    # numeric and slash-only SKUs. A catalogue-bound anchor is the authority
+    # for recovering that product scope. Keep the older structured-token
+    # fallback only when no catalogue was supplied, so it can never widen
+    # numeric/slash extraction in the live path.
+    resolved_catalog_anchors = tuple(
+        anchor
+        for anchor in catalog_sku_anchors
+        if anchor.canonical_sku is not None
+        and anchor.resolution.status.value in {"exact", "unique_prefix"}
+    )
+    catalog_anchor = (
+        resolved_catalog_anchors[0]
+        if len(resolved_catalog_anchors) == 1
+        else None
+    )
+    fallback_sku_tokens = [
         match.group(0)
         for match in _MIXED_IDENTIFIER_TOKEN_RE.finditer(current_message)
         if "." in match.group(0) and any(char.isdigit() for char in match.group(0))
     ]
-    explicit_sku = sku_tokens[0] if len(sku_tokens) == 1 else None
-    if explicit_sku is not None:
+    fallback_sku = (
+        fallback_sku_tokens[0]
+        if not catalog_sku_anchors and len(fallback_sku_tokens) == 1
+        else None
+    )
+    explicit_sku = catalog_anchor.text if catalog_anchor is not None else fallback_sku
+    canonical_sku = (
+        catalog_anchor.canonical_sku if catalog_anchor is not None else explicit_sku
+    )
+    if explicit_sku is not None and canonical_sku is not None:
         if not normalized_products:
             normalized_products.append(
                 ProductMention(
@@ -2246,19 +2275,31 @@ def _recover_bounded_selection_category_and_facts(
                 ).model_dump(mode="json")
             )
             target_index = 0
-            changes.append("explicit_sku_product_scope_recovered")
+            changes.append(
+                "catalog_bound_sku_product_scope_recovered"
+                if catalog_anchor is not None
+                else "explicit_sku_product_scope_recovered"
+            )
         if not _has_constraint_name(constraints, {"sku", "article", "артикул"}):
             _append_known_constraint(
                 constraints,
                 name="sku",
-                value=explicit_sku,
+                value=canonical_sku,
                 evidence=explicit_sku,
                 applies_to_product=target_index,
             )
-            changes.append("explicit_sku_constraint_recovered")
+            changes.append(
+                "catalog_bound_sku_constraint_recovered"
+                if catalog_anchor is not None
+                else "explicit_sku_constraint_recovered"
+            )
         if active_goal is not None:
             repaired_turn["operation"] = GoalOperation.SWITCH.value
-            changes.append("explicit_sku_overrode_stale_goal")
+            changes.append(
+                "catalog_bound_sku_overrode_stale_goal"
+                if catalog_anchor is not None
+                else "explicit_sku_overrode_stale_goal"
+            )
 
     pump_match = _CIRCULATION_PUMP_RE.search(current_message)
     if pump_match is not None and not normalized_products:
@@ -5602,6 +5643,7 @@ def repair_grounded_semantic_payload(
     authoritative_product_hints: tuple[dict[str, str], ...] = (),
     shown_product_cards: tuple[Any, ...] = (),
     authoritative_dialogue_state: dict[str, Any] | None = None,
+    catalog_sku_anchors: tuple[CatalogSkuAnchor[Any], ...] = (),
 ) -> tuple[Any, tuple[str, ...]]:
     """Apply bounded, source-preserving repairs before strict validation.
 
@@ -6483,6 +6525,7 @@ def repair_grounded_semantic_payload(
         normalized_constraints,
         authoritative_dialogue_state,
         changes,
+        catalog_sku_anchors,
     )
     # The bounded recovery may add or correct the one current target product;
     # keep the strict validator and all later stages on the same typed frame.
@@ -6858,9 +6901,16 @@ class SemanticInterpreter:
         llm_client: OpenRouterClient,
         *,
         model: str | None = None,
+        catalog_products: tuple[Any, ...] | list[Any] = (),
     ) -> None:
         self.llm_client = llm_client
         self.model = model
+        self._catalog_products: tuple[Any, ...] = tuple(catalog_products)
+
+    def set_catalog_products(self, products: tuple[Any, ...] | list[Any]) -> None:
+        """Set the read-only catalogue view used to prove SKU anchors."""
+
+        self._catalog_products = tuple(products)
 
     def interpret(
         self,
@@ -6872,6 +6922,10 @@ class SemanticInterpreter:
         safe_message = redact_pii_for_model(current_message)
         authoritative_product_hints = _authoritative_product_hints(state_before)
         shown_product_cards = _shown_product_cards(state_before)
+        catalog_sku_anchors = resolve_catalog_sku_anchors(
+            safe_message,
+            self._catalog_products,
+        )
         context_before_turn = semantic_context(state_before)
         authoritative_dialogue_state = context_before_turn.get(
             "authoritative_dialogue_state_v2"
@@ -6879,6 +6933,15 @@ class SemanticInterpreter:
         payload = {
             "current_message": safe_message,
             "context_before_turn": context_before_turn,
+            "deterministic_sku_anchors": [
+                {
+                    "text": item.text,
+                    "canonical_sku": item.canonical_sku,
+                    "match_kind": item.match_kind,
+                    "reason_code": item.resolution.reason_code,
+                }
+                for item in catalog_sku_anchors
+            ],
             "ontology": semantic_ontology_payload(),
             "output_schema": TurnUnderstanding.model_json_schema(),
         }
@@ -6959,6 +7022,7 @@ class SemanticInterpreter:
                         authoritative_product_hints,
                         shown_product_cards,
                         authoritative_dialogue_state,
+                        catalog_sku_anchors,
                     )
                     audited = TurnUnderstanding.model_validate(repaired_audit)
                     validate_current_turn_evidence(audited, safe_message)
@@ -6982,6 +7046,7 @@ class SemanticInterpreter:
                         authoritative_product_hints,
                         shown_product_cards,
                         authoritative_dialogue_state,
+                        catalog_sku_anchors,
                     )
                     first_pass = TurnUnderstanding.model_validate(repaired_first)
                     validate_current_turn_evidence(first_pass, safe_message)
@@ -7020,6 +7085,14 @@ class SemanticInterpreter:
                 raise ValueError(
                     "semantic_gate:" + ",".join(semantic_gate.reason_codes)
                 )
+            typed_state = (
+                state_before.live_dialogue_state_v2
+                or state_before.dialogue_state_v2
+            )
+            goal_reactivation = resolve_goal_reactivation(
+                safe_message,
+                typed_state,
+            )
             return SemanticInterpretationResult(
                 status="accepted",
                 requested=True,
@@ -7030,6 +7103,7 @@ class SemanticInterpreter:
                 understanding=understanding,
                 semantic_delta=semantic_delta,
                 semantic_gate=semantic_gate,
+                goal_reactivation=goal_reactivation,
                 audit_requested=True,
                 audit_output_accepted=audit_accepted,
                 structural_repairs=structural_repairs,

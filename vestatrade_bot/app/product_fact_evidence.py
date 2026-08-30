@@ -27,7 +27,7 @@ from app.passport_retrieval import expand_query, load_or_build
 from app.sku_resolution import (
     SkuResolutionStatus,
     extract_explicit_sku_tokens,
-    resolve_catalog_sku,
+    resolve_catalog_sku_anchors,
 )
 from app.v2_presentation import format_public_fact_value, public_fact_label
 from app.v2_visible_products import (
@@ -744,22 +744,21 @@ class ProductFactEvidenceService:
         session: SessionState,
     ) -> ProductReference:
         text = _normalise(question)
-        # Exact numeric articles are valid catalogue identities even when a
-        # customer does not introduce them with the word "артикул".  The
-        # shared extractor only returns candidates; ``resolve_catalog_sku``
-        # remains the authority that proves an exact/unique identity.
-        sku_tokens = list(extract_explicit_sku_tokens(question))
-        resolved = []
-        ambiguous = []
-        for token in dict.fromkeys(sku_tokens):
-            result = resolve_catalog_sku(token, self.products)
-            if result.status in {
-                SkuResolutionStatus.EXACT,
-                SkuResolutionStatus.UNIQUE_PREFIX,
-            }:
-                resolved.append((token, result))
-            elif result.status == SkuResolutionStatus.AMBIGUOUS_PREFIX:
-                ambiguous.append((token, result))
+        # The shared resolver emits only catalogue-proven identities.  Its
+        # five-digit/slash boundary is context-sensitive, while structured
+        # and long numeric articles keep the existing exact/unique semantics.
+        sku_anchors = resolve_catalog_sku_anchors(question, self.products)
+        resolved = [
+            (anchor.text, anchor.resolution)
+            for anchor in sku_anchors
+            if anchor.resolution.status
+            in {SkuResolutionStatus.EXACT, SkuResolutionStatus.UNIQUE_PREFIX}
+        ]
+        ambiguous = [
+            (anchor.text, anchor.resolution)
+            for anchor in sku_anchors
+            if anchor.resolution.status == SkuResolutionStatus.AMBIGUOUS_PREFIX
+        ]
         if len(resolved) == 1:
             token, result = resolved[0]
             return ProductReference(

@@ -18,6 +18,7 @@ from app.catalog_v2.contracts import (
 from app.comparison_v2.contracts import ComparisonRequest, ComparisonResult
 from app.calculation_v2.contracts import CalculationRequest, CalculationResult
 from app.compatibility_v2.contracts import CompatibilityRequest, CompatibilityResult
+from app.offer_fact_v2.contracts import OfferFactRequest, OfferFactResult
 from app.dialogue_v2.contracts import DialogueStateV2, NextActionKind, TaskAct
 from app.models import ChatResponse
 
@@ -198,6 +199,8 @@ class V2TurnCandidate(FrozenModel):
     comparison_result: ComparisonResult | None = None
     calculation_request: CalculationRequest | None = None
     calculation_result: CalculationResult | None = None
+    offer_fact_request: OfferFactRequest | None = None
+    offer_fact_result: OfferFactResult | None = None
     compatibility_request: CompatibilityRequest | None = None
     compatibility_result: CompatibilityResult | None = None
     product_scope_effect: ProductScopeEffect = ProductScopeEffect.PRESERVE

@@ -224,6 +224,7 @@ def _trace_summary(trace: dict[str, Any] | None) -> dict[str, Any]:
     cutover = trace.get("cutover_v2") or {}
     decision = cutover.get("decision") or {}
     candidate = cutover.get("candidate") or {}
+    comparison = cutover.get("comparison_delivery") or {}
     parity = cutover.get("parity") or {}
     v2_action = trace.get("v2_next_action") or {}
     primary = v2_action.get("primary") or {}
@@ -246,6 +247,11 @@ def _trace_summary(trace: dict[str, Any] | None) -> dict[str, Any]:
         "decision_reason_codes": decision.get("reason_codes") or [],
         "candidate_eligible": candidate.get("eligible_for_delivery"),
         "candidate_rejection_reason_codes": candidate.get("rejection_reason_codes") or [],
+        # Compare rendering deliberately says "Сравнение", not the legacy
+        # phrase "Сравниваю".  Metrics must come from the typed grounded
+        # result rather than fragile Russian response wording.
+        "comparison_status": comparison.get("status"),
+        "comparison_outcome_gate_passed": comparison.get("outcome_gate_passed"),
         "parity_status": parity.get("status"),
         "parity_severity": parity.get("severity"),
         "llm_events": len(llm_events),
@@ -315,7 +321,12 @@ def _mode_summary(mode: dict[str, Any]) -> dict[str, Any]:
             bool(turn["result"].get("response", {}).get("products")) for turn in ok_turns
         ),
         "passport_quote_answers": sum("По паспорту:" in answer for answer in answers),
-        "comparison_answers": sum("Сравниваю" in answer for answer in answers),
+        "comparison_answers": sum(
+            trace.get("owner") == "v2"
+            and trace.get("comparison_status") == "compared"
+            and trace.get("comparison_outcome_gate_passed") is True
+            for trace in traces
+        ),
         "avg_latency_sec": round(statistics.mean(latencies), 3) if latencies else 0.0,
         "p95_latency_sec": _percentile_95(latencies),
         "semantic_statuses": dict(sorted(semantic_statuses.items())),

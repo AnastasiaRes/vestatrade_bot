@@ -7,6 +7,8 @@ from app.agents.semantic_interpreter import (
     validate_semantic_content_coverage,
     validate_product_modifier_coverage,
 )
+from app.models import Product
+from app.sku_resolution import resolve_catalog_sku_anchors
 
 
 def _candidate(*, acts: tuple[str, ...] = ("select",)) -> dict[str, object]:
@@ -57,6 +59,32 @@ def _active_state(kind: str, category: str) -> dict[str, object]:
             }
         ],
     }
+
+
+def test_catalog_bound_numeric_sku_recovers_product_scope_after_untyped_llm_output() -> None:
+    product = Product(
+        sku="11677",
+        name="Тестовый товар",
+        category_path="Арматура",
+        price=100,
+        stock_status="нет в наличии",
+        stock_qty=0,
+        url="https://example.test/11677",
+    )
+    message = "Проверьте цену и наличие товара 11677"
+    repaired, changes = repair_grounded_semantic_payload(
+        _candidate(acts=("check_price", "check_stock")),
+        message,
+        catalog_sku_anchors=resolve_catalog_sku_anchors(message, [product]),
+    )
+    frame = TurnUnderstanding.model_validate(repaired)
+
+    assert [(item.canonical_type, item.evidence) for item in frame.products] == [
+        ("catalog_product", "11677")
+    ]
+    assert _facts(frame)["sku"] == ("11677", None)
+    assert "catalog_bound_sku_product_scope_recovered" in changes
+    assert "catalog_bound_sku_constraint_recovered" in changes
 
 
 def test_ppr_slang_recovers_product_and_all_explicit_facts() -> None:

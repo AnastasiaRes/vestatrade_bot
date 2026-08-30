@@ -68,6 +68,7 @@ from app.cutover_v2.calculation import build_v2_calculation_candidate
 from app.cutover_v2.compatibility import build_v2_compatibility_candidate
 from app.cutover_v2.comparison import build_v2_comparison_candidate
 from app.cutover_v2.product_fact import build_v2_product_fact_candidate
+from app.cutover_v2.offer_fact import build_v2_offer_fact_candidate
 from app.cutover_v2.contracts import (
     EarlyControlOutcome,
     EarlyControlResult,
@@ -105,8 +106,10 @@ from app.product_fact_evidence import (
     ProductFactEvidenceService,
     ProductReferenceKind,
 )
+from app.offer_fact_v2.service import build_offer_fact_request, build_offer_fact_result
 from app.session_store import SessionStore, build_session_store
 from app.sku_resolution import SkuResolutionStatus
+from app.v2_visible_products import turn_product_context
 
 from app.business_config import get_business_facts
 
@@ -738,6 +741,7 @@ class ChatOrchestrator:
                 self.settings.semantic_shadow_model
                 or self.settings.llm_model_strong
             ),
+            catalog_products=products or (),
         )
         self.dialogue_controller_v2 = DialogueControllerV2(
             response_renderer=ResponseRendererV2(
@@ -805,6 +809,7 @@ class ChatOrchestrator:
             products, source = self.feed_loader.load_products(refresh=refresh)
             self.docs_attached = load_docs_for_products(products, self._docs_dirs())
             self.search_agent.set_products(products)
+            self.semantic_interpreter.set_catalog_products(products)
             self.product_fact_evidence.set_products(products)
             if (
                 self._stage3_shadow_enabled()
@@ -1390,6 +1395,77 @@ class ChatOrchestrator:
             }
         )
 
+    def _maybe_build_v2_offer_fact_candidate(
+        self,
+        message: str,
+        before_turn: SessionState,
+        outcome: DialogueV2Outcome,
+        base_candidate: Any,
+        *,
+        session_id: str,
+        turn_id: str,
+    ) -> Any:
+        """Answer one price, stock or link fact from a checked visible offer.
+
+        This is intentionally before Calculation.  A question without a
+        quantity (``Сколько стоит второй?``) is a catalogue fact, while a
+        quantity × price request remains owned by the existing calculator.
+        """
+
+        snapshot = self.answer_source_snapshot_v2
+        if snapshot is None:
+            return base_candidate
+        # This is a recovery seam, not a competing response planner.  A
+        # fully accepted native candidate must retain ownership; otherwise an
+        # already correct canary response could be replaced by a different
+        # direct-fact shape.  A rejected semantic turn is also never repaired
+        # by guessing an offer fact from its surface wording.
+        if (
+            outcome.status != "applied"
+            or (
+                bool(getattr(base_candidate, "semantic_accepted", False))
+                and bool(getattr(base_candidate, "contracts_resolved", False))
+                and bool(getattr(base_candidate, "eligible_for_delivery", False))
+                and getattr(base_candidate, "response", None) is not None
+            )
+        ):
+            return base_candidate
+        request = build_offer_fact_request(
+            outcome,
+            before_turn,
+            snapshot,
+            original_utterance=message,
+        )
+        if request is None:
+            return base_candidate
+        result = build_offer_fact_result(request, snapshot)
+        candidate = build_v2_offer_fact_candidate(
+            outcome,
+            base_candidate,
+            result,
+            snapshot,
+            session_id=session_id,
+            turn_id=turn_id,
+        )
+        if candidate is not None:
+            return candidate.model_copy(
+                update={
+                    "offer_fact_request": request,
+                    "offer_fact_result": result,
+                }
+            )
+        return base_candidate.model_copy(
+            update={
+                "offer_fact_request": request,
+                "offer_fact_result": result,
+                "rejection_reason_codes": tuple(
+                    dict.fromkeys(
+                        (*base_candidate.rejection_reason_codes, *result.reason_codes)
+                    )
+                ),
+            }
+        )
+
     def _stage6_runtime(
         self,
         before_turn: SessionState,
@@ -1452,6 +1528,108 @@ class ChatOrchestrator:
             if source is not None:
                 result[product.sku] = source.product_kind
         return result
+
+    def _session_for_v2_turn_product_context(
+        self,
+        before_turn: SessionState,
+        state_after: DialogueStateV2,
+    ) -> SessionState:
+        """Build a read-only capability view for the active typed goal.
+
+        The persisted session intentionally keeps one UI-facing current list
+        for compatibility with Legacy.  V2 capabilities must not read that
+        global list after a goal was reactivated: ``первый`` then has to mean
+        the first card of the resumed goal, not the latest unrelated list.
+        This method changes no stored state; the delivery commit remains the
+        only writer of customer-visible cards and typed historical scopes.
+        """
+
+        snapshot = self.answer_source_snapshot_v2
+        if snapshot is None:
+            return before_turn
+        context = turn_product_context(
+            state_after,
+            source_revision=snapshot.source_revision,
+        )
+        if context.is_valid:
+            cards: list[ProductCard] = []
+            for sku in context.scope.ordered_skus:
+                source = self._find_product_by_sku(sku)
+                snapshot_product = snapshot.product(sku)
+                if (
+                    source is None
+                    or snapshot_product is None
+                    or source.price is None
+                    or not source.url
+                ):
+                    # A stale/missing historical scope is never replaced with
+                    # the current global view.  The downstream capability will
+                    # report its normal fail-closed scope boundary.
+                    return before_turn.model_copy(
+                        deep=True,
+                        update={
+                            "v2_last_products": [],
+                            "last_products": [],
+                            "v2_selection_id": None,
+                            "v2_source_revision": None,
+                            "product_focus": None,
+                        },
+                    )
+                cards.append(
+                    ProductCard(
+                        sku=source.sku,
+                        name=source.name,
+                        brand=source.brand,
+                        price=source.price,
+                        currency=source.currency,
+                        stock_status=source.stock_status,
+                        stock_qty=source.stock_qty,
+                        url=source.url,
+                        image_url=source.image_url,
+                        characteristics={},
+                    )
+                )
+            focus_sku = context.scope.focus_sku
+            focus_source = self._find_product_by_sku(focus_sku) if focus_sku else None
+            return before_turn.model_copy(
+                deep=True,
+                update={
+                    "v2_last_products": cards,
+                    "last_products": cards,
+                    "shown_product_skus": [card.sku for card in cards],
+                    "shown_result_signature": context.scope.selection_id,
+                    "v2_selection_id": context.scope.selection_id,
+                    "v2_source_revision": context.scope.source_revision,
+                    "product_focus": (
+                        ProductFocusState(
+                            sku=focus_sku,
+                            category=focus_source.category_path or None,
+                            origin="v2_reactivated_goal_scope",
+                        )
+                        if focus_sku is not None and focus_source is not None
+                        else None
+                    ),
+                },
+            )
+
+        # Once a typed state has historical selections, a missing scope for
+        # its active goal is meaningful (for example an old direct-fact-only
+        # task).  Do not silently borrow the latest cards from another goal.
+        if state_after.active_goal_id is not None and state_after.delivered_selection_scopes:
+            return before_turn.model_copy(
+                deep=True,
+                update={
+                    "v2_last_products": [],
+                    "last_products": [],
+                    "v2_selection_id": None,
+                    "v2_source_revision": None,
+                    "product_focus": None,
+                },
+            )
+        # Older stored V2 sessions have no per-goal history yet.  They retain
+        # the existing one-scope behavior until their next delivered Selection
+        # creates a safe typed scope.
+        return before_turn
 
     def _commit_v2_response(
         self,
@@ -1519,6 +1697,30 @@ class ChatOrchestrator:
             catalog_revision=(
                 selection_result.catalog_revision
                 if replaces_product_scope and selection_result is not None
+                else None
+            ),
+            selection_goal_id=(
+                selection_result.goal_id
+                if replaces_product_scope and selection_result is not None
+                else None
+            ),
+            selection_task_id=(
+                selection_result.task_id
+                if replaces_product_scope and selection_result is not None
+                else None
+            ),
+            selection_ordered_skus=(
+                selection_result.ordered_skus
+                if replaces_product_scope and selection_result is not None
+                else ()
+            ),
+            selection_focus_sku=(
+                selection_result.ordered_skus[0]
+                if (
+                    replaces_product_scope
+                    and selection_result is not None
+                    and len(selection_result.ordered_skus) == 1
+                )
                 else None
             ),
         )
@@ -1649,6 +1851,7 @@ class ChatOrchestrator:
         selection_delivery = None
         comparison_delivery = None
         calculation_delivery = None
+        offer_fact_delivery = None
         compatibility_delivery = None
         if candidate is not None:
             candidate_summary = candidate.model_dump(
@@ -1681,6 +1884,16 @@ class ChatOrchestrator:
                     mode="json"
                 )
                 calculation_delivery["customer_visible_scope_preserved"] = bool(
+                    commit is not None
+                    and commit.committed
+                    and candidate.product_scope_effect
+                    == ProductScopeEffect.PRESERVE
+                )
+            if candidate.offer_fact_result is not None:
+                offer_fact_delivery = candidate.offer_fact_result.model_dump(
+                    mode="json"
+                )
+                offer_fact_delivery["customer_visible_scope_preserved"] = bool(
                     commit is not None
                     and commit.committed
                     and candidate.product_scope_effect
@@ -1731,6 +1944,7 @@ class ChatOrchestrator:
             "selection_delivery": selection_delivery,
             "comparison_delivery": comparison_delivery,
             "calculation_delivery": calculation_delivery,
+            "offer_fact_delivery": offer_fact_delivery,
             "compatibility_delivery": compatibility_delivery,
             "arbitration": arbitration,
             "commit": commit,
@@ -1849,6 +2063,12 @@ class ChatOrchestrator:
                                             turn_id,
                                             before_turn,
                                         )
+                                        capability_session = (
+                                            self._session_for_v2_turn_product_context(
+                                                before_turn,
+                                                live_v2_outcome.state_after,
+                                            )
+                                        )
                                         live_candidate = build_v2_turn_candidate(
                                             live_v2_outcome,
                                             self.answer_source_snapshot_v2,
@@ -1856,18 +2076,18 @@ class ChatOrchestrator:
                                             turn_id=turn_id,
                                             original_utterance=message,
                                             previously_delivered_products=tuple(
-                                                before_turn.last_products
+                                                capability_session.last_products
                                             ),
                                             current_product_focus=(
-                                                before_turn.product_focus.sku
-                                                if before_turn.product_focus is not None
+                                                capability_session.product_focus.sku
+                                                if capability_session.product_focus is not None
                                                 else None
                                             ),
                                         )
                                         live_candidate = (
                                             self._maybe_build_v2_comparison_candidate(
                                                 message,
-                                                before_turn,
+                                                capability_session,
                                                 live_v2_outcome,
                                                 live_candidate,
                                                 session_id=session_id,
@@ -1877,7 +2097,7 @@ class ChatOrchestrator:
                                         live_candidate = (
                                             self._maybe_build_v2_compatibility_candidate(
                                                 message,
-                                                before_turn,
+                                                capability_session,
                                                 live_v2_outcome,
                                                 live_candidate,
                                                 session_id=session_id,
@@ -1887,8 +2107,18 @@ class ChatOrchestrator:
                                         live_candidate = (
                                             self._maybe_build_v2_product_fact_candidate(
                                                 message,
-                                                before_turn,
+                                                capability_session,
                                                 semantic,
+                                                live_v2_outcome,
+                                                live_candidate,
+                                                session_id=session_id,
+                                                turn_id=turn_id,
+                                            )
+                                        )
+                                        live_candidate = (
+                                            self._maybe_build_v2_offer_fact_candidate(
+                                                message,
+                                                capability_session,
                                                 live_v2_outcome,
                                                 live_candidate,
                                                 session_id=session_id,
@@ -1898,7 +2128,7 @@ class ChatOrchestrator:
                                         live_candidate = (
                                             self._maybe_build_v2_calculation_candidate(
                                                 message,
-                                                before_turn,
+                                                capability_session,
                                                 live_v2_outcome,
                                                 live_candidate,
                                                 session_id=session_id,
@@ -7788,6 +8018,34 @@ class ChatOrchestrator:
             return response
 
         query = self._build_query(message, intent, session)
+        if (
+            query.sku
+            and query.in_stock_only
+            and not self._explicit_stock_only_constraint(message)
+        ):
+            # Asking whether an exact named item is available must deliver the
+            # item with its actual (possibly zero) stock.  ``in_stock`` is
+            # still a hard filter for an explicit «только/из наличия» request.
+            # This narrow correction also prevents the final response guard
+            # from hiding the very card that answers the question.
+            query = query.model_copy(
+                update={
+                    "in_stock_only": False,
+                    "slots": {
+                        key: value
+                        for key, value in query.slots.items()
+                        if key != "in_stock"
+                    },
+                }
+            )
+            intent.slots.pop("in_stock", None)
+            intent.flags["in_stock"] = False
+            current_turn_slot_keys = set(
+                str(key)
+                for key in (intent.raw or {}).get("current_turn_slot_keys", [])
+            )
+            if "in_stock" in current_turn_slot_keys:
+                session.slots.pop("in_stock", None)
         direct_products: list[Product] = []
         if not session.pending_complectation_parts and not query.sku:
             direct_products = self.search_agent.search_by_name(message, query)
@@ -8843,6 +9101,31 @@ class ChatOrchestrator:
             brand=slots.get("brand"),
             cheap=bool(slots.get("cheap") or intent.flags.get("cheap")),
             in_stock_only=bool(slots.get("in_stock") or intent.flags.get("in_stock")),
+        )
+
+    @staticmethod
+    def _explicit_stock_only_constraint(message: str) -> bool:
+        """Distinguish availability as a fact from an availability filter."""
+
+        text = normalize_text(message)
+        if re.search(
+            r"\b(?:только|исключительно|именно|строго)\s+"
+            r"(?:в\s+наличии|из\s+наличия)\b",
+            text,
+        ):
+            return True
+        if re.search(
+            r"\b(?:только|исключительно|именно|строго)\s+если\b"
+            r"[^.!?]{0,36}\bв\s+наличии\b",
+            text,
+        ):
+            return True
+        return bool(
+            re.search(
+                r"\b(?:покажи|покажите|найди|найдите|подбери|подберите|"
+                r"предложи|предложите)\b[^.!?]{0,50}\bиз\s+наличия\b",
+                text,
+            )
         )
 
     def _merge_persistent_slots(

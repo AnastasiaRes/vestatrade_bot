@@ -270,3 +270,21 @@ def test_exact_unavailable_sku_is_reported_without_card_under_stock_filter() -> 
     assert "не в наличии" in response.answer.lower()
     assert "карточку товара не показываю" in response.answer.lower()
     assert response.need_handoff is False
+
+
+def test_exact_unavailable_sku_is_shown_for_a_stock_question_not_a_stock_filter() -> None:
+    unavailable = _pump(
+        "11677",
+        "Насос циркуляционный 11677",
+        price=3000,
+        stock_qty=0,
+    )
+    bot = ChatOrchestrator(products=[unavailable])
+
+    response = bot.handle_chat(
+        "exact-out-stock-question",
+        "Покажи товар 11677: есть ли он в наличии?",
+    )
+
+    assert [product.sku for product in response.products] == ["11677"]
+    assert "остатк" in response.answer.lower()

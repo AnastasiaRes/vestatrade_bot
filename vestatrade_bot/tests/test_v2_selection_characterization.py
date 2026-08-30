@@ -1433,6 +1433,12 @@ def test_committed_selection_atomically_updates_customer_visible_scope(
     assert stored.product_focus is not None
     assert stored.product_focus.sku == valve.sku
     assert stored.live_dialogue_state_v2 is not None
+    assert len(stored.live_dialogue_state_v2.delivered_selection_scopes) == 1
+    delivered_scope = stored.live_dialogue_state_v2.delivered_selection_scopes[0]
+    assert delivered_scope.selection_id == candidate.selection_result.selection_id
+    assert delivered_scope.task_id == candidate.selection_result.task_id
+    assert delivered_scope.goal_id == candidate.selection_result.goal_id
+    assert delivered_scope.ordered_skus == (valve.sku,)
 
 
 def test_v2_cards_feed_next_ordinal_product_fact_without_legacy_setup(
