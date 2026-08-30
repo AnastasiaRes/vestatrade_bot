@@ -67,6 +67,11 @@ from app.cutover_v2.assembler import build_v2_turn_candidate
 from app.cutover_v2.calculation import build_v2_calculation_candidate
 from app.cutover_v2.compatibility import build_v2_compatibility_candidate
 from app.cutover_v2.comparison import build_v2_comparison_candidate
+from app.cutover_v2.legacy_scope_bridge import (
+    LegacyScopeBridgeResult,
+    LegacyScopeBridgeStatus,
+    bridge_validated_legacy_selection_scope,
+)
 from app.cutover_v2.product_fact import build_v2_product_fact_candidate
 from app.cutover_v2.offer_fact import build_v2_offer_fact_candidate
 from app.cutover_v2.contracts import (
@@ -1639,6 +1644,48 @@ class ChatOrchestrator:
         # creates a safe typed scope.
         return before_turn
 
+    def _maybe_bridge_validated_legacy_selection_scope(
+        self,
+        *,
+        qa_mode: DialogueQAMode | None,
+        response: ChatResponse,
+        outcome: DialogueV2Outcome | None,
+        decision: Any | None,
+        session_id: str,
+        turn_id: str | None,
+    ) -> LegacyScopeBridgeResult | None:
+        """Keep a checked Legacy selection usable by the next QA V2 turn.
+
+        This is intentionally unavailable in Shadow and ordinary public
+        Legacy routing. It only bridges an actual Stage 6 fallback in the
+        protected Preview, after Legacy has produced its structured cards.
+        The public Legacy state remains untouched; the typed V2 state gains
+        only a source-verified scope for a future V2-owned follow-up.
+        """
+
+        if (
+            qa_mode != DialogueQAMode.V2_PREVIEW
+            or outcome is None
+            or outcome.status != "applied"
+            or decision is None
+            or decision.execution_mode != ExecutionMode.LEGACY_FALLBACK
+            or not turn_id
+        ):
+            return None
+        bridge = bridge_validated_legacy_selection_scope(
+            outcome.state_after,
+            response,
+            self.answer_source_snapshot_v2,
+            session_id=session_id,
+            turn_id=turn_id,
+        )
+        if bridge.audit.status != LegacyScopeBridgeStatus.IMPORTED:
+            return bridge
+        selected = self.sessions.snapshot(session_id)
+        selected.dialogue_state_v2 = bridge.state_after
+        self.sessions.save(selected)
+        return bridge
+
     def _commit_v2_response(
         self,
         before_turn: SessionState,
@@ -1853,6 +1900,7 @@ class ChatOrchestrator:
         arbitration: Any | None = None,
         commit: TurnCommit | None = None,
         parity: Any | None = None,
+        legacy_scope_bridge: LegacyScopeBridgeResult | None = None,
         error: str | None = None,
     ) -> dict[str, Any]:
         candidate_summary = None
@@ -1966,6 +2014,11 @@ class ChatOrchestrator:
             "product_fact_delivery": product_fact_delivery,
             "offer_fact_delivery": offer_fact_delivery,
             "compatibility_delivery": compatibility_delivery,
+            "legacy_scope_bridge": (
+                legacy_scope_bridge.audit.model_dump(mode="json")
+                if legacy_scope_bridge is not None
+                else None
+            ),
             "arbitration": arbitration,
             "commit": commit,
             "parity": parity,
@@ -2044,6 +2097,8 @@ class ChatOrchestrator:
                         live_arbitration = None
                         live_commit = None
                         cutover_error = None
+                        live_turn_id = None
+                        legacy_scope_bridge = None
                         with budget_scope:
                             self._request_agents.composer = ResponseComposerAgent(self.llm_client)
                             self._request_agents.consultant = ConsultantAgent(
@@ -2075,6 +2130,7 @@ class ChatOrchestrator:
                                                 ).encode("utf-8")
                                             ).hexdigest()
                                         )
+                                        live_turn_id = turn_id
                                         live_v2_outcome = self._run_stage6_v2_candidate(
                                             before_turn.live_dialogue_state_v2
                                             or before_turn.dialogue_state_v2
@@ -2502,6 +2558,18 @@ class ChatOrchestrator:
                                     )
                                 )
 
+                        if cutover_error is None:
+                            legacy_scope_bridge = (
+                                self._maybe_bridge_validated_legacy_selection_scope(
+                                    qa_mode=qa_mode,
+                                    response=response,
+                                    outcome=live_v2_outcome,
+                                    decision=live_decision,
+                                    session_id=session_id,
+                                    turn_id=live_turn_id,
+                                )
+                            )
+
                         if live_candidate is not None and not self.settings.dialogue_v2_shadow_compare_enabled:
                             parity = assess_response_parity(
                                 response,
@@ -2516,6 +2584,7 @@ class ChatOrchestrator:
                                     candidate=live_candidate,
                                     arbitration=live_arbitration,
                                     parity=parity,
+                                    legacy_scope_bridge=legacy_scope_bridge,
                                     error=cutover_error,
                                 )
                             )
@@ -2524,6 +2593,7 @@ class ChatOrchestrator:
                                 self._cutover_trace_payload(
                                     early_control=early_control,
                                     decision=live_decision,
+                                    legacy_scope_bridge=legacy_scope_bridge,
                                     error=cutover_error,
                                 )
                             )
@@ -2531,6 +2601,7 @@ class ChatOrchestrator:
                             record_cutover_v2(
                                 self._cutover_trace_payload(
                                     early_control=early_control,
+                                    legacy_scope_bridge=legacy_scope_bridge,
                                     error=cutover_error,
                                 )
                             )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 from app.dialogue_v2.contracts import CustomerTask, DialogueStateV2, ProductGoal
 from app.sku_resolution import SkuResolutionStatus, resolve_catalog_sku
@@ -39,6 +40,97 @@ def normalize_identity(value: object) -> str:
         .replace("_", " ")
         .replace("-", " ")
         .split()
+    )
+
+
+# One catalogue-bound vocabulary for brand facts.  These are aliases for
+# values already present in feed100, not an alternative product ontology or a
+# fuzzy manufacturer search.  The semantic layer consumes this table through
+# the helpers below; catalogue normalization uses the same canonical values.
+BRAND_VALUE_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("ARISTON", ("ariston", "аристон")),
+    ("ARDERIA", ("arderia", "ардерия")),
+    ("E.C.A", ("e.c.a", "e c a", "eca", "е.с.а", "е с а", "еса")),
+    ("OSTENDORF", ("ostendorf", "остендорф")),
+    ("ROMMER", ("rommer", "роммер")),
+    ("THERMEX", ("thermex", "термекс")),
+    ("UNIPUMP", ("unipump", "uni pump", "юнипамп")),
+    ("VALTEC", ("valtec", "валтек", "вальтек")),
+    ("WILO", ("wilo", "вило")),
+    ("ВИХРЬ", ("вихрь", "vihr", "vikhr")),
+    ("ХЕМКОР", ("хемкор", "hemkor")),
+)
+
+
+@dataclass(frozen=True)
+class BrandMention:
+    """One exact, catalogue-known brand mention in customer text."""
+
+    canonical: str
+    alias: str
+    start: int
+    end: int
+
+
+def canonical_brand(value: object) -> str | None:
+    """Resolve one full brand value through the shared feed100 vocabulary.
+
+    Unknown strings remain unknown rather than becoming a fuzzy supplier
+    constraint.  This makes a typo safe: the interpreter can ask or leave it
+    unresolved instead of silently filtering the catalogue to nothing.
+    """
+
+    identity = normalize_identity(value)
+    if not identity:
+        return None
+    for canonical, aliases in BRAND_VALUE_ALIASES:
+        known_values = {
+            normalize_identity(canonical),
+            *(normalize_identity(item) for item in aliases),
+        }
+        if identity in known_values:
+            return canonical
+    return None
+
+
+def resolve_brand_mentions(text: str) -> tuple[BrandMention, ...]:
+    """Find exact aliases with source spans; never use unrestricted fuzzy text."""
+
+    candidates: list[BrandMention] = []
+    for canonical, aliases in BRAND_VALUE_ALIASES:
+        for alias in (canonical, *aliases):
+            pattern = re.compile(
+                rf"(?<![0-9A-Za-zА-Яа-яЁё]){re.escape(alias)}(?![0-9A-Za-zА-Яа-яЁё])",
+                re.IGNORECASE,
+            )
+            for match in pattern.finditer(text):
+                candidates.append(
+                    BrandMention(
+                        canonical=canonical,
+                        alias=match.group(0),
+                        start=match.start(),
+                        end=match.end(),
+                    )
+                )
+    # Prefer the longest concrete alias at one span and do not double-count a
+    # canonical name that is also listed as an alias.
+    candidates.sort(key=lambda item: (item.start, -(item.end - item.start), item.canonical))
+    resolved: list[BrandMention] = []
+    occupied: list[tuple[int, int]] = []
+    for item in candidates:
+        if any(start <= item.start and item.end <= end for start, end in occupied):
+            continue
+        resolved.append(item)
+        occupied.append((item.start, item.end))
+    return tuple(resolved)
+
+
+def brand_ontology_values() -> tuple[dict[str, object], ...]:
+    """Expose the same value vocabulary to the bounded semantic prompt."""
+
+    return tuple(
+        {"value": canonical, "aliases": list(aliases)}
+        for canonical, aliases in BRAND_VALUE_ALIASES
     )
 
 

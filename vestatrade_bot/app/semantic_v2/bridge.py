@@ -15,6 +15,7 @@ from app.agents.semantic_interpreter import (
     ProductMention,
     ProductRole,
     ReferenceKind,
+    SelectionPreference,
     TurnReference,
     TurnUnderstanding,
 )
@@ -27,6 +28,7 @@ from .contracts import (
     SemanticFactUpdate,
     SemanticGateResult,
     SemanticProductReference,
+    SemanticSelectionPreference,
     SemanticTurnDeltaV1,
 )
 
@@ -311,6 +313,14 @@ def build_semantic_turn_delta(
         )
         for item in frame.references
     )
+    preferences = tuple(
+        SemanticSelectionPreference(
+            kind=item.kind.value,
+            value=item.value,
+            evidence=item.evidence,
+        )
+        for item in frame.selection_preferences
+    )
 
     normalized_message = _normalise(message)
     reason_codes: list[str] = []
@@ -318,6 +328,7 @@ def build_semantic_turn_delta(
         *(item.evidence for item in entities),
         *(item.evidence for item in facts),
         *(item.evidence for item in references),
+        *(item.evidence for item in preferences),
     ]:
         if _normalise(evidence) not in normalized_message:
             reason_codes.append("evidence_not_in_current_turn")
@@ -348,6 +359,7 @@ def build_semantic_turn_delta(
         entity_mentions=entities,
         fact_updates=facts,
         product_references=references,
+        selection_preferences=preferences,
         ambiguities=tuple(item.model_dump(mode="json") for item in frame.ambiguities),
         semantic_repairs=semantic_repairs,
         rejection_reason_codes=tuple(dict.fromkeys(reason_codes)),
@@ -356,8 +368,12 @@ def build_semantic_turn_delta(
         accepted=accepted,
         status=status,
         reason_codes=delta.rejection_reason_codes,
-        anchor_count=len(entities) + len(facts) + len(references),
-        accounted_anchor_count=(len(entities) + len(facts) + len(references) if accepted else 0),
+        anchor_count=len(entities) + len(facts) + len(references) + len(preferences),
+        accounted_anchor_count=(
+            len(entities) + len(facts) + len(references) + len(preferences)
+            if accepted
+            else 0
+        ),
     )
     return delta, gate
 
@@ -420,6 +436,14 @@ def adapt_delta_to_turn_understanding(
         )
         for item in delta.product_references
     ]
+    preferences = [
+        SelectionPreference(
+            kind=item.kind,
+            value=item.value,
+            evidence=item.evidence,
+        )
+        for item in delta.selection_preferences
+    ]
     payload = original.model_dump(mode="json")
     payload.update(
         {
@@ -427,6 +451,9 @@ def adapt_delta_to_turn_understanding(
             "products": [item.model_dump(mode="json") for item in products],
             "constraints": [item.model_dump(mode="json") for item in constraints],
             "references": [item.model_dump(mode="json") for item in references],
+            "selection_preferences": [
+                item.model_dump(mode="json") for item in preferences
+            ],
         }
     )
     return TurnUnderstanding.model_validate(payload)

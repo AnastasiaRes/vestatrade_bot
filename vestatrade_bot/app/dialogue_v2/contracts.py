@@ -230,6 +230,16 @@ class SelectionControlKind(str, Enum):
     CONTINUE_WITH_CONFIRMED_FACTS = "continue_with_confirmed_facts"
 
 
+class SelectionPreferenceKind(str, Enum):
+    """Goal-scoped customer preference for a safe catalogue shortlist."""
+
+    BRAND_REQUIRED = "brand_required"
+    BRAND_PREFERRED = "brand_preferred"
+    PRICE_LOWEST = "price_lowest"
+    PRICE_BELOW_REFERENCE = "price_below_reference"
+    STOCK_REQUIRED = "stock_required"
+
+
 class TurnMetadata(FrozenModel):
     turn_id: str = Field(min_length=1, max_length=160)
     source: str = Field(default="semantic_interpreter", min_length=1, max_length=80)
@@ -409,6 +419,40 @@ class SelectionControlSignal(FrozenModel):
     source_turn: int = Field(ge=1)
 
 
+class SelectionPreferenceSignal(FrozenModel):
+    """A typed preference bound to one discovery task and product goal.
+
+    Required brand/stock filtering still comes from ordinary typed
+    constraints. This signal makes the customer intent observable to ranking
+    and lets price preferences remain scoped to the correct conversation.
+    """
+
+    preference_id: str
+    kind: SelectionPreferenceKind
+    task_id: str
+    goal_id: str | None = None
+    value: str | bool | None = None
+    evidence: str = Field(default="", max_length=240)
+    source: str
+    source_turn: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def preference_signal_is_well_formed(self) -> "SelectionPreferenceSignal":
+        if self.kind in {
+            SelectionPreferenceKind.BRAND_REQUIRED,
+            SelectionPreferenceKind.BRAND_PREFERRED,
+        } and not isinstance(self.value, str):
+            raise ValueError("brand preference signal requires a brand")
+        if self.kind == SelectionPreferenceKind.STOCK_REQUIRED and self.value is not True:
+            raise ValueError("stock preference signal requires value=true")
+        if self.kind in {
+            SelectionPreferenceKind.PRICE_LOWEST,
+            SelectionPreferenceKind.PRICE_BELOW_REFERENCE,
+        } and self.value is not None:
+            raise ValueError("price preference signal must not carry a value")
+        return self
+
+
 class PresentedCandidateSummary(FrozenModel):
     """PII-free identity of a card included in the last answer candidate."""
 
@@ -476,16 +520,18 @@ class ResponseDeliveryRecord(FrozenModel):
 
 
 class DeliveredSelectionScope(FrozenModel):
-    """An immutable, customer-visible Selection bound to its product goal.
+    """An immutable, source-checked selection bound to its product goal.
 
     ``SessionState.v2_last_products`` remains the active UI view for backwards
     compatibility.  It cannot, however, represent two paused customer goals.
     This record is the typed history used to resolve later references such as
     ``первый насос`` after the customer temporarily looked at valves.
 
-    A scope is deliberately created only from a source-checked Selection that
-    was committed to the session.  Shadow candidates, direct facts,
-    comparisons and failed selections cannot create one.
+    A scope is normally created from a delivered V2 Selection.  The only
+    other permitted origin is a Legacy response whose *structured cards* have
+    been revalidated against the same source snapshot and attached to one
+    active typed selection task.  Shadow candidates, Legacy prose, direct
+    facts, comparisons and failed selections cannot create one.
     """
 
     scope_id: str
@@ -497,6 +543,7 @@ class DeliveredSelectionScope(FrozenModel):
     delivery_id: str
     source_turn: int = Field(ge=0)
     focus_sku: str | None = None
+    delivery_owner: Literal["v2", "legacy_validated"] = "v2"
 
     @model_validator(mode="after")
     def selection_scope_is_consistent(self) -> "DeliveredSelectionScope":
@@ -544,6 +591,7 @@ class DialogueStateV2(FrozenModel):
     direct_questions: tuple[DirectQuestion, ...] = ()
     ambiguities: tuple[Ambiguity, ...] = ()
     selection_controls: tuple[SelectionControlSignal, ...] = ()
+    selection_preferences: tuple[SelectionPreferenceSignal, ...] = ()
     progress: ProgressState = Field(default_factory=ProgressState)
     last_policy: NextActionPlan | None = None
     catalog_planning: CatalogPlanningResult | None = None
@@ -693,6 +741,16 @@ class SelectionControlRegistered(StateEventBase):
     )
     control_id: str
     control_kind: SelectionControlKind
+    task_id: str
+    goal_id: str | None = None
+
+
+class SelectionPreferenceRegistered(StateEventBase):
+    event_type: Literal["selection_preference_registered"] = (
+        "selection_preference_registered"
+    )
+    preference_id: str
+    preference_kind: SelectionPreferenceKind
     task_id: str
     goal_id: str | None = None
 
@@ -933,6 +991,7 @@ ReducerEvent: TypeAlias = (
     | InformationRequestUnavailable
     | AmbiguityRegistered
     | SelectionControlRegistered
+    | SelectionPreferenceRegistered
     | TurnIgnoredAsDuplicate
     | PolicyDecisionRecorded
     | ProductContractResolved

@@ -541,6 +541,12 @@ class SelectionResult(FrozenModel):
     candidates_after_filters: int = Field(default=0, ge=0)
     ordered_skus: tuple[str, ...] = ()
     cards: tuple[SelectionProductCard, ...] = ()
+    # Ordering is a customer-visible part of a delivered shortlist.  Keep the
+    # reason typed so the renderer can explain price ordering without looking
+    # back into customer prose or re-ranking cards.
+    ordering_reason_codes: tuple[str, ...] = ()
+    price_reference_selection_id: str | None = None
+    price_reference_amount: float | None = None
     is_preliminary: bool = False
     preliminary_fact_names: tuple[str, ...] = ()
     presentation_groups: tuple[SelectionPresentationGroup, ...] = ()

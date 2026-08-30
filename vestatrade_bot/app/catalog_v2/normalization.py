@@ -16,7 +16,7 @@ from .contracts import (
     FactProvenance,
     ProductKind,
 )
-from .registry import ProductContractRegistry, normalize_identity
+from .registry import ProductContractRegistry, canonical_brand, normalize_identity
 
 
 _NUMBER_RE = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
@@ -345,6 +345,11 @@ def normalize_fact_value(name: str, value: object) -> str | int | float | bool:
     if isinstance(value, (int, float, bool)):
         return value
     text = normalize_identity(value)
+    if name == "brand":
+        # Product cards and customer constraints must use the same canonical
+        # value; unknown brand text remains unproven rather than being mapped
+        # to the nearest catalogue manufacturer.
+        return canonical_brand(value) or text
     if name == "reinforcement":
         markers = set()
         if any(

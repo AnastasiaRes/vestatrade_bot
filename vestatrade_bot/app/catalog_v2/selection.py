@@ -24,6 +24,10 @@ from app.dialogue_v2.contracts import (
     ProductRole,
     TaskAct,
 )
+from app.dialogue_v2.selection_preferences import (
+    latest_delivered_scope,
+    price_preference,
+)
 
 from .contracts import (
     CandidateStatus,
@@ -528,6 +532,32 @@ def _source_backed_power_area_conflicts(
     return tuple(conflicts)
 
 
+def _price_reference(
+    outcome: DialogueV2Outcome,
+    source_snapshot: AnswerSourceSnapshot,
+    *,
+    task_id: str,
+    goal_id: str | None,
+) -> tuple[str | None, float | None]:
+    """Resolve a relative-price baseline only from a delivered current scope."""
+
+    scope = latest_delivered_scope(
+        outcome.state_after,
+        task_id=task_id,
+        goal_id=goal_id,
+        catalog_revision=source_snapshot.source_revision,
+    )
+    if scope is None:
+        return None, None
+    prices = []
+    for sku in scope.ordered_skus:
+        product = source_snapshot.product(sku)
+        if product is None or product.price is None:
+            return None, None
+        prices.append(product.price)
+    return scope.selection_id, min(prices) if prices else None
+
+
 def build_selection_result(
     request: SelectionRequest,
     outcome: DialogueV2Outcome,
@@ -786,6 +816,50 @@ def build_selection_result(
         if is_preliminary and not source_backed_conflicts
         else ()
     )
+    price_signal = price_preference(
+        outcome.state_after,
+        task_id=request.task_id,
+        goal_id=request.goal_id,
+    )
+    reference_selection_id, price_reference_amount = (
+        _price_reference(
+            outcome,
+            source_snapshot,
+            task_id=request.task_id,
+            goal_id=request.goal_id,
+        )
+        if price_signal is not None
+        and price_signal.kind.value == "price_below_reference"
+        else (None, None)
+    )
+    ordering_reason_codes: tuple[str, ...] = ()
+    if price_signal is not None:
+        ordering_reason_codes = (
+            "price_ordered_among_technically_presentable_candidates"
+            if price_signal.kind.value == "price_lowest"
+            else "price_below_delivered_scope_reference"
+            if price_reference_amount is not None
+            else "price_reference_scope_unavailable",
+        )
+    no_cheaper_candidate = bool(
+        price_signal is not None
+        and price_signal.kind.value == "price_below_reference"
+        and price_reference_amount is not None
+        and not cards
+        and candidate_assessments
+        and not any(
+            item.status != CandidateStatus.REJECTED
+            and (
+                product := source_snapshot.product(item.sku)
+            ) is not None
+            and product.price is not None
+            and product.price < price_reference_amount
+            for item in candidate_assessments
+        )
+    )
+    if no_cheaper_candidate:
+        status = SelectionResultStatus.NO_MATCH
+        reason = "no_verified_cheaper_candidate"
     selection_id = hashlib.sha256(
         "\x1f".join(
             (
@@ -837,6 +911,9 @@ def build_selection_result(
         candidates_after_filters=len(allowed_skus),
         ordered_skus=ordered_skus,
         cards=tuple(cards),
+        ordering_reason_codes=ordering_reason_codes,
+        price_reference_selection_id=reference_selection_id,
+        price_reference_amount=price_reference_amount,
         is_preliminary=is_preliminary,
         preliminary_fact_names=preliminary_fact_names,
         presentation_groups=presentation_groups,

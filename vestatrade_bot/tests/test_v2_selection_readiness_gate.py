@@ -25,6 +25,8 @@ def _product(
     price: float = 1_000,
     stock_status: str = "в наличии",
     stock_qty: int = 5,
+    description: str = "",
+    brand: str = "",
 ) -> Product:
     return Product(
         sku=sku,
@@ -37,6 +39,8 @@ def _product(
         url=f"https://example.test/{sku}",
         image_url=f"https://example.test/{sku}.jpg",
         attributes_normalized=attributes,
+        description=description,
+        brand=brand,
     )
 
 
@@ -69,6 +73,7 @@ def _frame(
     answers_pending_question: bool = False,
     acts: list[str] | None = None,
     references: list[dict[str, object]] | None = None,
+    selection_preferences: list[dict[str, object]] | None = None,
 ) -> TurnUnderstanding:
     return TurnUnderstanding.model_validate(
         {
@@ -91,6 +96,7 @@ def _frame(
                 if show
                 else []
             ),
+            "selection_preferences": selection_preferences or [],
             "selection_strategy": {
                 "kind": "continue_with_confirmed_facts" if show else "standard",
                 "evidence": "Покажите варианты" if show else None,
@@ -217,6 +223,218 @@ def test_preview_ppr_selection_uses_confirmed_facts_without_repeat_question(
     selection = trace["cutover_v2"]["selection_delivery"]
     assert selection["ordered_skus"] == ["PPR-GF-25"]
     assert selection["outcome_gate_passed"] is True
+
+
+def test_preview_price_preference_orders_only_technically_matching_cards(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Price preference reaches protected Preview without weakening PPR facts."""
+
+    common_attributes = {
+        "Тип товара": "Труба",
+        "Диаметр, мм": "25",
+        "Армирование": "Стекловолокно",
+        "Назначение": "Отопление",
+        "Максимальная рабочая температура": "95 C",
+    }
+    expensive = _product(
+        "PPR-GF-25-500",
+        "Труба PP-R 25 мм армированная стекловолокном для отопления",
+        "Трубы полипропиленовые",
+        attributes=common_attributes,
+        price=500,
+    )
+    cheap = _product(
+        "PPR-GF-25-300",
+        "Труба PP-R 25 мм армированная стекловолокном для отопления",
+        "Трубы полипропиленовые",
+        attributes=common_attributes,
+        price=300,
+    )
+    wrong_service = _product(
+        "PPR-GF-25-WATER-100",
+        "Труба PP-R 25 мм армированная стекловолокном для воды",
+        "Трубы полипропиленовые",
+        attributes={**common_attributes, "Назначение": "Водоснабжение"},
+        price=100,
+        description="Труба для холодного водоснабжения",
+    )
+    settings = _preview_settings(tmp_path)
+    bot = ChatOrchestrator(
+        settings=settings,
+        products=[expensive, cheap, wrong_service],
+    )
+    understanding = _frame(
+        product={
+            "text": "ППР",
+            "canonical_type": "pipe",
+            "category": "pipes",
+            "role": "target",
+            "evidence": "ППР",
+        },
+        constraints=[
+            _known("pipe_service", "heating", "для отопления"),
+            _known("diameter_mm", 25, "25 мм", unit="mm"),
+            _known("reinforcement", "glass_fiber", "стекловолокном"),
+            _known("operating_temperature_c", 90, "90 °C", unit="c"),
+        ],
+        show=True,
+        selection_preferences=[
+            {"kind": "price_lowest", "value": None, "evidence": "подешевле"}
+        ],
+    )
+    monkeypatch.setattr(
+        bot.semantic_interpreter,
+        "interpret",
+        lambda _message, _before: _semantic(understanding),
+    )
+
+    response = _preview_response(
+        bot,
+        session_id="v2-price-preference",
+        turn_id="v2-price-preference-1",
+        message="Нужна ППР 25 со стекловолокном для отопления, подешевле",
+    )
+
+    assert [item.sku for item in response.products] == [
+        "PPR-GF-25-300",
+        "PPR-GF-25-500",
+    ]
+    assert "отсортированы по цене" in response.answer.lower()
+    trace = _assert_v2_owner(settings)
+    selection = trace["cutover_v2"]["selection_delivery"]
+    assert selection["ordered_skus"] == ["PPR-GF-25-300", "PPR-GF-25-500"]
+    assert (
+        "price_ordered_among_technically_presentable_candidates"
+        in selection["ordering_reason_codes"]
+    )
+
+
+def test_preview_strict_brand_filter_never_substitutes_another_brand(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """«Только VALTEC» remains a technical-safe filter, not a tie-break."""
+
+    attributes = {
+        "Тип товара": "Труба",
+        "Диаметр, мм": "25",
+        "Армирование": "Стекловолокно",
+        "Назначение": "Отопление",
+        "Максимальная рабочая температура": "95 C",
+    }
+    valtec = _product(
+        "PPR-VALTEC-25",
+        "Труба PP-R 25 мм VALTEC для отопления",
+        "Трубы полипропиленовые",
+        attributes=attributes,
+        price=700,
+        brand="VALTEC",
+    )
+    other = _product(
+        "PPR-OTHER-25",
+        "Труба PP-R 25 мм другой марки для отопления",
+        "Трубы полипропиленовые",
+        attributes=attributes,
+        price=300,
+        brand="OTHER",
+    )
+    settings = _preview_settings(tmp_path)
+    bot = ChatOrchestrator(settings=settings, products=[valtec, other])
+    understanding = _frame(
+        product={
+            "text": "ППР",
+            "canonical_type": "pipe",
+            "category": "pipes",
+            "role": "target",
+            "evidence": "ППР",
+        },
+        constraints=[
+            _known("pipe_service", "heating", "для отопления"),
+            _known("diameter_mm", 25, "25 мм", unit="mm"),
+            _known("reinforcement", "glass_fiber", "стекловолокном"),
+            _known("brand", "VALTEC", "только VALTEC"),
+        ],
+        show=True,
+        selection_preferences=[
+            {"kind": "brand_required", "value": "VALTEC", "evidence": "только VALTEC"}
+        ],
+    )
+    monkeypatch.setattr(
+        bot.semantic_interpreter,
+        "interpret",
+        lambda _message, _before: _semantic(understanding),
+    )
+
+    response = _preview_response(
+        bot,
+        session_id="v2-strict-brand",
+        turn_id="v2-strict-brand-1",
+        message="Нужна ППР 25 для отопления, только VALTEC",
+    )
+
+    assert [item.sku for item in response.products] == ["PPR-VALTEC-25"]
+    trace = _assert_v2_owner(settings)
+    assert trace["cutover_v2"]["selection_delivery"]["ordered_skus"] == [
+        "PPR-VALTEC-25"
+    ]
+
+
+def test_preview_stock_filter_is_rendered_as_a_buyer_visible_condition(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Availability filtering must not appear as a raw boolean fact."""
+
+    product = _product(
+        "PPR-IN-STOCK-25",
+        "Труба PP-R 25 мм для отопления",
+        "Трубы полипропиленовые",
+        attributes={
+            "Тип товара": "Труба",
+            "Диаметр, мм": "25",
+            "Армирование": "Стекловолокно",
+            "Назначение": "Отопление",
+        },
+    )
+    settings = _preview_settings(tmp_path)
+    bot = ChatOrchestrator(settings=settings, products=[product])
+    understanding = _frame(
+        product={
+            "text": "ППР",
+            "canonical_type": "pipe",
+            "category": "pipes",
+            "role": "target",
+            "evidence": "ППР",
+        },
+        constraints=[
+            _known("pipe_service", "heating", "для отопления"),
+            _known("diameter_mm", 25, "25 мм", unit="mm"),
+            _known("reinforcement", "glass_fiber", "стекловолокном"),
+            _known("stock_availability", True, "только в наличии"),
+        ],
+        show=True,
+        selection_preferences=[
+            {"kind": "stock_required", "value": True, "evidence": "только в наличии"}
+        ],
+    )
+    monkeypatch.setattr(
+        bot.semantic_interpreter,
+        "interpret",
+        lambda _message, _before: _semantic(understanding),
+    )
+
+    response = _preview_response(
+        bot,
+        session_id="v2-stock-filter-copy",
+        turn_id="v2-stock-filter-copy-1",
+        message="Нужна ППР 25 для отопления, только в наличии",
+    )
+
+    assert [item.sku for item in response.products] == [product.sku]
+    assert "только варианты с подтверждённым наличием" in response.answer.lower()
+    assert "характеристика товара: да" not in response.answer.lower()
 
 
 def test_preview_external_sewer_selection_never_substitutes_ppr(

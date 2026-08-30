@@ -73,6 +73,21 @@ class SemanticProductReference(FrozenSemanticModel):
     validation_status: Literal["accepted", "ambiguous", "rejected"] = "accepted"
 
 
+class SemanticSelectionPreference(FrozenSemanticModel):
+    """A source-grounded customer ordering preference for one selection."""
+
+    kind: Literal[
+        "brand_required",
+        "brand_preferred",
+        "price_lowest",
+        "price_below_reference",
+        "stock_required",
+    ]
+    value: str | bool | None = None
+    evidence: str = Field(min_length=1, max_length=240)
+    validation_status: Literal["accepted", "ambiguous", "rejected"] = "accepted"
+
+
 class SemanticRelation(FrozenSemanticModel):
     subject_mention_id: str = Field(min_length=1, max_length=120)
     predicate: str = Field(min_length=1, max_length=120)
@@ -90,6 +105,7 @@ class SemanticTurnDeltaV1(FrozenSemanticModel):
     entity_mentions: tuple[SemanticEntityMention, ...] = ()
     fact_updates: tuple[SemanticFactUpdate, ...] = ()
     product_references: tuple[SemanticProductReference, ...] = ()
+    selection_preferences: tuple[SemanticSelectionPreference, ...] = ()
     relations: tuple[SemanticRelation, ...] = ()
     unresolved_fragments: tuple[str, ...] = ()
     ambiguities: tuple[dict[str, Any], ...] = ()

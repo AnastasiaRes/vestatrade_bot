@@ -67,6 +67,16 @@ def render_selection_no_match(result: SelectionResult) -> str | None:
 
     if result.status != SelectionResultStatus.NO_MATCH:
         raise ValueError("no-match renderer requires a checked no-match")
+    if result.reason_code == "no_verified_cheaper_candidate":
+        reference = (
+            f" дешевле {result.price_reference_amount:g} ₽"
+            if result.price_reference_amount is not None
+            else ""
+        )
+        return (
+            "Среди вариантов, которые сохраняют ваши технические условия, "
+            f"в текущем каталоге нет подтверждённого варианта{reference}."
+        )
     if result.product_kind == ProductKind.BOREHOLE_PUMP:
         below_point = next(
             (
@@ -172,12 +182,36 @@ def render_selection_result(result: SelectionResult) -> str:
     if not result.is_preliminary:
         if count == 1:
             return "Нашёл подходящий вариант. Карточка ниже."
+        if "price_below_delivered_scope_reference" in result.ordering_reason_codes:
+            return (
+                f"Показываю {count} подходящих {_variant_word(count)} дешевле "
+                "ранее показанных. Технические условия сохранены."
+            )
+        if "price_ordered_among_technically_presentable_candidates" in result.ordering_reason_codes:
+            return (
+                f"Подобрал {count} подходящих {_variant_word(count)}. "
+                "Карточки ниже отсортированы по цене среди технически "
+                "подходящих вариантов."
+            )
         return (
             f"Подобрал {count} подходящих {_variant_word(count)}. "
             "Карточки ниже расположены по соответствию запросу."
         )
 
-    known = [item for item in result.applied_facts if item.status == "known"]
+    stock_required = any(
+        item.name == "stock_availability"
+        and item.status == "known"
+        and item.value is True
+        for item in result.applied_facts
+    )
+    # Availability is a commercial delivery filter, not a product
+    # characteristic.  Rendering its boolean value as «Характеристика: да»
+    # would expose implementation detail instead of the buyer's request.
+    known = [
+        item
+        for item in result.applied_facts
+        if item.status == "known" and item.name != "stock_availability"
+    ]
     confirmed = "; ".join(
         f"{_label(item.name).capitalize()}: {_fact_value(item)}"
         for item in known[:3]
@@ -186,6 +220,18 @@ def render_selection_result(result: SelectionResult) -> str:
         f"Показываю {_preliminary_count_phrase(count)}"
         + (f" по подтверждённым данным: {confirmed}." if confirmed else ".")
     ]
+    if stock_required:
+        lines.append("Показываю только варианты с подтверждённым наличием.")
+    if "price_below_delivered_scope_reference" in result.ordering_reason_codes:
+        lines.append(
+            "Эти варианты дешевле ранее показанных; технические условия "
+            "сохранены."
+        )
+    elif "price_ordered_among_technically_presentable_candidates" in result.ordering_reason_codes:
+        lines.append(
+            "Карточки ниже отсортированы по цене среди технически "
+            "подходящих вариантов."
+        )
     if result.source_backed_conflicts:
         cards_by_sku = {card.sku: card for card in result.cards}
         for conflict in result.source_backed_conflicts:

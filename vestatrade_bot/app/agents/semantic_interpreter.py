@@ -21,7 +21,11 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from app.catalog_v2.normalization import parse_pump_designation
-from app.catalog_v2.registry import DEFAULT_CONTRACTS
+from app.catalog_v2.registry import (
+    DEFAULT_CONTRACTS,
+    canonical_brand,
+    resolve_brand_mentions,
+)
 from app.dialogue_v2.contracts import GoalReactivationResolution
 from app.dialogue_v2.reactivation import resolve_goal_reactivation
 from app.models import SessionState
@@ -236,6 +240,30 @@ SEMANTIC_INTERPRETER_PROMPT = """
   соответствующий constraint со status=unknown/refused/deferred, и отдельный
   selection_control. Control не заменяет эпистемический статус параметра;
 - каждый control сохраняет дословное evidence из current_message.
+
+Как кодировать предпочтения подбора:
+- selection_preferences описывает только порядок или явный коммерческий
+  фильтр среди технически допустимых товаров; это не замена характеристикам
+  товара и не разрешение ослабить их;
+- для брендов используй только канонические значения из brand_values ontology;
+  не придумывай производителя и не используй неразрешённое fuzzy-сопоставление;
+- «только <бренд>» — brand_required со значением этого бренда и одновременно
+  constraint brand=<бренд>, polarity=required;
+- «нужен/покажите <товар> <бренд>» с одним явно названным брендом — также
+  brand_required: в запросе на подбор это требование к товару, а не
+  предпочтение магазина по умолчанию;
+- «<бренд> желательно/предпочтительно» — brand_preferred со значением бренда
+  и одновременно constraint brand=<бренд>, polarity=preferred;
+- «подешевле/самый дешёвый» для нового или продолжаемого подбора —
+  price_lowest; «есть вариант дешевле этого/показанных?» —
+  price_below_reference;
+- «только из наличия» — stock_required и одновременно существующий required
+  constraint stock_availability=true. Обычный вопрос «есть ли в наличии?»
+  остаётся check_stock и не является предпочтением;
+- «какой из показанных дешевле?» — compare по показанным карточкам, а не
+  новая price-preference и не новый поиск;
+- при выборе по цене или бренду сохраняй технические ограничения и категорию:
+  нельзя подменять ими топливо, размер, назначение или совместимость.
 
 Взаимоисключающие инварианты перед возвратом JSON:
 - прямой запрос выставить/подготовить счёт или invoice как документ всегда
@@ -498,6 +526,21 @@ class SelectionControlKind(str, Enum):
     CONTINUE_WITH_CONFIRMED_FACTS = "continue_with_confirmed_facts"
 
 
+class SelectionPreferenceKind(str, Enum):
+    """A customer preference for ordering an otherwise safe selection.
+
+    The values deliberately describe *how to order or constrain an already
+    compatible candidate set*.  They are not technical facts and never give
+    permission to relax a product contract.
+    """
+
+    BRAND_REQUIRED = "brand_required"
+    BRAND_PREFERRED = "brand_preferred"
+    PRICE_LOWEST = "price_lowest"
+    PRICE_BELOW_REFERENCE = "price_below_reference"
+    STOCK_REQUIRED = "stock_required"
+
+
 class SelectionStrategyKind(str, Enum):
     STANDARD = "standard"
     CONTINUE_WITH_CONFIRMED_FACTS = "continue_with_confirmed_facts"
@@ -613,6 +656,30 @@ class SelectionControl(StrictModel):
     evidence: str = Field(min_length=1, max_length=240)
 
 
+class SelectionPreference(StrictModel):
+    """One explicit, source-grounded preference within a selection task."""
+
+    kind: SelectionPreferenceKind
+    value: str | bool | None = None
+    evidence: str = Field(min_length=1, max_length=240)
+
+    @model_validator(mode="after")
+    def preference_has_the_required_value(self) -> "SelectionPreference":
+        if self.kind in {
+            SelectionPreferenceKind.BRAND_REQUIRED,
+            SelectionPreferenceKind.BRAND_PREFERRED,
+        } and not isinstance(self.value, str):
+            raise ValueError("brand preference requires a brand value")
+        if self.kind == SelectionPreferenceKind.STOCK_REQUIRED and self.value is not True:
+            raise ValueError("stock preference requires value=true")
+        if self.kind in {
+            SelectionPreferenceKind.PRICE_LOWEST,
+            SelectionPreferenceKind.PRICE_BELOW_REFERENCE,
+        } and self.value is not None:
+            raise ValueError("price preference must not carry an arbitrary value")
+        return self
+
+
 class SelectionStrategyDecision(StrictModel):
     """Mandatory semantic verdict about how product selection may proceed."""
 
@@ -706,6 +773,14 @@ class TurnUnderstanding(StrictModel):
         description=(
             "Explicit request to continue selection using confirmed facts only. "
             "It never supplies, relaxes or changes a technical fact."
+        ),
+    )
+    selection_preferences: list[SelectionPreference] = Field(
+        default_factory=list,
+        max_length=8,
+        description=(
+            "Explicit brand, price or availability preference for the active "
+            "selection. Preferences never replace technical constraints."
         ),
     )
     selection_strategy: SelectionStrategyDecision | None = Field(
@@ -1890,6 +1965,23 @@ _VISIBLE_SCOPE_COMPARE_RE = re.compile(
     r"\bчто\s+лучше\b"
     r")"
 )
+_PRICE_PREFERENCE_RE = re.compile(
+    r"(?iu)\b(?:подешевле|деш[её]\w*|сам\w*\s+деш[её]\w*|"
+    r"бюджетн\w*|недорог\w*|(?:цен\w*\s+)?ниже\s+по\s+цене|"
+    r"не\s+дороже)\b"
+)
+_RELATIVE_PRICE_RE = re.compile(
+    r"(?iu)\b(?:эт(?:от|ого|их)|показан\w*|вариант\w*)\b"
+)
+_STOCK_REQUIRED_RE = re.compile(
+    r"(?iu)\b(?:только|исключительно|именно)\b[^.!?]{0,48}"
+    r"\b(?:в\s+наличии|из\s+наличия)\b"
+)
+_STOCK_CHECK_QUESTION_RE = re.compile(
+    r"(?iu)(?:\b(?:есть|имеется|остал(?:ся|ись)|будет)\b[^.!?]{0,48}"
+    r"\b(?:в\s+наличии|на\s+складе)\b|"
+    r"\b(?:в\s+наличии|на\s+складе)\s*\?\s*$)"
+)
 _GENERIC_PRODUCT_SELECTION_QUESTION_RE = re.compile(
     r"(?iu)\b(?:какой|какую|какие)\b[\s\S]{0,96}?"
     r"\b(?:смотреть|подобрать|выбрать|посоветовать)\w*\b"
@@ -2061,6 +2153,7 @@ def _append_known_constraint(
     evidence: str,
     applies_to_product: int | None,
     unit: str | None = None,
+    polarity: ConstraintPolarity = ConstraintPolarity.REQUIRED,
 ) -> None:
     constraints.append(
         ConstraintFact(
@@ -2068,11 +2161,267 @@ def _append_known_constraint(
             value=value,
             unit=unit,
             status=ConstraintStatus.KNOWN,
-            polarity=ConstraintPolarity.REQUIRED,
+            polarity=polarity,
             applies_to_product=applies_to_product,
             evidence=evidence,
         ).model_dump(mode="json")
     )
+
+
+def _recover_selection_preferences(
+    repaired_turn: dict[str, Any],
+    current_message: str,
+    constraints: list[dict[str, Any]],
+    normalized_products: list[dict[str, Any]],
+    changes: list[str],
+) -> None:
+    """Recover a small high-precision preference vocabulary before V2 state.
+
+    Legacy's price/brand ordering is useful, but it must enter V2 as a typed
+    choice attached to a discovery task. These anchors do not search the
+    catalogue or relax a technical coordinate. A visible-scope comparison owns
+    phrases such as «какой из них дешевле?» and is excluded here so Compare
+    retains its higher priority.
+    """
+
+    raw_preferences = repaired_turn.get("selection_preferences")
+    if not isinstance(raw_preferences, list):
+        raw_preferences = []
+        repaired_turn["selection_preferences"] = raw_preferences
+
+    # Brand values must be proved by the same closed feed vocabulary as
+    # catalogue facts.  An LLM may supply a useful candidate, but an unknown
+    # supplier name is not allowed to become a typed filter or ranking signal.
+    current_brand_mentions = resolve_brand_mentions(current_message)
+    current_brand_values = {item.canonical for item in current_brand_mentions}
+    sanitized_preferences: list[dict[str, Any]] = []
+    for item in raw_preferences:
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("kind") or "")
+        if kind not in {
+            SelectionPreferenceKind.BRAND_REQUIRED.value,
+            SelectionPreferenceKind.BRAND_PREFERRED.value,
+        }:
+            sanitized_preferences.append(item)
+            continue
+        canonical = canonical_brand(item.get("value"))
+        if canonical is None and len(current_brand_values) == 1:
+            canonical = next(iter(current_brand_values))
+        if canonical is None or canonical not in current_brand_values:
+            changes.append("unknown_or_ungrounded_brand_preference_dropped")
+            continue
+        normalized = dict(item)
+        normalized["value"] = canonical
+        sanitized_preferences.append(normalized)
+        if item.get("value") != canonical:
+            changes.append("brand_preference_value_canonicalized")
+    raw_preferences[:] = sanitized_preferences
+
+    # A stock enquiry must keep an explicitly named product visible even when
+    # its quantity is zero.  Models occasionally treat the words «в наличии»
+    # as a selection filter, so remove only that current-turn interpretation
+    # before it can reach the typed state.  Past goal facts are never touched.
+    direct_stock_question = (
+        _STOCK_CHECK_QUESTION_RE.search(current_message) is not None
+        and _STOCK_REQUIRED_RE.search(current_message) is None
+    )
+    if direct_stock_question:
+        raw_preferences[:] = [
+            item
+            for item in raw_preferences
+            if not (
+                isinstance(item, dict)
+                and str(item.get("kind") or "")
+                == SelectionPreferenceKind.STOCK_REQUIRED.value
+            )
+        ]
+        constraints[:] = [
+            item
+            for item in constraints
+            if not (
+                str(item.get("name") or "") == "stock_availability"
+                and str(item.get("polarity") or "")
+                == ConstraintPolarity.REQUIRED.value
+            )
+        ]
+        changes.append("stock_check_not_treated_as_stock_filter")
+
+    def append(
+        kind: SelectionPreferenceKind,
+        evidence: str,
+        value: object = None,
+    ) -> None:
+        grounded = _grounded_evidence_fragment(evidence, current_message)
+        if grounded is None:
+            return
+        candidate = {"kind": kind.value, "value": value, "evidence": grounded}
+        if any(
+            isinstance(item, dict)
+            and str(item.get("kind") or "") == kind.value
+            and item.get("value") == value
+            for item in raw_preferences
+        ):
+            return
+        raw_preferences.append(candidate)
+        changes.append(f"selection_preference_recovered:{kind.value}")
+
+    def ensure_selection_execution(evidence: str) -> None:
+        """Let a preference refine the current discovery task, never Compare.
+
+        This makes a terse follow-up such as «только VALTEC» meaningful after
+        a prior selection even when the LLM only classified it as a generic
+        continuation.  Explicit higher-priority actions stay untouched.
+        """
+
+        acts = [
+            str(getattr(item, "value", item))
+            for item in (repaired_turn.get("acts") or [])
+        ]
+        protected = {
+            CustomerAct.COMPARE.value,
+            CustomerAct.CALCULATE.value,
+            CustomerAct.CHECK_PRICE.value,
+            CustomerAct.CHECK_STOCK.value,
+        }
+        if protected.intersection(acts):
+            return
+        if CustomerAct.FIND.value not in acts and CustomerAct.SELECT.value not in acts:
+            acts.append(CustomerAct.FIND.value)
+            repaired_turn["acts"] = acts
+            changes.append("selection_preference_selection_action_recovered")
+        controls = repaired_turn.get("selection_controls")
+        if isinstance(controls, list) and not controls:
+            controls.append(
+                {
+                    "kind": SelectionControlKind.CONTINUE_WITH_CONFIRMED_FACTS.value,
+                    "evidence": evidence,
+                }
+            )
+            repaired_turn["selection_strategy"] = {
+                "kind": SelectionStrategyKind.CONTINUE_WITH_CONFIRMED_FACTS.value,
+                "evidence": evidence,
+            }
+            changes.append("selection_preference_selection_control_recovered")
+
+    def explicit_brand_preference() -> tuple[SelectionPreferenceKind, str, str] | None:
+        """Return one known-brand rule only when the buyer expressed one.
+
+        Two known brands in one message are intentionally left to the LLM as
+        an ambiguity: a single brand preference must never silently erase an
+        expressed alternative.  A lone brand in an explicit selection request
+        is a required product constraint (the Legacy ``query.brand`` meaning),
+        not the store's default VALTEC tie-break.  We deliberately do not make
+        the same inference in an open-ended factual or comparison question.
+        """
+
+        if len(current_brand_mentions) != 1:
+            return None
+        mention = current_brand_mentions[0]
+        before = current_message[max(0, mention.start - 64) : mention.start]
+        after = current_message[mention.end : mention.end + 64]
+        if re.search(r"(?iu)\b(?:только|именно)\s*$", before):
+            return (
+                SelectionPreferenceKind.BRAND_REQUIRED,
+                mention.alias,
+                mention.canonical,
+            )
+        if (
+            re.search(r"(?iu)\b(?:желательн\w*|предпочтительн\w*)\s*$", before)
+            or re.search(r"(?iu)^\s*(?:желательн\w*|предпочтительн\w*)\b", after)
+        ):
+            return (
+                SelectionPreferenceKind.BRAND_PREFERRED,
+                mention.alias,
+                mention.canonical,
+            )
+        current_acts = {
+            str(getattr(item, "value", item))
+            for item in (repaired_turn.get("acts") or [])
+        }
+        explicit_selection = bool(
+            {CustomerAct.FIND.value, CustomerAct.SELECT.value}.intersection(
+                current_acts
+            )
+            or _EXPLICIT_SHOW_SELECTION_RE.search(current_message)
+        )
+        if explicit_selection:
+            return (
+                SelectionPreferenceKind.BRAND_REQUIRED,
+                mention.alias,
+                mention.canonical,
+            )
+        return None
+
+    def set_brand_constraint(
+        *,
+        brand: str,
+        evidence: str,
+        polarity: ConstraintPolarity,
+        reason_code: str,
+    ) -> None:
+        # This is a current-turn deterministic correction.  It cannot alter a
+        # fact stored by an earlier turn, but it prevents a wrong LLM brand
+        # value from conflicting with an explicit buyer phrase.
+        constraints[:] = [
+            item for item in constraints if str(item.get("name") or "") != "brand"
+        ]
+        _append_known_constraint(
+            constraints,
+            name="brand",
+            value=brand,
+            evidence=evidence,
+            applies_to_product=applies_to_product,
+            polarity=polarity,
+        )
+        changes.append(reason_code)
+
+    applies_to_product = 0 if normalized_products else None
+    brand_preference = explicit_brand_preference()
+    if brand_preference is not None:
+        kind, evidence, brand = brand_preference
+        append(kind, evidence, brand)
+        set_brand_constraint(
+            brand=brand,
+            evidence=evidence,
+            polarity=(
+                ConstraintPolarity.REQUIRED
+                if kind == SelectionPreferenceKind.BRAND_REQUIRED
+                else ConstraintPolarity.PREFERRED
+            ),
+            reason_code=(
+                "required_brand_constraint_recovered"
+                if kind == SelectionPreferenceKind.BRAND_REQUIRED
+                else "preferred_brand_constraint_recovered"
+            ),
+        )
+        ensure_selection_execution(evidence)
+
+    stock_required = _STOCK_REQUIRED_RE.search(current_message)
+    if stock_required is not None and not direct_stock_question:
+        evidence = stock_required.group(0)
+        append(SelectionPreferenceKind.STOCK_REQUIRED, evidence, True)
+        if not _has_constraint_name(constraints, {"stock_availability"}):
+            _append_known_constraint(
+                constraints,
+                name="stock_availability",
+                value=True,
+                evidence=evidence,
+                applies_to_product=applies_to_product,
+            )
+            changes.append("required_stock_constraint_recovered")
+        ensure_selection_execution(evidence)
+
+    price = _PRICE_PREFERENCE_RE.search(current_message)
+    if price is None or _VISIBLE_SCOPE_COMPARE_RE.search(current_message) is not None:
+        return
+    kind = (
+        SelectionPreferenceKind.PRICE_BELOW_REFERENCE
+        if _RELATIVE_PRICE_RE.search(current_message) is not None
+        else SelectionPreferenceKind.PRICE_LOWEST
+    )
+    append(kind, price.group(0))
+    ensure_selection_execution(price.group(0))
 
 
 def _recover_explicit_show_selection_control(
@@ -6526,6 +6875,13 @@ def repair_grounded_semantic_payload(
         authoritative_dialogue_state,
         changes,
         catalog_sku_anchors,
+    )
+    _recover_selection_preferences(
+        repaired,
+        current_message,
+        normalized_constraints,
+        normalized_products,
+        changes,
     )
     # The bounded recovery may add or correct the one current target product;
     # keep the strict validator and all later stages on the same typed frame.

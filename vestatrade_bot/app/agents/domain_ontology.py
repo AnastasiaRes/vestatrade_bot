@@ -12,6 +12,8 @@ import json
 import re
 from typing import Any
 
+from app.catalog_v2.registry import brand_ontology_values
+
 
 PRODUCT_TYPE_ONTOLOGY: tuple[dict[str, Any], ...] = (
     {
@@ -1210,6 +1212,9 @@ def semantic_ontology_payload() -> dict[str, Any]:
             dict(item) for item in CAPABILITY_CONSTRAINT_ONTOLOGY
         ],
         "action_aliases": [dict(item) for item in ACTION_ALIAS_ONTOLOGY],
+        # Catalogue-bound values, shared with normalization rather than copied
+        # into an LLM-only synonym list.
+        "brand_values": list(brand_ontology_values()),
         "range_capable_constraint_facts": sorted(
             RANGE_CAPABLE_CONSTRAINT_FACTS
         ),

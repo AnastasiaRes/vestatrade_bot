@@ -42,6 +42,10 @@ from app.dialogue_v2.contracts import (
     ShadowDeliveryStatus,
     TaskAct,
 )
+from app.dialogue_v2.selection_preferences import (
+    latest_delivered_scope,
+    price_preference,
+)
 
 from .contracts import (
     AnalogDifference,
@@ -694,10 +698,73 @@ def _radiator_declared_area_order(
     return (0, declared - requested)
 
 
+def _catalog_price(source_snapshot: AnswerSourceSnapshot, sku: str) -> float:
+    product = source_snapshot.product(sku)
+    if product is None or product.price is None:
+        return math.inf
+    return product.price
+
+
+def _source_brand(source_snapshot: AnswerSourceSnapshot, sku: str) -> str | None:
+    product = source_snapshot.product(sku)
+    if product is None or any(item.name == "brand" for item in product.fact_issues):
+        return None
+    values = {str(item.value).casefold() for item in product.facts if item.name == "brand"}
+    return next(iter(values)) if len(values) == 1 else None
+
+
+def _default_brand_tiebreak(
+    search_plan: CatalogSearchPlan,
+    source_snapshot: AnswerSourceSnapshot,
+    sku: str,
+) -> int:
+    """Apply the established default VALTEC preference when no brand was named.
+
+    This is the Legacy commercial policy for an ordinary shortlist: after
+    technical suitability it shows VALTEC before another brand.  Explicit
+    brand constraints disable the default.  A lowest-price request uses this
+    key only after availability and price, so an expensive VALTEC card is
+    never presented as the customer's cheaper option.
+    """
+
+    if any(item.name == "brand" for item in (*search_plan.hard_constraints, *search_plan.soft_constraints)):
+        return 0
+    return 0 if _source_brand(source_snapshot, sku) == "valtec" else 1
+
+
+def _reference_price_ceiling(
+    dialogue_state: DialogueStateV2,
+    source_snapshot: AnswerSourceSnapshot,
+    *,
+    task_id: str,
+    goal_id: str | None,
+) -> float | None:
+    """Return the lowest price in one actually delivered, current scope.
+
+    A relative request («покажи дешевле») is meaningful only relative to cards
+    the customer really received under the current source revision.  A stale
+    scope cannot authorize a price comparison.
+    """
+
+    scope = latest_delivered_scope(
+        dialogue_state,
+        task_id=task_id,
+        goal_id=goal_id,
+        catalog_revision=source_snapshot.source_revision,
+    )
+    if scope is None:
+        return None
+    prices = [_catalog_price(source_snapshot, sku) for sku in scope.ordered_skus]
+    if not prices or any(not math.isfinite(item) for item in prices):
+        return None
+    return min(prices)
+
+
 def _presentable_candidate_shortlist(
     search_plans: tuple[CatalogSearchPlan, ...],
     source_snapshot: AnswerSourceSnapshot,
     *,
+    dialogue_state: DialogueStateV2 | None = None,
     task_order: tuple[str, ...] = (),
     recommendation_task_ids: frozenset[str] = frozenset(),
 ) -> tuple[frozenset[tuple[str, str]], dict[tuple[str, str], int], bool]:
@@ -708,6 +775,10 @@ def _presentable_candidate_shortlist(
     large result set cannot crowd every other requested product out.
     """
 
+    # Standalone planner callers (including existing regression tests) have no
+    # dialogue history.  They retain the prior neutral ordering; the live V2
+    # path always supplies the typed state and can therefore apply preferences.
+    state = dialogue_state or DialogueStateV2()
     by_task: dict[str, list[tuple[CatalogSearchPlan, CandidateAssessment]]] = {}
     for search_plan in search_plans:
         for candidate in search_plan.candidate_assessments:
@@ -721,6 +792,31 @@ def _presentable_candidate_shortlist(
         list[tuple[CatalogSearchPlan, CandidateAssessment]],
     ] = {}
     for task_id, options in by_task.items():
+        task_goal_id = options[0][0].goal_id if options else None
+        price_signal = price_preference(
+            state,
+            task_id=task_id,
+            goal_id=task_goal_id,
+        )
+        price_ceiling = (
+            _reference_price_ceiling(
+                state,
+                source_snapshot,
+                task_id=task_id,
+                goal_id=task_goal_id,
+            )
+            if price_signal is not None
+            and price_signal.kind.value == "price_below_reference"
+            else None
+        )
+        # Both «подешевле» and «есть вариант дешевле?» are price-led requests.
+        # The latter first narrows candidates to a delivered-scope reference,
+        # then uses the same ordering policy among the remaining cards.
+        price_order_requested = (
+            price_signal is not None
+            and price_signal.kind.value
+            in {"price_lowest", "price_below_reference"}
+        )
         # If a safe in-stock availability analogue exists, it is the only
         # customer-visible group for that selection.  The exact cards are
         # confirmed out of stock and remain recorded in the search plan as
@@ -731,6 +827,16 @@ def _presentable_candidate_shortlist(
         )
         if availability_analogs:
             options = list(availability_analogs)
+        if price_ceiling is not None:
+            # A relative-price request never relaxes a technical constraint:
+            # it only narrows the already presentable candidates to cards
+            # whose current source-backed price is strictly lower than the
+            # cheapest card the customer was actually shown.
+            options = [
+                item
+                for item in options
+                if _catalog_price(source_snapshot, item[1].sku) < price_ceiling
+            ]
         if task_id in recommendation_task_ids:
             exact_options = tuple(
                 item
@@ -758,6 +864,20 @@ def _presentable_candidate_shortlist(
                         else 1,
                         _candidate_tier(item[0], item[1]),
                         _numeric_relaxation_distance(item[1]),
+                        (
+                            _catalog_price(source_snapshot, item[1].sku)
+                            if price_order_requested
+                            else _default_brand_tiebreak(
+                                item[0], source_snapshot, item[1].sku
+                            )
+                        ),
+                        (
+                            _catalog_price(source_snapshot, item[1].sku)
+                            if not price_order_requested
+                            else _default_brand_tiebreak(
+                                item[0], source_snapshot, item[1].sku
+                            )
+                        ),
                         item[1].sku.casefold(),
                         item[1].sku,
                         item[0].plan_id,
@@ -983,6 +1103,7 @@ def build_answer_plan(
         ) = _presentable_candidate_shortlist(
             scoped_search_plans,
             source_snapshot,
+            dialogue_state=dialogue_state,
             task_order=response_task_order,
             recommendation_task_ids=recommendation_task_ids,
         )

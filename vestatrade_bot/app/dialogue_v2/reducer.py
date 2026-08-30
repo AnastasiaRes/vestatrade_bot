@@ -78,6 +78,7 @@ from .contracts import (
     ConstraintStrength,
     CustomerTask,
     DiagnosticConflict,
+    DeliveredSelectionScope,
     DialogueStateV2,
     DirectQuestion,
     DirectQuestionRegistered,
@@ -107,6 +108,9 @@ from .contracts import (
     SelectionControlKind,
     SelectionControlRegistered,
     SelectionControlSignal,
+    SelectionPreferenceKind,
+    SelectionPreferenceRegistered,
+    SelectionPreferenceSignal,
     TaskAct,
     TaskAddressed,
     TaskCompleted,
@@ -1047,6 +1051,7 @@ def reduce_dialogue_state(
     commerce_sensitive_values = list(previous.commerce_sensitive_values)
     commerce_controls = list(previous.commerce_controls)
     selection_controls = list(previous.selection_controls)
+    selection_preferences = list(previous.selection_preferences)
     questions = list(previous.direct_questions)
     information_requests = list(previous.information_requests)
     ambiguities = list(previous.ambiguities)
@@ -1758,6 +1763,97 @@ def reduce_dialogue_state(
         )
         progress_changes.append(ProgressKind.SELECTION_STRATEGY_CHANGED)
 
+    for preference_index, semantic_preference in enumerate(
+        turn_understanding.selection_preferences
+    ):
+        task = _task_for_selection_control(
+            tasks,
+            addressed_tasks,
+            preferred_active_task=preferred_active_task,
+            active_goal_id=active_goal_id,
+        )
+        if task is None:
+            rejected.append(
+                RejectedProposal(
+                    proposal_type="selection_preference",
+                    reason_code="selection_preference_has_no_active_discovery_task",
+                    evidence=_short_evidence(semantic_preference.evidence),
+                )
+            )
+            continue
+        if not task.was_addressed_on(turn_number):
+            task = task.model_copy(
+                update={
+                    "status": TaskStatus.IN_PROGRESS,
+                    "source_turn": turn_number,
+                    "created_turn": task.origin_turn,
+                    "last_addressed_turn": turn_number,
+                    "blocking_reason": None,
+                }
+            )
+            _replace_task(tasks, task)
+            preferred_active_task = task.task_id
+            events.append(
+                TaskAddressed(
+                    turn_id=turn_metadata.turn_id,
+                    turn_number=turn_number,
+                    task_id=task.task_id,
+                    act=task.act,
+                    goal_id=task.target_goal_id,
+                )
+            )
+        kind = SelectionPreferenceKind(semantic_preference.kind.value)
+        existing = next(
+            (
+                item
+                for item in reversed(selection_preferences)
+                if item.task_id == task.task_id
+                and item.kind == kind
+                and item.value == semantic_preference.value
+            ),
+            None,
+        )
+        if existing is not None:
+            rejected.append(
+                RejectedProposal(
+                    proposal_type="selection_preference",
+                    reason_code="selection_preference_already_active",
+                    evidence=_short_evidence(semantic_preference.evidence),
+                    details={"preference_id": existing.preference_id},
+                )
+            )
+            continue
+        preference_id = _stable_id(
+            "selection_preference",
+            turn_metadata.turn_id,
+            preference_index,
+            task.task_id,
+            kind.value,
+            semantic_preference.value,
+        )
+        signal = SelectionPreferenceSignal(
+            preference_id=preference_id,
+            kind=kind,
+            task_id=task.task_id,
+            goal_id=task.target_goal_id,
+            value=semantic_preference.value,
+            evidence=_short_evidence(semantic_preference.evidence),
+            source=turn_metadata.source,
+            source_turn=turn_number,
+        )
+        selection_preferences.append(signal)
+        events.append(
+            SelectionPreferenceRegistered(
+                turn_id=turn_metadata.turn_id,
+                turn_number=turn_number,
+                preference_id=preference_id,
+                preference_kind=kind,
+                task_id=task.task_id,
+                goal_id=task.target_goal_id,
+            )
+        )
+        progress_changes.append(ProgressKind.SELECTION_STRATEGY_CHANGED)
+
     for request_index, semantic_request in enumerate(
         turn_understanding.information_requests
     ):
@@ -2271,6 +2367,7 @@ def reduce_dialogue_state(
         direct_questions=tuple(questions),
         ambiguities=tuple(ambiguities),
         selection_controls=tuple(selection_controls[-100:]),
+        selection_preferences=tuple(selection_preferences[-100:]),
         progress=progress,
         last_policy=previous.last_policy,
         catalog_planning=previous.catalog_planning,
@@ -3343,4 +3440,74 @@ def record_response_delivery(
         state=new_state,
         events=tuple(events),
         progress=state.progress,
+    )
+
+
+def record_validated_legacy_selection_scope(
+    state: DialogueStateV2,
+    *,
+    selection_id: str,
+    catalog_revision: str,
+    goal_id: str,
+    task_id: str,
+    ordered_skus: tuple[str, ...],
+    delivery_id: str,
+    focus_sku: str | None = None,
+) -> DialogueStateV2:
+    """Persist a Legacy-owned selection only after its cards were verified.
+
+    This deliberately does *not* create ``ResponseDeliveryRecord``: Legacy
+    remains the response owner.  The helper is the sole V2-state writer for
+    the narrow validated bridge, keeping the same bounded, immutable scope
+    history used by delivered V2 selections.
+    """
+
+    if not (
+        selection_id
+        and catalog_revision
+        and goal_id
+        and task_id
+        and ordered_skus
+        and delivery_id
+    ):
+        raise ValueError("incomplete_validated_legacy_selection_scope")
+    if goal_id != state.active_goal_id:
+        raise ValueError("validated_legacy_selection_scope_goal_not_active")
+    goal_ids = {item.goal_id for item in state.product_goals}
+    if goal_id not in goal_ids:
+        raise ValueError("validated_legacy_selection_scope_goal_missing")
+    task = next((item for item in state.tasks if item.task_id == task_id), None)
+    if (
+        task is None
+        or task.target_goal_id != goal_id
+        or task.act not in {TaskAct.FIND, TaskAct.SELECT}
+    ):
+        raise ValueError("validated_legacy_selection_scope_task_invalid")
+
+    scope_id = _stable_id(
+        "validated_legacy_selection_scope",
+        goal_id,
+        task_id,
+        selection_id,
+        catalog_revision,
+        delivery_id,
+    )
+    scope = DeliveredSelectionScope(
+        scope_id=scope_id,
+        goal_id=goal_id,
+        task_id=task_id,
+        selection_id=selection_id,
+        ordered_skus=ordered_skus,
+        catalog_revision=catalog_revision,
+        delivery_id=delivery_id,
+        source_turn=state.turn_number,
+        focus_sku=focus_sku,
+        delivery_owner="legacy_validated",
+    )
+    scopes = [
+        item for item in state.delivered_selection_scopes if item.scope_id != scope_id
+    ]
+    scopes.append(scope)
+    return state.model_copy(
+        update={"delivered_selection_scopes": tuple(scopes[-40:])}
     )

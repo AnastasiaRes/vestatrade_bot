@@ -20,7 +20,16 @@ from app.cutover_v2.contracts import (
     RolloutStage,
     V2TurnCandidate,
 )
-from app.dialogue_v2.contracts import DialogueStateV2, NextActionKind, TaskAct
+from app.dialogue_v2.contracts import (
+    CustomerTask,
+    DialogueStateV2,
+    NextActionKind,
+    ProductCategory,
+    ProductGoal,
+    ProductRole,
+    TaskAct,
+    TaskStatus,
+)
 from app.dialogue_v2.controller import DialogueV2Outcome
 from app.models import (
     ChatProductSummary,
@@ -234,6 +243,136 @@ def test_protected_qa_preview_uses_v2_without_public_rollout_flags(
     assert trace["runtime"]["qa_mode"] == "v2_preview"
     assert trace["cutover_v2"]["decision"]["owner_candidate"] == "v2"
     assert "approved_protected_qa_v2_preview" in trace["cutover_v2"]["decision"]["reason_codes"]
+
+
+def test_qa_preview_bridges_only_verified_legacy_selection_cards_to_v2_state(
+    sample_products,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Legacy still owns the response; only checked card coordinates cross it."""
+
+    settings = _qa_settings(tmp_path)
+    bot = ChatOrchestrator(
+        settings=settings,
+        products=sample_products,
+        llm_client=_NoNetworkClient(settings),
+    )
+    snapshot = bot.answer_source_snapshot_v2
+    assert snapshot is not None
+    source = snapshot.product("VT.228.N.04")
+    assert source is not None
+    goal = ProductGoal(
+        goal_id="legacy-valve-goal",
+        canonical_type="ball_valve",
+        category=ProductCategory.VALVES,
+        role=ProductRole.TARGET,
+        evidence="кран BASE",
+        source="test",
+        confidence=1.0,
+        confirmed_turn=1,
+        type_locked=True,
+        category_locked=True,
+    )
+    task = CustomerTask(
+        task_id="legacy-valve-selection",
+        target_goal_id=goal.goal_id,
+        act=TaskAct.SELECT,
+        priority=0,
+        status=TaskStatus.IN_PROGRESS,
+        source="test",
+        source_turn=1,
+        created_turn=1,
+        last_addressed_turn=1,
+    )
+    state_after = DialogueStateV2(
+        turn_number=1,
+        active_goal_id=goal.goal_id,
+        product_goals=(goal,),
+        tasks=(task,),
+    )
+    legacy = ChatResponse(
+        session_id="qa-legacy-bridge",
+        answer="Legacy показал кран.",
+        products=[
+            ChatProductSummary(
+                sku=source.sku,
+                name=source.name,
+                price=source.price or 0,
+                currency=source.currency or "RUB",
+                stock_status=source.stock_status or "unknown",
+                url=source.url or "",
+                image_url=source.image_url,
+            )
+        ],
+    )
+    monkeypatch.setattr(bot.semantic_interpreter, "interpret", lambda *_args: {"status": "accepted"})
+
+    def run_candidate(previous, *_args):
+        return DialogueV2Outcome(
+            status="applied",
+            state_before=previous,
+            state_after=(state_after if previous.turn_number == 0 else previous),
+        )
+
+    monkeypatch.setattr(bot, "_run_stage6_v2_candidate", run_candidate)
+
+    def rejected_candidate(outcome, *_args, **kwargs):
+        return V2TurnCandidate(
+            turn_id=kwargs["turn_id"],
+            state_before=outcome.state_before,
+            state_after=outcome.state_after,
+            validation_status="rejected",
+            semantic_accepted=True,
+            contracts_resolved=False,
+            rejection_reason_codes=("test_forced_v2_fallback",),
+        )
+
+    monkeypatch.setattr(
+        "app.agents.orchestrator.build_v2_turn_candidate",
+        rejected_candidate,
+    )
+
+    def legacy_handler(_session_id, message):
+        if "сколько стоит" in message.casefold():
+            raise AssertionError("verified V2 offer fact must not fall back to Legacy")
+        return legacy
+
+    monkeypatch.setattr(bot, "_handle_chat", legacy_handler)
+
+    response = bot.handle_chat(
+        "qa-legacy-bridge",
+        "Покажите BASE",
+        client_turn_id="qa-legacy-bridge-turn",
+        qa_mode=DialogueQAMode.V2_PREVIEW,
+    )
+
+    assert response == legacy
+    stored = bot.sessions.snapshot("qa-legacy-bridge")
+    # The public Legacy list has not been rewritten into a V2 list.
+    assert stored.v2_last_products == []
+    assert stored.live_dialogue_state_v2 is None
+    assert stored.dialogue_state_v2 is not None
+    scope = stored.dialogue_state_v2.delivered_selection_scopes[-1]
+    assert scope.delivery_owner == "legacy_validated"
+    assert scope.ordered_skus == ("VT.228.N.04",)
+    assert scope.catalog_revision == snapshot.source_revision
+    trace = json.loads(settings.diagnostic_trace_path.read_text().splitlines()[0])
+    bridge = trace["cutover_v2"]["legacy_scope_bridge"]
+    assert bridge["status"] == "imported"
+    assert bridge["ordered_skus"] == ["VT.228.N.04"]
+
+    follow_up = bot.handle_chat(
+        "qa-legacy-bridge",
+        "Сколько стоит первый вариант?",
+        client_turn_id="qa-legacy-bridge-price",
+        qa_mode=DialogueQAMode.V2_PREVIEW,
+    )
+    assert [item.sku for item in follow_up.products] == ["VT.228.N.04"]
+    assert str(int(source.price or 0)) in follow_up.answer
+    after_follow_up = bot.sessions.snapshot("qa-legacy-bridge")
+    assert after_follow_up.live_dialogue_state_v2 is not None
+    assert after_follow_up.live_dialogue_state_v2.delivered_selection_scopes[-1] == scope
 
 
 def test_protected_qa_shadow_keeps_legacy_public_and_v2_state_separate(
