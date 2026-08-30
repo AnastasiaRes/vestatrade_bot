@@ -1750,7 +1750,10 @@ def test_terminal_fact_only_suppresses_its_own_question(
     assessment = assess_task_readiness(reduction.state, task, contract)
 
     assert assessment.status == ReadinessStatus.NEEDS_DECISION_FACT
-    assert assessment.recommended_question_fact == "diameter_mm"
+    # A preliminary circulation-pump shortlist requires a real duty point.
+    # When the customer cannot provide head, flow is the remaining blocking
+    # part of that pair; DN is asked only after the duty point is known.
+    assert assessment.recommended_question_fact == "duty_point_flow_l_h"
     assert "diameter_mm" in assessment.missing_decision_facts
     assert "mounting_length_mm" in assessment.missing_decision_facts
     assert getattr(assessment, f"{status}_facts") == ("max_head_m",)

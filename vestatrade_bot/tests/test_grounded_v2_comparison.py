@@ -230,7 +230,7 @@ def test_cheapest_result_is_a_proved_price_conclusion_not_free_recommendation() 
     assert "Какой критерий" not in rendered
 
 
-def test_generic_compare_hides_identity_dimension_and_uses_human_criteria() -> None:
+def test_plain_compare_hides_identity_dimension_without_forcing_a_buying_criterion() -> None:
     snapshot = _snapshot()
     outcome = _outcome()
     session = _session(snapshot)
@@ -250,7 +250,70 @@ def test_generic_compare_hides_identity_dimension_and_uses_human_criteria() -> N
     assert result.outcome_gate_passed is True
     assert "• Sku:" not in rendered
     assert "None" not in rendered
+    assert "Какой критерий для вас решающий" not in rendered
+
+
+def test_decision_without_criterion_shows_differences_then_asks_one_question() -> None:
+    snapshot = _snapshot()
+    outcome = _outcome()
+    session = _session(snapshot)
+    request = build_comparison_request(
+        outcome,
+        session,
+        original_utterance="Что из показанных лучше?",
+    )
+    assert request is not None
+    assert request.needs_deciding_criterion is True
+
+    result = validate_comparison_result(
+        request,
+        build_comparison_result(request, snapshot, visible_cards=session.v2_last_products),
+        snapshot,
+    )
+    rendered = render_comparison_result(
+        result,
+        names={item.sku: item.name for item in snapshot.products},
+    )
+
+    assert result.outcome_gate_passed is True
     assert "Какой критерий для вас решающий: цена, наличие, монтажная длина?" in rendered
+
+
+def test_two_ordinals_compare_only_the_two_cards_named_by_the_buyer() -> None:
+    snapshot = AnswerSourceSnapshot(
+        source_revision="source-v1",
+        products=(
+            *_snapshot().products,
+            _product("PUMP-250", price=7000, length=250),
+        ),
+    )
+    outcome = _outcome()
+    session = _session(snapshot)
+    session.v2_last_products = [_card(item) for item in snapshot.products]
+    session.last_products = [_card(item) for item in snapshot.products]
+
+    request = build_comparison_request(
+        outcome,
+        session,
+        original_utterance="Чем первый отличается от второго?",
+    )
+    assert request is not None
+    assert request.ordered_skus == ("PUMP-180", "PUMP-130")
+    assert request.needs_deciding_criterion is False
+
+    result = validate_comparison_result(
+        request,
+        build_comparison_result(request, snapshot, visible_cards=session.v2_last_products),
+        snapshot,
+    )
+    rendered = render_comparison_result(
+        result,
+        names={item.sku: item.name for item in snapshot.products},
+    )
+
+    assert result.outcome_gate_passed is True
+    assert "PUMP-250" not in rendered
+    assert "Какой критерий для вас решающий" not in rendered
 
 
 def test_single_visible_card_gets_one_subject_clarification() -> None:

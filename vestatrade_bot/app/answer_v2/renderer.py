@@ -25,6 +25,7 @@ from .contracts import (
     RenderedSegmentKind,
     TransitionStyle,
 )
+from app.v2_presentation import clarification_presentation
 
 
 RENDERER_PROMPT_VERSION = "answer-renderer-v2.2"
@@ -901,11 +902,13 @@ def deterministic_render(answer_plan: AnswerPlan) -> RenderedAnswer:
     segments.extend(limitation_segments.values())
     if answer_plan.question is not None:
         question = answer_plan.question
-        question_text = (
-            f"Уточните, пожалуйста, параметр «{_fact_label(question.fact_name)}» — "
-            "он влияет на выбор."
+        presentation = clarification_presentation(question.fact_name)
+        question_text = presentation.question
+        learn_instruction = (
+            _learn_method_instruction(question.learn_method_code)
+            if presentation.include_learn_instruction
+            else None
         )
-        learn_instruction = _learn_method_instruction(question.learn_method_code)
         if learn_instruction:
             question_text = f"{question_text} {learn_instruction}"
         question_text += _expected_unit_instruction(question.expected_unit)
@@ -943,6 +946,14 @@ def deterministic_render(answer_plan: AnswerPlan) -> RenderedAnswer:
         NextStepKind.WAIT_FOR_CUSTOMER: "Продолжу, когда вы будете готовы сообщить недостающие данные.",
     }
     next_step_text = next_labels[answer_plan.next_step.kind]
+    if (
+        answer_plan.question is not None
+        and answer_plan.next_step.kind == NextStepKind.ASK_DECISION_FACT
+    ):
+        # The question above is already the whole next action.  Repeating a
+        # generic "one clarification" sentence makes the widget sound like a
+        # form rather than a consultant and adds no grounded information.
+        next_step_text = "После ответа покажу варианты по вашему запросу."
     if (
         answer_plan.next_step.kind
         == NextStepKind.OFFER_VERIFIABLE_EXTERNAL_STEP

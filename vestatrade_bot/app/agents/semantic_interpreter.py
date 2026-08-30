@@ -1176,6 +1176,14 @@ _PIPE_DIAMETER_ANCHOR_RES = (
         flags=re.IGNORECASE,
     ),
 )
+# ``DN25`` is also a normal way to state a circulation pump's nominal
+# connection diameter.  Keep it separate from the pipe patterns above: an
+# outer pipe diameter is not automatically a pump connection diameter, while
+# an explicit DN notation is sufficiently precise for both families.
+_PUMP_CONNECTION_DIAMETER_ANCHOR_RE = re.compile(
+    r"\b(?:dn|ду|дн)\s*-?\s*(?P<value>\d{1,3})(?:\s*(?P<unit>мм|mm))?\b",
+    flags=re.IGNORECASE,
+)
 _CYRILLIC_TRANSLITERATION = {
     "а": "a",
     "б": "b",
@@ -4723,6 +4731,8 @@ def _typed_numeric_anchors(current_message: str) -> list[dict[str, Any]]:
             )
     for match in _MOUNTING_LENGTH_ANCHOR_RE.finditer(current_message):
         add(match, family="pump", name="mounting_length_mm", unit_override="mm")
+    for match in _PUMP_CONNECTION_DIAMETER_ANCHOR_RE.finditer(current_message):
+        add(match, family="pump", name="diameter_mm", unit_override="mm")
     for match in _RADIATOR_CENTER_DISTANCE_ANCHOR_RE.finditer(current_message):
         add(match, family="radiator", name="center_distance_mm", unit_override="mm")
     for match in _PIPE_PRESSURE_ANCHOR_RE.finditer(current_message):
@@ -5312,27 +5322,40 @@ def repair_structural_enum_placement(
         repaired["operation"] = GoalOperation.UNKNOWN.value
         changes.append("operation_act_moved_to_acts")
 
-    normalized_acts: list[Any] = []
+    normalized_acts: list[str] = []
     for item in acts:
         value = getattr(item, "value", item)
+        # This is a pre-validation repair boundary.  A malformed LLM field
+        # must reach strict validation as a rejected field, not make the
+        # entire semantic turn crash while de-duplicating an unhashable dict.
+        if not isinstance(value, str):
+            changes.append("invalid_act_schema_dropped")
+            continue
         if value in control_values:
             controls.append({"kind": value, "evidence": evidence})
             changes.append("act_control_moved_to_workflow_controls")
         else:
             normalized_acts.append(item)
 
-    normalized_controls: list[Any] = []
+    normalized_controls: list[dict[str, str]] = []
     for item in controls:
-        kind = item.get("kind") if isinstance(item, dict) else None
+        if not isinstance(item, dict):
+            changes.append("invalid_workflow_control_schema_dropped")
+            continue
+        kind = item.get("kind")
+        control_evidence = item.get("evidence")
+        if not isinstance(kind, str) or not isinstance(control_evidence, str):
+            changes.append("invalid_workflow_control_schema_dropped")
+            continue
         if kind in act_values:
             normalized_acts.append(kind)
             changes.append("workflow_control_act_moved_to_acts")
         else:
-            normalized_controls.append(item)
+            normalized_controls.append({"kind": kind, "evidence": control_evidence})
 
     repaired["acts"] = list(dict.fromkeys(normalized_acts))
-    unique_controls: list[Any] = []
-    seen_controls: set[tuple[object, object]] = set()
+    unique_controls: list[dict[str, str]] = []
+    seen_controls: set[tuple[str, str]] = set()
     for item in normalized_controls:
         key = (
             item.get("kind") if isinstance(item, dict) else None,

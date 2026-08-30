@@ -30,6 +30,11 @@ from app.sku_resolution import (
     resolve_catalog_sku,
 )
 from app.v2_presentation import format_public_fact_value, public_fact_label
+from app.v2_visible_products import (
+    customer_visible_v2_scope,
+    has_deictic_product_reference,
+    ordinal_indices,
+)
 
 
 class FrozenModel(BaseModel):
@@ -795,17 +800,42 @@ class ProductFactEvidenceService:
         if named is not None:
             return named
 
-        ordinal = self._ordinal(text)
+        ordinals = ordinal_indices(question)
+        ordinal = ordinals[0] if len(ordinals) == 1 else None
         # A versioned V2 Selection is the authoritative ordinal scope in
         # Preview/live V2.  ``last_products`` is retained for Legacy and may
         # legitimately contain a one-card contextual response; allowing it to
         # win here would silently reorder or truncate ``first/second/...``.
+        visible_scope = customer_visible_v2_scope(session)
         cards = list(
             session.v2_last_products
-            if session.v2_selection_id and session.v2_last_products
+            if visible_scope.is_valid
             else (session.last_products or session.v2_last_products)
         )
+        if len(ordinals) > 1:
+            return ProductReference(
+                kind=ProductReferenceKind.UNRESOLVED,
+                raw="; ".join(str(item + 1) for item in ordinals),
+                reason_code="multiple_ordinal_product_references",
+            )
         if ordinal is not None:
+            v2_reference = visible_scope.ordinal(ordinal)
+            if visible_scope.is_valid and v2_reference.resolved:
+                sku = v2_reference.canonical_sku
+                assert sku is not None
+                return ProductReference(
+                    kind=ProductReferenceKind.ORDINAL,
+                    raw=v2_reference.raw,
+                    canonical_sku=sku,
+                    candidate_skus=(sku,),
+                    reason_code=v2_reference.reason_code,
+                )
+            if visible_scope.is_valid:
+                return ProductReference(
+                    kind=ProductReferenceKind.UNRESOLVED,
+                    raw=v2_reference.raw,
+                    reason_code=v2_reference.reason_code,
+                )
             if 0 <= ordinal < len(cards):
                 card = cards[ordinal]
                 return ProductReference(
@@ -867,7 +897,7 @@ class ProductFactEvidenceService:
                     candidate_skus=(sku,),
                     reason_code="current_product_focus",
                 )
-        if len(cards) == 1 and self._has_deictic_reference(text):
+        if len(cards) == 1 and has_deictic_product_reference(question):
             return ProductReference(
                 kind=ProductReferenceKind.SINGLE_PRESENTED,
                 raw=cards[0].sku,
@@ -992,19 +1022,38 @@ class ProductFactEvidenceService:
         if normalized_semantic in shared and normalized_semantic not in {"sku", "brand"}:
             return normalized_semantic
 
-        candidates: set[str] = set()
+        # Prefer the most specific declared phrase.  ``резьба`` can describe
+        # the nominal size (G1/2), while ``тип резьбы`` specifically asks for
+        # the male/female pattern.  Treating every substring match as equal
+        # would make that safe card fact ambiguous and needlessly send a
+        # customer to a passport refusal.
+        candidates: dict[str, int] = {}
         for snapshot in snapshots:
             for predicate in shared:
                 if predicate in {"sku", "brand"}:
                     continue
-                aliases = tuple(
-                    _normalise(alias)
-                    for alias in fact_aliases(snapshot.product_kind.value, predicate)
-                    if _normalise(alias)
+                aliases = (
+                    *fact_aliases(snapshot.product_kind.value, predicate),
+                    _CARD_FACT_LABELS.get(predicate, ""),
                 )
-                if any(alias in text for alias in aliases):
-                    candidates.add(predicate)
-        return next(iter(candidates)) if len(candidates) == 1 else None
+                matched_lengths = [
+                    len(normalised_alias)
+                    for alias in aliases
+                    if (normalised_alias := _normalise(alias)) and normalised_alias in text
+                ]
+                if matched_lengths:
+                    candidates[predicate] = max(
+                        candidates.get(predicate, 0), max(matched_lengths)
+                    )
+        if not candidates:
+            return None
+        longest = max(candidates.values())
+        best = tuple(
+            predicate
+            for predicate, length in candidates.items()
+            if length == longest
+        )
+        return best[0] if len(best) == 1 else None
 
     @staticmethod
     def _exact_catalog_fact(snapshot: CatalogProductSnapshot, predicate: str):
@@ -1071,37 +1120,6 @@ class ProductFactEvidenceService:
             verifier_status="catalog_snapshot_exact",
             reason_code="catalog_snapshot_predicate_scope_and_value_match",
             document_scope=document_scope,
-        )
-
-    @staticmethod
-    def _ordinal(text: str) -> int | None:
-        markers = (
-            (("перв", "1-й", "1го", "номер 1"), 0),
-            (("втор", "2-й", "2го", "номер 2"), 1),
-            (("трет", "3-й", "3го", "номер 3"), 2),
-            (("четверт", "4-й", "4го", "номер 4"), 3),
-            (("пят", "5-й", "5го", "номер 5"), 4),
-        )
-        for aliases, index in markers:
-            if any(alias in text for alias in aliases):
-                return index
-        return None
-
-    @staticmethod
-    def _has_deictic_reference(text: str) -> bool:
-        return any(
-            marker in text
-            for marker in (
-                " у него",
-                " у нее",
-                " у неё",
-                " этого ",
-                " этой ",
-                " этот ",
-                " его ",
-                " ее ",
-                " её ",
-            )
         )
 
     @staticmethod

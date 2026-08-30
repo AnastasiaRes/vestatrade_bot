@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Iterable
 
 from app.answer_v2.contracts import AnswerSourceSnapshot, CatalogAnswerProduct
@@ -10,6 +11,7 @@ from app.dialogue_v2.contracts import NextActionKind, TaskAct
 from app.dialogue_v2.controller import DialogueV2Outcome
 from app.models import SessionState
 from app.v2_presentation import public_fact_label
+from app.v2_visible_products import customer_visible_v2_scope, ordinal_indices
 
 from .contracts import (
     ComparisonCriterion,
@@ -42,6 +44,18 @@ _PREDICATE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("connection_pattern", ("резьб", "вн-вн", "вр/вр")),
     ("material", ("материал",)),
 )
+_DECISION_REQUEST_MARKERS = (
+    "что лучше",
+    "какой лучше",
+    "какая лучше",
+    "какой выбрать",
+    "какую выбрать",
+    "что выбрать",
+    "посоветуй",
+    "посоветуйте",
+    "рекомендуй",
+    "рекомендуете",
+)
 
 
 def _stable_id(prefix: str, *parts: object) -> str:
@@ -68,6 +82,16 @@ def _criterion(message: str) -> ComparisonCriterion | None:
     if any(item in lowered for item in ("что есть в наличии", "в наличии", "остаток")):
         return ComparisonCriterion.AVAILABILITY
     return None
+
+
+def _needs_deciding_criterion(message: str) -> bool:
+    """Whether the buyer asks us to choose, rather than list differences."""
+
+    lowered = _normalized(message)
+    return bool(
+        any(marker in lowered for marker in _DECISION_REQUEST_MARKERS)
+        or re.search(r"\b(?:что|какой|какая)\b[^?.!]{0,48}\bлучше\b", lowered)
+    )
 
 
 def _comparison_task(outcome: DialogueV2Outcome):
@@ -100,11 +124,23 @@ def build_comparison_request(
         return None
     # A legacy list may be read by Shadow for diagnostics, but has no stored
     # revision / selection identity and therefore can never pass V2 delivery.
-    if session.v2_last_products:
-        ordered_skus = tuple(item.sku for item in session.v2_last_products)
+    visible_scope = customer_visible_v2_scope(session)
+    if visible_scope.is_valid:
+        # A plural ordinal reference selects a strict subset of the delivered
+        # list.  It remains anchored to the original selection identity and
+        # cannot introduce a catalogue item that the buyer did not see.
+        ordinal_refs = tuple(visible_scope.ordinal(index) for index in ordinal_indices(original_utterance))
+        if len(ordinal_refs) >= 2 and all(item.resolved for item in ordinal_refs):
+            ordered_skus = tuple(
+                dict.fromkeys(
+                    item.canonical_sku for item in ordinal_refs if item.canonical_sku
+                )
+            )
+        else:
+            ordered_skus = visible_scope.ordered_skus
         origin: str = "v2_delivered"
-        selection_id = session.v2_selection_id
-        revision = session.v2_source_revision
+        selection_id = visible_scope.selection_id
+        revision = visible_scope.source_revision
     elif session.last_products:
         ordered_skus = tuple(item.sku for item in session.last_products)
         origin = "legacy_unversioned"
@@ -123,6 +159,7 @@ def build_comparison_request(
         ordered_skus=ordered_skus,
         requested_predicates=_requested_predicates(original_utterance),
         criterion=_criterion(original_utterance),
+        needs_deciding_criterion=_needs_deciding_criterion(original_utterance),
         source_revision=revision,
         scope_origin=origin,  # type: ignore[arg-type]
     )
@@ -305,7 +342,11 @@ def build_comparison_result(
             if sum(float(item.value) == float(lowest.value) for item in price.values) == 1:
                 recommendation = ComparisonRecommendation(sku=lowest.sku, criterion=ComparisonCriterion.LOWEST_PRICE, source_ref_ids=lowest.source_ref_ids, reason_code="lowest_confirmed_price")
 
-    generic_request = not request.requested_predicates and request.criterion is None
+    generic_request = (
+        not request.requested_predicates
+        and request.criterion is None
+        and request.needs_deciding_criterion
+    )
     question = None
     if generic_request:
         decision_dimensions = tuple(

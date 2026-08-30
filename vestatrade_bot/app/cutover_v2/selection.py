@@ -64,6 +64,32 @@ def render_selection_result(result: SelectionResult) -> str:
     if result.status.value != "shown" or not result.cards:
         raise ValueError("selection renderer requires shown cards")
     count = len(result.cards)
+    if result.availability_analog:
+        lines = [
+            "Точного варианта с подтверждённым наличием в каталоге нет.",
+            f"Показываю {_preliminary_count_phrase(count)} из наличия — "
+            "это ближайший предварительный аналог по каталогу.",
+        ]
+        for difference in result.availability_analog_differences:
+            requested = format_public_fact_value(
+                difference.requested_value,
+                predicate=difference.fact_name,
+                imply_unit=True,
+            )
+            actual = format_public_fact_value(
+                difference.candidate_value,
+                predicate=difference.fact_name,
+                imply_unit=True,
+            )
+            lines.append(
+                f"Отличие: {_label(difference.fact_name)} {actual} вместо "
+                f"запрошенных {requested}."
+            )
+        lines.append(
+            "Это не подтверждённый тепловой расчёт: перед покупкой нужно "
+            "сверить теплопотери и условия монтажа."
+        )
+        return "\n".join(lines)
     if not result.is_preliminary:
         if count == 1:
             return "Нашёл подходящий вариант. Карточка ниже."

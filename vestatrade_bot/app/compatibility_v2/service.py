@@ -20,6 +20,11 @@ from app.product_fact_evidence import (
     ProductFactEvidenceService,
 )
 from app.sku_resolution import SkuResolutionStatus, extract_explicit_sku_tokens, resolve_catalog_sku
+from app.v2_visible_products import (
+    customer_visible_v2_scope,
+    has_deictic_product_reference,
+    ordinal_indices,
+)
 
 from .contracts import (
     CompatibilityProductReference,
@@ -37,20 +42,15 @@ from .contracts import (
 )
 
 
-_ORDINALS: tuple[tuple[tuple[str, ...], int], ...] = (
-    (("перв", "1-й", "1я", "первую", "первый"), 0),
-    (("втор", "2-й", "2я", "вторую", "второй"), 1),
-    (("трет", "3-й", "3я", "третью", "третий"), 2),
-    (("четверт", "4-й", "4я"), 3),
-    (("пят", "5-й", "5я"), 4),
-)
-_DEICTIC_MARKERS = ("этот", "эта", "этой", "того", "тому", "нему", "ней")
-_SEWER_KINDS = frozenset(
+_SEWER_EXPLICIT_KINDS = frozenset(
     {
         ProductKind.SEWER_PIPE,
         ProductKind.SEWER_ELBOW,
+    }
+)
+_SEWER_MULTI_PORT_KINDS = frozenset(
+    {
         ProductKind.TEE,
-        ProductKind.COUPLING,
         ProductKind.REDUCING_COUPLING,
     }
 )
@@ -76,6 +76,7 @@ _METRIC_THREAD_RE = re.compile(
 _THREAD_STANDARD_RE = re.compile(
     r"(?iu)(?<![a-zа-яё])(npt|rp|rc|g|r)\s*\d+(?:\s+\d+/\d+|/\d+)?"
 )
+_SEWER_SYSTEM_IDENTITY_RE = re.compile(r"(?iu)\b(?:ht|kg)\w*\b")
 # General SKU extraction deliberately does not accept short numeric tokens:
 # outside an identity operation they are too easily confused with a dimension
 # or quantity.  Compatibility has a frozen catalogue scope, so an additional
@@ -110,15 +111,6 @@ def _canonical_interface_value(predicate: str, value: object) -> object:
 
 def _normalise(value: object) -> str:
     return " ".join(str(value or "").casefold().replace("ё", "е").split())
-
-
-def _ordinal_indices(message: str) -> tuple[int, ...]:
-    text = _normalise(message)
-    found: list[int] = []
-    for aliases, index in _ORDINALS:
-        if any(alias in text for alias in aliases) and index not in found:
-            found.append(index)
-    return tuple(found)
 
 
 def _reference(
@@ -211,6 +203,25 @@ def _strict_named_skus(message: str, snapshot: AnswerSourceSnapshot) -> tuple[st
     return tuple(dict.fromkeys(matches))
 
 
+def _is_sewer_product(product: CatalogAnswerProduct) -> bool:
+    """Recognise a sewer item without treating every tee/coupling as sewer.
+
+    ``TEE`` and ``REDUCING_COUPLING`` are shared catalogue kinds: a PPR
+    reducer is not a sewer fitting.  A positive sewer relation therefore needs
+    either an unambiguous sewer kind or a product-specific sewer marker from
+    the frozen snapshot.  This is deliberately narrower than category search:
+    it prevents a compatibility verdict from being inferred from a generic
+    component name.
+    """
+
+    if product.product_kind in _SEWER_EXPLICIT_KINDS:
+        return True
+    scope, scope_conflict = _exact_card_fact(product, "sewer_scope")
+    if scope is not None and not scope_conflict:
+        return True
+    return _SEWER_SYSTEM_IDENTITY_RE.search(product.name) is not None
+
+
 def _relation(
     left: CompatibilityProductReference,
     right: CompatibilityProductReference,
@@ -224,7 +235,7 @@ def _relation(
     kinds = {first.product_kind, second.product_kind}
     if kinds == {ProductKind.THERMOSTATIC_HEAD, ProductKind.RADIATOR_VALVE}:
         return CompatibilityRelationKind.THERMOSTATIC_HEAD_TO_VALVE
-    if first.product_kind in _SEWER_KINDS and second.product_kind in _SEWER_KINDS:
+    if _is_sewer_product(first) and _is_sewer_product(second):
         return CompatibilityRelationKind.SEWER_CONNECTION
     if (
         first.product_kind in _PUMP_KINDS and second.product_kind in _BOILER_KINDS
@@ -288,31 +299,31 @@ def build_compatibility_request(
                             reason="strict_catalogue_title_match",
                         )
                     )
-        visible = tuple(card.sku for card in session.v2_last_products)
-        visible_valid = bool(
-            visible
-            and session.v2_selection_id
-            and session.v2_source_revision == snapshot.source_revision
-        )
-        for ordinal in _ordinal_indices(original_utterance):
+        visible_scope = customer_visible_v2_scope(session)
+        visible_valid = visible_scope.matches_revision(snapshot.source_revision)
+        visible = visible_scope.ordered_skus if visible_valid else ()
+        for ordinal in ordinal_indices(original_utterance):
             if len(resolved) >= 2:
                 break
-            if visible_valid and 0 <= ordinal < len(visible):
-                sku = visible[ordinal]
+            ordinal_reference = visible_scope.ordinal(ordinal)
+            if visible_valid and ordinal_reference.resolved:
+                sku = ordinal_reference.canonical_sku
+                assert sku is not None
                 if sku not in {item.canonical_sku for item in resolved}:
                     resolved.append(
                         _reference(
                             CompatibilityReferenceKind.ORDINAL,
                             raw=str(ordinal + 1),
                             sku=sku,
-                            reason="ordinal_in_customer_visible_v2_scope",
+                            reason=ordinal_reference.reason_code,
                         )
                     )
             elif visible_valid:
-                resolved.append(_unresolved("ordinal_outside_customer_visible_v2_scope", raw=str(ordinal + 1)))
+                resolved.append(
+                    _unresolved(ordinal_reference.reason_code, raw=str(ordinal + 1))
+                )
                 break
         if len(resolved) < 2 and visible_valid:
-            text = _normalise(original_utterance)
             if not resolved and len(visible) == 2:
                 resolved.extend(
                     _reference(
@@ -323,10 +334,12 @@ def build_compatibility_request(
                     )
                     for sku in visible
                 )
-            elif len(resolved) == 1 and any(marker in text for marker in _DEICTIC_MARKERS):
-                focus = session.product_focus.sku if session.product_focus else None
-                candidates = tuple(sku for sku in visible if sku != resolved[0].canonical_sku)
-                if focus in candidates:
+            elif len(resolved) == 1 and has_deictic_product_reference(original_utterance):
+                focus_reference = visible_scope.current_focus()
+                if (
+                    focus_reference.resolved
+                    and focus_reference.canonical_sku != resolved[0].canonical_sku
+                ):
                     # ``этот`` is an explicit reference to the current focus,
                     # not a request to guess among every remaining card.  It
                     # therefore stays resolvable for selections of 3–5 cards.
@@ -334,8 +347,8 @@ def build_compatibility_request(
                         _reference(
                             CompatibilityReferenceKind.CURRENT_FOCUS,
                             raw="этот",
-                            sku=focus,
-                            reason="deictic_focus_in_customer_visible_v2_scope",
+                            sku=focus_reference.canonical_sku,
+                            reason=focus_reference.reason_code,
                         )
                     )
         if len(resolved) >= 2:
@@ -748,6 +761,15 @@ def _requires_port_resolution(
         return False
 
 
+def _requires_sewer_endpoint_resolution(product: CatalogAnswerProduct) -> bool:
+    """A flat DN cannot identify a branch of a tee or a reducing fitting."""
+
+    return (
+        product.product_kind in _SEWER_MULTI_PORT_KINDS
+        or _requires_port_resolution(product)
+    )
+
+
 def _relation_verdict(
     relation: CompatibilityRelationKind,
     facts: dict[tuple[str, str], InterfaceFact],
@@ -917,6 +939,21 @@ def build_compatibility_result(
                 interface_predicates=predicates,
                 missing_predicates=("resolved_connection_endpoint",),
                 reason_codes=("threaded_multiport_endpoint_not_determined",),
+                **common,
+            )
+    if request.relation == CompatibilityRelationKind.SEWER_CONNECTION:
+        left_product = snapshot.product(request.left.canonical_sku)
+        right_product = snapshot.product(request.right.canonical_sku)
+        assert left_product is not None and right_product is not None
+        if (
+            _requires_sewer_endpoint_resolution(left_product)
+            or _requires_sewer_endpoint_resolution(right_product)
+        ):
+            return CompatibilityResult(
+                status=CompatibilityResultStatus.INSUFFICIENT_EVIDENCE,
+                interface_predicates=predicates,
+                missing_predicates=("resolved_sewer_joint_endpoint",),
+                reason_codes=("sewer_multiport_endpoint_not_determined",),
                 **common,
             )
     facts, conflict, observations = _all_facts(service, request, predicates)

@@ -44,7 +44,7 @@ from app.dialogue_v2.contracts import (
 )
 from app.dialogue_v2.controller import DialogueV2Outcome
 from app.dialogue_v2.seller_policy import SellerPolicy
-from app.models import Product, ProductCard, SessionState
+from app.models import Product, ProductCard, ProductFocusState, SessionState
 
 
 def _fact(name: str, value: object, unit: str | None = None) -> CatalogFact:
@@ -237,6 +237,33 @@ def test_ordinal_binds_to_the_actual_customer_visible_card_and_checks_shortage()
     assert result.stock_assessment == StockAssessment.INSUFFICIENT
     assert result.stock_delta == Decimal("-15")
     assert "не хватает 15 шт." in render_calculation_result(result)
+
+
+def test_deictic_calculation_uses_only_focus_inside_the_versioned_v2_scope() -> None:
+    snapshot = _snapshot()
+    session = _session(snapshot, ("VT.217.N.04", "VT.214.N.04"))
+    session.product_focus = ProductFocusState(sku="VT.214.N.04", category="valves")
+
+    request, result = _result("Посчитай 2 шт. этого", session=session)
+
+    assert request.product_ref.kind.value == "current_focus"
+    assert request.product_ref.canonical_sku == "VT.214.N.04"
+    assert result.status == CalculationResultStatus.CALCULATED
+    assert result.total == Decimal("996")
+
+
+def test_deictic_calculation_refuses_focus_outside_the_versioned_v2_scope() -> None:
+    snapshot = _snapshot()
+    session = _session(snapshot, ("VT.217.N.04", "VT.214.N.04"))
+    session.product_focus = ProductFocusState(sku="PIPE-M", category="pipes")
+
+    request, result = _result("Посчитай 2 шт. этого", session=session)
+
+    assert request.product_ref.canonical_sku is None
+    assert result.status == CalculationResultStatus.NEED_CLARIFICATION
+    assert request.product_ref.reason_code == (
+        "deictic_focus_missing_or_outside_customer_visible_v2_scope"
+    )
 
 
 def test_raw_stock_count_is_not_silently_interpreted_as_pieces() -> None:

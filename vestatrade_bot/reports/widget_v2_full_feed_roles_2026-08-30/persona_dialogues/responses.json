@@ -1,0 +1,3230 @@
+{
+  "created_at": "2026-08-30T18:35:10.874134+03:00",
+  "base_url": "http://127.0.0.1:8010",
+  "health": {
+    "ok": true,
+    "http_status": 200,
+    "latency_sec": 0.014,
+    "payload": {
+      "status": "ok",
+      "products_loaded": 100,
+      "products_loaded_from": "file",
+      "product_docs_loaded": 28,
+      "llm_provider": "openrouter",
+      "llm_configured": true,
+      "llm_model": "qwen/qwen3-vl-8b-instruct",
+      "llm_request_timeout_seconds": 180.0,
+      "llm_attempt_timeout_seconds": 60.0,
+      "llm_max_retries": 2
+    }
+  },
+  "modes": [
+    {
+      "mode": "v2_preview",
+      "dialogues": [
+        {
+          "title": "Новичок · канализация",
+          "note": "не знает терминов, описывает бытовыми словами",
+          "session_id": "widget-d0d00d1090-v2_preview-01",
+          "turns": [
+            {
+              "turn": 1,
+              "client_turn_id": "widget-d0d00d1090-v2_preview-01-t01",
+              "message": "Здравствуйте! У меня в частном доме воняет из туалета, наверное труба плохая",
+              "result": {
+                "ok": true,
+                "http_status": 200,
+                "latency_sec": 8.092,
+                "response": {
+                  "session_id": "widget-d0d00d1090-v2_preview-01",
+                  "answer": "Подскажите, пожалуйста, назначение канализации? Уточните, где проходит участок: внутри отапливаемого здания или снаружи, в грунте. Переход через стену или фундамент опишите как отдельный участок.\nПосле ответа покажу варианты по вашему запросу.",
+                  "products": [],
+                  "product_groups": [],
+                  "need_handoff": false,
+                  "handoff_status": "none",
+                  "handoff_ticket_id": null,
+                  "debug": {}
+                }
+              },
+              "trace": {
+                "trace_found": true,
+                "duration_ms": 7910,
+                "semantic_status": "accepted",
+                "semantic_output_accepted": true,
+                "semantic_rejection_reason": null,
+                "semantic_structural_repairs": [
+                  "external_sewer_goal_recovered"
+                ],
+                "v2_status": "applied",
+                "v2_action": "ask_decision_changing_question",
+                "stage5_error": null,
+                "owner": "v2",
+                "execution_mode": "v2_primary",
+                "decision_reason_codes": [
+                  "approved_protected_qa_v2_preview"
+                ],
+                "candidate_eligible": true,
+                "candidate_rejection_reason_codes": [],
+                "parity_status": null,
+                "parity_severity": null,
+                "llm_events": 4,
+                "llm_calls": 2,
+                "llm_cost_usd": 0.00341341,
+                "llm_prompt_tokens": 27930,
+                "llm_completion_tokens": 320,
+                "embedding_calls": 0,
+                "embedding_successes": 0,
+                "embedding_failures": 0,
+                "passport_events": [],
+                "search_events": [
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "здравствуйте у меня в частном доме воняет из туалета, наверное труба плохая",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "здравствуйте у меня в частном доме воняет из туалета, наверное труба плохая",
+                    "relaxations": [],
+                    "result_skus": []
+                  }
+                ]
+              }
+            },
+            {
+              "turn": 2,
+              "client_turn_id": "widget-d0d00d1090-v2_preview-01-t02",
+              "message": "Наверное надо менять. А какую брать, серую или рыжую?",
+              "result": {
+                "ok": true,
+                "http_status": 200,
+                "latency_sec": 8.973,
+                "response": {
+                  "session_id": "widget-d0d00d1090-v2_preview-01",
+                  "answer": "Подскажите, пожалуйста, назначение канализации? Уточните, где проходит участок: внутри отапливаемого здания или снаружи, в грунте. Переход через стену или фундамент опишите как отдельный участок.\nПосле ответа покажу варианты по вашему запросу.",
+                  "products": [],
+                  "product_groups": [],
+                  "need_handoff": false,
+                  "handoff_status": "none",
+                  "handoff_ticket_id": null,
+                  "debug": {}
+                }
+              },
+              "trace": {
+                "trace_found": true,
+                "duration_ms": 8947,
+                "semantic_status": "accepted",
+                "semantic_output_accepted": true,
+                "semantic_rejection_reason": null,
+                "semantic_structural_repairs": [
+                  "constraint_closed_value_not_allowed_dropped",
+                  "constraint_non_known_without_explicit_status_dropped",
+                  "constraint_categorical_ambiguity_added",
+                  "untyped_ambiguous_selection_strategy_defaulted_to_standard"
+                ],
+                "v2_status": "applied",
+                "v2_action": "ask_decision_changing_question",
+                "stage5_error": null,
+                "owner": "v2",
+                "execution_mode": "v2_primary",
+                "decision_reason_codes": [
+                  "approved_protected_qa_v2_preview"
+                ],
+                "candidate_eligible": true,
+                "candidate_rejection_reason_codes": [],
+                "parity_status": null,
+                "parity_severity": null,
+                "llm_events": 4,
+                "llm_calls": 2,
+                "llm_cost_usd": 0.0036082930000000003,
+                "llm_prompt_tokens": 28849,
+                "llm_completion_tokens": 512,
+                "embedding_calls": 0,
+                "embedding_successes": 0,
+                "embedding_failures": 0,
+                "passport_events": [],
+                "search_events": [
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "наверное надо менять. а какую брать, серую или рыжую",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "наверное надо менять. а какую брать, серую или рыжую",
+                    "relaxations": [],
+                    "result_skus": []
+                  }
+                ]
+              }
+            },
+            {
+              "turn": 3,
+              "client_turn_id": "widget-d0d00d1090-v2_preview-01-t03",
+              "message": "Мне на улицу, от дома до септика. Покажите что есть",
+              "result": {
+                "ok": true,
+                "http_status": 200,
+                "latency_sec": 8.916,
+                "response": {
+                  "session_id": "widget-d0d00d1090-v2_preview-01",
+                  "answer": "Показываю 2 предварительных варианта по подтверждённым данным: Назначение канализации: наружная.\nДля точного подтверждения пригодности ещё нужно уточнить «диаметр», «длина». Карточки ниже — предварительные, не окончательная рекомендация.",
+                  "products": [
+                    {
+                      "sku": "220010",
+                      "name": "Труба канализационная наружная (3,2мм), KGEM 110*1000",
+                      "price": 585.0,
+                      "currency": "RUB",
+                      "stock_status": "в наличии",
+                      "url": "https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-naruzhnaya/kanalizaciya-naruzhnaya-ostendorf/truba-kanalizacionnaya-naruzhnaya-32mm-kgem-1101000/",
+                      "image_url": "https://www.vestatrade.ru/image/catalog/product/kanalizacionnyesistemy/123/37.jpg"
+                    },
+                    {
+                      "sku": "1491056",
+                      "name": "Труба наруж. ПВХ 110*1000 SN4 ХЕМКОР",
+                      "price": 436.0,
+                      "currency": "RUB",
+                      "stock_status": "нет в наличии",
+                      "url": "https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-naruzhnaya/kanalizacija-naruzhnaja-hemkor/truba-naruzh-pvh-1101000-sn4-hemkor/",
+                      "image_url": "https://www.vestatrade.ru/image/catalog/product/Hemkor/1491056.jpeg"
+                    }
+                  ],
+                  "product_groups": [],
+                  "need_handoff": false,
+                  "handoff_status": "none",
+                  "handoff_ticket_id": null,
+                  "debug": {}
+                }
+              },
+              "trace": {
+                "trace_found": true,
+                "duration_ms": 8876,
+                "semantic_status": "accepted",
+                "semantic_output_accepted": true,
+                "semantic_rejection_reason": null,
+                "semantic_structural_repairs": [
+                  "bounded_fact_followup_rebound_to_active_goal",
+                  "external_sewer_goal_recovered",
+                  "external_sewer_scope_recovered",
+                  "explicit_show_selection_control_recovered"
+                ],
+                "v2_status": "applied",
+                "v2_action": "show_preliminary_options",
+                "stage5_error": null,
+                "owner": "v2",
+                "execution_mode": "v2_primary",
+                "decision_reason_codes": [
+                  "approved_protected_qa_v2_preview"
+                ],
+                "candidate_eligible": true,
+                "candidate_rejection_reason_codes": [],
+                "parity_status": null,
+                "parity_severity": null,
+                "llm_events": 4,
+                "llm_calls": 2,
+                "llm_cost_usd": 0.0035955270000000003,
+                "llm_prompt_tokens": 29191,
+                "llm_completion_tokens": 396,
+                "embedding_calls": 0,
+                "embedding_successes": 0,
+                "embedding_failures": 0,
+                "passport_events": [],
+                "search_events": [
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "мне на улицу, от дома до септика. покажите что есть",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "мне на улицу, от дома до септика. покажите что есть",
+                    "relaxations": [],
+                    "result_skus": []
+                  }
+                ]
+              }
+            },
+            {
+              "turn": 4,
+              "client_turn_id": "widget-d0d00d1090-v2_preview-01-t04",
+              "message": "Сравните их, что лучше?",
+              "result": {
+                "ok": true,
+                "http_status": 200,
+                "latency_sec": 6.597,
+                "response": {
+                  "session_id": "widget-d0d00d1090-v2_preview-01",
+                  "answer": "Сравнение показанных вариантов:\n1. Труба канализационная наружная (3,2мм), KGEM 110*1000 (220010)\n2. Труба наруж. ПВХ 110*1000 SN4 ХЕМКОР (1491056)\n• Цена: 1 — 585 ₽; 2 — 436 ₽.\n• Наличие: 1 — в наличии; 2 — нет в наличии.\n• Бренд: 1 — OSTENDORF; 2 — ХЕМКОР.\nКакой критерий для вас решающий: цена, наличие?",
+                  "products": [],
+                  "product_groups": [],
+                  "need_handoff": false,
+                  "handoff_status": "none",
+                  "handoff_ticket_id": null,
+                  "debug": {}
+                }
+              },
+              "trace": {
+                "trace_found": true,
+                "duration_ms": 6566,
+                "semantic_status": "accepted",
+                "semantic_output_accepted": true,
+                "semantic_rejection_reason": null,
+                "semantic_structural_repairs": [
+                  "untyped_ambiguous_selection_strategy_defaulted_to_standard"
+                ],
+                "v2_status": "applied",
+                "v2_action": "compare",
+                "stage5_error": null,
+                "owner": "v2",
+                "execution_mode": "v2_primary",
+                "decision_reason_codes": [
+                  "approved_protected_qa_v2_preview"
+                ],
+                "candidate_eligible": true,
+                "candidate_rejection_reason_codes": [],
+                "parity_status": null,
+                "parity_severity": null,
+                "llm_events": 4,
+                "llm_calls": 2,
+                "llm_cost_usd": 0.00357747,
+                "llm_prompt_tokens": 29690,
+                "llm_completion_tokens": 228,
+                "embedding_calls": 0,
+                "embedding_successes": 0,
+                "embedding_failures": 0,
+                "passport_events": [],
+                "search_events": [
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "сравните их, что лучше",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "сравните их, что лучше",
+                    "relaxations": [],
+                    "result_skus": []
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "title": "Монтажник · трубы",
+          "note": "знает терминологию, формулирует точно",
+          "session_id": "widget-d0d00d1090-v2_preview-02",
+          "turns": [
+            {
+              "turn": 1,
+              "client_turn_id": "widget-d0d00d1090-v2_preview-02-t01",
+              "message": "Нужна ППР 25 армированная стекловолокном на радиаторную магистраль, подача 90 °С",
+              "result": {
+                "ok": true,
+                "http_status": 200,
+                "latency_sec": 11.545,
+                "response": {
+                  "session_id": "widget-d0d00d1090-v2_preview-02",
+                  "answer": "Диаметр присоединения: 25 мм.\nТип армирования: стекловолокно.\nНазначение трубы: отопление.\nРабочая температура: 90 °C.\nПодскажите, пожалуйста, рабочее давление? Укажите максимальное рабочее давление системы. Проверьте его в проекте, на настройке автоматики или по показанию исправного манометра. Ответ укажите в барах (бар).\nПосле ответа покажу варианты по вашему запросу.",
+                  "products": [],
+                  "product_groups": [],
+                  "need_handoff": false,
+                  "handoff_status": "none",
+                  "handoff_ticket_id": null,
+                  "debug": {}
+                }
+              },
+              "trace": {
+                "trace_found": true,
+                "duration_ms": 11519,
+                "semantic_status": "accepted",
+                "semantic_output_accepted": true,
+                "semantic_rejection_reason": null,
+                "semantic_structural_repairs": [
+                  "constraint_evidence_rebound_to_current_message"
+                ],
+                "v2_status": "applied",
+                "v2_action": "ask_decision_changing_question",
+                "stage5_error": null,
+                "owner": "v2",
+                "execution_mode": "v2_primary",
+                "decision_reason_codes": [
+                  "approved_protected_qa_v2_preview"
+                ],
+                "candidate_eligible": true,
+                "candidate_rejection_reason_codes": [],
+                "parity_status": null,
+                "parity_severity": null,
+                "llm_events": 4,
+                "llm_calls": 2,
+                "llm_cost_usd": 0.005521644,
+                "llm_prompt_tokens": 28193,
+                "llm_completion_tokens": 840,
+                "embedding_calls": 0,
+                "embedding_successes": 0,
+                "embedding_failures": 0,
+                "passport_events": [],
+                "search_events": [
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "нужна ппр 25 армированная стекловолокном на радиаторную магистраль, подача 90 °с",
+                    "relaxations": [],
+                    "result_skus": []
+                  }
+                ]
+              }
+            },
+            {
+              "turn": 2,
+              "client_turn_id": "widget-d0d00d1090-v2_preview-02-t02",
+              "message": "Покажите варианты",
+              "result": {
+                "ok": true,
+                "http_status": 200,
+                "latency_sec": 15.861,
+                "response": {
+                  "session_id": "widget-d0d00d1090-v2_preview-02",
+                  "answer": "Показываю 1 предварительный вариант по подтверждённым данным: Диаметр: 25 мм; Тип армирования: стекловолокно; Назначение трубы: отопление.\nДля точного подтверждения пригодности ещё нужно уточнить «рабочее давление». Карточки ниже — предварительные, не окончательная рекомендация.",
+                  "products": [
+                    {
+                      "sku": "VTp.700.FB20.25",
+                      "name": "Труба PP-FIBER арм. стекл., PN 20, 25 MM (белый)",
+                      "price": 168.0,
+                      "currency": "RUB",
+                      "stock_status": "в наличии",
+                      "url": "https://www.vestatrade.ru/truby/truby-polipropilenovye/truby-belye-valtec/truba-pp-fiber-arm-stekl-pn-20-25-mm-belyy/",
+                      "image_url": "https://www.vestatrade.ru/image/catalog/product/trubiifitingi/vtp.700.fb20_0.jpg"
+                    }
+                  ],
+                  "product_groups": [],
+                  "need_handoff": false,
+                  "handoff_status": "none",
+                  "handoff_ticket_id": null,
+                  "debug": {}
+                }
+              },
+              "trace": {
+                "trace_found": true,
+                "duration_ms": 15803,
+                "semantic_status": "accepted",
+                "semantic_output_accepted": true,
+                "semantic_rejection_reason": null,
+                "semantic_structural_repairs": [
+                  "generic_show_rebound_to_active_goal",
+                  "constraint_ungrounded_evidence_dropped",
+                  "explicit_show_selection_control_recovered",
+                  "generic_show_anchor_forced_continue"
+                ],
+                "v2_status": "applied",
+                "v2_action": "show_preliminary_options",
+                "stage5_error": null,
+                "owner": "v2",
+                "execution_mode": "v2_primary",
+                "decision_reason_codes": [
+                  "approved_protected_qa_v2_preview"
+                ],
+                "candidate_eligible": true,
+                "candidate_rejection_reason_codes": [],
+                "parity_status": null,
+                "parity_severity": null,
+                "llm_events": 4,
+                "llm_calls": 2,
+                "llm_cost_usd": 0.0062202920000000005,
+                "llm_prompt_tokens": 30221,
+                "llm_completion_tokens": 874,
+                "embedding_calls": 0,
+                "embedding_successes": 0,
+                "embedding_failures": 0,
+                "passport_events": [],
+                "search_events": [
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "покажите варианты",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "покажите варианты",
+                    "relaxations": [],
+                    "result_skus": []
+                  }
+                ]
+              }
+            },
+            {
+              "turn": 3,
+              "client_turn_id": "widget-d0d00d1090-v2_preview-02-t03",
+              "message": "Сравните по классу эксплуатации",
+              "result": {
+                "ok": true,
+                "http_status": 200,
+                "latency_sec": 8.236,
+                "response": {
+                  "session_id": "widget-d0d00d1090-v2_preview-02",
+                  "answer": "Для сравнения нужны минимум две реально показанные карточки. Покажите ещё один вариант или назовите второй товар.",
+                  "products": [],
+                  "product_groups": [],
+                  "need_handoff": false,
+                  "handoff_status": "none",
+                  "handoff_ticket_id": null,
+                  "debug": {}
+                }
+              },
+              "trace": {
+                "trace_found": true,
+                "duration_ms": 8200,
+                "semantic_status": "accepted",
+                "semantic_output_accepted": true,
+                "semantic_rejection_reason": null,
+                "semantic_structural_repairs": [
+                  "untyped_ambiguous_selection_strategy_defaulted_to_standard"
+                ],
+                "v2_status": "applied",
+                "v2_action": "compare",
+                "stage5_error": null,
+                "owner": "v2",
+                "execution_mode": "v2_primary",
+                "decision_reason_codes": [
+                  "approved_protected_qa_v2_preview"
+                ],
+                "candidate_eligible": true,
+                "candidate_rejection_reason_codes": [],
+                "parity_status": null,
+                "parity_severity": null,
+                "llm_events": 4,
+                "llm_calls": 2,
+                "llm_cost_usd": 0.00366236,
+                "llm_prompt_tokens": 30400,
+                "llm_completion_tokens": 232,
+                "embedding_calls": 0,
+                "embedding_successes": 0,
+                "embedding_failures": 0,
+                "passport_events": [],
+                "search_events": [
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "сравните по классу эксплуатации",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "сравните по классу эксплуатации",
+                    "relaxations": [],
+                    "result_skus": []
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "title": "Прораб · краны",
+          "note": "думает партиями и деньгами",
+          "session_id": "widget-d0d00d1090-v2_preview-03",
+          "turns": [
+            {
+              "turn": 1,
+              "client_turn_id": "widget-d0d00d1090-v2_preview-03-t01",
+              "message": "Нужны шаровые краны BASE 1/2 вн-вн, штук двадцать",
+              "result": {
+                "ok": true,
+                "http_status": 200,
+                "latency_sec": 12.227,
+                "response": {
+                  "session_id": "widget-d0d00d1090-v2_preview-03",
+                  "answer": "Подобрал 3 подходящих варианта. Карточки ниже расположены по соответствию запросу.",
+                  "products": [
+                    {
+                      "sku": "VT.217.N.04",
+                      "name": "Кран шаровой BASE, рукоятка бабочка 1/2\" вн.-вн.",
+                      "price": 452.0,
+                      "currency": "RUB",
+                      "stock_status": "в наличии",
+                      "url": "https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/",
+                      "image_url": "https://www.vestatrade.ru/image/catalog/krani_i_klapani/36.jpg"
+                    },
+                    {
+                      "sku": "VT.214.N.04",
+                      "name": "Кран шаровой BASE, стальная рукоятка 1/2\" вн.-вн.",
+                      "price": 503.0,
+                      "currency": "RUB",
+                      "stock_status": "в наличии",
+                      "url": "https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-stalnaya-rukoyatka-12-vn-vn/",
+                      "image_url": "https://www.vestatrade.ru/image/catalog/krani_i_klapani/39.jpg"
+                    },
+                    {
+                      "sku": "VT.245.N.04",
+                      "name": "Кран шаровой BASE с дренажом и воздухоотводчиком 1/2\" вн.-вн.",
+                      "price": 753.0,
+                      "currency": "RUB",
+                      "stock_status": "нет в наличии",
+                      "url": "https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-s-drenazhom-i-vozduhootvodchikom-12-vn-vn/",
+                      "image_url": "https://www.vestatrade.ru/image/catalog/krani_i_klapani/28.jpg"
+                    }
+                  ],
+                  "product_groups": [],
+                  "need_handoff": false,
+                  "handoff_status": "none",
+                  "handoff_ticket_id": null,
+                  "debug": {}
+                }
+              },
+              "trace": {
+                "trace_found": true,
+                "duration_ms": 12170,
+                "semantic_status": "accepted",
+                "semantic_output_accepted": true,
+                "semantic_rejection_reason": null,
+                "semantic_structural_repairs": [
+                  "constraint_ungrounded_evidence_dropped",
+                  "constraint_numeric_value_not_in_evidence_dropped",
+                  "connection_pattern_recovered_from_explicit_pair"
+                ],
+                "v2_status": "applied",
+                "v2_action": "recommend_one",
+                "stage5_error": null,
+                "owner": "v2",
+                "execution_mode": "v2_primary",
+                "decision_reason_codes": [
+                  "approved_protected_qa_v2_preview"
+                ],
+                "candidate_eligible": true,
+                "candidate_rejection_reason_codes": [],
+                "parity_status": null,
+                "parity_severity": null,
+                "llm_events": 4,
+                "llm_calls": 2,
+                "llm_cost_usd": 0.003631914,
+                "llm_prompt_tokens": 28102,
+                "llm_completion_tokens": 756,
+                "embedding_calls": 0,
+                "embedding_successes": 0,
+                "embedding_failures": 0,
+                "passport_events": [],
+                "search_events": [
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "нужны шаровые краны base 1/2 вн-вн, штук двадцать",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "нужны шаровые краны base 1/2 вн-вн, штук двадцать",
+                    "relaxations": [],
+                    "result_skus": []
+                  }
+                ]
+              }
+            },
+            {
+              "turn": 2,
+              "client_turn_id": "widget-d0d00d1090-v2_preview-03-t02",
+              "message": "Чем 214-я серия отличается от 217-й?",
+              "result": {
+                "ok": true,
+                "http_status": 200,
+                "latency_sec": 8.715,
+                "response": {
+                  "session_id": "widget-d0d00d1090-v2_preview-03",
+                  "answer": "Размер присоединения: 1/2.\nТип резьбового соединения: внутренняя/внутренняя резьба.\nПродолжу, когда вы будете готовы сообщить недостающие данные.",
+                  "products": [],
+                  "product_groups": [],
+                  "need_handoff": false,
+                  "handoff_status": "none",
+                  "handoff_ticket_id": null,
+                  "debug": {}
+                }
+              },
+              "trace": {
+                "trace_found": true,
+                "duration_ms": 8684,
+                "semantic_status": "accepted",
+                "semantic_output_accepted": true,
+                "semantic_rejection_reason": null,
+                "semantic_structural_repairs": [
+                  "shown_card_identifier_unmatched",
+                  "untyped_ambiguous_selection_strategy_defaulted_to_standard"
+                ],
+                "v2_status": "applied",
+                "v2_action": "wait_for_semantic_understanding",
+                "stage5_error": null,
+                "owner": "v2",
+                "execution_mode": "v2_primary",
+                "decision_reason_codes": [
+                  "approved_protected_qa_v2_preview"
+                ],
+                "candidate_eligible": true,
+                "candidate_rejection_reason_codes": [],
+                "parity_status": null,
+                "parity_severity": null,
+                "llm_events": 4,
+                "llm_calls": 2,
+                "llm_cost_usd": 0.003665701,
+                "llm_prompt_tokens": 29818,
+                "llm_completion_tokens": 389,
+                "embedding_calls": 0,
+                "embedding_successes": 0,
+                "embedding_failures": 0,
+                "passport_events": [],
+                "search_events": [
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "чем 214-я серия отличается от 217-й",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "чем 214-я серия отличается от 217-й",
+                    "relaxations": [],
+                    "result_skus": []
+                  }
+                ]
+              }
+            },
+            {
+              "turn": 3,
+              "client_turn_id": "widget-d0d00d1090-v2_preview-03-t03",
+              "message": "Сколько это выйдет за двадцать штук?",
+              "result": {
+                "ok": true,
+                "http_status": 200,
+                "latency_sec": 6.442,
+                "response": {
+                  "session_id": "widget-d0d00d1090-v2_preview-03",
+                  "answer": "Укажите, для какой из показанных карточек посчитать количество: первой, второй или по артикулу.",
+                  "products": [],
+                  "product_groups": [],
+                  "need_handoff": false,
+                  "handoff_status": "none",
+                  "handoff_ticket_id": null,
+                  "debug": {}
+                }
+              },
+              "trace": {
+                "trace_found": true,
+                "duration_ms": 6417,
+                "semantic_status": "accepted",
+                "semantic_output_accepted": true,
+                "semantic_rejection_reason": null,
+                "semantic_structural_repairs": [],
+                "v2_status": "applied",
+                "v2_action": "calculate_preliminary",
+                "stage5_error": "answer_pipeline:KeyError: <NextStepKind.CALCULATE_CATALOGUE_AMOUNT: 'calculate_catalogue_amount'>",
+                "owner": "v2",
+                "execution_mode": "v2_primary",
+                "decision_reason_codes": [
+                  "approved_protected_qa_v2_preview"
+                ],
+                "candidate_eligible": true,
+                "candidate_rejection_reason_codes": [],
+                "parity_status": null,
+                "parity_severity": null,
+                "llm_events": 4,
+                "llm_calls": 2,
+                "llm_cost_usd": 0.003637751,
+                "llm_prompt_tokens": 30213,
+                "llm_completion_tokens": 226,
+                "embedding_calls": 0,
+                "embedding_successes": 0,
+                "embedding_failures": 0,
+                "passport_events": [],
+                "search_events": [
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "сколько это выйдет за двадцать штук",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "сколько это выйдет за двадцать штук",
+                    "relaxations": [],
+                    "result_skus": []
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "title": "Новичок · радиаторы",
+          "note": "не понимает разницы материалов",
+          "session_id": "widget-d0d00d1090-v2_preview-04",
+          "turns": [
+            {
+              "turn": 1,
+              "client_turn_id": "widget-d0d00d1090-v2_preview-04-t01",
+              "message": "Хочу батарею в комнату 18 квадратов, что посоветуете?",
+              "result": {
+                "ok": true,
+                "http_status": 200,
+                "latency_sec": 9.142,
+                "response": {
+                  "session_id": "widget-d0d00d1090-v2_preview-04",
+                  "answer": "Подскажите, пожалуйста, межосевое расстояние? Измерьте расстояние между осями верхнего и нижнего присоединений радиатора, а не полную высоту корпуса. Не ослабляйте пробки и соединения заполненной системы. Ответ укажите в миллиметрах (мм).\nПосле ответа покажу варианты по вашему запросу.",
+                  "products": [],
+                  "product_groups": [],
+                  "need_handoff": false,
+                  "handoff_status": "none",
+                  "handoff_ticket_id": null,
+                  "debug": {}
+                }
+              },
+              "trace": {
+                "trace_found": true,
+                "duration_ms": 9119,
+                "semantic_status": "accepted",
+                "semantic_output_accepted": true,
+                "semantic_rejection_reason": null,
+                "semantic_structural_repairs": [],
+                "v2_status": "applied",
+                "v2_action": "ask_decision_changing_question",
+                "stage5_error": null,
+                "owner": "v2",
+                "execution_mode": "v2_primary",
+                "decision_reason_codes": [
+                  "approved_protected_qa_v2_preview"
+                ],
+                "candidate_eligible": true,
+                "candidate_rejection_reason_codes": [],
+                "parity_status": null,
+                "parity_severity": null,
+                "llm_events": 4,
+                "llm_calls": 2,
+                "llm_cost_usd": 0.003514329,
+                "llm_prompt_tokens": 28007,
+                "llm_completion_tokens": 522,
+                "embedding_calls": 0,
+                "embedding_successes": 0,
+                "embedding_failures": 0,
+                "passport_events": [],
+                "search_events": [
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "хочу батарею в комнату 18 квадратов, что посоветуете",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "хочу батарею в комнату 18 квадратов, что посоветуете",
+                    "relaxations": [],
+                    "result_skus": []
+                  }
+                ]
+              }
+            },
+            {
+              "turn": 2,
+              "client_turn_id": "widget-d0d00d1090-v2_preview-04-t02",
+              "message": "А чем алюминиевый радиатор от биметаллического отличается?",
+              "result": {
+                "ok": true,
+                "http_status": 200,
+                "latency_sec": 8.267,
+                "response": {
+                  "session_id": "widget-d0d00d1090-v2_preview-04",
+                  "answer": "Подтверждённого значения параметра «уточняемая характеристика» в доступных проверенных источниках этого ответа нет. Я не буду подставлять значение или типичное значение без источника.",
+                  "products": [],
+                  "product_groups": [],
+                  "need_handoff": false,
+                  "handoff_status": "none",
+                  "handoff_ticket_id": null,
+                  "debug": {}
+                }
+              },
+              "trace": {
+                "trace_found": true,
+                "duration_ms": 8242,
+                "semantic_status": "accepted",
+                "semantic_output_accepted": true,
+                "semantic_rejection_reason": null,
+                "semantic_structural_repairs": [],
+                "v2_status": "applied",
+                "v2_action": "answer_direct_question",
+                "stage5_error": null,
+                "owner": "v2",
+                "execution_mode": "v2_primary",
+                "decision_reason_codes": [
+                  "approved_protected_qa_v2_preview"
+                ],
+                "candidate_eligible": true,
+                "candidate_rejection_reason_codes": [],
+                "parity_status": null,
+                "parity_severity": null,
+                "llm_events": 4,
+                "llm_calls": 2,
+                "llm_cost_usd": 0.005786467,
+                "llm_prompt_tokens": 29243,
+                "llm_completion_tokens": 431,
+                "embedding_calls": 0,
+                "embedding_successes": 0,
+                "embedding_failures": 0,
+                "passport_events": [],
+                "search_events": [
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "а чем алюминиевый радиатор от биметаллического отличается",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "а чем алюминиевый радиатор от биметаллического отличается",
+                    "relaxations": [],
+                    "result_skus": []
+                  }
+                ]
+              }
+            },
+            {
+              "turn": 3,
+              "client_turn_id": "widget-d0d00d1090-v2_preview-04-t03",
+              "message": "Покажите что есть",
+              "result": {
+                "ok": true,
+                "http_status": 200,
+                "latency_sec": 10.568,
+                "response": {
+                  "session_id": "widget-d0d00d1090-v2_preview-04",
+                  "answer": "Подскажите для радиатора: прямое или угловое подключение; размер 1/2 или 3/4; регулировать температуру термоголовкой или просто перекрывать поток.",
+                  "products": [],
+                  "product_groups": [],
+                  "need_handoff": false,
+                  "handoff_status": "none",
+                  "handoff_ticket_id": null,
+                  "debug": {
+                    "intent": "attribute_request",
+                    "category": "radiator_fittings",
+                    "slots": {
+                      "_last_bare_question": "Подскажите для радиатора: прямое или угловое подключение; размер 1/2 или 3/4; регулировать температуру термоголовкой или просто перекрывать поток."
+                    },
+                    "project_context": {
+                      "version": 2,
+                      "goals": {
+                        "radiator_fittings": {
+                          "category": "radiator_fittings",
+                          "scope": null,
+                          "slots": {},
+                          "pending": {
+                            "question_id": "radiator_fittings.connection_form",
+                            "text": "Подскажите для радиатора: прямое или угловое подключение; размер 1/2 или 3/4; регулировать температуру термоголовкой или просто перекрывать поток.",
+                            "expected_slots": [
+                              "connection_form",
+                              "body_form",
+                              "diameter_mm",
+                              "size_inch",
+                              "control_mode"
+                            ],
+                            "attempts": 0,
+                            "category": "radiator_fittings",
+                            "intent_type": "attribute_request"
+                          }
+                        }
+                      },
+                      "category_last_goal": {
+                        "radiator_fittings": "radiator_fittings"
+                      },
+                      "active_goal": "radiator_fittings",
+                      "active_category": "radiator_fittings",
+                      "categories": {
+                        "radiator_fittings": {}
+                      },
+                      "known_facts": {},
+                      "shared_by_scope": {}
+                    },
+                    "product_branch_categories": [],
+                    "last_search_outcome": null,
+                    "focused_product_sku": null,
+                    "product_relation": null,
+                    "restored_product_skus": null,
+                    "agents_used": [
+                      "EngineeringInterpreterAgent",
+                      "IntentRouterAgent",
+                      "EngineeringRequirementsAgent",
+                      "ResponseComposerAgent"
+                    ],
+                    "turn_acts": [],
+                    "turn_actions": [],
+                    "selection_mode": "unspecified",
+                    "contact_direction": null,
+                    "llm_used": true,
+                    "llm_requested": true,
+                    "llm_transport_succeeded": true,
+                    "llm_output_accepted": true,
+                    "final_answer_source": "deterministic",
+                    "llm_rejection_reason": "intent_sanity_check_override",
+                    "intent_llm_used": true,
+                    "intent_llm_requested": true,
+                    "intent_llm_output_accepted": false,
+                    "intent_llm_rejection_reason": "intent_sanity_check_override",
+                    "engineering_llm_requested": true,
+                    "engineering_llm_used": true,
+                    "engineering_llm_output_accepted": true,
+                    "engineering_llm_fallback_reason": null,
+                    "engineering_reply_used": false,
+                    "response_llm_used": false,
+                    "response_llm_requested": false,
+                    "response_llm_output_accepted": false,
+                    "response_llm_rejection_reason": null,
+                    "response_llm_fallback_reason": null,
+                    "consultant_llm_used": false,
+                    "consultant_llm_requested": false,
+                    "consultant_llm_output_accepted": false,
+                    "consultant_llm_rejection_reason": null,
+                    "consultant_llm_fallback_reason": null,
+                    "any_llm_used": true,
+                    "topic_changed": false,
+                    "handoff_status": "none",
+                    "handoff_ticket_id": null,
+                    "products_loaded_from": "file"
+                  }
+                }
+              },
+              "trace": {
+                "trace_found": true,
+                "duration_ms": 10539,
+                "semantic_status": "accepted",
+                "semantic_output_accepted": true,
+                "semantic_rejection_reason": null,
+                "semantic_structural_repairs": [
+                  "explicit_show_selection_control_recovered",
+                  "generic_show_anchor_forced_continue"
+                ],
+                "v2_status": "applied",
+                "v2_action": "state_capability_boundary",
+                "stage5_error": null,
+                "owner": "legacy",
+                "execution_mode": "legacy_fallback",
+                "decision_reason_codes": [
+                  "answer_plan_status_boundary_not_deliverable"
+                ],
+                "candidate_eligible": false,
+                "candidate_rejection_reason_codes": [
+                  "answer_plan_status_boundary_not_deliverable"
+                ],
+                "parity_status": "unavailable",
+                "parity_severity": "p1",
+                "llm_events": 8,
+                "llm_calls": 4,
+                "llm_cost_usd": 0.004072263,
+                "llm_prompt_tokens": 32659,
+                "llm_completion_tokens": 552,
+                "embedding_calls": 0,
+                "embedding_successes": 0,
+                "embedding_failures": 0,
+                "passport_events": [],
+                "search_events": [
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "покажите что есть",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "покажите что есть",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "покажите что есть",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "покажите что есть",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "Покажите что есть",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "Покажите что есть",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "Покажите что есть",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "Покажите что есть",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "Покажите что есть",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "Покажите что есть",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "find_named_models",
+                    "query": {
+                      "brand": null,
+                      "category": "radiator_fittings",
+                      "message": "Покажите что есть",
+                      "name_tokens": [],
+                      "old_model": null
+                    },
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "Покажите что есть",
+                    "relaxations": [],
+                    "result_skus": []
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "title": "Проектировщик · насосы",
+          "note": "оперирует рабочей точкой",
+          "session_id": "widget-d0d00d1090-v2_preview-05",
+          "turns": [
+            {
+              "turn": 1,
+              "client_turn_id": "widget-d0d00d1090-v2_preview-05-t01",
+              "message": "Циркуляционный насос: расчётный расход 1,5 м3/ч, напор 4 м, схема радиаторная",
+              "result": {
+                "ok": true,
+                "http_status": 200,
+                "latency_sec": 11.492,
+                "response": {
+                  "session_id": "widget-d0d00d1090-v2_preview-05",
+                  "answer": "Расход в рабочей точке: 1500 л/ч.\nНапор в рабочей точке: 4 м.\nКакой размер присоединения или трубы нужен? Его обычно указывают на старом насосе, трубе или в паспорте. Ответ укажите в миллиметрах (мм).\nПосле ответа покажу варианты по вашему запросу.",
+                  "products": [],
+                  "product_groups": [],
+                  "need_handoff": false,
+                  "handoff_status": "none",
+                  "handoff_ticket_id": null,
+                  "debug": {}
+                }
+              },
+              "trace": {
+                "trace_found": true,
+                "duration_ms": 11467,
+                "semantic_status": "accepted",
+                "semantic_output_accepted": true,
+                "semantic_rejection_reason": null,
+                "semantic_structural_repairs": [
+                  "constraint_closed_value_not_grounded_dropped",
+                  "constraint_categorical_ambiguity_added",
+                  "spoken_numeric_anchor_recovered",
+                  "constraint_numeric_anchor_unit_recovered"
+                ],
+                "v2_status": "applied",
+                "v2_action": "ask_decision_changing_question",
+                "stage5_error": null,
+                "owner": "v2",
+                "execution_mode": "v2_primary",
+                "decision_reason_codes": [
+                  "approved_protected_qa_v2_preview"
+                ],
+                "candidate_eligible": true,
+                "candidate_rejection_reason_codes": [],
+                "parity_status": null,
+                "parity_severity": null,
+                "llm_events": 4,
+                "llm_calls": 2,
+                "llm_cost_usd": 0.0036372180000000002,
+                "llm_prompt_tokens": 28124,
+                "llm_completion_tokens": 762,
+                "embedding_calls": 0,
+                "embedding_successes": 0,
+                "embedding_failures": 0,
+                "passport_events": [],
+                "search_events": [
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "циркуляционный насос расчетный расход 1,5 м3/ч, напор 4 м, схема радиаторная",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "циркуляционный насос расчетный расход 1,5 м3/ч, напор 4 м, схема радиаторная",
+                    "relaxations": [],
+                    "result_skus": []
+                  }
+                ]
+              }
+            },
+            {
+              "turn": 2,
+              "client_turn_id": "widget-d0d00d1090-v2_preview-05-t02",
+              "message": "Покажите варианты",
+              "result": {
+                "ok": true,
+                "http_status": 200,
+                "latency_sec": 7.387,
+                "response": {
+                  "session_id": "widget-d0d00d1090-v2_preview-05",
+                  "answer": "Показываю 5 предварительных вариантов по подтверждённым данным: Расход в рабочей точке: 1,5 м³/ч; Напор в рабочей точке: 4 м.\nДля точного подтверждения пригодности ещё нужно уточнить «диаметр», «монтажная длина». Карточки ниже — предварительные, не окончательная рекомендация.",
+                  "products": [
+                    {
+                      "sku": "2459900",
+                      "name": "Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK",
+                      "price": 10521.0,
+                      "currency": "RUB",
+                      "stock_status": "в наличии",
+                      "url": "https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-s-montazhnymi-adapterami-i-gajkami-wilo-star-rs-25-6-130-180-rk/",
+                      "image_url": "https://www.vestatrade.ru/image/catalog/product/nasosnoeoborydovanie/wilo/25-6-rk.png"
+                    },
+                    {
+                      "sku": "53843",
+                      "name": "Насос циркуляц. (отопл.) UPС 25-40 180",
+                      "price": 3844.0,
+                      "currency": "RUB",
+                      "stock_status": "в наличии",
+                      "url": "https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/cirkulyacionnye-nasosy-unipump/nasos-cirkulyac-otopl-ups-25-40-180/",
+                      "image_url": "https://www.vestatrade.ru/image/catalog/product/nasosnoeoborydovanie/unipump/UNIPUMPUPC.jpg"
+                    },
+                    {
+                      "sku": "9168934",
+                      "name": "Насос циркуляционный Wilo Star RS 25/6-130-RK",
+                      "price": 7148.0,
+                      "currency": "RUB",
+                      "stock_status": "в наличии",
+                      "url": "https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-wilo-star-rs-25-6-130-rk/",
+                      "image_url": "https://www.vestatrade.ru/image/catalog/product/nasosnoeoborydovanie/wilo/25-6-rk.png"
+                    },
+                    {
+                      "sku": "VRS.254.18.0",
+                      "name": "Насос циркуляционный VALTEC RS 25/4-180 с гайками",
+                      "price": 3989.0,
+                      "currency": "RUB",
+                      "stock_status": "в наличии",
+                      "url": "https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-254-180-s-gaykami/",
+                      "image_url": "https://www.vestatrade.ru/image/catalog/product/valtek/Nasos/VRS.254.18.0/VRS.254.18_0.jpg"
+                    },
+                    {
+                      "sku": "VRS.256.13.0",
+                      "name": "Насос циркуляционный VALTEC RS 25/6-130 с гайками",
+                      "price": 4311.0,
+                      "currency": "RUB",
+                      "stock_status": "в наличии",
+                      "url": "https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-256-130-s-gaykami/",
+                      "image_url": "https://www.vestatrade.ru/image/catalog/product/valtek/Nasos/vrs130/VRS.256.13_0.jpg"
+                    }
+                  ],
+                  "product_groups": [],
+                  "need_handoff": false,
+                  "handoff_status": "none",
+                  "handoff_ticket_id": null,
+                  "debug": {}
+                }
+              },
+              "trace": {
+                "trace_found": true,
+                "duration_ms": 7332,
+                "semantic_status": "accepted",
+                "semantic_output_accepted": true,
+                "semantic_rejection_reason": null,
+                "semantic_structural_repairs": [
+                  "explicit_show_selection_control_recovered",
+                  "generic_show_anchor_forced_continue"
+                ],
+                "v2_status": "applied",
+                "v2_action": "show_preliminary_options",
+                "stage5_error": null,
+                "owner": "v2",
+                "execution_mode": "v2_primary",
+                "decision_reason_codes": [
+                  "approved_protected_qa_v2_preview"
+                ],
+                "candidate_eligible": true,
+                "candidate_rejection_reason_codes": [],
+                "parity_status": null,
+                "parity_severity": null,
+                "llm_events": 4,
+                "llm_calls": 2,
+                "llm_cost_usd": 0.003574896,
+                "llm_prompt_tokens": 29388,
+                "llm_completion_tokens": 300,
+                "embedding_calls": 0,
+                "embedding_successes": 0,
+                "embedding_failures": 0,
+                "passport_events": [],
+                "search_events": [
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "покажите варианты",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "покажите варианты",
+                    "relaxations": [],
+                    "result_skus": []
+                  }
+                ]
+              }
+            },
+            {
+              "turn": 3,
+              "client_turn_id": "widget-d0d00d1090-v2_preview-05-t03",
+              "message": "Сравните их между собой",
+              "result": {
+                "ok": true,
+                "http_status": 200,
+                "latency_sec": 12.095,
+                "response": {
+                  "session_id": "widget-d0d00d1090-v2_preview-05",
+                  "answer": "Сравнение показанных вариантов:\n1. Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK (2459900)\n2. Насос циркуляц. (отопл.) UPС 25-40 180 (53843)\n3. Насос циркуляционный Wilo Star RS 25/6-130-RK (9168934)\n4. Насос циркуляционный VALTEC RS 25/4-180 с гайками (VRS.254.18.0)\n5. Насос циркуляционный VALTEC RS 25/6-130 с гайками (VRS.256.13.0)\n• Цена: 1 — 10521 ₽; 2 — 3844 ₽; 3 — 7148 ₽; 4 — 3989 ₽; 5 — 4311 ₽.\n• Бренд: 1 — Wilo; 2 — UNIPUMP; 3 — Wilo; 4 — VALTEC; 5 — VALTEC.\n• Максимальный напор: 1 — 6 м; 2 — 4,5 м; 3 — 6 м; 4 — 4,2 м; 5 — 6 м.",
+                  "products": [],
+                  "product_groups": [],
+                  "need_handoff": false,
+                  "handoff_status": "none",
+                  "handoff_ticket_id": null,
+                  "debug": {}
+                }
+              },
+              "trace": {
+                "trace_found": true,
+                "duration_ms": 12057,
+                "semantic_status": "accepted",
+                "semantic_output_accepted": true,
+                "semantic_rejection_reason": null,
+                "semantic_structural_repairs": [],
+                "v2_status": "applied",
+                "v2_action": "compare",
+                "stage5_error": null,
+                "owner": "v2",
+                "execution_mode": "v2_primary",
+                "decision_reason_codes": [
+                  "approved_protected_qa_v2_preview"
+                ],
+                "candidate_eligible": true,
+                "candidate_rejection_reason_codes": [],
+                "parity_status": null,
+                "parity_severity": null,
+                "llm_events": 4,
+                "llm_calls": 2,
+                "llm_cost_usd": 0.003710993,
+                "llm_prompt_tokens": 30839,
+                "llm_completion_tokens": 226,
+                "embedding_calls": 0,
+                "embedding_successes": 0,
+                "embedding_failures": 0,
+                "passport_events": [],
+                "search_events": [
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "сравните их между собой",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "сравните их между собой",
+                    "relaxations": [],
+                    "result_skus": []
+                  }
+                ]
+              }
+            },
+            {
+              "turn": 4,
+              "client_turn_id": "widget-d0d00d1090-v2_preview-05-t04",
+              "message": "Какая у первого монтажная длина?",
+              "result": {
+                "ok": true,
+                "http_status": 200,
+                "latency_sec": 11.394,
+                "response": {
+                  "session_id": "widget-d0d00d1090-v2_preview-05",
+                  "answer": "Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK (2459900). Монтажная длина — 130–180 мм. По паспорту: «Монтажная длина 130 мм / 180 мм». Источник: Циркуляционные_насосы_Wilo_Star_RS_с_мокрым_ротором.pdf, пункт 5.2.",
+                  "products": [
+                    {
+                      "sku": "2459900",
+                      "name": "Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK",
+                      "price": 10521.0,
+                      "currency": "RUB",
+                      "stock_status": "в наличии",
+                      "url": "https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-s-montazhnymi-adapterami-i-gajkami-wilo-star-rs-25-6-130-180-rk/",
+                      "image_url": "https://www.vestatrade.ru/image/catalog/product/nasosnoeoborydovanie/wilo/25-6-rk.png"
+                    }
+                  ],
+                  "product_groups": [],
+                  "need_handoff": false,
+                  "handoff_status": "none",
+                  "handoff_ticket_id": null,
+                  "debug": {}
+                }
+              },
+              "trace": {
+                "trace_found": true,
+                "duration_ms": 11365,
+                "semantic_status": "accepted",
+                "semantic_output_accepted": true,
+                "semantic_rejection_reason": null,
+                "semantic_structural_repairs": [
+                  "constraint_non_known_without_explicit_status_dropped"
+                ],
+                "v2_status": "applied",
+                "v2_action": "wait_for_semantic_understanding",
+                "stage5_error": null,
+                "owner": "v2",
+                "execution_mode": "v2_primary",
+                "decision_reason_codes": [
+                  "approved_protected_qa_v2_preview"
+                ],
+                "candidate_eligible": true,
+                "candidate_rejection_reason_codes": [],
+                "parity_status": null,
+                "parity_severity": null,
+                "llm_events": 6,
+                "llm_calls": 3,
+                "llm_cost_usd": 0.0043172869999999995,
+                "llm_prompt_tokens": 35111,
+                "llm_completion_tokens": 460,
+                "embedding_calls": 1,
+                "embedding_successes": 1,
+                "embedding_failures": 0,
+                "passport_events": [
+                  {
+                    "canonical_sku": "2459900",
+                    "document_scope": [
+                      "Циркуляционные_насосы_Wilo_Star_RS_с_мокрым_ротором.pdf"
+                    ],
+                    "embedding_model": "openai/text-embedding-3-small",
+                    "event": "passport_retrieval",
+                    "flow": "v2_product_fact",
+                    "hits": [
+                      {
+                        "document": "Циркуляционные_насосы_Wilo_Star_RS_с_мокрым_ротором.pdf",
+                        "ordinal": 21,
+                        "score": 0.412124,
+                        "section": "пункт 5.2"
+                      },
+                      {
+                        "document": "Циркуляционные_насосы_Wilo_Star_RS_с_мокрым_ротором.pdf",
+                        "ordinal": 36,
+                        "score": 0.328493,
+                        "section": "пункт 7.2"
+                      },
+                      {
+                        "document": "Циркуляционные_насосы_Wilo_Star_RS_с_мокрым_ротором.pdf",
+                        "ordinal": 14,
+                        "score": 0.326202,
+                        "section": "пункт 2.8"
+                      },
+                      {
+                        "document": "Циркуляционные_насосы_Wilo_Star_RS_с_мокрым_ротором.pdf",
+                        "ordinal": 29,
+                        "score": 0.325884,
+                        "section": "пункт 7.1"
+                      },
+                      {
+                        "document": "Циркуляционные_насосы_Wilo_Star_RS_с_мокрым_ротором.pdf",
+                        "ordinal": 1,
+                        "score": 0.323056,
+                        "section": "текст"
+                      },
+                      {
+                        "document": "Циркуляционные_насосы_Wilo_Star_RS_с_мокрым_ротором.pdf",
+                        "ordinal": 3,
+                        "score": 0.319089,
+                        "section": "текст"
+                      },
+                      {
+                        "document": "Циркуляционные_насосы_Wilo_Star_RS_с_мокрым_ротором.pdf",
+                        "ordinal": 12,
+                        "score": 0.315124,
+                        "section": "пункт 2.6"
+                      },
+                      {
+                        "document": "Циркуляционные_насосы_Wilo_Star_RS_с_мокрым_ротором.pdf",
+                        "ordinal": 30,
+                        "score": 0.312077,
+                        "section": "пункт 7.1"
+                      }
+                    ],
+                    "index_chunk_count": 1742,
+                    "index_has_vectors": true,
+                    "index_model": "openai/text-embedding-3-small",
+                    "predicate": "installation_length_mm",
+                    "status": "hits"
+                  },
+                  {
+                    "canonical_sku": "2459900",
+                    "corrected_excerpts": 0,
+                    "document_scope": [
+                      "Циркуляционные_насосы_Wilo_Star_RS_с_мокрым_ротором.pdf"
+                    ],
+                    "event": "passport_verification",
+                    "flow": "v2_product_fact",
+                    "framing_drop_reason": null,
+                    "llm_used": true,
+                    "predicate": "installation_length_mm",
+                    "rejection_reason": null,
+                    "source": {
+                      "document": "Циркуляционные_насосы_Wilo_Star_RS_с_мокрым_ротором.pdf",
+                      "ordinal": 21,
+                      "section": "пункт 5.2"
+                    },
+                    "status": "accepted"
+                  },
+                  {
+                    "candidate_skus": [
+                      "2459900"
+                    ],
+                    "canonical_sku": "2459900",
+                    "document_scope": [
+                      "Циркуляционные_насосы_Wilo_Star_RS_с_мокрым_ротором.pdf"
+                    ],
+                    "event": "product_fact_evidence_gate",
+                    "flow": "v2_product_fact",
+                    "predicate": "installation_length_mm",
+                    "reason": "product_predicate_scope_and_value_match",
+                    "source_document": "Циркуляционные_насосы_Wilo_Star_RS_с_мокрым_ротором.pdf",
+                    "status": "accepted",
+                    "verifier_status": "accepted"
+                  },
+                  {
+                    "candidate_skus": [
+                      "2459900"
+                    ],
+                    "canonical_sku": "2459900",
+                    "event": "product_fact_v2_candidate",
+                    "evidence_document": "Циркуляционные_насосы_Wilo_Star_RS_с_мокрым_ротором.pdf",
+                    "evidence_fragment": "Монтажная длина 130 мм / 180 мм",
+                    "evidence_section": "пункт 5.2",
+                    "evidence_source": "passport_and_catalog_card",
+                    "evidence_status": "answered",
+                    "evidence_unit": "мм",
+                    "evidence_value": "130–180",
+                    "evidence_verifier_status": "accepted",
+                    "general_semantic_skip_reason": null,
+                    "general_semantic_status": "applied",
+                    "owner_candidate": "v2",
+                    "predicate": "installation_length_mm",
+                    "product_reference_kind": "ordinal",
+                    "raw_product_reference": "1",
+                    "reason": "product_predicate_scope_and_value_match",
+                    "semantic_source": "general_semantic_form",
+                    "status": "accepted"
+                  }
+                ],
+                "search_events": [
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "какая у первого монтажная длина",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "какая у первого монтажная длина",
+                    "relaxations": [],
+                    "result_skus": []
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "title": "Сомневающийся · котлы",
+          "note": "переспрашивает и требует обоснований",
+          "session_id": "widget-d0d00d1090-v2_preview-06",
+          "turns": [
+            {
+              "turn": 1,
+              "client_turn_id": "widget-d0d00d1090-v2_preview-06-t01",
+              "message": "Нужен газовый котёл на дом 150 квадратов",
+              "result": {
+                "ok": true,
+                "http_status": 200,
+                "latency_sec": 9.772,
+                "response": {
+                  "session_id": "widget-d0d00d1090-v2_preview-06",
+                  "answer": "Площадь: 150 м².\nТип котла: газовый.\nКотёл будет только отапливать дом или ещё готовить горячую воду? Если горячую воду обеспечивает отдельный водонагреватель, тоже напишите.\nПосле ответа покажу варианты по вашему запросу.",
+                  "products": [],
+                  "product_groups": [],
+                  "need_handoff": false,
+                  "handoff_status": "none",
+                  "handoff_ticket_id": null,
+                  "debug": {}
+                }
+              },
+              "trace": {
+                "trace_found": true,
+                "duration_ms": 9747,
+                "semantic_status": "accepted",
+                "semantic_output_accepted": true,
+                "semantic_rejection_reason": null,
+                "semantic_structural_repairs": [
+                  "boiler_type_recovered_from_closed_alias",
+                  "constraint_numeric_anchor_unit_recovered"
+                ],
+                "v2_status": "applied",
+                "v2_action": "ask_decision_changing_question",
+                "stage5_error": null,
+                "owner": "v2",
+                "execution_mode": "v2_primary",
+                "decision_reason_codes": [
+                  "approved_protected_qa_v2_preview"
+                ],
+                "candidate_eligible": true,
+                "candidate_rejection_reason_codes": [],
+                "parity_status": null,
+                "parity_severity": null,
+                "llm_events": 4,
+                "llm_calls": 2,
+                "llm_cost_usd": 0.003510078,
+                "llm_prompt_tokens": 27994,
+                "llm_completion_tokens": 516,
+                "embedding_calls": 0,
+                "embedding_successes": 0,
+                "embedding_failures": 0,
+                "passport_events": [],
+                "search_events": [
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "нужен газовый котел на дом 150 квадратов",
+                    "relaxations": [],
+                    "result_skus": []
+                  }
+                ]
+              }
+            },
+            {
+              "turn": 2,
+              "client_turn_id": "widget-d0d00d1090-v2_preview-06-t02",
+              "message": "А почему именно такая мощность?",
+              "result": {
+                "ok": true,
+                "http_status": 200,
+                "latency_sec": 7.125,
+                "response": {
+                  "session_id": "widget-d0d00d1090-v2_preview-06",
+                  "answer": "Для указанного товара паспорт может подтвердить характеристики самой модели, но не обоснование мощности для конкретного дома. Для такого вывода нужны расчётные теплопотери, климат, утепление и запас на ГВС. Поэтому не буду подменять расчёт посторонней характеристикой из паспорта.",
+                  "products": [],
+                  "product_groups": [],
+                  "need_handoff": false,
+                  "handoff_status": "none",
+                  "handoff_ticket_id": null,
+                  "debug": {}
+                }
+              },
+              "trace": {
+                "trace_found": true,
+                "duration_ms": 7097,
+                "semantic_status": "accepted",
+                "semantic_output_accepted": true,
+                "semantic_rejection_reason": null,
+                "semantic_structural_repairs": [
+                  "typed_characteristic_question_rebound_to_active_goal",
+                  "untyped_ambiguous_selection_strategy_defaulted_to_standard"
+                ],
+                "v2_status": "applied",
+                "v2_action": "explain_term_or_method",
+                "stage5_error": null,
+                "owner": "v2",
+                "execution_mode": "v2_primary",
+                "decision_reason_codes": [
+                  "approved_protected_qa_v2_preview"
+                ],
+                "candidate_eligible": true,
+                "candidate_rejection_reason_codes": [],
+                "parity_status": null,
+                "parity_severity": null,
+                "llm_events": 4,
+                "llm_calls": 2,
+                "llm_cost_usd": 0.0035676550000000003,
+                "llm_prompt_tokens": 29260,
+                "llm_completion_tokens": 317,
+                "embedding_calls": 0,
+                "embedding_successes": 0,
+                "embedding_failures": 0,
+                "passport_events": [
+                  {
+                    "candidate_skus": [],
+                    "canonical_sku": null,
+                    "event": "product_fact_v2_candidate",
+                    "evidence_document": null,
+                    "evidence_fragment": null,
+                    "evidence_section": null,
+                    "evidence_source": null,
+                    "evidence_status": "ambiguous",
+                    "evidence_unit": null,
+                    "evidence_value": null,
+                    "evidence_verifier_status": "not_run",
+                    "general_semantic_skip_reason": null,
+                    "general_semantic_status": "applied",
+                    "owner_candidate": "v2",
+                    "predicate": "selection_power_rationale",
+                    "product_reference_kind": "unresolved",
+                    "raw_product_reference": "",
+                    "reason": "product_reference_not_grounded",
+                    "semantic_source": "general_semantic_form",
+                    "status": "accepted"
+                  }
+                ],
+                "search_events": [
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "а почему именно такая мощность",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "а почему именно такая мощность",
+                    "relaxations": [],
+                    "result_skus": []
+                  }
+                ]
+              }
+            },
+            {
+              "turn": 3,
+              "client_turn_id": "widget-d0d00d1090-v2_preview-06-t03",
+              "message": "А вы уверены? Мне сосед говорил что надо больше",
+              "result": {
+                "ok": true,
+                "http_status": 200,
+                "latency_sec": 8.506,
+                "response": {
+                  "session_id": "widget-d0d00d1090-v2_preview-06",
+                  "answer": "Площадь: 150 м².\nТип котла: газовый.\nПодбор выполнен по уже подтверждённым данным.",
+                  "products": [],
+                  "product_groups": [],
+                  "need_handoff": false,
+                  "handoff_status": "none",
+                  "handoff_ticket_id": null,
+                  "debug": {}
+                }
+              },
+              "trace": {
+                "trace_found": true,
+                "duration_ms": 8478,
+                "semantic_status": "accepted",
+                "semantic_output_accepted": true,
+                "semantic_rejection_reason": null,
+                "semantic_structural_repairs": [
+                  "constraint_non_known_fact_unresolved_dropped",
+                  "constraint_non_known_fact_ambiguity_added"
+                ],
+                "v2_status": "applied",
+                "v2_action": "continue_with_confirmed_facts",
+                "stage5_error": null,
+                "owner": "v2",
+                "execution_mode": "v2_primary",
+                "decision_reason_codes": [
+                  "approved_protected_qa_v2_preview"
+                ],
+                "candidate_eligible": true,
+                "candidate_rejection_reason_codes": [],
+                "parity_status": null,
+                "parity_severity": null,
+                "llm_events": 4,
+                "llm_calls": 2,
+                "llm_cost_usd": 0.0036455510000000003,
+                "llm_prompt_tokens": 29603,
+                "llm_completion_tokens": 400,
+                "embedding_calls": 0,
+                "embedding_successes": 0,
+                "embedding_failures": 0,
+                "passport_events": [],
+                "search_events": [
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "а вы уверены мне сосед говорил что надо больше",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "а вы уверены мне сосед говорил что надо больше",
+                    "relaxations": [],
+                    "result_skus": []
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "title": "Монтажник · радиаторная арматура",
+          "note": "проверяет совместимость",
+          "session_id": "widget-d0d00d1090-v2_preview-07",
+          "turns": [
+            {
+              "turn": 1,
+              "client_turn_id": "widget-d0d00d1090-v2_preview-07-t01",
+              "message": "Нужен термостатический клапан прямой 1/2 и головка к нему",
+              "result": {
+                "ok": true,
+                "http_status": 200,
+                "latency_sec": 11.886,
+                "response": {
+                  "session_id": "widget-d0d00d1090-v2_preview-07",
+                  "answer": "Нашёл подходящие варианты:\n1. Клапан термостатический для рад. прямой 1/2\"\n   Артикул: VT.032.N.04\n   Бренд: VALTEC\n   Цена: 1673 RUB\n   Наличие: в наличии, 1 шт.\n   Характеристики: номинальный диаметр dn, мм: 15, 20; срок службы, лет: 15; номинальное давление, мпа: 1.0\n   Ссылка: https://www.vestatrade.ru/termoreguliruyushchaya-armatura-dlya-radiatorov/klapany-valtec-dlya-radiatorov/klapany-termostaticheskie-valtec-dlya-radiatorov/klapan-termostaticheskiy-dlya-rad-pryamoy-12/\n2. Клапан с термостатической головкой для рад. прямой 1/2\"\n   Артикул: VT.048.N.04\n   Бренд: VALTEC\n   Цена: 1404 RUB\n   Наличие: нет в наличии, 0 шт.\n   Характеристики: номинальный диаметр dn, мм: 15; срок службы, лет: 15; номинальное давление, мпа: 1.0\n   Ссылка: https://www.vestatrade.ru/termoreguliruyushchaya-armatura-dlya-radiatorov/klapany-valtec-dlya-radiatorov/klapany-termostaticheskie-valtec-dlya-radiatorov/klapan-s-termostaticheskoy-golovkoy-dlya-rad-pryamoy-12/\nМогу сравнить эти варианты по главным отличиям для вашей задачи.\n\nКстати, если нужна регулировка температуры, к радиаторному клапану берут термоголовку — могу подобрать.",
+                  "products": [
+                    {
+                      "sku": "VT.032.N.04",
+                      "name": "Клапан термостатический для рад. прямой 1/2\"",
+                      "price": 1673.0,
+                      "currency": "RUB",
+                      "stock_status": "в наличии",
+                      "url": "https://www.vestatrade.ru/termoreguliruyushchaya-armatura-dlya-radiatorov/klapany-valtec-dlya-radiatorov/klapany-termostaticheskie-valtec-dlya-radiatorov/klapan-termostaticheskiy-dlya-rad-pryamoy-12/",
+                      "image_url": "https://www.vestatrade.ru/image/catalog/radiatori_otopleniy/klapanvaltek/termap.jpg"
+                    },
+                    {
+                      "sku": "VT.048.N.04",
+                      "name": "Клапан с термостатической головкой для рад. прямой 1/2\"",
+                      "price": 1404.0,
+                      "currency": "RUB",
+                      "stock_status": "нет в наличии",
+                      "url": "https://www.vestatrade.ru/termoreguliruyushchaya-armatura-dlya-radiatorov/klapany-valtec-dlya-radiatorov/klapany-termostaticheskie-valtec-dlya-radiatorov/klapan-s-termostaticheskoy-golovkoy-dlya-rad-pryamoy-12/",
+                      "image_url": "https://www.vestatrade.ru/image/catalog/product/Valtek/VT.048.N/VT.048.N_0.jpg"
+                    }
+                  ],
+                  "product_groups": [],
+                  "need_handoff": false,
+                  "handoff_status": "none",
+                  "handoff_ticket_id": null,
+                  "debug": {
+                    "intent": "attribute_request",
+                    "category": "radiator_fittings",
+                    "slots": {
+                      "body_form": "прямой",
+                      "connection_form": "прямое",
+                      "product_kind": "thermostatic_valve",
+                      "radiator_action": "регулировать температуру",
+                      "size_inch": "1/2",
+                      "companion_hint_radiator_fittings": true
+                    },
+                    "project_context": {
+                      "version": 2,
+                      "goals": {
+                        "radiator_fittings": {
+                          "category": "radiator_fittings",
+                          "scope": null,
+                          "slots": {
+                            "body_form": "прямой",
+                            "connection_form": "прямое",
+                            "product_kind": "thermostatic_valve",
+                            "size_inch": "1/2"
+                          },
+                          "pending": null
+                        }
+                      },
+                      "category_last_goal": {
+                        "radiator_fittings": "radiator_fittings"
+                      },
+                      "active_goal": "radiator_fittings",
+                      "active_category": "radiator_fittings",
+                      "categories": {
+                        "radiator_fittings": {
+                          "body_form": "прямой",
+                          "connection_form": "прямое",
+                          "product_kind": "thermostatic_valve",
+                          "size_inch": "1/2"
+                        }
+                      },
+                      "known_facts": {},
+                      "shared_by_scope": {}
+                    },
+                    "product_branch_categories": [
+                      "radiator_fittings"
+                    ],
+                    "last_search_outcome": null,
+                    "focused_product_sku": null,
+                    "product_relation": null,
+                    "restored_product_skus": null,
+                    "agents_used": [
+                      "EngineeringInterpreterAgent",
+                      "IntentRouterAgent",
+                      "EngineeringRequirementsAgent",
+                      "FeedSearchAgent",
+                      "RankingAgent",
+                      "ProductCardAgent",
+                      "GuardrailsAgent",
+                      "ResponseComposerAgent"
+                    ],
+                    "turn_acts": [],
+                    "turn_actions": [],
+                    "selection_mode": "recommend",
+                    "contact_direction": null,
+                    "llm_used": true,
+                    "llm_requested": true,
+                    "llm_transport_succeeded": true,
+                    "llm_output_accepted": true,
+                    "final_answer_source": "deterministic",
+                    "llm_rejection_reason": null,
+                    "intent_llm_used": false,
+                    "intent_llm_requested": false,
+                    "intent_llm_output_accepted": false,
+                    "intent_llm_rejection_reason": null,
+                    "engineering_llm_requested": true,
+                    "engineering_llm_used": true,
+                    "engineering_llm_output_accepted": true,
+                    "engineering_llm_fallback_reason": null,
+                    "engineering_reply_used": false,
+                    "response_llm_used": false,
+                    "response_llm_requested": false,
+                    "response_llm_output_accepted": false,
+                    "response_llm_rejection_reason": null,
+                    "response_llm_fallback_reason": null,
+                    "consultant_llm_used": false,
+                    "consultant_llm_requested": false,
+                    "consultant_llm_output_accepted": false,
+                    "consultant_llm_rejection_reason": null,
+                    "consultant_llm_fallback_reason": null,
+                    "any_llm_used": true,
+                    "topic_changed": false,
+                    "handoff_status": "none",
+                    "handoff_ticket_id": null,
+                    "products_loaded_from": "file"
+                  }
+                }
+              },
+              "trace": {
+                "trace_found": true,
+                "duration_ms": 11873,
+                "semantic_status": "rejected",
+                "semantic_output_accepted": false,
+                "semantic_rejection_reason": "audit: explicit product modifier missing from constraints: 1,2; first_pass: explicit product modifier missing from constraints: 1,2",
+                "semantic_structural_repairs": [],
+                "v2_status": "skipped",
+                "v2_action": "wait_for_semantic_understanding",
+                "stage5_error": null,
+                "owner": "legacy",
+                "execution_mode": "legacy_fallback",
+                "decision_reason_codes": [
+                  "semantic_result_unavailable"
+                ],
+                "candidate_eligible": false,
+                "candidate_rejection_reason_codes": [
+                  "dialogue_v2_skipped",
+                  "answer_plan_missing",
+                  "rendered_answer_missing",
+                  "grounding_not_accepted"
+                ],
+                "parity_status": "unavailable",
+                "parity_severity": "p1",
+                "llm_events": 6,
+                "llm_calls": 3,
+                "llm_cost_usd": 0.003834207,
+                "llm_prompt_tokens": 30181,
+                "llm_completion_tokens": 666,
+                "embedding_calls": 0,
+                "embedding_successes": 0,
+                "embedding_failures": 0,
+                "passport_events": [],
+                "search_events": [
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "нужен термостатический клапан прямой 1/2 и головка к нему",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "нужен термостатический клапан прямой 1/2 и головка к нему",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "нужен термостатический клапан прямой 1/2 и головка к нему",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "нужен термостатический клапан прямой 1/2 и головка к нему",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "Нужен термостатический клапан прямой 1/2 и головка к нему",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "Нужен термостатический клапан прямой 1/2 и головка к нему",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "Нужен термостатический клапан прямой 1/2 и головка к нему",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "Нужен термостатический клапан прямой 1/2 и головка к нему",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "Нужен термостатический клапан прямой 1/2 и головка к нему",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "Нужен термостатический клапан прямой 1/2 и головка к нему",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "find_named_models",
+                    "query": {
+                      "brand": null,
+                      "category": "radiator_fittings",
+                      "message": "Нужен термостатический клапан прямой 1/2 и головка к нему",
+                      "name_tokens": [],
+                      "old_model": null
+                    },
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "Нужен термостатический клапан прямой 1/2 и головка к нему",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "search_by_name",
+                    "query": {
+                      "brand": null,
+                      "category": "radiator_fittings",
+                      "cheap": false,
+                      "in_stock_only": false,
+                      "limit": 30,
+                      "original_text": "Нужен термостатический клапан прямой 1/2 и головка к нему",
+                      "sku": null,
+                      "slots": {
+                        "body_form": "прямой",
+                        "connection_form": "прямое",
+                        "product_kind": "thermostatic_valve",
+                        "radiator_action": "регулировать температуру",
+                        "size_inch": "1/2"
+                      }
+                    },
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "search",
+                    "query": {
+                      "brand": null,
+                      "category": "radiator_fittings",
+                      "cheap": false,
+                      "in_stock_only": false,
+                      "limit": 30,
+                      "original_text": "Нужен термостатический клапан прямой 1/2 и головка к нему",
+                      "sku": null,
+                      "slots": {
+                        "body_form": "прямой",
+                        "connection_form": "прямое",
+                        "product_kind": "thermostatic_valve",
+                        "radiator_action": "регулировать температуру",
+                        "size_inch": "1/2"
+                      }
+                    },
+                    "relaxations": [],
+                    "result_skus": [
+                      "VT.032.N.04",
+                      "VT.048.N.04"
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "turn": 2,
+              "client_turn_id": "widget-d0d00d1090-v2_preview-07-t02",
+              "message": "Какая резьба под термоголовку у этого клапана?",
+              "result": {
+                "ok": true,
+                "http_status": 200,
+                "latency_sec": 14.612,
+                "response": {
+                  "session_id": "widget-d0d00d1090-v2_preview-07",
+                  "answer": "Не могу однозначно определить, о каком товаре задан вопрос. Укажите артикул или номер ранее показанной карточки; без product scope искать ответ по всем паспортам небезопасно.",
+                  "products": [],
+                  "product_groups": [],
+                  "need_handoff": false,
+                  "handoff_status": "none",
+                  "handoff_ticket_id": null,
+                  "debug": {}
+                }
+              },
+              "trace": {
+                "trace_found": true,
+                "duration_ms": 14589,
+                "semantic_status": "accepted",
+                "semantic_output_accepted": true,
+                "semantic_rejection_reason": null,
+                "semantic_structural_repairs": [],
+                "v2_status": "applied",
+                "v2_action": "answer_direct_question",
+                "stage5_error": null,
+                "owner": "v2",
+                "execution_mode": "v2_primary",
+                "decision_reason_codes": [
+                  "approved_protected_qa_v2_preview"
+                ],
+                "candidate_eligible": true,
+                "candidate_rejection_reason_codes": [],
+                "parity_status": null,
+                "parity_severity": null,
+                "llm_events": 4,
+                "llm_calls": 2,
+                "llm_cost_usd": 0.003651375,
+                "llm_prompt_tokens": 28735,
+                "llm_completion_tokens": 636,
+                "embedding_calls": 0,
+                "embedding_successes": 0,
+                "embedding_failures": 0,
+                "passport_events": [
+                  {
+                    "candidate_skus": [],
+                    "canonical_sku": null,
+                    "event": "product_fact_v2_candidate",
+                    "evidence_document": null,
+                    "evidence_fragment": null,
+                    "evidence_section": null,
+                    "evidence_source": null,
+                    "evidence_status": "ambiguous",
+                    "evidence_unit": null,
+                    "evidence_value": null,
+                    "evidence_verifier_status": "not_run",
+                    "general_semantic_skip_reason": null,
+                    "general_semantic_status": "applied",
+                    "owner_candidate": "v2",
+                    "predicate": "thermostatic_head_thread",
+                    "product_reference_kind": "unresolved",
+                    "raw_product_reference": "",
+                    "reason": "product_reference_not_grounded",
+                    "semantic_source": "general_semantic_form",
+                    "status": "accepted"
+                  }
+                ],
+                "search_events": [
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "какая резьба под термоголовку у этого клапана",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "какая резьба под термоголовку у этого клапана",
+                    "relaxations": [],
+                    "result_skus": []
+                  }
+                ]
+              }
+            },
+            {
+              "turn": 3,
+              "client_turn_id": "widget-d0d00d1090-v2_preview-07-t03",
+              "message": "А головка VT.1500 подойдёт?",
+              "result": {
+                "ok": true,
+                "http_status": 200,
+                "latency_sec": 18.475,
+                "response": {
+                  "session_id": "widget-d0d00d1090-v2_preview-07",
+                  "answer": "Артикул VT.1500 однозначно распознан как VT.1500.0.0 — Термоголовка диап. регул-ки 6,5 - 28°C жидкостная. Сам факт наличия товара не доказывает совместимость: для ответа нужно отдельно подтвердить интерфейсы обоих изделий. Без этого совместимость обещать не буду.",
+                  "products": [
+                    {
+                      "sku": "VT.1500.0.0",
+                      "name": "Термоголовка диап. регул-ки 6,5 - 28°C жидкостная",
+                      "price": 1044.0,
+                      "currency": "RUB",
+                      "stock_status": "в наличии",
+                      "url": "https://www.vestatrade.ru/termoreguliruyushchaya-armatura-dlya-radiatorov/klapany-valtec-dlya-radiatorov/klapany-termostaticheskie-valtec-dlya-radiatorov/termogolovka-diap-regul-ki-65-28degc-zhidkostnaya/",
+                      "image_url": "https://www.vestatrade.ru/image/catalog/radiatori_otopleniy/klapanvaltek/10.jpg"
+                    }
+                  ],
+                  "product_groups": [],
+                  "need_handoff": false,
+                  "handoff_status": "none",
+                  "handoff_ticket_id": null,
+                  "debug": {}
+                }
+              },
+              "trace": {
+                "trace_found": true,
+                "duration_ms": 18451,
+                "semantic_status": "accepted",
+                "semantic_output_accepted": true,
+                "semantic_rejection_reason": null,
+                "semantic_structural_repairs": [
+                  "explicit_sku_product_scope_recovered",
+                  "explicit_sku_constraint_recovered",
+                  "explicit_sku_overrode_stale_goal",
+                  "constraint_shown_card_sku_unverified_dropped",
+                  "shown_card_identifier_unmatched",
+                  "untyped_ambiguous_selection_strategy_defaulted_to_standard"
+                ],
+                "v2_status": "applied",
+                "v2_action": "wait_for_semantic_understanding",
+                "stage5_error": null,
+                "owner": "v2",
+                "execution_mode": "v2_primary",
+                "decision_reason_codes": [
+                  "approved_protected_qa_v2_preview"
+                ],
+                "candidate_eligible": true,
+                "candidate_rejection_reason_codes": [],
+                "parity_status": null,
+                "parity_severity": null,
+                "llm_events": 4,
+                "llm_calls": 2,
+                "llm_cost_usd": 0.003626623,
+                "llm_prompt_tokens": 29449,
+                "llm_completion_tokens": 398,
+                "embedding_calls": 0,
+                "embedding_successes": 0,
+                "embedding_failures": 0,
+                "passport_events": [
+                  {
+                    "candidate_skus": [
+                      "VT.1500.0.0"
+                    ],
+                    "canonical_sku": "VT.1500.0.0",
+                    "event": "product_fact_v2_candidate",
+                    "evidence_document": null,
+                    "evidence_fragment": null,
+                    "evidence_section": null,
+                    "evidence_source": null,
+                    "evidence_status": "rejected",
+                    "evidence_unit": null,
+                    "evidence_value": null,
+                    "evidence_verifier_status": "not_run",
+                    "general_semantic_skip_reason": null,
+                    "general_semantic_status": "applied",
+                    "owner_candidate": "v2",
+                    "predicate": "compatibility_boundary",
+                    "product_reference_kind": "partial_sku",
+                    "raw_product_reference": "VT.1500",
+                    "reason": "compatibility_requires_two_verified_interfaces",
+                    "semantic_source": "general_semantic_form",
+                    "status": "accepted"
+                  }
+                ],
+                "search_events": [
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "а головка vt.1500 подойдет",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "а головка vt.1500 подойдет",
+                    "relaxations": [],
+                    "result_skus": []
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "title": "Новичок · фитинги",
+          "note": "не знает как соединять",
+          "session_id": "widget-d0d00d1090-v2_preview-08",
+          "turns": [
+            {
+              "turn": 1,
+              "client_turn_id": "widget-d0d00d1090-v2_preview-08-t01",
+              "message": "Мне надо полипропиленовую трубу присоединить к железной, что купить?",
+              "result": {
+                "ok": true,
+                "http_status": 200,
+                "latency_sec": 9.021,
+                "response": {
+                  "session_id": "widget-d0d00d1090-v2_preview-08",
+                  "answer": "Для какого участка нужна труба: холодное или горячее водоснабжение, отопление или канализация? Для канализации нужен отдельный тип трубы.\nПосле ответа покажу варианты по вашему запросу.",
+                  "products": [],
+                  "product_groups": [],
+                  "need_handoff": false,
+                  "handoff_status": "none",
+                  "handoff_ticket_id": null,
+                  "debug": {}
+                }
+              },
+              "trace": {
+                "trace_found": true,
+                "duration_ms": 8994,
+                "semantic_status": "accepted",
+                "semantic_output_accepted": true,
+                "semantic_rejection_reason": null,
+                "semantic_structural_repairs": [
+                  "constraint_closed_value_not_grounded_dropped",
+                  "constraint_categorical_ambiguity_added"
+                ],
+                "v2_status": "applied",
+                "v2_action": "ask_decision_changing_question",
+                "stage5_error": null,
+                "owner": "v2",
+                "execution_mode": "v2_primary",
+                "decision_reason_codes": [
+                  "approved_protected_qa_v2_preview"
+                ],
+                "candidate_eligible": true,
+                "candidate_rejection_reason_codes": [],
+                "parity_status": null,
+                "parity_severity": null,
+                "llm_events": 4,
+                "llm_calls": 2,
+                "llm_cost_usd": 0.003490123,
+                "llm_prompt_tokens": 27979,
+                "llm_completion_tokens": 476,
+                "embedding_calls": 0,
+                "embedding_successes": 0,
+                "embedding_failures": 0,
+                "passport_events": [],
+                "search_events": [
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "мне надо полипропиленовую трубу присоединить к железной, что купить",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "мне надо полипропиленовую трубу присоединить к железной, что купить",
+                    "relaxations": [],
+                    "result_skus": []
+                  }
+                ]
+              }
+            },
+            {
+              "turn": 2,
+              "client_turn_id": "widget-d0d00d1090-v2_preview-08-t02",
+              "message": "Труба 25 миллиметров, резьба дюймовая",
+              "result": {
+                "ok": true,
+                "http_status": 200,
+                "latency_sec": 15.89,
+                "response": {
+                  "session_id": "widget-d0d00d1090-v2_preview-08",
+                  "answer": "Диаметр присоединения: 25 мм.\nДля какого участка нужна труба: холодное или горячее водоснабжение, отопление или канализация? Для канализации нужен отдельный тип трубы.\nПосле ответа покажу варианты по вашему запросу.",
+                  "products": [],
+                  "product_groups": [],
+                  "need_handoff": false,
+                  "handoff_status": "none",
+                  "handoff_ticket_id": null,
+                  "debug": {}
+                }
+              },
+              "trace": {
+                "trace_found": true,
+                "duration_ms": 15861,
+                "semantic_status": "accepted",
+                "semantic_output_accepted": true,
+                "semantic_rejection_reason": null,
+                "semantic_structural_repairs": [
+                  "bounded_fact_followup_rebound_to_active_goal",
+                  "constraint_closed_value_not_grounded_dropped",
+                  "constraint_categorical_ambiguity_added",
+                  "typed_numeric_anchor_skipped_model_fact_present"
+                ],
+                "v2_status": "applied",
+                "v2_action": "ask_decision_changing_question",
+                "stage5_error": null,
+                "owner": "v2",
+                "execution_mode": "v2_primary",
+                "decision_reason_codes": [
+                  "approved_protected_qa_v2_preview"
+                ],
+                "candidate_eligible": true,
+                "candidate_rejection_reason_codes": [],
+                "parity_status": null,
+                "parity_severity": null,
+                "llm_events": 4,
+                "llm_calls": 2,
+                "llm_cost_usd": 0.0036520249999999997,
+                "llm_prompt_tokens": 28935,
+                "llm_completion_tokens": 586,
+                "embedding_calls": 0,
+                "embedding_successes": 0,
+                "embedding_failures": 0,
+                "passport_events": [],
+                "search_events": [
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "труба 25 миллиметров, резьба дюймовая",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "труба 25 миллиметров, резьба дюймовая",
+                    "relaxations": [],
+                    "result_skus": []
+                  }
+                ]
+              }
+            },
+            {
+              "turn": 3,
+              "client_turn_id": "widget-d0d00d1090-v2_preview-08-t03",
+              "message": "Покажите варианты",
+              "result": {
+                "ok": true,
+                "http_status": 200,
+                "latency_sec": 9.914,
+                "response": {
+                  "session_id": "widget-d0d00d1090-v2_preview-08",
+                  "answer": "Диаметр присоединения: 25 мм.\nПараметр «назначение трубы»: как измерить или проверить. Укажите участок: холодное или горячее водоснабжение либо отопление; для канализации нужен отдельный тип трубы.",
+                  "products": [],
+                  "product_groups": [],
+                  "need_handoff": false,
+                  "handoff_status": "none",
+                  "handoff_ticket_id": null,
+                  "debug": {}
+                }
+              },
+              "trace": {
+                "trace_found": true,
+                "duration_ms": 9890,
+                "semantic_status": "accepted",
+                "semantic_output_accepted": true,
+                "semantic_rejection_reason": null,
+                "semantic_structural_repairs": [
+                  "constraint_ungrounded_evidence_dropped",
+                  "explicit_show_selection_control_recovered",
+                  "generic_show_anchor_forced_continue"
+                ],
+                "v2_status": "applied",
+                "v2_action": "explain_how_to_find_fact",
+                "stage5_error": null,
+                "owner": "v2",
+                "execution_mode": "v2_primary",
+                "decision_reason_codes": [
+                  "approved_protected_qa_v2_preview"
+                ],
+                "candidate_eligible": true,
+                "candidate_rejection_reason_codes": [],
+                "parity_status": null,
+                "parity_severity": null,
+                "llm_events": 4,
+                "llm_calls": 2,
+                "llm_cost_usd": 0.0035979970000000003,
+                "llm_prompt_tokens": 29321,
+                "llm_completion_tokens": 368,
+                "embedding_calls": 0,
+                "embedding_successes": 0,
+                "embedding_failures": 0,
+                "passport_events": [],
+                "search_events": [
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "покажите варианты",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "покажите варианты",
+                    "relaxations": [],
+                    "result_skus": []
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "title": "Снабженец · котельная",
+          "note": "мыслит комплектом",
+          "session_id": "widget-d0d00d1090-v2_preview-09",
+          "turns": [
+            {
+              "turn": 1,
+              "client_turn_id": "widget-d0d00d1090-v2_preview-09-t01",
+              "message": "Собираю котельную на 200 квадратов, что нужно кроме котла?",
+              "result": {
+                "ok": true,
+                "http_status": 200,
+                "latency_sec": 11.42,
+                "response": {
+                  "session_id": "widget-d0d00d1090-v2_preview-09",
+                  "answer": "Площадь: 200 м².\nКакой котёл вам нужен: газовый или электрический?\nПосле ответа покажу варианты по вашему запросу.",
+                  "products": [],
+                  "product_groups": [],
+                  "need_handoff": false,
+                  "handoff_status": "none",
+                  "handoff_ticket_id": null,
+                  "debug": {}
+                }
+              },
+              "trace": {
+                "trace_found": true,
+                "duration_ms": 11396,
+                "semantic_status": "accepted",
+                "semantic_output_accepted": true,
+                "semantic_rejection_reason": null,
+                "semantic_structural_repairs": [
+                  "typed_characteristic_question_explain_act_added"
+                ],
+                "v2_status": "applied",
+                "v2_action": "ask_decision_changing_question",
+                "stage5_error": null,
+                "owner": "v2",
+                "execution_mode": "v2_primary",
+                "decision_reason_codes": [
+                  "approved_protected_qa_v2_preview"
+                ],
+                "candidate_eligible": true,
+                "candidate_rejection_reason_codes": [],
+                "parity_status": null,
+                "parity_severity": null,
+                "llm_events": 4,
+                "llm_calls": 2,
+                "llm_cost_usd": 0.0052472330000000005,
+                "llm_prompt_tokens": 27992,
+                "llm_completion_tokens": 457,
+                "embedding_calls": 0,
+                "embedding_successes": 0,
+                "embedding_failures": 0,
+                "passport_events": [],
+                "search_events": [
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "собираю котельную на 200 квадратов, что нужно кроме котла",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "собираю котельную на 200 квадратов, что нужно кроме котла",
+                    "relaxations": [],
+                    "result_skus": []
+                  }
+                ]
+              }
+            },
+            {
+              "turn": 2,
+              "client_turn_id": "widget-d0d00d1090-v2_preview-09-t02",
+              "message": "Покажите насос и краны для обвязки",
+              "result": {
+                "ok": true,
+                "http_status": 200,
+                "latency_sec": 9.344,
+                "response": {
+                  "session_id": "widget-d0d00d1090-v2_preview-09",
+                  "answer": "Подскажите, пожалуйста, расход в рабочей точке? Ответ укажите в литрах в час (л/ч).\nПосле ответа покажу варианты по вашему запросу.",
+                  "products": [],
+                  "product_groups": [],
+                  "need_handoff": false,
+                  "handoff_status": "none",
+                  "handoff_ticket_id": null,
+                  "debug": {}
+                }
+              },
+              "trace": {
+                "trace_found": true,
+                "duration_ms": 9315,
+                "semantic_status": "accepted",
+                "semantic_output_accepted": true,
+                "semantic_rejection_reason": null,
+                "semantic_structural_repairs": [
+                  "explicit_show_selection_control_recovered"
+                ],
+                "v2_status": "applied",
+                "v2_action": "ask_decision_changing_question",
+                "stage5_error": null,
+                "owner": "v2",
+                "execution_mode": "v2_primary",
+                "decision_reason_codes": [
+                  "approved_protected_qa_v2_preview"
+                ],
+                "candidate_eligible": true,
+                "candidate_rejection_reason_codes": [],
+                "parity_status": null,
+                "parity_severity": null,
+                "llm_events": 4,
+                "llm_calls": 2,
+                "llm_cost_usd": 0.003626285,
+                "llm_prompt_tokens": 29275,
+                "llm_completion_tokens": 442,
+                "embedding_calls": 0,
+                "embedding_successes": 0,
+                "embedding_failures": 0,
+                "passport_events": [],
+                "search_events": [
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "покажите насос и краны для обвязки",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "покажите насос и краны для обвязки",
+                    "relaxations": [],
+                    "result_skus": []
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "title": "Дотошный · трубы",
+          "note": "проверяет цифры и сравнивает",
+          "session_id": "widget-d0d00d1090-v2_preview-10",
+          "turns": [
+            {
+              "turn": 1,
+              "client_turn_id": "widget-d0d00d1090-v2_preview-10-t01",
+              "message": "Какая максимальная рабочая температура у трубы PP-FIBER PN 20?",
+              "result": {
+                "ok": true,
+                "http_status": 200,
+                "latency_sec": 12.672,
+                "response": {
+                  "session_id": "widget-d0d00d1090-v2_preview-10",
+                  "answer": "PP-FIBER PN 20. Максимальная рабочая температура — 90 °C. В карточке: «максимальная рабочая температура, °с: 90». Источник: feed_showcase_100_2026-06-14.xml, серия PP-FIBER PN 20, attributes_normalized.",
+                  "products": [],
+                  "product_groups": [],
+                  "need_handoff": false,
+                  "handoff_status": "none",
+                  "handoff_ticket_id": null,
+                  "debug": {}
+                }
+              },
+              "trace": {
+                "trace_found": true,
+                "duration_ms": 12657,
+                "semantic_status": "accepted",
+                "semantic_output_accepted": true,
+                "semantic_rejection_reason": null,
+                "semantic_structural_repairs": [
+                  "constraint_non_known_without_explicit_status_dropped"
+                ],
+                "v2_status": "applied",
+                "v2_action": "wait_for_semantic_understanding",
+                "stage5_error": null,
+                "owner": "v2",
+                "execution_mode": "v2_primary",
+                "decision_reason_codes": [
+                  "approved_protected_qa_v2_preview"
+                ],
+                "candidate_eligible": true,
+                "candidate_rejection_reason_codes": [],
+                "parity_status": null,
+                "parity_severity": null,
+                "llm_events": 6,
+                "llm_calls": 3,
+                "llm_cost_usd": 0.003949894,
+                "llm_prompt_tokens": 31652,
+                "llm_completion_tokens": 542,
+                "embedding_calls": 1,
+                "embedding_successes": 1,
+                "embedding_failures": 0,
+                "passport_events": [
+                  {
+                    "canonical_sku": null,
+                    "document_scope": [
+                      "VTp.700.FB20-0425.pdf"
+                    ],
+                    "embedding_model": "openai/text-embedding-3-small",
+                    "event": "passport_retrieval",
+                    "flow": "v2_product_fact",
+                    "hits": [
+                      {
+                        "document": "VTp.700.FB20-0425.pdf",
+                        "ordinal": 7,
+                        "score": 0.704282,
+                        "section": "таблица характеристик"
+                      },
+                      {
+                        "document": "VTp.700.FB20-0425.pdf",
+                        "ordinal": 19,
+                        "score": 0.691796,
+                        "section": "пункт 6.2."
+                      },
+                      {
+                        "document": "VTp.700.FB20-0425.pdf",
+                        "ordinal": 6,
+                        "score": 0.678628,
+                        "section": "таблица характеристик"
+                      },
+                      {
+                        "document": "VTp.700.FB20-0425.pdf",
+                        "ordinal": 36,
+                        "score": 0.604352,
+                        "section": "пункт 10.4."
+                      },
+                      {
+                        "document": "VTp.700.FB20-0425.pdf",
+                        "ordinal": 5,
+                        "score": 0.523203,
+                        "section": "таблица характеристик"
+                      },
+                      {
+                        "document": "VTp.700.FB20-0425.pdf",
+                        "ordinal": 11,
+                        "score": 0.517154,
+                        "section": "пункт 5.2."
+                      },
+                      {
+                        "document": "VTp.700.FB20-0425.pdf",
+                        "ordinal": 10,
+                        "score": 0.500006,
+                        "section": "пункт 5.1."
+                      },
+                      {
+                        "document": "VTp.700.FB20-0425.pdf",
+                        "ordinal": 14,
+                        "score": 0.485314,
+                        "section": "пункт 5.5."
+                      }
+                    ],
+                    "index_chunk_count": 1742,
+                    "index_has_vectors": true,
+                    "index_model": "openai/text-embedding-3-small",
+                    "predicate": "maximum_operating_temperature_c",
+                    "status": "hits"
+                  },
+                  {
+                    "canonical_sku": null,
+                    "corrected_excerpts": 0,
+                    "document_scope": [
+                      "VTp.700.FB20-0425.pdf"
+                    ],
+                    "event": "passport_verification",
+                    "flow": "v2_product_fact",
+                    "framing_drop_reason": null,
+                    "llm_used": true,
+                    "predicate": "maximum_operating_temperature_c",
+                    "rejection_reason": null,
+                    "source": {
+                      "document": "VTp.700.FB20-0425.pdf",
+                      "ordinal": 19,
+                      "section": "пункт 6.2."
+                    },
+                    "status": "accepted"
+                  },
+                  {
+                    "candidate_skus": [
+                      "VTp.700.FB20.25",
+                      "VTp.700.FB20.20",
+                      "VTp.700.FB20.32",
+                      "VTp.700.FB20.40"
+                    ],
+                    "canonical_sku": null,
+                    "document_scope": [
+                      "VTp.700.FB20-0425.pdf"
+                    ],
+                    "event": "product_fact_evidence_gate",
+                    "evidence_fragment": "максимальная рабочая температура, °с: 90",
+                    "flow": "v2_product_fact",
+                    "passport_verifier_status": "accepted",
+                    "predicate": "maximum_operating_temperature_c",
+                    "reason": "catalog_attribute_consensus",
+                    "source_document": "feed_showcase_100_2026-06-14.xml",
+                    "source_section": "серия PP-FIBER PN 20, attributes_normalized",
+                    "status": "accepted",
+                    "verifier_status": "catalog_card_exact"
+                  },
+                  {
+                    "candidate_skus": [
+                      "VTp.700.FB20.25",
+                      "VTp.700.FB20.20",
+                      "VTp.700.FB20.32",
+                      "VTp.700.FB20.40"
+                    ],
+                    "canonical_sku": null,
+                    "event": "product_fact_v2_candidate",
+                    "evidence_document": "feed_showcase_100_2026-06-14.xml",
+                    "evidence_fragment": "максимальная рабочая температура, °с: 90",
+                    "evidence_section": "серия PP-FIBER PN 20, attributes_normalized",
+                    "evidence_source": "catalog_card",
+                    "evidence_status": "answered",
+                    "evidence_unit": "°C",
+                    "evidence_value": "90",
+                    "evidence_verifier_status": "catalog_card_exact",
+                    "general_semantic_skip_reason": null,
+                    "general_semantic_status": "applied",
+                    "owner_candidate": "v2",
+                    "predicate": "maximum_operating_temperature_c",
+                    "product_reference_kind": "named_series",
+                    "raw_product_reference": "PP-FIBER PN 20",
+                    "reason": "catalog_attribute_consensus",
+                    "semantic_source": "general_semantic_form",
+                    "status": "accepted"
+                  }
+                ],
+                "search_events": [
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "какая максимальная рабочая температура у трубы pp-fiber pn 20",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "какая максимальная рабочая температура у трубы pp-fiber pn 20",
+                    "relaxations": [],
+                    "result_skus": []
+                  }
+                ]
+              }
+            },
+            {
+              "turn": 2,
+              "client_turn_id": "widget-d0d00d1090-v2_preview-10-t02",
+              "message": "А какое давление при радиаторном отоплении?",
+              "result": {
+                "ok": true,
+                "http_status": 200,
+                "latency_sec": 9.98,
+                "response": {
+                  "session_id": "widget-d0d00d1090-v2_preview-10",
+                  "answer": "PP-FIBER PN 20. Рабочее давление при радиаторном отоплении — 6 бар. В карточке: «рабочее давление, радиаторное отопление, бар: 6». Источник: feed_showcase_100_2026-06-14.xml, серия PP-FIBER PN 20, attributes_normalized.",
+                  "products": [],
+                  "product_groups": [],
+                  "need_handoff": false,
+                  "handoff_status": "none",
+                  "handoff_ticket_id": null,
+                  "debug": {}
+                }
+              },
+              "trace": {
+                "trace_found": true,
+                "duration_ms": 9963,
+                "semantic_status": "accepted",
+                "semantic_output_accepted": true,
+                "semantic_rejection_reason": null,
+                "semantic_structural_repairs": [],
+                "v2_status": "applied",
+                "v2_action": "answer_direct_question",
+                "stage5_error": null,
+                "owner": "v2",
+                "execution_mode": "v2_primary",
+                "decision_reason_codes": [
+                  "approved_protected_qa_v2_preview"
+                ],
+                "candidate_eligible": true,
+                "candidate_rejection_reason_codes": [],
+                "parity_status": null,
+                "parity_severity": null,
+                "llm_events": 6,
+                "llm_calls": 3,
+                "llm_cost_usd": 0.0065072080000000004,
+                "llm_prompt_tokens": 31692,
+                "llm_completion_tokens": 503,
+                "embedding_calls": 1,
+                "embedding_successes": 1,
+                "embedding_failures": 0,
+                "passport_events": [
+                  {
+                    "canonical_sku": null,
+                    "document_scope": [
+                      "VTp.700.FB20-0425.pdf"
+                    ],
+                    "embedding_model": "openai/text-embedding-3-small",
+                    "event": "passport_retrieval",
+                    "flow": "v2_product_fact",
+                    "hits": [
+                      {
+                        "document": "VTp.700.FB20-0425.pdf",
+                        "ordinal": 5,
+                        "score": 0.626329,
+                        "section": "таблица характеристик"
+                      },
+                      {
+                        "document": "VTp.700.FB20-0425.pdf",
+                        "ordinal": 19,
+                        "score": 0.407331,
+                        "section": "пункт 6.2."
+                      },
+                      {
+                        "document": "VTp.700.FB20-0425.pdf",
+                        "ordinal": 16,
+                        "score": 0.393426,
+                        "section": "пункт 5.7."
+                      },
+                      {
+                        "document": "VTp.700.FB20-0425.pdf",
+                        "ordinal": 6,
+                        "score": 0.341911,
+                        "section": "таблица характеристик"
+                      },
+                      {
+                        "document": "VTp.700.FB20-0425.pdf",
+                        "ordinal": 9,
+                        "score": 0.310049,
+                        "section": "текст"
+                      },
+                      {
+                        "document": "VTp.700.FB20-0425.pdf",
+                        "ordinal": 25,
+                        "score": 0.289889,
+                        "section": "пункт 7.7."
+                      },
+                      {
+                        "document": "VTp.700.FB20-0425.pdf",
+                        "ordinal": 14,
+                        "score": 0.276242,
+                        "section": "пункт 5.5."
+                      },
+                      {
+                        "document": "VTp.700.FB20-0425.pdf",
+                        "ordinal": 13,
+                        "score": 0.268617,
+                        "section": "пункт 5.4."
+                      }
+                    ],
+                    "index_chunk_count": 1742,
+                    "index_has_vectors": true,
+                    "index_model": "openai/text-embedding-3-small",
+                    "predicate": "radiator_heating_pressure_bar",
+                    "status": "hits"
+                  },
+                  {
+                    "canonical_sku": null,
+                    "corrected_excerpts": 0,
+                    "document_scope": [
+                      "VTp.700.FB20-0425.pdf"
+                    ],
+                    "event": "passport_verification",
+                    "flow": "v2_product_fact",
+                    "framing_drop_reason": null,
+                    "llm_used": true,
+                    "predicate": "radiator_heating_pressure_bar",
+                    "rejection_reason": "quote_not_verbatim",
+                    "source": null,
+                    "status": "rejected"
+                  },
+                  {
+                    "candidate_skus": [
+                      "VTp.700.FB20.25",
+                      "VTp.700.FB20.20",
+                      "VTp.700.FB20.32",
+                      "VTp.700.FB20.40"
+                    ],
+                    "canonical_sku": null,
+                    "document_scope": [
+                      "VTp.700.FB20-0425.pdf"
+                    ],
+                    "event": "product_fact_evidence_gate",
+                    "evidence_fragment": "рабочее давление, радиаторное отопление, бар: 6",
+                    "flow": "v2_product_fact",
+                    "passport_verifier_status": "rejected",
+                    "predicate": "radiator_heating_pressure_bar",
+                    "reason": "catalog_attribute_consensus",
+                    "source_document": "feed_showcase_100_2026-06-14.xml",
+                    "source_section": "серия PP-FIBER PN 20, attributes_normalized",
+                    "status": "accepted",
+                    "verifier_status": "catalog_card_exact"
+                  },
+                  {
+                    "candidate_skus": [
+                      "VTp.700.FB20.25",
+                      "VTp.700.FB20.20",
+                      "VTp.700.FB20.32",
+                      "VTp.700.FB20.40"
+                    ],
+                    "canonical_sku": null,
+                    "event": "product_fact_v2_candidate",
+                    "evidence_document": "feed_showcase_100_2026-06-14.xml",
+                    "evidence_fragment": "рабочее давление, радиаторное отопление, бар: 6",
+                    "evidence_section": "серия PP-FIBER PN 20, attributes_normalized",
+                    "evidence_source": "catalog_card",
+                    "evidence_status": "answered",
+                    "evidence_unit": "бар",
+                    "evidence_value": "6",
+                    "evidence_verifier_status": "catalog_card_exact",
+                    "general_semantic_skip_reason": null,
+                    "general_semantic_status": "applied",
+                    "owner_candidate": "v2",
+                    "predicate": "radiator_heating_pressure_bar",
+                    "product_reference_kind": "current_focus",
+                    "raw_product_reference": "PP-FIBER PN 20",
+                    "reason": "catalog_attribute_consensus",
+                    "semantic_source": "general_semantic_form",
+                    "status": "accepted"
+                  }
+                ],
+                "search_events": [
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "а какое давление при радиаторном отоплении",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "а какое давление при радиаторном отоплении",
+                    "relaxations": [],
+                    "result_skus": []
+                  }
+                ]
+              }
+            },
+            {
+              "turn": 3,
+              "client_turn_id": "widget-d0d00d1090-v2_preview-10-t03",
+              "message": "Сравните её с PP-ALUX",
+              "result": {
+                "ok": true,
+                "http_status": 200,
+                "latency_sec": 7.833,
+                "response": {
+                  "session_id": "widget-d0d00d1090-v2_preview-10",
+                  "answer": "Для сравнения нужны минимум две реально показанные карточки. Покажите ещё один вариант или назовите второй товар.",
+                  "products": [],
+                  "product_groups": [],
+                  "need_handoff": false,
+                  "handoff_status": "none",
+                  "handoff_ticket_id": null,
+                  "debug": {}
+                }
+              },
+              "trace": {
+                "trace_found": true,
+                "duration_ms": 7805,
+                "semantic_status": "accepted",
+                "semantic_output_accepted": true,
+                "semantic_rejection_reason": null,
+                "semantic_structural_repairs": [
+                  "untyped_ambiguous_selection_strategy_defaulted_to_standard"
+                ],
+                "v2_status": "applied",
+                "v2_action": "compare",
+                "stage5_error": null,
+                "owner": "v2",
+                "execution_mode": "v2_primary",
+                "decision_reason_codes": [
+                  "approved_protected_qa_v2_preview"
+                ],
+                "candidate_eligible": true,
+                "candidate_rejection_reason_codes": [],
+                "parity_status": null,
+                "parity_severity": null,
+                "llm_events": 4,
+                "llm_calls": 2,
+                "llm_cost_usd": 0.003517722,
+                "llm_prompt_tokens": 28701,
+                "llm_completion_tokens": 351,
+                "embedding_calls": 0,
+                "embedding_successes": 0,
+                "embedding_failures": 0,
+                "passport_events": [],
+                "search_events": [
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "сравните ее с pp-alux",
+                    "relaxations": [],
+                    "result_skus": []
+                  },
+                  {
+                    "error": null,
+                    "operation": "resolve_sku_mentions",
+                    "query": "сравните ее с pp-alux",
+                    "relaxations": [],
+                    "result_skus": []
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "summary": {
+        "turns": 31,
+        "http_ok": 31,
+        "http_errors": 0,
+        "turns_with_products": 7,
+        "passport_quote_answers": 1,
+        "comparison_answers": 0,
+        "avg_latency_sec": 10.4,
+        "p95_latency_sec": 15.861,
+        "semantic_statuses": {
+          "accepted": 30,
+          "rejected": 1
+        },
+        "semantic_repairs": {
+          "boiler_type_recovered_from_closed_alias": 1,
+          "bounded_fact_followup_rebound_to_active_goal": 2,
+          "connection_pattern_recovered_from_explicit_pair": 1,
+          "constraint_categorical_ambiguity_added": 4,
+          "constraint_closed_value_not_allowed_dropped": 1,
+          "constraint_closed_value_not_grounded_dropped": 3,
+          "constraint_evidence_rebound_to_current_message": 1,
+          "constraint_non_known_fact_ambiguity_added": 1,
+          "constraint_non_known_fact_unresolved_dropped": 1,
+          "constraint_non_known_without_explicit_status_dropped": 3,
+          "constraint_numeric_anchor_unit_recovered": 2,
+          "constraint_numeric_value_not_in_evidence_dropped": 1,
+          "constraint_shown_card_sku_unverified_dropped": 1,
+          "constraint_ungrounded_evidence_dropped": 3,
+          "explicit_show_selection_control_recovered": 6,
+          "explicit_sku_constraint_recovered": 1,
+          "explicit_sku_overrode_stale_goal": 1,
+          "explicit_sku_product_scope_recovered": 1,
+          "external_sewer_goal_recovered": 2,
+          "external_sewer_scope_recovered": 1,
+          "generic_show_anchor_forced_continue": 4,
+          "generic_show_rebound_to_active_goal": 1,
+          "shown_card_identifier_unmatched": 2,
+          "spoken_numeric_anchor_recovered": 1,
+          "typed_characteristic_question_explain_act_added": 1,
+          "typed_characteristic_question_rebound_to_active_goal": 1,
+          "typed_numeric_anchor_skipped_model_fact_present": 1,
+          "untyped_ambiguous_selection_strategy_defaulted_to_standard": 7
+        },
+        "owners": {
+          "legacy": 2,
+          "v2": 29
+        },
+        "candidate_eligible": 29,
+        "candidate_rejection_codes": {
+          "answer_plan_missing": 1,
+          "answer_plan_status_boundary_not_deliverable": 1,
+          "dialogue_v2_skipped": 1,
+          "grounding_not_accepted": 1,
+          "rendered_answer_missing": 1
+        },
+        "parity_statuses": {
+          "unavailable": 2
+        },
+        "llm_calls": 68,
+        "llm_events": 136,
+        "llm_cost_usd": 0.12457179,
+        "llm_prompt_tokens": 916747,
+        "llm_completion_tokens": 14684,
+        "embedding_calls": 3,
+        "embedding_successes": 3,
+        "embedding_failures": 0,
+        "passport_events": 15,
+        "traces_found": 31
+      }
+    }
+  ]
+}

@@ -88,7 +88,8 @@ def test_question_uses_contract_learn_method_and_expected_unit() -> None:
     assert plan.question.learn_method_code == "measure_outer_or_nominal_diameter"
     assert plan.question.expected_unit == "мм"
     rendered = deterministic_render(plan)
-    assert "штангенциркулем" in rendered.text
+    assert "старом насосе, трубе или в паспорте" in rendered.text
+    assert "штангенциркулем" not in rendered.text
     assert "миллиметрах (мм)" in rendered.text
 
 

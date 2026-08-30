@@ -362,9 +362,12 @@ def _candidate_is_presentable(
         and candidate.product_kind in allowed_product_kinds
         and candidate.role == search_plan.requested_role
         and not candidate.mismatched_hard_facts
-        and not any(
-            item.fact_name in hard_constraint_names
-            for item in candidate.relaxations
+        and (
+            candidate.availability_analog
+            or not any(
+                item.fact_name in hard_constraint_names
+                for item in candidate.relaxations
+            )
         )
         and product is not None
         and product.product_kind == candidate.product_kind
@@ -664,6 +667,16 @@ def _presentable_candidate_shortlist(
         list[tuple[CatalogSearchPlan, CandidateAssessment]],
     ] = {}
     for task_id, options in by_task.items():
+        # If a safe in-stock availability analogue exists, it is the only
+        # customer-visible group for that selection.  The exact cards are
+        # confirmed out of stock and remain recorded in the search plan as
+        # the evidence for this boundary; mixing them back into the selection
+        # scope would make ordinal references misleading.
+        availability_analogs = tuple(
+            item for item in options if item[1].availability_analog
+        )
+        if availability_analogs:
+            options = list(availability_analogs)
         if task_id in recommendation_task_ids:
             exact_options = tuple(
                 item
@@ -1169,9 +1182,12 @@ def build_answer_plan(
                         )
                     )
                     continue
-                if candidate.mismatched_hard_facts or any(
-                    item.fact_name in hard_constraint_names
-                    for item in candidate.relaxations
+                if candidate.mismatched_hard_facts or (
+                    not candidate.availability_analog
+                    and any(
+                        item.fact_name in hard_constraint_names
+                        for item in candidate.relaxations
+                    )
                 ):
                     rejected.append(
                         RejectedClaim(

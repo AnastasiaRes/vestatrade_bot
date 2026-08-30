@@ -150,6 +150,25 @@ def _snapshot() -> AnswerSourceSnapshot:
                 ),
             ),
             _product(
+                "HT.50.50",
+                "Тройник канализационный HT 50x50",
+                ProductKind.TEE,
+                (
+                    _fact("diameter_mm", 50, "mm"),
+                    _fact("secondary_diameter_mm", 50, "mm"),
+                    _fact("sewer_scope", "internal"),
+                ),
+            ),
+            _product(
+                "PPR.25.20",
+                "Муфта переходная PPR 25x20",
+                ProductKind.REDUCING_COUPLING,
+                (
+                    _fact("diameter_mm", 25, "mm"),
+                    _fact("secondary_diameter_mm", 20, "mm"),
+                ),
+            ),
+            _product(
                 "PUMP-25",
                 "Насос 25-40",
                 ProductKind.CIRCULATION_PUMP,
@@ -519,6 +538,26 @@ def test_sewer_scope_or_diameter_mismatch_is_not_hidden_as_a_fallback() -> None:
     assert result.status == CompatibilityResultStatus.INCOMPATIBLE
     assert result.outcome_gate_passed is True
     assert result.reason_codes == ("sewer_nominal_diameter_mismatch",)
+
+
+def test_sewer_tee_requires_a_resolved_joint_endpoint_before_a_verdict() -> None:
+    _, result = _result("Совместимы ли HT.50.50 и HT-50-PIPE?")
+
+    assert result.relation == CompatibilityRelationKind.SEWER_CONNECTION
+    assert result.status == CompatibilityResultStatus.INSUFFICIENT_EVIDENCE
+    assert result.outcome_gate_passed is True
+    assert result.reason_codes == ("sewer_multiport_endpoint_not_determined",)
+    assert result.missing_predicates == ("resolved_sewer_joint_endpoint",)
+    assert "конкретная сторона канализационного соединения" in render_compatibility_result(result)
+
+
+def test_ppr_reducing_coupling_is_not_mistaken_for_a_sewer_item() -> None:
+    _, result = _result("Совместимы ли PPR.25.20 и THREAD.11.00?")
+
+    assert result.relation == CompatibilityRelationKind.UNKNOWN
+    assert result.status == CompatibilityResultStatus.INSUFFICIENT_EVIDENCE
+    assert result.outcome_gate_passed is True
+    assert result.reason_codes == ("compatibility_relation_not_supported",)
 
 
 def test_pump_to_boiler_is_explicitly_insufficient_not_an_engineering_guess() -> None:

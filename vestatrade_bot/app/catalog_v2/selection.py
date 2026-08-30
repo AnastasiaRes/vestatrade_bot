@@ -573,6 +573,7 @@ def build_selection_result(
         )
 
     candidate_assessments = search.candidate_assessments if search is not None else ()
+    candidate_by_sku = {item.sku: item for item in candidate_assessments}
     allowed_skus = (
         tuple(
             dict.fromkeys(
@@ -633,6 +634,28 @@ def build_selection_result(
                     )
                 )
 
+    availability_analog = bool(
+        cards
+        and search is not None
+        and search.availability_analog_exact_out_of_stock_skus
+        and all(
+            candidate_by_sku.get(card.sku) is not None
+            and candidate_by_sku[card.sku].availability_analog
+            and candidate_by_sku[card.sku].availability_status.value == "in_stock"
+            for card in cards
+        )
+    )
+    if (
+        cards
+        and search is not None
+        and search.availability_analog_exact_out_of_stock_skus
+        and not availability_analog
+    ):
+        # The answer planner must not combine a hidden unavailable exact card
+        # with its availability analogue.  A selection scope is a customer
+        # contract, so this stale/mixed response fails closed.
+        card_gate_failed = True
+
     missing_critical = (
         readiness.recommended_question_fact
         if readiness.status == ReadinessStatus.NEEDS_DECISION_FACT
@@ -654,7 +677,11 @@ def build_selection_result(
         reason = "selection_card_source_gate_failed"
     elif cards:
         status = SelectionResultStatus.SHOWN
-        reason = "verified_cards_delivered"
+        reason = (
+            "availability_analog_after_confirmed_out_of_stock_exact_match"
+            if availability_analog
+            else "verified_cards_delivered"
+        )
     elif missing_critical is not None:
         status = SelectionResultStatus.NEED_CLARIFICATION
         reason = "one_critical_fact_required"
@@ -678,7 +705,15 @@ def build_selection_result(
         and (
             readiness.status == ReadinessStatus.PRELIMINARY_READY
             or source_backed_conflicts
+            or availability_analog
         )
+    )
+    availability_analog_differences = tuple(
+        relaxation
+        for card in cards
+        if (candidate := candidate_by_sku.get(card.sku)) is not None
+        and candidate.availability_analog
+        for relaxation in candidate.relaxations
     )
     preliminary_fact_names = tuple(
         dict.fromkeys(
@@ -691,6 +726,12 @@ def build_selection_result(
                 *readiness.unknown_facts,
                 *readiness.refused_facts,
                 *readiness.deferred_facts,
+                # A card can be deliberately preliminary because the buyer
+                # asked to see the confirmed part of the shortlist before
+                # supplying a still-askable installation fact (for example
+                # pump DN or mounting length).  Keep that missing fact visible
+                # instead of presenting the cards as merely vaguely limited.
+                *readiness.missing_decision_facts,
             )
         )
     )
@@ -745,6 +786,8 @@ def build_selection_result(
         is_preliminary=is_preliminary,
         preliminary_fact_names=preliminary_fact_names,
         presentation_groups=presentation_groups,
+        availability_analog=availability_analog,
+        availability_analog_differences=availability_analog_differences,
         source_backed_conflicts=source_backed_conflicts,
         excluded_candidate_reason_codes=exclusions,
         catalog_revision=request.catalog_revision,

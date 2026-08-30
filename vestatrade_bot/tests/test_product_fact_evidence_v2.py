@@ -221,6 +221,78 @@ def test_explicit_card_title_fact_answers_without_passport_search() -> None:
     assert "Тип ручки — рукоятка бабочка" in render_product_fact_evidence(evidence)
 
 
+def test_type_of_thread_on_first_v2_card_prefers_pattern_over_generic_thread_size() -> None:
+    """The common customer phrase must not become an unknown ProductFact."""
+
+    valve = _product(
+        "VT.214.N.04",
+        'Кран шаровой BASE, стальная рукоятка 1/2" вн.-вн.',
+        {"Тип товара": "Кран шаровой"},
+        "VT.214-215-217-218-219-1224.pdf",
+    )
+    snapshot = CatalogProductSnapshot(
+        sku=valve.sku,
+        name=valve.name,
+        category=valve.category_path,
+        product_kind=ProductKind.BALL_VALVE,
+        role=CatalogProductRole.COMPONENT,
+        facts=(
+            CatalogFact(
+                name="connection_size",
+                value="1/2",
+                unit="inch",
+                provenance=FactProvenance(
+                    source="name",
+                    source_field="name",
+                    raw_value='1/2"',
+                    parser="inch_size",
+                ),
+            ),
+            CatalogFact(
+                name="connection_pattern",
+                value="female_female",
+                provenance=FactProvenance(
+                    source="name",
+                    source_field="name",
+                    raw_value="вн.-вн.",
+                    parser="connection_pattern",
+                ),
+            ),
+        ),
+    )
+    passport = _StubPassport()
+    settings = get_settings().model_copy(update={"embeddings_enabled": True})
+    service = ProductFactEvidenceService(
+        settings,
+        _NoopClient(),
+        [valve],
+        passport_service=passport,  # type: ignore[arg-type]
+        catalog_snapshot=(snapshot,),
+    )
+    session = SessionState(
+        session_id="v2-thread-pattern",
+        # The public contextual card is intentionally shorter; ordinals must
+        # still resolve from the complete versioned V2 Selection.
+        last_products=[_card(valve)],
+        v2_last_products=[_card(valve)],
+        v2_selection_id="selection-valve",
+        v2_source_revision="catalog-revision",
+    )
+
+    evidence = service.evaluate("Какая у первого тип резьбы?", session)
+
+    assert evidence is not None
+    assert evidence.status == ProductFactStatus.ANSWERED
+    assert evidence.request.predicate == "connection_pattern"
+    assert evidence.request.product_ref.kind == ProductReferenceKind.ORDINAL
+    assert evidence.request.product_ref.canonical_sku == valve.sku
+    assert evidence.value == "female_female"
+    assert evidence.source_kind == "catalog_card"
+    assert evidence.verifier_status == "catalog_snapshot_exact"
+    assert passport.calls == []
+    assert "внутренняя/внутренняя резьба" in render_product_fact_evidence(evidence)
+
+
 def test_wilo_range_is_not_silently_narrowed_to_180() -> None:
     pump = _product(
         "2459900",

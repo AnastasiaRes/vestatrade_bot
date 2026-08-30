@@ -1,0 +1,340 @@
+{
+  "created_at": "2026-08-30T18:59:15.862728+03:00",
+  "dialogues": [
+    {
+      "title": "Монтажник · насос → цена → кран → возврат к насосу",
+      "role": "Знает рабочую точку, но ведёт несколько задач объекта одновременно.",
+      "session_id": "topic-9ed83ddd-1",
+      "turns": [
+        {
+          "turn": 1,
+          "message": "Нужен циркуляционный насос для радиаторной системы: расход 1,5 м³/ч, напор 4 м.",
+          "result": {
+            "ok": true,
+            "latency_sec": 15.057,
+            "response": {
+              "session_id": "topic-9ed83ddd-1",
+              "answer": "Расход в рабочей точке: 1500 л/ч.\nНапор в рабочей точке: 4 м.\nКакой размер присоединения или трубы нужен? Его обычно указывают на старом насосе, трубе или в паспорте. Ответ укажите в миллиметрах (мм).\nПосле ответа покажу варианты по вашему запросу.",
+              "products": [],
+              "product_groups": [],
+              "need_handoff": false,
+              "handoff_status": "none",
+              "handoff_ticket_id": null,
+              "debug": {}
+            }
+          }
+        },
+        {
+          "turn": 2,
+          "message": "Покажите варианты.",
+          "result": {
+            "ok": true,
+            "latency_sec": 11.234,
+            "response": {
+              "session_id": "topic-9ed83ddd-1",
+              "answer": "Показываю 5 предварительных вариантов по подтверждённым данным: Расход в рабочей точке: 1,5 м³/ч; Напор в рабочей точке: 4 м.\nДля точного подтверждения пригодности ещё нужно уточнить «диаметр», «монтажная длина». Карточки ниже — предварительные, не окончательная рекомендация.",
+              "products": [
+                {
+                  "sku": "2459900",
+                  "name": "Насос циркуляционный с монтажными адаптерами и гайками Wilo Star RS 25/6-130(180)-RK",
+                  "price": 10521.0,
+                  "currency": "RUB",
+                  "stock_status": "в наличии",
+                  "url": "https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-s-montazhnymi-adapterami-i-gajkami-wilo-star-rs-25-6-130-180-rk/",
+                  "image_url": "https://www.vestatrade.ru/image/catalog/product/nasosnoeoborydovanie/wilo/25-6-rk.png"
+                },
+                {
+                  "sku": "53843",
+                  "name": "Насос циркуляц. (отопл.) UPС 25-40 180",
+                  "price": 3844.0,
+                  "currency": "RUB",
+                  "stock_status": "в наличии",
+                  "url": "https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/cirkulyacionnye-nasosy-unipump/nasos-cirkulyac-otopl-ups-25-40-180/",
+                  "image_url": "https://www.vestatrade.ru/image/catalog/product/nasosnoeoborydovanie/unipump/UNIPUMPUPC.jpg"
+                },
+                {
+                  "sku": "9168934",
+                  "name": "Насос циркуляционный Wilo Star RS 25/6-130-RK",
+                  "price": 7148.0,
+                  "currency": "RUB",
+                  "stock_status": "в наличии",
+                  "url": "https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-wilo/nasos-cirkulyacionnyj-wilo-star-rs-25-6-130-rk/",
+                  "image_url": "https://www.vestatrade.ru/image/catalog/product/nasosnoeoborydovanie/wilo/25-6-rk.png"
+                },
+                {
+                  "sku": "VRS.254.18.0",
+                  "name": "Насос циркуляционный VALTEC RS 25/4-180 с гайками",
+                  "price": 3989.0,
+                  "currency": "RUB",
+                  "stock_status": "в наличии",
+                  "url": "https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-254-180-s-gaykami/",
+                  "image_url": "https://www.vestatrade.ru/image/catalog/product/valtek/Nasos/VRS.254.18.0/VRS.254.18_0.jpg"
+                },
+                {
+                  "sku": "VRS.256.13.0",
+                  "name": "Насос циркуляционный VALTEC RS 25/6-130 с гайками",
+                  "price": 4311.0,
+                  "currency": "RUB",
+                  "stock_status": "в наличии",
+                  "url": "https://www.vestatrade.ru/nasosnoe-oborudovanie/cirkulyacionnye-nasosy/nasosy-cirkulyacionnye-valtec/nasos-cirkulyacionnyy-valtec-rs-256-130-s-gaykami/",
+                  "image_url": "https://www.vestatrade.ru/image/catalog/product/valtek/Nasos/vrs130/VRS.256.13_0.jpg"
+                }
+              ],
+              "product_groups": [],
+              "need_handoff": false,
+              "handoff_status": "none",
+              "handoff_ticket_id": null,
+              "debug": {}
+            }
+          }
+        },
+        {
+          "turn": 3,
+          "message": "Сколько стоит второй вариант?",
+          "result": {
+            "ok": true,
+            "latency_sec": 6.614,
+            "response": {
+              "session_id": "topic-9ed83ddd-1",
+              "answer": "Точную цену пока нельзя привязать к товару: сначала нужно определить подходящую модель. После подбора цена будет взята из её карточки в каталоге; без карточки я не буду подставлять цену.\nРасход в рабочей точке: 1500 л/ч.\nНапор в рабочей точке: 4 м.\nСейчас могу опираться только на подтверждённые данные; для остального понадобится уточнение или проверка сотрудником.",
+              "products": [],
+              "product_groups": [],
+              "need_handoff": false,
+              "handoff_status": "none",
+              "handoff_ticket_id": null,
+              "debug": {}
+            }
+          }
+        },
+        {
+          "turn": 4,
+          "message": "Теперь ещё нужны два крана BASE 1/2 ВР/ВР.",
+          "result": {
+            "ok": true,
+            "latency_sec": 14.72,
+            "response": {
+              "session_id": "topic-9ed83ddd-1",
+              "answer": "Подобрал 3 подходящих варианта. Карточки ниже расположены по соответствию запросу.",
+              "products": [
+                {
+                  "sku": "VT.217.N.04",
+                  "name": "Кран шаровой BASE, рукоятка бабочка 1/2\" вн.-вн.",
+                  "price": 452.0,
+                  "currency": "RUB",
+                  "stock_status": "в наличии",
+                  "url": "https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/",
+                  "image_url": "https://www.vestatrade.ru/image/catalog/krani_i_klapani/36.jpg"
+                },
+                {
+                  "sku": "VT.214.N.04",
+                  "name": "Кран шаровой BASE, стальная рукоятка 1/2\" вн.-вн.",
+                  "price": 503.0,
+                  "currency": "RUB",
+                  "stock_status": "в наличии",
+                  "url": "https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-stalnaya-rukoyatka-12-vn-vn/",
+                  "image_url": "https://www.vestatrade.ru/image/catalog/krani_i_klapani/39.jpg"
+                },
+                {
+                  "sku": "VT.245.N.04",
+                  "name": "Кран шаровой BASE с дренажом и воздухоотводчиком 1/2\" вн.-вн.",
+                  "price": 753.0,
+                  "currency": "RUB",
+                  "stock_status": "нет в наличии",
+                  "url": "https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-s-drenazhom-i-vozduhootvodchikom-12-vn-vn/",
+                  "image_url": "https://www.vestatrade.ru/image/catalog/krani_i_klapani/28.jpg"
+                }
+              ],
+              "product_groups": [],
+              "need_handoff": false,
+              "handoff_status": "none",
+              "handoff_ticket_id": null,
+              "debug": {}
+            }
+          }
+        },
+        {
+          "turn": 5,
+          "message": "Вернёмся к насосу: какая монтажная длина у первого варианта?",
+          "result": {
+            "ok": true,
+            "latency_sec": 14.403,
+            "response": {
+              "session_id": "topic-9ed83ddd-1",
+              "answer": "По товару Кран шаровой BASE, рукоятка бабочка 1/2\" вн.-вн. (VT.217.N.04) не удалось подтвердить характеристику «монтажная длина» в карточке и привязанной документации. Не буду подставлять типовое или похожее значение без источника именно для этого товара.",
+              "products": [
+                {
+                  "sku": "VT.217.N.04",
+                  "name": "Кран шаровой BASE, рукоятка бабочка 1/2\" вн.-вн.",
+                  "price": 452.0,
+                  "currency": "RUB",
+                  "stock_status": "в наличии",
+                  "url": "https://www.vestatrade.ru/vodozapornaya-armatura-2/krany-sharovye/krany-sharovye-valtec-base/kran-shar-base-rukoyatka-babochka-12-vn-vn/",
+                  "image_url": "https://www.vestatrade.ru/image/catalog/krani_i_klapani/36.jpg"
+                }
+              ],
+              "product_groups": [],
+              "need_handoff": false,
+              "handoff_status": "none",
+              "handoff_ticket_id": null,
+              "debug": {}
+            }
+          }
+        }
+      ]
+    },
+    {
+      "title": "Новичок · котёл → канализация → возврат к котлу",
+      "role": "Не знает терминов и переключается между двумя домашними проблемами.",
+      "session_id": "topic-9ed83ddd-2",
+      "turns": [
+        {
+          "turn": 1,
+          "message": "Нужен котёл для дома 150 квадратов.",
+          "result": {
+            "ok": true,
+            "latency_sec": 9.188,
+            "response": {
+              "session_id": "topic-9ed83ddd-2",
+              "answer": "Площадь: 150 м².\nКакой котёл вам нужен: газовый или электрический?\nПосле ответа покажу варианты по вашему запросу.",
+              "products": [],
+              "product_groups": [],
+              "need_handoff": false,
+              "handoff_status": "none",
+              "handoff_ticket_id": null,
+              "debug": {}
+            }
+          }
+        },
+        {
+          "turn": 2,
+          "message": "Газовый, только отопление.",
+          "result": {
+            "ok": true,
+            "latency_sec": 7.888,
+            "response": {
+              "session_id": "topic-9ed83ddd-2",
+              "answer": "Показываю 4 предварительных варианта по подтверждённым данным: Площадь: 150 м²; Тип котла: газовый; Количество контуров: один контур.\nУ этих моделей заявленная в карточке площадь отопления не меньше 150 м². Это ориентир для предварительной выдачи, а не расчёт теплопотерь и не окончательная рекомендация.\nКарточки ниже предварительные: перед покупкой проверьте отмеченные ограничения.",
+              "products": [
+                {
+                  "sku": "2201375",
+                  "name": "Котел газовый настенный Arderia SB24 (24 кВт, закр.камера, одноконтурный, 3х-ход.клапан)",
+                  "price": 35869.0,
+                  "currency": "RUB",
+                  "stock_status": "в наличии",
+                  "url": "https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-gazovyj-nastennyj-arderia-sb24-24-kvt-zakrkamera-odnokonturnyj-3h-hodklapan/",
+                  "image_url": "https://www.vestatrade.ru/image/catalog/product/Arderia/AdrediaSB.jpg"
+                },
+                {
+                  "sku": "2201376",
+                  "name": "Котел газовый настенный Arderia SB28 (28 кВт, закр.камера, одноконтурный, 3х-ход.клапан)",
+                  "price": 38535.0,
+                  "currency": "RUB",
+                  "stock_status": "в наличии",
+                  "url": "https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-gazovyj-nastennyj-arderia-sb28-28-kvt-zakr-kamera-odnokonturnyj-3h-hod-klapan/",
+                  "image_url": "https://www.vestatrade.ru/image/catalog/product/Arderia/AdrediaSB.jpg"
+                },
+                {
+                  "sku": "2201377",
+                  "name": "Котел газовый настенный Arderia SB32 (32 кВт, закрытая камера, одноконтурный, 3х-ход.клапан)",
+                  "price": 38535.0,
+                  "currency": "RUB",
+                  "stock_status": "в наличии",
+                  "url": "https://www.vestatrade.ru/akcionnye-tovary-spb/kotel-gazovyj-nastennyj-arderia-sb32-32-kvt-zakr-kamera-odnokonturnyj-3h-hod-klapan/",
+                  "image_url": "https://www.vestatrade.ru/image/catalog/product/Arderia/AdrediaSB.jpg"
+                },
+                {
+                  "sku": "3301679",
+                  "name": "Котел газовый настенный одноконтурный Ariston CLAS XC SYSTEM 24 FF NG (закр.камера, 3х-ход.клапан)",
+                  "price": 78571.0,
+                  "currency": "RUB",
+                  "stock_status": "нет в наличии",
+                  "url": "https://www.vestatrade.ru/kotelnoe-oborudovanie/kotly-gazovye-nastennye/kotly-gazovye-nastennye-ariston/kotel-gazovyy-nastennyy-odnokonturnyy-ariston-clas-xc-system-24-ff-ng-zakrkamera-3h-hodklapan/",
+                  "image_url": "https://www.vestatrade.ru/image/catalog/product/Ariston/Kotli/CLASXCSYSTEM.png"
+                }
+              ],
+              "product_groups": [],
+              "need_handoff": false,
+              "handoff_status": "none",
+              "handoff_ticket_id": null,
+              "debug": {}
+            }
+          }
+        },
+        {
+          "turn": 3,
+          "message": "Стоп, ещё труба нужна от дома до септика, покажите что есть.",
+          "result": {
+            "ok": true,
+            "latency_sec": 7.952,
+            "response": {
+              "session_id": "topic-9ed83ddd-2",
+              "answer": "Показываю 2 предварительных варианта по подтверждённым данным: Назначение канализации: наружная.\nДля точного подтверждения пригодности ещё нужно уточнить «диаметр», «длина». Карточки ниже — предварительные, не окончательная рекомендация.",
+              "products": [
+                {
+                  "sku": "220010",
+                  "name": "Труба канализационная наружная (3,2мм), KGEM 110*1000",
+                  "price": 585.0,
+                  "currency": "RUB",
+                  "stock_status": "в наличии",
+                  "url": "https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-naruzhnaya/kanalizaciya-naruzhnaya-ostendorf/truba-kanalizacionnaya-naruzhnaya-32mm-kgem-1101000/",
+                  "image_url": "https://www.vestatrade.ru/image/catalog/product/kanalizacionnyesistemy/123/37.jpg"
+                },
+                {
+                  "sku": "1491056",
+                  "name": "Труба наруж. ПВХ 110*1000 SN4 ХЕМКОР",
+                  "price": 436.0,
+                  "currency": "RUB",
+                  "stock_status": "нет в наличии",
+                  "url": "https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-naruzhnaya/kanalizacija-naruzhnaja-hemkor/truba-naruzh-pvh-1101000-sn4-hemkor/",
+                  "image_url": "https://www.vestatrade.ru/image/catalog/product/Hemkor/1491056.jpeg"
+                }
+              ],
+              "product_groups": [],
+              "need_handoff": false,
+              "handoff_status": "none",
+              "handoff_ticket_id": null,
+              "debug": {}
+            }
+          }
+        },
+        {
+          "turn": 4,
+          "message": "Вернёмся к котлу: горячая вода от него не нужна.",
+          "result": {
+            "ok": true,
+            "latency_sec": 7.628,
+            "response": {
+              "session_id": "topic-9ed83ddd-2",
+              "answer": "Показываю 2 предварительных варианта по подтверждённым данным: Назначение канализации: наружная.\nДля точного подтверждения пригодности ещё нужно уточнить «диаметр», «длина». Карточки ниже — предварительные, не окончательная рекомендация.",
+              "products": [
+                {
+                  "sku": "220010",
+                  "name": "Труба канализационная наружная (3,2мм), KGEM 110*1000",
+                  "price": 585.0,
+                  "currency": "RUB",
+                  "stock_status": "в наличии",
+                  "url": "https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-naruzhnaya/kanalizaciya-naruzhnaya-ostendorf/truba-kanalizacionnaya-naruzhnaya-32mm-kgem-1101000/",
+                  "image_url": "https://www.vestatrade.ru/image/catalog/product/kanalizacionnyesistemy/123/37.jpg"
+                },
+                {
+                  "sku": "1491056",
+                  "name": "Труба наруж. ПВХ 110*1000 SN4 ХЕМКОР",
+                  "price": 436.0,
+                  "currency": "RUB",
+                  "stock_status": "нет в наличии",
+                  "url": "https://www.vestatrade.ru/kanalizacionnye-sistemy/kanalizacionnye-truby-i-fitingi/kanalizaciya-naruzhnaya/kanalizacija-naruzhnaja-hemkor/truba-naruzh-pvh-1101000-sn4-hemkor/",
+                  "image_url": "https://www.vestatrade.ru/image/catalog/product/Hemkor/1491056.jpeg"
+                }
+              ],
+              "product_groups": [],
+              "need_handoff": false,
+              "handoff_status": "none",
+              "handoff_ticket_id": null,
+              "debug": {}
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

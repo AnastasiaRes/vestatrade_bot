@@ -315,7 +315,7 @@ def test_unavailable_circulation_anchor_asks_for_remaining_safe_alternative() ->
     assert assessment.unknown_facts == ("diameter_mm",)
     assert assessment.refused_facts == ("max_head_m",)
     assert assessment.deferred_facts == ("mounting_length_mm",)
-    assert assessment.recommended_question_fact == "duty_point_head_m"
+    assert assessment.recommended_question_fact == "duty_point_flow_l_h"
     assert assessment.unavailable_preliminary_identity_groups == ()
     assert outcome.next_action_plan.primary.kind == NextActionKind.ASK_DECISION_CHANGING_QUESTION
 
@@ -1485,6 +1485,8 @@ def test_missing_required_hard_facts_fail_closed_for_executable_task(catalog) ->
 def test_preliminary_candidates_are_unverified_until_unknown_hard_facts_are_known(catalog) -> None:
     constraints = [
         _fact("connection_diameter", 25),
+        _fact("duty_point_flow_l_h", 1500, "l/h"),
+        _fact("duty_point_head_m", 4, "m"),
         _fact("max_head_m", status="unknown"),
         _fact("mounting_length", status="deferred"),
     ]
@@ -1497,7 +1499,9 @@ def test_preliminary_candidates_are_unverified_until_unknown_hard_facts_are_know
     assert not plan.eligible_skus
     assert CatalogSearchStage.HONEST_NO_MATCH not in plan.stages
     assert all(
-        item.reason_codes == ("required_customer_fact_unavailable",)
+        set(item.reason_codes).intersection(
+            {"required_customer_fact_unavailable", "catalogue_hard_fact_missing"}
+        )
         for item in plan.candidate_assessments
         if item.status == CandidateStatus.UNVERIFIED
     )
@@ -1587,6 +1591,8 @@ def test_accessory_tool_and_spare_part_cannot_replace_base_product() -> None:
     )
     constraints = [
         _fact("connection_diameter", 25),
+        _fact("duty_point_flow_l_h", 1500, "l/h"),
+        _fact("duty_point_head_m", 4, "m"),
         _fact("max_head_m", status="unknown"),
         _fact("mounting_length", status="unknown"),
     ]

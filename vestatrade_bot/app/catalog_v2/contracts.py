@@ -146,6 +146,15 @@ class ProductContract(FrozenModel):
     candidate_kinds: tuple[ProductKind, ...] = ()
     alternative_kinds: tuple[ProductKind, ...] = ()
     required_fact_alternatives: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    # An availability analogue is a deliberately narrower capability than a
+    # normal soft-preference relaxation.  It may be used only after every
+    # exact candidate has confirmed ``out_of_stock`` status, and only for the
+    # declaratively listed facts of this product family.
+    availability_analog_relaxable_facts: tuple[str, ...] = ()
+    # Additional all-of groups that are relevant only to a *preliminary*
+    # result.  Each group is an any-of set; exact readiness never depends on
+    # these facts.
+    preliminary_required_fact_groups: tuple[tuple[str, ...], ...] = ()
     # Each group is an ``any-of`` set of facts that makes a preliminary
     # catalogue result meaningful and safe enough to show.  Exact readiness
     # may still require more facts.  A group is deliberately owned by the
@@ -244,6 +253,8 @@ class TaskReadinessAssessment(FrozenModel):
     # in the existing catalogue planner.
     missing_preliminary_identity_facts: tuple[str, ...] = ()
     unavailable_preliminary_identity_groups: tuple[tuple[str, ...], ...] = ()
+    missing_preliminary_required_facts: tuple[str, ...] = ()
+    unavailable_preliminary_required_groups: tuple[tuple[str, ...], ...] = ()
     recommended_question_fact: str | None = None
     learn_method_code: str | None = None
     reason_codes: tuple[str, ...] = ()
@@ -297,6 +308,9 @@ class CandidateAssessment(FrozenModel):
     matched_soft_facts: tuple[str, ...] = ()
     mismatched_soft_facts: tuple[str, ...] = ()
     relaxations: tuple[CatalogRelaxation, ...] = ()
+    # Set only by the catalogue planner's fail-closed availability-analogue
+    # pass.  It is never inferred from a generic relaxed candidate.
+    availability_analog: bool = False
     provenance: tuple[FactProvenance, ...] = ()
     reason_codes: tuple[str, ...] = ()
 
@@ -317,6 +331,9 @@ class CatalogSearchPlan(FrozenModel):
     eligible_skus: tuple[str, ...] = ()
     relaxed_skus: tuple[str, ...] = ()
     unverified_skus: tuple[str, ...] = ()
+    # Exact candidates with a confirmed zero/negative stock balance that
+    # justified an explicitly labelled in-stock availability analogue.
+    availability_analog_exact_out_of_stock_skus: tuple[str, ...] = ()
     excluded_kind_count: int = 0
     reason_codes: tuple[str, ...] = ()
 
@@ -478,6 +495,10 @@ class SelectionResult(FrozenModel):
     is_preliminary: bool = False
     preliminary_fact_names: tuple[str, ...] = ()
     presentation_groups: tuple[SelectionPresentationGroup, ...] = ()
+    # A checked fallback for a confirmed unavailable exact boiler.  It is not
+    # an exact fit and is rendered with the factual difference(s) below.
+    availability_analog: bool = False
+    availability_analog_differences: tuple[CatalogRelaxation, ...] = ()
     source_backed_conflicts: tuple[SelectionSourceConflict, ...] = ()
     excluded_candidate_reason_codes: dict[str, tuple[str, ...]] = Field(
         default_factory=dict

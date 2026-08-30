@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from collections.abc import Iterable
 
 from app.dialogue_v2.contracts import (
@@ -416,6 +417,151 @@ def _assess_candidate(
     )
 
 
+def _numeric_catalog_fact(
+    product: CatalogProductSnapshot,
+    name: str,
+) -> float | None:
+    """Return one finite scalar fact without guessing from an ambiguous card."""
+
+    values = tuple(item.value for item in product.facts if item.name == name)
+    if len(values) != 1 or isinstance(values[0], bool):
+        return None
+    try:
+        value = float(values[0])
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _availability_analog_assessments(
+    assessment: TaskReadinessAssessment,
+    contract: ProductContract,
+    pool: tuple[CatalogProductSnapshot, ...],
+    hard: tuple[SearchConstraint, ...],
+    soft: tuple[SearchConstraint, ...],
+    ordinary: tuple[CandidateAssessment, ...],
+) -> tuple[tuple[CandidateAssessment, ...], tuple[str, ...]]:
+    """Offer a narrowly safe in-stock boiler analogue after exact stock fails.
+
+    This is intentionally not part of generic soft-constraint relaxation.  A
+    product family must opt in through the registry; currently that means only
+    boilers and only a *higher, source-confirmed* power.  Fuel, circuit count
+    and every other hard fact remain exact.  A stated building area is an
+    additional lower bound when the prospective model declares one.
+    """
+
+    relaxable = set(contract.availability_analog_relaxable_facts)
+    if not relaxable or not ordinary:
+        return ordinary, ()
+
+    without_stock = tuple(
+        _assess_candidate(product, contract, hard, soft, ())
+        for product in pool
+    )
+    exact = tuple(
+        item
+        for item in without_stock
+        if item.status == CandidateStatus.ELIGIBLE
+        and not item.relaxations
+        and not item.missing_hard_facts
+        and not item.mismatched_hard_facts
+    )
+    # We can say that no exact item is available only when every exact card
+    # carries a confirmed negative stock status.  Unknown availability leaves
+    # the user-facing result on the ordinary exact path.
+    exact_out_of_stock = tuple(
+        item.sku
+        for item in exact
+        if item.availability_status == CatalogAvailabilityStatus.OUT_OF_STOCK
+    )
+    if not exact_out_of_stock or len(exact_out_of_stock) != len(exact):
+        return ordinary, ()
+
+    constraints_by_name = {item.name: item for item in hard}
+    if set(constraints_by_name).isdisjoint(relaxable):
+        return ordinary, ()
+    customer_area = next(
+        (
+            item.value
+            for item in assessment.confirmed_hard_facts
+            if item.name == "area_m2" and item.status == "known"
+        ),
+        None,
+    )
+    customer_area_number = (
+        float(customer_area)
+        if isinstance(customer_area, (int, float)) and not isinstance(customer_area, bool)
+        else None
+    )
+    product_by_sku = {item.sku: item for item in pool}
+    amended: list[CandidateAssessment] = []
+    for candidate in ordinary:
+        product = product_by_sku.get(candidate.sku)
+        requested_names = set(candidate.mismatched_hard_facts)
+        if (
+            product is None
+            or candidate.availability_status != CatalogAvailabilityStatus.IN_STOCK
+            or not requested_names
+            or requested_names != relaxable.intersection(constraints_by_name)
+            or candidate.missing_hard_facts
+            or candidate.mismatched_soft_facts
+        ):
+            amended.append(candidate)
+            continue
+
+        differences: list[CatalogRelaxation] = []
+        safe = True
+        for name in sorted(requested_names):
+            requested = constraints_by_name[name].value
+            actual = _numeric_catalog_fact(product, name)
+            if (
+                isinstance(requested, bool)
+                or not isinstance(requested, (int, float))
+                or actual is None
+                or actual <= float(requested)
+            ):
+                safe = False
+                break
+            differences.append(
+                CatalogRelaxation(
+                    fact_name=name,
+                    requested_value=requested,
+                    candidate_value=int(actual) if actual.is_integer() else actual,
+                    reason_code="availability_analog_higher_confirmed_power_in_stock",
+                )
+            )
+        coverage = _numeric_catalog_fact(product, "declared_heated_area_m2")
+        if customer_area_number is not None and (
+            coverage is None or coverage < customer_area_number
+        ):
+            safe = False
+        if not safe:
+            amended.append(candidate)
+            continue
+        amended.append(
+            candidate.model_copy(
+                update={
+                    "status": CandidateStatus.ELIGIBLE,
+                    "matched_hard_facts": tuple(
+                        dict.fromkeys((*candidate.matched_hard_facts, *requested_names))
+                    ),
+                    "mismatched_hard_facts": (),
+                    "relaxations": tuple(differences),
+                    "availability_analog": True,
+                    "reason_codes": tuple(
+                        dict.fromkeys(
+                            (
+                                "required_stock_confirmed",
+                                "availability_analog_after_confirmed_out_of_stock_exact_match",
+                            )
+                        )
+                    ),
+                }
+            )
+        )
+    return tuple(amended), exact_out_of_stock
+
+
 def _make_search_plan(
     assessment: TaskReadinessAssessment,
     contract: ProductContract,
@@ -520,6 +666,18 @@ def _make_search_plan(
             for product in sorted(pool, key=lambda item: item.sku)
         )
     )
+    assessments, availability_analog_exact_out_of_stock_skus = (
+        _availability_analog_assessments(
+            assessment,
+            contract,
+            pool,
+            hard,
+            soft,
+            assessments,
+        )
+        if assessments
+        else (assessments, ())
+    )
     eligible = tuple(
         item.sku for item in assessments
         if item.status == CandidateStatus.ELIGIBLE and not item.relaxations
@@ -546,6 +704,8 @@ def _make_search_plan(
             stages.append(CatalogSearchStage.COMPATIBLE_ANALOG)
         if soft:
             stages.append(CatalogSearchStage.RELAX_ONE_SOFT_CONSTRAINT)
+        if availability_analog_exact_out_of_stock_skus:
+            stages.append(CatalogSearchStage.COMPATIBLE_ANALOG)
         if not eligible and not relaxed and (
             assessment.status != ReadinessStatus.PRELIMINARY_READY or not unverified
         ):
@@ -564,6 +724,8 @@ def _make_search_plan(
         reasons.append(f"sku_resolution_{sku_resolution.status.value}")
     if in_stock_required:
         reasons.append("in_stock_requirement_from_typed_fact")
+    if availability_analog_exact_out_of_stock_skus:
+        reasons.append("availability_analog_after_confirmed_out_of_stock_exact_match")
     if ambiguous_sku_prefix:
         reasons.append("catalog_search_blocked_ambiguous_sku_prefix")
     elif search_blocked:
@@ -596,6 +758,9 @@ def _make_search_plan(
         eligible_skus=eligible,
         relaxed_skus=relaxed,
         unverified_skus=unverified,
+        availability_analog_exact_out_of_stock_skus=(
+            availability_analog_exact_out_of_stock_skus
+        ),
         excluded_kind_count=len(catalog_snapshot) - len(pool),
         reason_codes=tuple(reasons),
     )

@@ -715,6 +715,8 @@ def _contract(
     invariants: tuple[str, ...] = (),
     required_alternatives: tuple[tuple[str, tuple[str, ...]], ...] = (),
     preliminary_identity_fact_groups: tuple[tuple[str, ...], ...] = (),
+    availability_analog_relaxable_facts: tuple[str, ...] = (),
+    preliminary_required_fact_groups: tuple[tuple[str, ...], ...] = (),
 ) -> ProductContract:
     return ProductContract(
         contract_id=contract_id,
@@ -730,6 +732,8 @@ def _contract(
         candidate_kinds=candidates or (kind,),
         required_fact_alternatives=required_alternatives,
         preliminary_identity_fact_groups=preliminary_identity_fact_groups,
+        availability_analog_relaxable_facts=availability_analog_relaxable_facts,
+        preliminary_required_fact_groups=preliminary_required_fact_groups,
     )
 
 
@@ -897,6 +901,15 @@ DEFAULT_CONTRACTS: tuple[ProductContract, ...] = (
         preliminary_identity_fact_groups=(
             ("diameter_mm", "max_head_m", "duty_point_head_m", "mounting_length_mm"),
         ),
+        # A circulation-pump shortlist can be useful before the mounting
+        # dimensions are known, but only once the customer supplied a real
+        # duty point.  These groups affect only the explicitly requested
+        # preliminary path; DN and mounting length remain hard facts for an
+        # exact installation match.
+        preliminary_required_fact_groups=(
+            ("duty_point_flow_l_h",),
+            ("max_head_m", "duty_point_head_m"),
+        ),
     ),
     _contract(
         "pump.dhw_circulation.v1", ProductKind.DHW_CIRCULATION_PUMP, "pumps",
@@ -936,6 +949,7 @@ DEFAULT_CONTRACTS: tuple[ProductContract, ...] = (
         invariants=("boiler_type", "circuits"),
         required_alternatives=(("power_kw", ("area_m2",)),),
         preliminary_identity_fact_groups=(("boiler_type",), ("power_kw", "area_m2")),
+        availability_analog_relaxable_facts=("power_kw",),
     ),
     _contract(
         "boiler.gas.v1", ProductKind.GAS_BOILER, "boilers",
@@ -944,6 +958,7 @@ DEFAULT_CONTRACTS: tuple[ProductContract, ...] = (
         catalog_types=("котел",), invariants=("boiler_type", "circuits"),
         required_alternatives=(("power_kw", ("area_m2",)),),
         preliminary_identity_fact_groups=(("power_kw", "area_m2"),),
+        availability_analog_relaxable_facts=("power_kw",),
     ),
     _contract(
         "boiler.electric.v1", ProductKind.ELECTRIC_BOILER, "boilers",
@@ -952,6 +967,7 @@ DEFAULT_CONTRACTS: tuple[ProductContract, ...] = (
         invariants=("boiler_type", "circuits"),
         required_alternatives=(("power_kw", ("area_m2",)),),
         preliminary_identity_fact_groups=(("power_kw", "area_m2"),),
+        availability_analog_relaxable_facts=("power_kw",),
     ),
     _contract(
         "radiator.v1", ProductKind.RADIATOR, "radiators",

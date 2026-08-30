@@ -28,7 +28,11 @@ from app.product_fact_evidence import (
     ProductReferenceKind,
     render_product_fact_evidence,
 )
-from app.v2_presentation import format_public_fact_value, public_fact_label
+from app.v2_presentation import (
+    clarification_presentation,
+    format_public_fact_value,
+    public_fact_label,
+)
 
 
 def test_shared_v2_formatter_localizes_canonical_values_units_and_labels() -> None:
@@ -45,6 +49,17 @@ def test_shared_v2_formatter_localizes_canonical_values_units_and_labels() -> No
         == "1,5 м³/ч"
     )
     assert _presentation_value(25, "mm") == "25 мм"
+
+
+def test_clarification_copy_is_human_and_does_not_repeat_service_words() -> None:
+    circuits = clarification_presentation("circuits")
+
+    assert circuits.question == (
+        "Котёл будет только отапливать дом или ещё готовить горячую воду? "
+        "Если горячую воду обеспечивает отдельный водонагреватель, тоже напишите."
+    )
+    assert circuits.include_learn_instruction is False
+    assert "уточните" not in circuits.question.casefold()
 
 
 def test_comparison_never_shows_canonical_predicates_values_or_units() -> None:

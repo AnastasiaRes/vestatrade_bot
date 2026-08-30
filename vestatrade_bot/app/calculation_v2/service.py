@@ -11,6 +11,11 @@ from app.dialogue_v2.contracts import NextActionKind, TaskAct
 from app.dialogue_v2.controller import DialogueV2Outcome
 from app.models import SessionState
 from app.sku_resolution import SkuResolutionStatus, extract_explicit_sku_tokens, resolve_catalog_sku
+from app.v2_visible_products import (
+    customer_visible_v2_scope,
+    has_deictic_product_reference,
+    ordinal_indices,
+)
 
 from .contracts import (
     CalculationProductReference,
@@ -94,21 +99,6 @@ def _quantity(message: str) -> tuple[Decimal | None, CalculationUnit | None, str
     return value, unit, match.group(0)
 
 
-def _ordinal(message: str) -> int | None:
-    text = _normalise(message)
-    markers = (
-        (("перв", "1-й", "1го", "номер 1"), 0),
-        (("втор", "2-й", "2го", "номер 2"), 1),
-        (("трет", "3-й", "3го", "номер 3"), 2),
-        (("четверт", "4-й", "4го", "номер 4"), 3),
-        (("пят", "5-й", "5го", "номер 5"), 4),
-    )
-    for aliases, index in markers:
-        if any(alias in text for alias in aliases):
-            return index
-    return None
-
-
 def _calculation_task(outcome: DialogueV2Outcome):
     plan = outcome.next_action_plan
     if plan is None:
@@ -171,10 +161,9 @@ def build_calculation_request(
         return None
     quantity, unit, evidence = _quantity(original_utterance)
     explicit = _explicit_reference(original_utterance, snapshot)
-    visible_skus = tuple(item.sku for item in session.v2_last_products)
-    visible_scope_valid = bool(
-        visible_skus and session.v2_selection_id and session.v2_source_revision
-    )
+    visible_scope = customer_visible_v2_scope(session)
+    visible_skus = visible_scope.ordered_skus
+    visible_scope_valid = visible_scope.is_valid
     if explicit is not None:
         reference = explicit
         scope_origin = (
@@ -183,22 +172,48 @@ def build_calculation_request(
             else CalculationScopeOrigin.EXPLICIT_SKU
         )
     elif visible_scope_valid:
-        ordinal = _ordinal(original_utterance)
-        if ordinal is not None and 0 <= ordinal < len(visible_skus):
-            sku = visible_skus[ordinal]
-            reference = CalculationProductReference(
-                kind=CalculationReferenceKind.ORDINAL,
-                raw=str(ordinal + 1),
-                canonical_sku=sku,
-                candidate_skus=(sku,),
-                reason_code="ordinal_in_customer_visible_v2_cards",
-            )
-        elif ordinal is not None:
+        ordinals = ordinal_indices(original_utterance)
+        if len(ordinals) == 1:
+            ordinal_reference = visible_scope.ordinal(ordinals[0])
+            if ordinal_reference.resolved:
+                sku = ordinal_reference.canonical_sku
+                assert sku is not None
+                reference = CalculationProductReference(
+                    kind=CalculationReferenceKind.ORDINAL,
+                    raw=ordinal_reference.raw,
+                    canonical_sku=sku,
+                    candidate_skus=(sku,),
+                    reason_code=ordinal_reference.reason_code,
+                )
+            else:
+                reference = CalculationProductReference(
+                    kind=CalculationReferenceKind.UNRESOLVED,
+                    raw=ordinal_reference.raw,
+                    reason_code=ordinal_reference.reason_code,
+                )
+        elif len(ordinals) > 1:
             reference = CalculationProductReference(
                 kind=CalculationReferenceKind.UNRESOLVED,
-                raw=str(ordinal + 1),
-                reason_code="ordinal_outside_customer_visible_v2_cards",
+                reason_code="multiple_ordinal_product_references",
             )
+        elif has_deictic_product_reference(original_utterance):
+            focus_reference = visible_scope.current_focus()
+            if focus_reference.resolved:
+                sku = focus_reference.canonical_sku
+                assert sku is not None
+                reference = CalculationProductReference(
+                    kind=CalculationReferenceKind.CURRENT_FOCUS,
+                    raw=focus_reference.raw,
+                    canonical_sku=sku,
+                    candidate_skus=(sku,),
+                    reason_code=focus_reference.reason_code,
+                )
+            else:
+                reference = CalculationProductReference(
+                    kind=CalculationReferenceKind.UNRESOLVED,
+                    raw=focus_reference.raw,
+                    reason_code=focus_reference.reason_code,
+                )
         elif len(visible_skus) == 1:
             reference = CalculationProductReference(
                 kind=CalculationReferenceKind.SINGLE_PRESENTED,
@@ -223,9 +238,17 @@ def build_calculation_request(
         task_id=task.task_id,
         goal_id=task.target_goal_id,
         original_utterance=original_utterance,
-        selection_id=session.v2_selection_id if scope_origin == CalculationScopeOrigin.V2_DELIVERED else None,
+        selection_id=(
+            visible_scope.selection_id
+            if scope_origin == CalculationScopeOrigin.V2_DELIVERED
+            else None
+        ),
         ordered_skus=visible_skus if scope_origin == CalculationScopeOrigin.V2_DELIVERED else (),
-        source_revision=(session.v2_source_revision if scope_origin == CalculationScopeOrigin.V2_DELIVERED else snapshot.source_revision),
+        source_revision=(
+            visible_scope.source_revision
+            if scope_origin == CalculationScopeOrigin.V2_DELIVERED
+            else snapshot.source_revision
+        ),
         scope_origin=scope_origin,
         product_ref=reference,
         quantity=quantity,

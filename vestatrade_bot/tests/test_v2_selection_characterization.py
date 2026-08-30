@@ -358,11 +358,67 @@ def test_pump_show_command_produces_verified_structured_cards() -> None:
     assert candidate.selection_result is not None
     assert candidate.selection_result.status == SelectionResultStatus.SHOWN
     assert candidate.selection_result.outcome_gate_passed is True
+    assert candidate.selection_result.is_preliminary is True
+    assert set(candidate.selection_result.preliminary_fact_names) >= {
+        "diameter_mm",
+        "mounting_length_mm",
+    }
     assert candidate.response is not None
     assert candidate.selection_result.ordered_skus == tuple(
         item.sku for item in candidate.response.products
     )
     assert candidate.selection_result.cards
+
+
+def test_circulation_pump_does_not_show_before_both_duty_point_facts() -> None:
+    products = [
+        _product(
+            "VRS.254.18.0",
+            "Насос циркуляционный VALTEC RS 25/4-180",
+            "Насосное оборудование",
+            attributes={"Тип товара": "Насос"},
+        )
+    ]
+    only_head = TurnUnderstanding.model_validate(
+        _frame(
+            operation="new",
+            acts=["find"],
+            products=[
+                {
+                    "text": "Циркуляционный насос",
+                    "canonical_type": "circulation pump",
+                    "category": "pumps",
+                    "role": "target",
+                    "evidence": "Циркуляционный насос",
+                }
+            ],
+            constraints=[_known("duty_point_head_m", 4, "напор 4 м", unit="m")],
+        )
+    )
+
+    controller = DialogueControllerV2()
+    opening, _sources = _run_v2_turn(
+        controller,
+        None,
+        only_head,
+        "pump-no-flow",
+        products,
+    )
+    show, _changes = _validated_repair(_frame(acts=["find"]), "Покажите варианты")
+    outcome, _sources = _run_v2_turn(
+        controller,
+        opening.state_after,
+        show,
+        "pump-no-flow-show",
+        products,
+    )
+
+    assert outcome.catalog_planning is not None
+    readiness = outcome.catalog_planning.readiness_assessments[0]
+    assert readiness.recommended_question_fact == "duty_point_flow_l_h"
+    assert outcome.answer_planning is not None
+    assert outcome.answer_planning.answer_plan is not None
+    assert outcome.answer_planning.answer_plan.products == ()
 
 
 def test_compound_explanation_cards_still_require_a_gated_selection_result() -> None:
@@ -750,6 +806,169 @@ def test_boiler_area_delivers_only_source_backed_preliminary_cards() -> None:
     assert "Количество контуров: один контур" in candidate.response.answer
     assert "заявленная в карточке площадь отопления не меньше 150 м²" in candidate.response.answer
     assert "не окончательная рекомендация" in candidate.response.answer
+
+
+def test_boiler_out_of_stock_exact_offers_only_safe_higher_power_analog() -> None:
+    exact_unavailable = _product(
+        "electric-18-out",
+        "Котёл электрический 18 кВт одноконтурный",
+        "Котельное оборудование",
+        attributes={
+            "Тип товара": "Котёл",
+            "Тип котла": "Электрический",
+            "Мощность, кВт": "18",
+            "Количество контуров": "Одноконтурный",
+            "Отапливаемая площадь, м²": "180",
+        },
+    ).model_copy(update={"stock_status": "нет в наличии", "stock_qty": 0})
+    higher_in_stock = _product(
+        "electric-24-in",
+        "Котёл электрический 24 кВт одноконтурный",
+        "Котельное оборудование",
+        attributes={
+            "Тип товара": "Котёл",
+            "Тип котла": "Электрический",
+            "Мощность, кВт": "24",
+            "Количество контуров": "Одноконтурный",
+            "Отапливаемая площадь, м²": "240",
+        },
+    )
+    lower_in_stock = _product(
+        "electric-12-in",
+        "Котёл электрический 12 кВт одноконтурный",
+        "Котельное оборудование",
+        attributes={
+            "Тип товара": "Котёл",
+            "Тип котла": "Электрический",
+            "Мощность, кВт": "12",
+            "Количество контуров": "Одноконтурный",
+            "Отапливаемая площадь, м²": "240",
+        },
+    )
+    wrong_fuel = _product(
+        "gas-24-in",
+        "Котёл газовый 24 кВт одноконтурный",
+        "Котельное оборудование",
+        attributes={
+            "Тип товара": "Котёл",
+            "Тип котла": "Газовый",
+            "Мощность, кВт": "24",
+            "Количество контуров": "Одноконтурный",
+            "Отапливаемая площадь, м²": "240",
+        },
+    )
+    opening = TurnUnderstanding.model_validate(
+        _frame(
+            operation="new",
+            acts=["find"],
+            products=[
+                {
+                    "text": "электрический котёл",
+                    "canonical_type": "electric_boiler",
+                    "category": "boilers",
+                    "role": "target",
+                    "evidence": "электрический котёл",
+                }
+            ],
+            constraints=[
+                _known("boiler_type", "electric", "электрический"),
+                _known("power_kw", 18, "18 кВт", unit="kW"),
+                _known("area_m2", 150, "150 м²", unit="m2"),
+                _known("circuits", 1, "только отопление"),
+            ],
+        )
+    )
+    outcome, sources = _run_v2_turn(
+        DialogueControllerV2(),
+        None,
+        opening,
+        "boiler-availability-analog",
+        [exact_unavailable, higher_in_stock, lower_in_stock, wrong_fuel],
+    )
+    candidate = build_v2_turn_candidate(
+        outcome,
+        sources,
+        session_id="boiler-availability-analog",
+        turn_id="boiler-availability-analog",
+        original_utterance="Нужен электрический одноконтурный котёл 18 кВт для дома 150 м²",
+    )
+
+    assert candidate.eligible_for_delivery is True
+    assert candidate.selection_result is not None
+    assert candidate.selection_result.availability_analog is True
+    assert candidate.selection_result.is_preliminary is True
+    assert candidate.selection_result.ordered_skus == (higher_in_stock.sku,)
+    assert candidate.selection_result.availability_analog_differences[0].fact_name == "power_kw"
+    assert candidate.selection_result.availability_analog_differences[0].requested_value == 18
+    assert candidate.selection_result.availability_analog_differences[0].candidate_value == 24
+    assert candidate.response is not None
+    assert "Точного варианта с подтверждённым наличием" in candidate.response.answer
+    assert "24 кВт вместо запрошенных 18 кВт" in candidate.response.answer
+    assert "не подтверждённый тепловой расчёт" in candidate.response.answer
+
+
+def test_boiler_exact_in_stock_never_turns_into_availability_analog() -> None:
+    exact_in_stock = _product(
+        "electric-18-in",
+        "Котёл электрический 18 кВт одноконтурный",
+        "Котельное оборудование",
+        attributes={
+            "Тип товара": "Котёл",
+            "Тип котла": "Электрический",
+            "Мощность, кВт": "18",
+            "Количество контуров": "Одноконтурный",
+        },
+    )
+    higher_in_stock = _product(
+        "electric-24-in",
+        "Котёл электрический 24 кВт одноконтурный",
+        "Котельное оборудование",
+        attributes={
+            "Тип товара": "Котёл",
+            "Тип котла": "Электрический",
+            "Мощность, кВт": "24",
+            "Количество контуров": "Одноконтурный",
+        },
+    )
+    opening = TurnUnderstanding.model_validate(
+        _frame(
+            operation="new",
+            acts=["find"],
+            products=[
+                {
+                    "text": "электрический котёл",
+                    "canonical_type": "electric_boiler",
+                    "category": "boilers",
+                    "role": "target",
+                    "evidence": "электрический котёл",
+                }
+            ],
+            constraints=[
+                _known("boiler_type", "electric", "электрический"),
+                _known("power_kw", 18, "18 кВт", unit="kW"),
+                _known("circuits", 1, "только отопление"),
+            ],
+        )
+    )
+    outcome, sources = _run_v2_turn(
+        DialogueControllerV2(),
+        None,
+        opening,
+        "boiler-exact-stock",
+        [exact_in_stock, higher_in_stock],
+    )
+    candidate = build_v2_turn_candidate(
+        outcome,
+        sources,
+        session_id="boiler-exact-stock",
+        turn_id="boiler-exact-stock",
+        original_utterance="Нужен электрический одноконтурный котёл 18 кВт",
+    )
+
+    assert candidate.eligible_for_delivery is True
+    assert candidate.selection_result is not None
+    assert candidate.selection_result.availability_analog is False
+    assert candidate.selection_result.ordered_skus == (exact_in_stock.sku,)
 
 
 def test_explicit_boiler_power_with_too_small_declared_area_stays_preliminary() -> None:

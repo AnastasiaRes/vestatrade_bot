@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.agents.semantic_interpreter import (
+    CustomerAct,
     TurnUnderstanding,
     repair_grounded_semantic_payload,
     validate_semantic_content_coverage,
@@ -192,6 +193,21 @@ def test_mounting_length_anchor_canonicalizes_a_numeric_string() -> None:
     )
     frame = TurnUnderstanding.model_validate(repaired)
 
+    assert _facts(frame)["mounting_length_mm"] == (180, "mm")
+
+
+def test_pump_dn_anchor_canonicalizes_connection_diameter() -> None:
+    repaired, _ = repair_grounded_semantic_payload(
+        _candidate(),
+        "DN25, монтажная длина 180 мм.",
+        authoritative_product_hints=(
+            {"canonical_type": "circulation_pump", "category": "pumps"},
+        ),
+        authoritative_dialogue_state=_active_state("circulation_pump", "pumps"),
+    )
+    frame = TurnUnderstanding.model_validate(repaired)
+
+    assert _facts(frame)["diameter_mm"] == (25, "mm")
     assert _facts(frame)["mounting_length_mm"] == (180, "mm")
 
 
@@ -838,6 +854,54 @@ def test_visible_scope_natural_compatibility_question_repairs_empty_frame() -> N
     validate_semantic_content_coverage(frame, "А этот подойдёт к третьему?", changes)
 
     assert [item.value for item in frame.acts] == ["compatibility"]
+    assert "visible_scope_compatibility_action_recovered" in changes
+
+
+def test_visible_scope_colloquial_compatibility_variants_recover_the_action() -> None:
+    for message in (
+        "Эта головка состыкуется со вторым клапаном?",
+        "Первый подходит к третьему?",
+        "Эти два товара будут работать вместе?",
+    ):
+        candidate = _candidate(acts=())
+        candidate["operation"] = "continue"
+        repaired, changes = repair_grounded_semantic_payload(
+            candidate,
+            message,
+            shown_product_cards=("FIRST", "SECOND", "THIRD"),
+            authoritative_dialogue_state=_active_state("radiator_valve", "radiator_fittings"),
+        )
+        frame = TurnUnderstanding.model_validate(repaired)
+
+        assert CustomerAct.COMPATIBILITY in frame.acts
+        assert "visible_scope_compatibility_action_recovered" in changes
+
+
+def test_malformed_llm_control_does_not_drop_visible_scope_compatibility() -> None:
+    """Pre-validation de-duplication must never crash on an object field.
+
+    A live interpreter response once supplied an object where a workflow
+    control evidence string belongs.  The malformed field is disposable; the
+    explicit relationship in the customer message and the delivered scope are
+    still enough to preserve the grounded Compatibility action.
+    """
+
+    candidate = _candidate(acts=())
+    candidate["operation"] = "continue"
+    candidate["workflow_controls"] = [
+        {"kind": "confirm", "evidence": {"raw": "первый и второй"}}
+    ]
+
+    repaired, changes = repair_grounded_semantic_payload(
+        candidate,
+        "Первый совместим со вторым?",
+        shown_product_cards=("FIRST", "SECOND", "THIRD"),
+        authoritative_dialogue_state=_active_state("ball_valve", "valves"),
+    )
+    frame = TurnUnderstanding.model_validate(repaired)
+
+    assert CustomerAct.COMPATIBILITY in frame.acts
+    assert "invalid_workflow_control_schema_dropped" in changes
     assert "visible_scope_compatibility_action_recovered" in changes
 
 

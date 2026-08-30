@@ -11,6 +11,7 @@ excerpt, or alter a value used by a gate.
 from __future__ import annotations
 
 from math import isfinite
+from dataclasses import dataclass
 
 
 _FACT_LABELS = {
@@ -49,6 +50,7 @@ _FACT_LABELS = {
     "power_kw": "мощность",
     "price": "цена",
     "radiator_heating_pressure_bar": "давление при радиаторном отоплении",
+    "resolved_sewer_joint_endpoint": "конкретная сторона канализационного соединения",
     "reinforcement": "тип армирования",
     "secondary_diameter_mm": "второй диаметр",
     "sewer_scope": "назначение канализации",
@@ -189,10 +191,71 @@ _IMPLIED_UNITS = {
 }
 
 
+@dataclass(frozen=True)
+class ClarificationPresentation:
+    """Customer wording for a checked missing contract fact.
+
+    The renderer chooses from this declarative table after planning has
+    already selected the fact.  It changes no requirement, priority or gate.
+    """
+
+    question: str
+    include_learn_instruction: bool = True
+
+
+_CLARIFICATION_PRESENTATIONS = {
+    "boiler_type": ClarificationPresentation(
+        "Какой котёл вам нужен: газовый или электрический?",
+        include_learn_instruction=False,
+    ),
+    "circuits": ClarificationPresentation(
+        "Котёл будет только отапливать дом или ещё готовить горячую воду? "
+        "Если горячую воду обеспечивает отдельный водонагреватель, тоже напишите.",
+        include_learn_instruction=False,
+    ),
+    "pipe_service": ClarificationPresentation(
+        "Для какого участка нужна труба: холодное или горячее водоснабжение, "
+        "отопление или канализация? Для канализации нужен отдельный тип трубы.",
+        include_learn_instruction=False,
+    ),
+    "diameter_mm": ClarificationPresentation(
+        "Какой размер присоединения или трубы нужен? Его обычно указывают на "
+        "старом насосе, трубе или в паспорте.",
+        include_learn_instruction=False,
+    ),
+    "mounting_length_mm": ClarificationPresentation(
+        "Какая монтажная длина нужна для установки насоса? Её можно посмотреть "
+        "на старом насосе или в его паспорте.",
+        include_learn_instruction=False,
+    ),
+    "connection_pattern": ClarificationPresentation(
+        "Какая резьба нужна с каждой стороны: внутренняя или наружная?"
+    ),
+    "power_kw": ClarificationPresentation(
+        "Какая проектная мощность отопления нужна? Если её нет, назовите "
+        "площадь дома — тогда покажу только предварительные варианты.",
+        include_learn_instruction=False,
+    ),
+}
+
+
 def public_fact_label(predicate: str | None, *, fallback: str = "характеристика товара") -> str:
     """Return Russian text for a canonical predicate without leaking its key."""
 
     return _FACT_LABELS.get(str(predicate or ""), fallback)
+
+
+def clarification_presentation(
+    predicate: str | None,
+) -> ClarificationPresentation:
+    """Return human-facing wording for an already chosen clarification fact."""
+
+    known = _CLARIFICATION_PRESENTATIONS.get(str(predicate or ""))
+    if known is not None:
+        return known
+    return ClarificationPresentation(
+        f"Подскажите, пожалуйста, {public_fact_label(predicate)}?"
+    )
 
 
 def public_value(value: object, predicate: str | None = None) -> str:

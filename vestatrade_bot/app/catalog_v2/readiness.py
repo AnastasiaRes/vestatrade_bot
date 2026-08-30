@@ -396,30 +396,62 @@ def assess_task_readiness(
         else:
             unavailable_preliminary_groups.append(group)
 
+    continue_with_confirmed_facts = any(
+        item.task_id == customer_task.task_id
+        and item.kind == SelectionControlKind.CONTINUE_WITH_CONFIRMED_FACTS
+        for item in dialogue_state.selection_controls
+    )
+    # An explicit terminal answer ("не знаю", "уточню позже", "не хочу
+    # сообщать") is a real decision by the customer.  Once identity anchors
+    # are known, it may end the questionnaire and authorise a safe preliminary
+    # result without requiring a second phrase such as "покажите по остальному".
+    terminal_fact_allows_preliminary = bool(unavailable)
+    preliminary_requested = (
+        continue_with_confirmed_facts or terminal_fact_allows_preliminary
+    )
+
+    # Unlike identity anchors above, these safety groups must never block an
+    # ordinary exact questionnaire.  They apply only when the buyer explicitly
+    # asks to see a preliminary shortlist (or declines a normal fact).  This
+    # keeps established exact pump selection backwards-compatible while
+    # ensuring that a preliminary pump list has both flow and head.
+    missing_preliminary_required: list[str] = []
+    unavailable_preliminary_required_groups: list[tuple[str, ...]] = []
+    if preliminary_requested and "sku" not in known_names:
+        for raw_group in product_contract.preliminary_required_fact_groups:
+            group = tuple(name for name in raw_group if name in definition_by_name)
+            if not group or any(name in known_names for name in group):
+                continue
+            still_askable = tuple(name for name in group if name not in terminal_names)
+            if still_askable:
+                missing_preliminary_required.append(still_askable[0])
+            else:
+                unavailable_preliminary_required_groups.append(group)
+
     unresolved_for_preliminary = tuple(dict.fromkeys((*missing, *unavailable)))
     can_show_preliminary = (
         not missing_preliminary_identity
         and not unavailable_preliminary_groups
+        and not missing_preliminary_required
+        and not unavailable_preliminary_required_groups
         and all(
             definition_by_name[name].preliminary_allowed_without
             for name in unresolved_for_preliminary
             if name in definition_by_name
         )
     )
-    continue_with_confirmed_facts = any(
-        item.task_id == customer_task.task_id
-        and item.kind == SelectionControlKind.CONTINUE_WITH_CONFIRMED_FACTS
-        for item in dialogue_state.selection_controls
-    )
-    # An explicit terminal answer («не знаю», «уточню позже», «не хочу
-    # сообщать») is a real decision by the customer.  Once identity anchors
-    # are known, it may end the questionnaire and authorise a safe preliminary
-    # result without requiring a second phrase such as «покажите по остальному».
-    terminal_fact_allows_preliminary = bool(unavailable)
     if conflicts:
         status = ReadinessStatus.BLOCKED
         question = None
         reasons = ("conflicting_contract_facts",)
+    elif preliminary_requested and missing_preliminary_required:
+        status = ReadinessStatus.NEEDS_DECISION_FACT
+        question = missing_preliminary_required[0]
+        reasons = ("preliminary_safety_fact_missing",)
+    elif preliminary_requested and unavailable_preliminary_required_groups:
+        status = ReadinessStatus.BLOCKED
+        question = None
+        reasons = ("preliminary_safety_fact_unavailable",)
     elif missing_preliminary_identity:
         status = ReadinessStatus.NEEDS_DECISION_FACT
         question = missing_preliminary_identity[0]
@@ -508,6 +540,10 @@ def assess_task_readiness(
         missing_preliminary_identity_facts=tuple(missing_preliminary_identity),
         unavailable_preliminary_identity_groups=tuple(
             unavailable_preliminary_groups
+        ),
+        missing_preliminary_required_facts=tuple(missing_preliminary_required),
+        unavailable_preliminary_required_groups=tuple(
+            unavailable_preliminary_required_groups
         ),
         recommended_question_fact=question,
         learn_method_code=learn,

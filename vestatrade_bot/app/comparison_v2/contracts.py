@@ -92,6 +92,10 @@ class ComparisonRequest(FrozenModel):
     ordered_skus: tuple[str, ...] = ()
     requested_predicates: tuple[str, ...] = ()
     criterion: ComparisonCriterion | None = None
+    # ``Сравните их`` asks for facts; ``что лучше?`` asks for a decision.
+    # Keep the distinction explicit so the renderer cannot turn every factual
+    # comparison into an unnecessary sales question.
+    needs_deciding_criterion: bool = False
     source_revision: str | None = None
     scope_origin: Literal["v2_delivered", "legacy_unversioned", "none"]
 

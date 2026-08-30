@@ -810,7 +810,11 @@ CONSTRAINT_FACT_ONTOLOGY: dict[str, tuple[dict[str, Any], ...]] = {
         {
             "name": "connection_pattern",
             "meaning": "male/female pattern for both ports",
-            "aliases": ["ВР-ВР", "ВР-НР", "НР-НР"],
+            "aliases": [
+                "ВР-ВР",
+                "ВР-НР",
+                "НР-НР",
+            ],
             "closed_values": [
                 {
                     "value": "female_female",
@@ -1080,12 +1084,21 @@ ACTION_ALIAS_ONTOLOGY: tuple[dict[str, Any], ...] = (
         "action": "compatibility",
         "aliases": [
             "совместим",
+            "совместимость",
             "подойдёт ли",
             "подойдет ли",
+            "подойдут ли",
             "подойдёт к",
             "подойдет к",
+            "подойдут к",
+            "подходит к",
             "можно соединить",
             "можно ли соединить",
+            "можно состыковать",
+            "состыкуется",
+            "стыкуется с",
+            "сочетается с",
+            "будут работать вместе",
         ],
     },
     {
