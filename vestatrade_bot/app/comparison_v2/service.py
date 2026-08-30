@@ -9,6 +9,7 @@ from app.answer_v2.contracts import AnswerSourceSnapshot, CatalogAnswerProduct
 from app.dialogue_v2.contracts import NextActionKind, TaskAct
 from app.dialogue_v2.controller import DialogueV2Outcome
 from app.models import SessionState
+from app.v2_presentation import public_fact_label
 
 from .contracts import (
     ComparisonCriterion,
@@ -22,23 +23,6 @@ from .contracts import (
     ComparisonValue,
 )
 
-
-_PREDICATE_LABELS = {
-    "price": "цена",
-    "availability": "наличие",
-    "installation_length_mm": "монтажная длина",
-    "operating_temperature_c": "рабочая температура",
-    "operating_pressure_bar": "рабочее давление",
-    "radiator_heating_pressure_bar": "давление для радиаторного отопления",
-    "max_head_m": "напор",
-    "max_flow_l_h": "расход",
-    "diameter_mm": "диаметр",
-    "reinforcement": "армирование",
-    "connection_pattern": "тип резьбового соединения",
-    "connection_size": "размер соединения",
-    "material": "материал",
-    "brand": "бренд",
-}
 
 # Identity fields are useful for source gates but are not meaningful comparison
 # dimensions.  Brand may be shown as a factual difference, but it must not be
@@ -215,7 +199,7 @@ def _dimension_from_products(
     return (
         ComparisonDimension(
             predicate=predicate,
-            label=_PREDICATE_LABELS.get(predicate, predicate),
+            label=public_fact_label(predicate),
             values=tuple(values),
             missing_skus=tuple(missing),
             missing_reason_codes=("catalogue_value_missing_or_ambiguous",) if missing else (),

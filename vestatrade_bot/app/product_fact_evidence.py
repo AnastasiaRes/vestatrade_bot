@@ -29,6 +29,7 @@ from app.sku_resolution import (
     extract_explicit_sku_tokens,
     resolve_catalog_sku,
 )
+from app.v2_presentation import format_public_fact_value, public_fact_label
 
 
 class FrozenModel(BaseModel):
@@ -1182,11 +1183,15 @@ def render_product_fact_evidence(evidence: ProductFactEvidence) -> str:
 
     if evidence.status == ProductFactStatus.ANSWERED and evidence.value is not None:
         label = spec.label if spec else _CARD_FACT_LABELS.get(
-            predicate, predicate.replace("_", " ")
+            predicate,
+            public_fact_label(predicate),
         )
-        value = str(evidence.value)
-        suffix = f" {evidence.unit}" if evidence.unit else ""
-        answer = f"{subject}. {label.capitalize()} — {value}{suffix}."
+        value = format_public_fact_value(
+            _display_value(evidence.value, predicate),
+            predicate=predicate,
+            unit=evidence.unit,
+        )
+        answer = f"{subject}. {label.capitalize()} — {value}."
         if (
             evidence.quote
             and evidence.document
@@ -1255,7 +1260,7 @@ def render_product_fact_evidence(evidence: ProductFactEvidence) -> str:
         else (
             "запрошенная характеристика"
             if predicate == "unsupported_product_fact"
-            else predicate.replace("_", " ")
+            else public_fact_label(predicate)
         )
     )
     return (

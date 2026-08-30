@@ -12,6 +12,7 @@ from app.sku_resolution import (
     extract_explicit_sku_tokens,
     resolve_catalog_sku,
 )
+from app.v2_presentation import format_public_fact_value, public_fact_label
 from app.dialogue_v2.contracts import (
     ConstraintFactV2,
     ConstraintPolarity,
@@ -45,58 +46,12 @@ from .contracts import (
 )
 
 
-_PRESENTATION_FACT_LABELS = {
-    "connection_pattern": "тип резьбы",
-    "connection_size": "размер соединения",
-    "diameter_mm": "диаметр",
-    "secondary_diameter_mm": "второй диаметр",
-    "mounting_length_mm": "монтажная длина",
-    "operating_temperature_c": "рабочая температура",
-    "operating_pressure_bar": "рабочее давление",
-    "max_head_m": "напор",
-    "max_flow_l_h": "расход",
-    "power_kw": "мощность",
-    "area_m2": "отапливаемая площадь",
-    "declared_heated_area_m2": "заявленная отапливаемая площадь",
-    "pipe_service": "назначение трубы",
-    "reinforcement": "тип армирования",
-    "sewer_scope": "участок канализации",
-    "material": "материал",
-    "boiler_type": "тип котла",
-    "circuits": "количество контуров",
-    "combustion_chamber": "камера сгорания",
-    "center_distance_mm": "межосевое расстояние",
-}
-
-_PRESENTATION_VALUES = {
-    "female_female": "ВР/ВР — внутренняя/внутренняя",
-    "female_male": "ВР/НР — внутренняя/наружная",
-    "male_female": "НР/ВР — наружная/внутренняя",
-    "male_male": "НР/НР — наружная/наружная",
-    "glass_fiber": "стекловолокно",
-    "aluminium": "алюминий",
-    "unreinforced": "без армирования",
-    "heating": "отопление",
-    "cold_water": "холодная вода",
-    "hot_water": "горячая вода",
-    "internal": "внутренняя канализация",
-    "external": "наружная канализация",
-    "gas": "газовый",
-    "electric": "электрический",
-    "closed": "закрытая",
-    "open": "открытая",
-}
-
-
 def _presentation_label(fact_name: str) -> str:
-    return _PRESENTATION_FACT_LABELS.get(fact_name, fact_name.replace("_", " "))
+    return public_fact_label(fact_name)
 
 
 def _presentation_value(value: object, unit: str | None) -> str:
-    raw = _PRESENTATION_VALUES.get(str(value), str(value))
-    if unit:
-        return f"{raw} {unit}"
-    return raw
+    return format_public_fact_value(value, unit=unit)
 
 
 def _exact_source_fact(source, fact_name: str):

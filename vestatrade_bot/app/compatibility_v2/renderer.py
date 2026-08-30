@@ -2,31 +2,17 @@
 
 from __future__ import annotations
 
+from app.v2_presentation import (
+    format_public_fact_value,
+    public_fact_label,
+    public_missing_predicate_label,
+)
+
 from .contracts import CompatibilityRelationKind, CompatibilityResult, CompatibilityResultStatus
 
 
-_LABELS = {
-    "control_thread": "посадочная резьба термоголовки",
-    "connection_size": "размер резьбового соединения",
-    "connection_pattern": "тип резьбового соединения",
-    "diameter_mm": "номинальный диаметр",
-    "sewer_scope": "назначение канализации",
-    "sewer_system_family": "система канализации",
-    "integrated_circulation_pump": "встроенный циркуляционный насос",
-}
-_VALUE_LABELS = {
-    "female_female": "внутренняя–внутренняя",
-    "female_male": "внутренняя–наружная",
-    "male_female": "наружная–внутренняя",
-    "male_male": "наружная–наружная",
-    "internal": "внутренняя",
-    "external": "наружная",
-}
-
-
-def _value(value: object, unit: str | None) -> str:
-    rendered = _VALUE_LABELS.get(str(value), str(value))
-    return f"{rendered} {unit}".strip() if unit else rendered
+def _value(value: object, unit: str | None, predicate: str) -> str:
+    return format_public_fact_value(value, predicate=predicate, unit=unit)
 
 
 def _facts(result: CompatibilityResult) -> list[str]:
@@ -36,9 +22,9 @@ def _facts(result: CompatibilityResult) -> list[str]:
         if len(values) != 2:
             continue
         lines.append(
-            f"• {_LABELS.get(predicate, predicate)}: "
-            f"{values[0].sku} — {_value(values[0].value, values[0].unit)}; "
-            f"{values[1].sku} — {_value(values[1].value, values[1].unit)}."
+            f"• {public_fact_label(predicate, fallback='характеристика соединения')}: "
+            f"{values[0].sku} — {_value(values[0].value, values[0].unit, predicate)}; "
+            f"{values[1].sku} — {_value(values[1].value, values[1].unit, predicate)}."
         )
     return lines
 
@@ -116,10 +102,7 @@ def render_compatibility_result(result: CompatibilityResult) -> str:
             f"Для {pair} пока нет безопасного правила проверки этого типа соединения. "
             "Нужны точные данные интерфейса обеих сторон; случайный переходник не назначаю."
         )
-    missing = ", ".join(
-        item.split(":", 1)[-1].replace("_", " ")
-        for item in result.missing_predicates
-    )
+    missing = ", ".join(public_missing_predicate_label(item) for item in result.missing_predicates)
     return (
         f"Для {pair} недостаточно подтверждённых данных о соединении"
         + (f": {missing}." if missing else ".")

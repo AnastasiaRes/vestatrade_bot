@@ -9,54 +9,20 @@ from __future__ import annotations
 
 from app.catalog_v2.contracts import SelectionFactInput, SelectionResult
 from app.models import ChatProductGroup
-
-
-_FACT_LABELS = {
-    "connection_pattern": "тип резьбы",
-    "connection_size": "размер соединения",
-    "diameter_mm": "диаметр",
-    "secondary_diameter_mm": "второй диаметр",
-    "mounting_length_mm": "монтажную длину",
-    "operating_temperature_c": "рабочую температуру",
-    "operating_pressure_bar": "рабочее давление",
-    "max_head_m": "напор",
-    "max_flow_l_h": "расход",
-    "power_kw": "мощность",
-    "area_m2": "отапливаемая площадь",
-    "declared_heated_area_m2": "заявленная отапливаемая площадь",
-    "pipe_service": "назначение трубы",
-    "reinforcement": "тип армирования",
-    "sewer_scope": "участок канализации",
-    "material": "материал",
-    "boiler_type": "тип котла",
-    "circuits": "количество контуров",
-    "combustion_chamber": "камеру сгорания",
-    "center_distance_mm": "межосевое расстояние",
-}
+from app.v2_presentation import format_public_fact_value, public_fact_label
 
 
 def _label(fact_name: str) -> str:
-    return _FACT_LABELS.get(fact_name, fact_name.replace("_", " "))
+    return public_fact_label(fact_name)
 
 
 def _fact_value(fact: SelectionFactInput) -> str:
-    if fact.name == "boiler_type":
-        return {"gas": "газовый", "electric": "электрический"}.get(
-            str(fact.value),
-            str(fact.value),
-        )
-    if fact.name == "circuits":
-        return {"1": "один контур", "2": "два контура"}.get(
-            str(fact.value),
-            str(fact.value),
-        )
-    value = str(fact.value)
-    unit = {
-        "m2": "м²",
-        "kW": "кВт",
-        "kw": "кВт",
-    }.get(fact.unit, fact.unit)
-    return f"{value} {unit}" if unit else value
+    return format_public_fact_value(
+        fact.value,
+        predicate=fact.name,
+        unit=fact.unit,
+        imply_unit=True,
+    )
 
 
 def _variant_word(count: int) -> str:

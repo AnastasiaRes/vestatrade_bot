@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
+from app.v2_presentation import format_public_fact_value, public_fact_label
+
 from .contracts import ComparisonResult, ComparisonResultStatus
 
 
-def _value(value: object, unit: str | None) -> str:
-    if isinstance(value, float) and value.is_integer():
-        value = int(value)
-    if unit == "RUB":
-        return f"{value} ₽"
-    return f"{value} {unit}".strip() if unit else str(value)
+def _value(
+    value: object,
+    unit: str | None,
+    predicate: str | None = None,
+    *,
+    source_value: str | None = None,
+) -> str:
+    # The canonical snapshot normalizes brand values for matching.  Their
+    # original card spelling is still evidence-bound in the source reference
+    # and is what a customer should see (``Wilo``, not ``wilo``).
+    presented = source_value if predicate == "brand" and source_value else value
+    return format_public_fact_value(presented, predicate=predicate, unit=unit)
 
 
 def _reference_list(result: ComparisonResult, names: dict[str, str]) -> list[str]:
@@ -20,10 +28,26 @@ def _reference_list(result: ComparisonResult, names: dict[str, str]) -> list[str
     ]
 
 
-def _dimension_values(dimension, ordinal_by_sku: dict[str, int]) -> str:
+def _dimension_values(
+    dimension,
+    ordinal_by_sku: dict[str, int],
+    source_values: dict[str, str | None],
+) -> str:
     return "; ".join(
-        f"{ordinal_by_sku.get(item.sku, item.sku)} — {_value(item.value, item.unit)}"
+        f"{ordinal_by_sku.get(item.sku, item.sku)} — "
+        f"{_value(item.value, item.unit, item.predicate, source_value=_source_value(item, source_values))}"
         for item in dimension.values
+    )
+
+
+def _source_value(item, source_values: dict[str, str | None]) -> str | None:
+    return next(
+        (
+            source_values.get(source_id)
+            for source_id in item.source_ref_ids
+            if source_values.get(source_id)
+        ),
+        None,
     )
 
 
@@ -43,6 +67,10 @@ def render_comparison_result(result: ComparisonResult, *, names: dict[str, str])
     ordinal_by_sku = {
         sku: index for index, sku in enumerate(result.compared_skus, start=1)
     }
+    source_values = {
+        item.source_ref_id: item.raw_value
+        for item in result.sources
+    }
     if result.recommendation is not None:
         winner = result.recommendation.sku
         price_dimension = next(
@@ -56,7 +84,7 @@ def render_comparison_result(result: ComparisonResult, *, names: dict[str, str])
         if price is not None:
             return (
                 f"Из показанных дешевле {names.get(winner, winner)} ({winner}) — "
-                f"{_value(price.value, price.unit)}."
+                f"{_value(price.value, price.unit, price.predicate, source_value=_source_value(price, source_values))}."
             )
 
     lines = ["Сравнение показанных вариантов:", *_reference_list(result, names)]
@@ -65,12 +93,16 @@ def render_comparison_result(result: ComparisonResult, *, names: dict[str, str])
             continue
         lines.append(
             f"• {dimension.label.capitalize()}: "
-            f"{_dimension_values(dimension, ordinal_by_sku)}."
+            f"{_dimension_values(dimension, ordinal_by_sku, source_values)}."
         )
         if dimension.missing_skus:
             lines.append("  Для части позиций значение в карточке не подтверждено.")
     if result.missing_data:
-        lines.append("Не хватает подтверждённых данных по: " + ", ".join(result.missing_data) + ".")
+        lines.append(
+            "Не хватает подтверждённых данных о характеристиках: "
+            + ", ".join(public_fact_label(item) for item in result.missing_data)
+            + "."
+        )
     if result.deciding_question:
         lines.append(result.deciding_question)
     return "\n".join(lines)
