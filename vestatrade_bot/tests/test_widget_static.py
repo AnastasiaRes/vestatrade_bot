@@ -1,13 +1,32 @@
 from __future__ import annotations
 
+import asyncio
 from collections import Counter
 
+import pytest
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
+from app import main
 from app.main import app
 
 
 client = TestClient(app)
+
+
+def _preview_request(client_host: str) -> Request:
+    return Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/widget-v2-preview",
+            "headers": [],
+            "query_string": b"",
+            "server": ("127.0.0.1", 8010),
+            "client": (client_host, 34567),
+            "scheme": "http",
+        }
+    )
 
 
 def test_widget_loader_is_served() -> None:
@@ -37,6 +56,28 @@ def test_widget_demo_is_served() -> None:
 
     misspellings = ("шаровои", "сталная", "пазови", "кансультанта", "свезаться", "минеджером")
     assert not any(misspelling in response.text.lower() for misspelling in misspellings)
+
+
+def test_local_v2_preview_widget_is_loopback_only_and_no_store(monkeypatch) -> None:
+    monkeypatch.setattr(main.settings, "dialogue_v2_local_preview_enabled", True)
+    monkeypatch.setattr(main.settings, "dialogue_v2_qa_controls_enabled", True)
+    monkeypatch.setattr(main.settings, "dialogue_v2_qa_control_token", "qa-test-token")
+
+    response = asyncio.run(main.widget_v2_preview(_preview_request("127.0.0.1")))
+    page = response.body.decode("utf-8")
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store, max-age=0"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert '"dialogueMode": "v2_preview"' in page
+    assert '"qaToken": "qa-test-token"' in page
+    assert 'data-title="AI-консультант — V2 Preview"' in page
+    assert 'data-subtitle="Локальный защищённый режим"' in page
+    assert "/widget-loader.js" in page
+
+    with pytest.raises(main.HTTPException) as captured:
+        asyncio.run(main.widget_v2_preview(_preview_request("198.51.100.10")))
+    assert captured.value.status_code == 404
 
 
 def test_widget_demo_catalog_is_served() -> None:

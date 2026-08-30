@@ -159,6 +159,8 @@ def build_answer_source_snapshot(
                             (
                                 document.filename,
                                 document.document_kind,
+                                document.binding_scope,
+                                str(document.binding_value),
                                 hashlib.sha256(
                                     document.text.encode("utf-8")
                                 ).hexdigest(),

@@ -59,6 +59,26 @@ class InterfaceSourceKind(str, Enum):
     PASSPORT = "passport"
 
 
+class InterfaceEndpoint(str, Enum):
+    """A relation surface, not an inferred physical port number.
+
+    The first V2 profiles only name a surface where the supplied evidence is
+    genuinely about one interface.  Multi-port products remain insufficient
+    until a later profile resolves an actual port.
+    """
+
+    THERMOSTATIC_CONTROL = "thermostatic_control"
+    THREADED_CONNECTION = "threaded_connection"
+    SEWER_JOINT = "sewer_joint"
+    INTEGRATED_CIRCULATION_PUMP = "integrated_circulation_pump"
+
+
+class InterfaceFactResolutionStatus(str, Enum):
+    PROVEN = "proven"
+    INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+    SOURCE_CONFLICT = "source_conflict"
+
+
 class CompatibilityProductReference(FrozenModel):
     kind: CompatibilityReferenceKind
     raw: str = ""
@@ -80,6 +100,36 @@ class InterfaceFact(FrozenModel):
     section: str | None = None
     excerpt: str
     verifier_status: str
+    endpoint: InterfaceEndpoint | None = None
+    # Exact model binding, a series-prefix binding, etc.  This follows the
+    # document attachment; it never comes from the LLM answer.
+    model_scope: str | None = None
+
+
+class InterfaceFactResolution(FrozenModel):
+    """All checked observations for one ``SKU + predicate + endpoint`` query."""
+
+    sku: str
+    predicate: str
+    endpoint: InterfaceEndpoint | None = None
+    status: InterfaceFactResolutionStatus
+    selected_fact: InterfaceFact | None = None
+    observations: tuple[InterfaceFact, ...] = ()
+    reason_codes: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def resolution_is_coherent(self) -> "InterfaceFactResolution":
+        if self.status == InterfaceFactResolutionStatus.PROVEN:
+            if self.selected_fact is None or not self.observations:
+                raise ValueError("proven interface fact requires selected evidence")
+        if self.status == InterfaceFactResolutionStatus.SOURCE_CONFLICT:
+            # A card can itself declare one interface attribute ambiguous
+            # before there are two safely representable values to expose.
+            # Keep that conflict typed instead of turning a defensive refusal
+            # into a model-validation exception.
+            if not self.reason_codes:
+                raise ValueError("source conflict requires a reason code")
+        return self
 
 
 class CompatibilityRequest(FrozenModel):
@@ -108,6 +158,10 @@ class CompatibilityResult(FrozenModel):
     source_revision: str | None = None
     interface_predicates: tuple[str, ...] = ()
     facts: tuple[InterfaceFact, ...] = ()
+    # ``facts`` are the selected values used by the deterministic relation
+    # rule.  ``observations`` retains every checked card/passport statement so
+    # a conflict cannot be hidden by source priority.
+    observations: tuple[InterfaceFact, ...] = ()
     missing_predicates: tuple[str, ...] = ()
     reason_codes: tuple[str, ...] = ()
     outcome_gate_passed: bool = False

@@ -12,6 +12,8 @@ from app.catalog_v2.registry import ProductContractRegistry
 from app.compatibility_v2.contracts import (
     CompatibilityRelationKind,
     CompatibilityResultStatus,
+    InterfaceFactResolutionStatus,
+    InterfaceSourceKind,
 )
 from app.compatibility_v2.renderer import render_compatibility_result
 from app.compatibility_v2.service import (
@@ -33,6 +35,10 @@ from app.dialogue_v2.contracts import (
 from app.dialogue_v2.controller import DialogueV2Outcome
 from app.dialogue_v2.seller_policy import SellerPolicy
 from app.models import Product, ProductCard, ProductDocument, SessionState
+from app.product_fact_evidence import (
+    PassportEvidenceResult,
+    PassportEvidenceStatus,
+)
 
 
 def _fact(name: str, value: object, unit: str | None = None) -> CatalogFact:
@@ -94,7 +100,7 @@ def _snapshot() -> AnswerSourceSnapshot:
             ),
             _product(
                 "THREAD.11.00",
-                "Кран 1/2 ВР-ВР",
+                "Кран G1/2 ВР-ВР",
                 ProductKind.BALL_VALVE,
                 (
                     _fact("connection_size", "1/2", "inch"),
@@ -103,7 +109,7 @@ def _snapshot() -> AnswerSourceSnapshot:
             ),
             _product(
                 "THREAD.22.00",
-                "Ниппель 1/2 НР-НР",
+                "Ниппель G1/2 НР-НР",
                 ProductKind.COUPLING,
                 (
                     _fact("connection_size", "1/2", "inch"),
@@ -112,7 +118,7 @@ def _snapshot() -> AnswerSourceSnapshot:
             ),
             _product(
                 "THREAD.33.00",
-                "Кран 1/2 ВР-ВР второй",
+                "Кран G1/2 ВР-ВР второй",
                 ProductKind.BALL_VALVE,
                 (
                     _fact("connection_size", "1/2", "inch"),
@@ -210,6 +216,29 @@ def _result(message: str, session: SessionState | None = None):
     return request, result
 
 
+class _PassportStub:
+    def __init__(self, quote: str) -> None:
+        self.quote = quote
+        self.calls = 0
+
+    def answer(self, *_args, **kwargs) -> PassportEvidenceResult:
+        self.calls += 1
+        documents = tuple(kwargs["document_scope"])
+        return PassportEvidenceResult(
+            status=PassportEvidenceStatus.ANSWERED,
+            quote=self.quote,
+            document=documents[0],
+            section="технические характеристики",
+            verifier_status="accepted",
+            document_scope=documents,
+        )
+
+
+class _EvidenceStub:
+    def __init__(self, passport_service: _PassportStub) -> None:
+        self.passport_service = passport_service
+
+
 def test_partial_sku_head_and_exact_valve_are_resolved_and_proven() -> None:
     request, result = _result("Подойдёт ли VT.1500 к VT.048.N.04?")
 
@@ -230,6 +259,133 @@ def test_thermostatic_thread_mismatch_is_incompatible_not_a_brand_guess() -> Non
     assert result.reason_codes == ("thermostatic_control_thread_mismatch",)
 
 
+def test_exact_bound_passport_is_aggregated_with_card_before_head_verdict() -> None:
+    snapshot = _snapshot()
+    source_head = Product(
+        sku="VT.1500.0.0",
+        name="Термоголовка VALTEC VT.1500",
+        documents=[
+            ProductDocument(
+                filename="head-passport.pdf",
+                document_kind="passport",
+                text="Присоединительная резьба M30×1,5.",
+                binding_scope="exact_sku",
+                binding_value="VT.1500.0.0",
+            )
+        ],
+    )
+    passport = _PassportStub("Присоединительная резьба M30×1,5.")
+    service = InterfaceFactService(
+        snapshot,
+        product_fact_evidence=_EvidenceStub(passport),  # type: ignore[arg-type]
+        products=[source_head],
+    )
+
+    resolution = service.observe("VT.1500.0.0", "control_thread")
+
+    assert resolution.status == InterfaceFactResolutionStatus.PROVEN
+    assert resolution.selected_fact is not None
+    assert resolution.selected_fact.source_kind == InterfaceSourceKind.PASSPORT
+    assert resolution.selected_fact.value == "M30x1.5"
+    assert {item.source_kind for item in resolution.observations} == {
+        InterfaceSourceKind.CATALOG_ATTRIBUTE,
+        InterfaceSourceKind.PASSPORT,
+    }
+    assert passport.calls == 1
+
+    request = build_compatibility_request(
+        _outcome(),
+        SessionState(session_id="interface-observation"),
+        snapshot,
+        original_utterance="Подойдёт ли VT.1500 к VT.048.N.04?",
+    )
+    assert request is not None
+    result = validate_compatibility_result(
+        request,
+        build_compatibility_result(request, snapshot, interface_facts=service),
+        snapshot,
+    )
+
+    assert result.status == CompatibilityResultStatus.COMPATIBLE
+    assert result.outcome_gate_passed is True
+    assert len(result.observations) == 3
+    assert any(item.source_kind == InterfaceSourceKind.PASSPORT for item in result.observations)
+
+
+def test_passport_card_thread_disagreement_is_source_conflict_not_card_priority() -> None:
+    snapshot = _snapshot()
+    source_head = Product(
+        sku="VT.1500.0.0",
+        name="Термоголовка VALTEC VT.1500",
+        documents=[
+            ProductDocument(
+                filename="head-passport.pdf",
+                document_kind="passport",
+                text="Присоединительная резьба M28×1,5.",
+                binding_scope="exact_sku",
+                binding_value="VT.1500.0.0",
+            )
+        ],
+    )
+    service = InterfaceFactService(
+        snapshot,
+        product_fact_evidence=_EvidenceStub(
+            _PassportStub("Присоединительная резьба M28×1,5.")
+        ),  # type: ignore[arg-type]
+        products=[source_head],
+    )
+    request = build_compatibility_request(
+        _outcome(),
+        SessionState(session_id="interface-conflict"),
+        snapshot,
+        original_utterance="Подойдёт ли VT.1500 к VT.048.N.04?",
+    )
+    assert request is not None
+    result = validate_compatibility_result(
+        request,
+        build_compatibility_result(request, snapshot, interface_facts=service),
+        snapshot,
+    )
+
+    assert result.status == CompatibilityResultStatus.SOURCE_CONFLICT
+    assert result.outcome_gate_passed is True
+    assert {item.value for item in result.observations if item.sku == "VT.1500.0.0"} == {
+        "M28x1.5",
+        "M30x1.5",
+    }
+
+
+def test_series_bound_passport_cannot_upgrade_model_specific_interface_verdict() -> None:
+    snapshot = _snapshot()
+    source_head = Product(
+        sku="VT.1500.0.0",
+        name="Термоголовка VALTEC VT.1500",
+        documents=[
+            ProductDocument(
+                filename="head-series.pdf",
+                document_kind="passport",
+                text="Присоединительная резьба M30×1,5.",
+                binding_scope="sku_prefix",
+                binding_value="VT.1500",
+            )
+        ],
+    )
+    passport = _PassportStub("Присоединительная резьба M30×1,5.")
+    service = InterfaceFactService(
+        snapshot,
+        product_fact_evidence=_EvidenceStub(passport),  # type: ignore[arg-type]
+        products=[source_head],
+    )
+
+    resolution = service.observe("VT.1500.0.0", "control_thread")
+
+    assert resolution.status == InterfaceFactResolutionStatus.PROVEN
+    assert len(resolution.observations) == 1
+    assert resolution.selected_fact is not None
+    assert resolution.selected_fact.source_kind == InterfaceSourceKind.CATALOG_ATTRIBUTE
+    assert passport.calls == 0
+
+
 def test_threaded_connection_requires_complementary_size_and_gender() -> None:
     _, compatible = _result("Можно соединить THREAD.11.00 и THREAD.22.00?")
     _, incompatible = _result("Можно соединить THREAD.11.00 и THREAD.33.00?")
@@ -237,6 +393,113 @@ def test_threaded_connection_requires_complementary_size_and_gender() -> None:
     assert compatible.status == CompatibilityResultStatus.COMPATIBLE
     assert incompatible.status == CompatibilityResultStatus.INCOMPATIBLE
     assert incompatible.reason_codes == ("thread_connection_pattern_not_mating",)
+
+
+def test_threaded_connection_without_explicit_standard_is_not_positive() -> None:
+    original = _snapshot()
+    snapshot = original.model_copy(
+        update={
+            "products": tuple(
+                item.model_copy(update={"name": item.name.replace("G1/2 ", "")})
+                if item.sku in {"THREAD.11.00", "THREAD.22.00"}
+                else item
+                for item in original.products
+            )
+        }
+    )
+    request = build_compatibility_request(
+        _outcome(),
+        SessionState(session_id="thread-standard-missing"),
+        snapshot,
+        original_utterance="Можно соединить THREAD.11.00 и THREAD.22.00?",
+    )
+    assert request is not None
+    result = validate_compatibility_result(
+        request, build_compatibility_result(request, snapshot), snapshot
+    )
+
+    assert result.status == CompatibilityResultStatus.INSUFFICIENT_EVIDENCE
+    assert result.outcome_gate_passed is True
+    assert set(result.missing_predicates) == {
+        "THREAD.11.00:thread_standard",
+        "THREAD.22.00:thread_standard",
+    }
+    assert render_compatibility_result(result).count("стандарт резьбы") == 1
+
+
+def test_five_digit_article_is_resolved_only_inside_source_bound_compatibility() -> None:
+    original = _snapshot()
+    pump = _product(
+        "53843",
+        "Насос циркуляционный 25-40",
+        ProductKind.CIRCULATION_PUMP,
+        (),
+    )
+    boiler = _product(
+        "8216262000",
+        "Котёл электрический",
+        ProductKind.ELECTRIC_BOILER,
+        (),
+    )
+    snapshot = original.model_copy(update={"products": (*original.products, pump, boiler)})
+    request = build_compatibility_request(
+        _outcome(),
+        SessionState(session_id="five-digit-compatibility"),
+        snapshot,
+        original_utterance="Подойдет ли насос 53843 к котлу 8216262000?",
+    )
+
+    assert request is not None
+    assert request.left.canonical_sku == "53843"
+    assert request.right.canonical_sku == "8216262000"
+    assert request.left.reason_code == "explicit_exact_sku"
+    assert request.right.reason_code == "explicit_exact_sku"
+
+
+def test_multiport_threaded_item_requires_a_resolved_endpoint() -> None:
+    original = _snapshot()
+    left = original.product("THREAD.11.00")
+    assert left is not None
+    snapshot = original.model_copy(
+        update={
+            "products": tuple(
+                item.model_copy(update={"facts": (*item.facts, _fact("port_count", 3))})
+                if item.sku == "THREAD.11.00"
+                else item
+                for item in original.products
+            )
+        }
+    )
+    request = build_compatibility_request(
+        _outcome(),
+        SessionState(session_id="threaded-multiport"),
+        snapshot,
+        original_utterance="Можно соединить THREAD.11.00 и THREAD.22.00?",
+    )
+    assert request is not None
+    result = validate_compatibility_result(
+        request, build_compatibility_result(request, snapshot), snapshot
+    )
+
+    assert result.status == CompatibilityResultStatus.INSUFFICIENT_EVIDENCE
+    assert result.outcome_gate_passed is True
+    assert result.reason_codes == ("threaded_multiport_endpoint_not_determined",)
+
+
+def test_outcome_gate_recomputes_threaded_verdict_from_selected_evidence() -> None:
+    request, result = _result("Можно соединить THREAD.11.00 и THREAD.22.00?")
+    assert result.status == CompatibilityResultStatus.COMPATIBLE
+    forged = result.model_copy(
+        update={
+            "status": CompatibilityResultStatus.INCOMPATIBLE,
+            "reason_codes": ("thread_connection_pattern_not_mating",),
+        }
+    )
+
+    checked = validate_compatibility_result(request, forged, _snapshot())
+
+    assert checked.outcome_gate_passed is False
+    assert "compatibility_verdict_not_recomputed_from_evidence" in checked.reason_codes
 
 
 def test_sewer_identity_fallback_proves_dn_from_explicit_ht_marking() -> None:
@@ -306,10 +569,11 @@ def test_pump_boiler_reads_attached_passport_before_requesting_hydraulic_prechec
         name="Котёл 24 кВт",
         category_path="Котлы",
         documents=[
-            ProductDocument(
-                filename="boiler-passport.pdf",
-                document_kind="passport",
-                text="Котёл оборудован встроенным циркуляционным насосом.",
+                ProductDocument(
+                    filename="boiler-passport.pdf",
+                    document_kind="passport",
+                    text="Котёл оборудован встроенным циркуляционным насосом.",
+                    binding_scope="exact_sku",
             )
         ],
     )
@@ -364,10 +628,11 @@ def test_pump_boiler_card_and_passport_conflict_fails_closed() -> None:
         category_path="Котлы",
         description="Котёл со встроенным циркуляционным насосом.",
         documents=[
-            ProductDocument(
-                filename="boiler-passport.pdf",
-                document_kind="passport",
-                text="Циркуляционный насос в изделие не встроен.",
+                ProductDocument(
+                    filename="boiler-passport.pdf",
+                    document_kind="passport",
+                    text="Циркуляционный насос в изделие не встроен.",
+                    binding_scope="exact_sku",
             )
         ],
     )

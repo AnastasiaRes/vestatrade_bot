@@ -857,6 +857,60 @@ def test_compatibility_action_is_not_invented_without_multi_card_scope() -> None
     assert "visible_scope_compatibility_action_recovered" not in changes
 
 
+def test_explicit_pair_compatibility_recovers_before_direct_fact_routing() -> None:
+    """Two concrete articles are enough to preserve the relationship action.
+
+    Resolution still happens only in CompatibilityRequest against its source
+    snapshot; this repair cannot make an arbitrary numeric span a product.
+    """
+
+    candidate = _candidate(acts=("explain",))
+    candidate["operation"] = "continue"
+
+    repaired, changes = repair_grounded_semantic_payload(
+        candidate,
+        "Подойдет ли насос 53843 к котлу 8216262000?",
+        authoritative_dialogue_state=_active_state("circulation_pump", "pumps"),
+    )
+    frame = TurnUnderstanding.model_validate(repaired)
+    validate_semantic_content_coverage(
+        frame,
+        "Подойдет ли насос 53843 к котлу 8216262000?",
+        changes,
+    )
+
+    assert [item.value for item in frame.acts] == ["explain", "compatibility"]
+    assert "explicit_pair_compatibility_action_recovered" in changes
+
+
+def test_five_digit_article_in_compatibility_product_evidence_is_not_a_fake_fact() -> None:
+    candidate = _candidate(acts=("compatibility",))
+    candidate["operation"] = "continue"
+    candidate["products"] = [
+        {
+            "text": "насос 53843",
+            "canonical_type": "circulation_pump",
+            "category": "pumps",
+            "role": "existing",
+            "evidence": "насос 53843",
+        },
+        {
+            "text": "котлу 8216262000",
+            "canonical_type": "electric_boiler",
+            "category": "boilers",
+            "role": "existing",
+            "evidence": "котлу 8216262000",
+        },
+    ]
+    repaired, _ = repair_grounded_semantic_payload(
+        candidate,
+        "Подойдет ли насос 53843 к котлу 8216262000?",
+    )
+    frame = TurnUnderstanding.model_validate(repaired)
+
+    validate_product_modifier_coverage(frame)
+
+
 def test_generic_typed_product_question_recovers_selection_not_product_fact() -> None:
     candidate = _candidate(acts=("select", "explain"))
     candidate["products"] = [

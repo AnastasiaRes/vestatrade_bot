@@ -67,6 +67,9 @@ SEMANTIC_INTERPRETER_PROMPT = """
   «чем они отличаются», «в чём разница», «какие отличия» и «сравните их» —
   это compare по уже показанным карточкам, а не explain и не возвращение к
   анкете; не выбирай победителя без явно названного критерия;
+- явный вопрос «подойдёт ли X к Y», «можно соединить X и Y» или «совместимы
+  ли X и Y» — это compatibility, а не explain, если покупатель назвал две
+  конкретные позиции; сам не выбирай эти позиции и не выноси вердикт;
 - «какой/какую ... смотреть, подобрать, посоветовать» о ещё не определённом
   типе товара — select, а не explain: вопрос о характеристике требует
   одновременно предмета и характеристики;
@@ -1817,6 +1820,34 @@ _EXPLICIT_CALCULATION_RE = re.compile(
 _VISIBLE_SCOPE_COMPATIBILITY_RE = re.compile(
     rf"(?iu)(?<![\w-])(?:{_COMPATIBILITY_ACTION_ALIAS_PATTERN})(?![\w-])"
 )
+# A five-digit number is normally too broad to declare a SKU globally: it may
+# be a measurement or an address fragment.  In the very narrow context of an
+# explicit two-sided compatibility request it is only an *action anchor*.
+# Identity is still resolved later, against the frozen source snapshot, by the
+# existing Compatibility request builder.  This lets valid catalogue articles
+# such as ``53843`` reach that safe resolver without expanding general SKU
+# extraction or allowing the semantic layer to select a product.
+_COMPATIBILITY_NUMERIC_REFERENCE_RE = re.compile(r"(?<!\d)\d{5,}(?!\d)")
+
+
+def _explicit_compatibility_reference_count(message: str) -> int:
+    """Count only high-precision identity-shaped spans for action recovery.
+
+    This intentionally does *not* resolve an item or mutate product scope.
+    Structured SKU-shaped spans use the shared extractor's conservative
+    grammar.  A five-digit numeric span is admitted solely for an explicit
+    two-sided compatibility phrase because some current catalogue articles
+    have five digits; the request builder subsequently proves its existence
+    against the source snapshot before any compatibility rule can execute.
+    """
+
+    structured = [
+        match.group(0)
+        for match in _MIXED_IDENTIFIER_TOKEN_RE.finditer(message)
+        if "." in match.group(0) and any(char.isdigit() for char in match.group(0))
+    ]
+    numeric = [match.group(0) for match in _COMPATIBILITY_NUMERIC_REFERENCE_RE.finditer(message)]
+    return len(dict.fromkeys((*structured, *numeric)))
 # The modifier-coverage gate checks product evidence syntactically.  A count
 # in a total-price request is commercial input, not a hidden characteristic of
 # the product.  This deliberately recognises only an explicit count/length
@@ -5198,6 +5229,19 @@ def validate_product_modifier_coverage(
             match.span()
             for match in _NUMERIC_ARTICLE_TOKEN_RE.finditer(evidence)
         )
+        # Compatibility is a bounded two-sided identity operation.  Some
+        # catalogue articles have five digits (for example ``53843``), while
+        # the general identity grammar correctly requires six to avoid turning
+        # ordinary measurements into products.  When the typed action is
+        # already compatibility, preserve such a span as a possible identity
+        # rather than demanding the LLM invent an engineering constraint for
+        # it.  The source-bound Compatibility builder still has to resolve it
+        # exactly before any two-product rule runs.
+        if CustomerAct.COMPATIBILITY in understanding.acts:
+            exempt_spans.extend(
+                match.span()
+                for match in _COMPATIBILITY_NUMERIC_REFERENCE_RE.finditer(evidence)
+            )
         if _LATIN_WORD_RE.search(evidence):
             exempt_spans.extend(
                 match.span() for match in _STRUCTURED_MODEL_NUMBER_RE.finditer(evidence)
@@ -5722,18 +5766,28 @@ def repair_grounded_semantic_payload(
         normalized_acts.append(CustomerAct.COMPARE.value)
         changes.append("visible_scope_compare_action_recovered")
 
-    # A compatibility request is safe to recover only in an already delivered
-    # multi-card scope.  This restores the explicit action when the language
-    # model returns an empty or overly broad frame; the existing compatibility
-    # resolver must still bind two references from the current utterance, and
-    # its evidence gate remains solely responsible for the verdict.
+    # A compatibility request is safe to recover either from an already
+    # delivered multi-card scope or from two explicit identity-shaped spans in
+    # this utterance.  The latter does not resolve a SKU here: the existing
+    # Compatibility request builder still validates both sides against the
+    # frozen source snapshot, and its evidence gate remains solely responsible
+    # for the verdict.
     if (
-        len(shown_product_cards) >= 2
+        (
+            len(shown_product_cards) >= 2
+            or _explicit_compatibility_reference_count(current_message) >= 2
+        )
         and _VISIBLE_SCOPE_COMPATIBILITY_RE.search(current_message) is not None
         and CustomerAct.COMPATIBILITY.value not in normalized_acts
     ):
         normalized_acts.append(CustomerAct.COMPATIBILITY.value)
-        changes.append("visible_scope_compatibility_action_recovered")
+        changes.append(
+            (
+                "visible_scope_compatibility_action_recovered"
+                if len(shown_product_cards) >= 2
+                else "explicit_pair_compatibility_action_recovered"
+            )
+        )
 
     # Preserve an explicit total-price request even if the model reduced it to
     # a generic product question.  This only creates a typed action; product

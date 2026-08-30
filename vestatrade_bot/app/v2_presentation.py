@@ -25,6 +25,7 @@ _FACT_LABELS = {
     "connection_diameter_mm": "диаметр присоединения",
     "connection_pattern": "тип резьбового соединения",
     "connection_size": "размер присоединения",
+    "thread_standard": "стандарт резьбы",
     "control_thread": "посадочная резьба термоголовки",
     "declared_heated_area_m2": "заявленная отапливаемая площадь",
     "diameter_mm": "диаметр",

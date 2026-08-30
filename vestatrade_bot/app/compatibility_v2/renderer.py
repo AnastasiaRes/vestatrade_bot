@@ -102,7 +102,16 @@ def render_compatibility_result(result: CompatibilityResult) -> str:
             f"Для {pair} пока нет безопасного правила проверки этого типа соединения. "
             "Нужны точные данные интерфейса обеих сторон; случайный переходник не назначаю."
         )
-    missing = ", ".join(public_missing_predicate_label(item) for item in result.missing_predicates)
+    # Missing facts are recorded per side (SKU + predicate) so the gate can
+    # remain exact.  The customer-facing explanation should not mechanically
+    # repeat the same interface label twice when it is absent on both sides.
+    missing_labels = tuple(
+        dict.fromkeys(
+            public_missing_predicate_label(item)
+            for item in result.missing_predicates
+        )
+    )
+    missing = ", ".join(missing_labels)
     return (
         f"Для {pair} недостаточно подтверждённых данных о соединении"
         + (f": {missing}." if missing else ".")

@@ -12,13 +12,12 @@ from collections.abc import Iterable
 
 from app.answer_v2.contracts import AnswerSourceSnapshot, CatalogAnswerProduct
 from app.catalog_v2.contracts import ProductKind
-from app.component_evidence import builtin_part_evidence
+from app.component_evidence import builtin_part_state_from_text
 from app.dialogue_v2.contracts import NextActionKind, TaskAct
 from app.dialogue_v2.controller import DialogueV2Outcome
-from app.models import Product, ProductFocusState, SessionState
+from app.models import Product, SessionState
 from app.product_fact_evidence import (
     ProductFactEvidenceService,
-    ProductFactStatus,
 )
 from app.sku_resolution import SkuResolutionStatus, extract_explicit_sku_tokens, resolve_catalog_sku
 
@@ -30,7 +29,10 @@ from .contracts import (
     CompatibilityResult,
     CompatibilityResultStatus,
     CompatibilityScopeOrigin,
+    InterfaceEndpoint,
     InterfaceFact,
+    InterfaceFactResolution,
+    InterfaceFactResolutionStatus,
     InterfaceSourceKind,
 )
 
@@ -68,6 +70,42 @@ _PUMP_KINDS = frozenset(
 _BOILER_KINDS = frozenset(
     {ProductKind.BOILER, ProductKind.GAS_BOILER, ProductKind.ELECTRIC_BOILER}
 )
+_METRIC_THREAD_RE = re.compile(
+    r"(?iu)(?<![a-zа-яё])(?:m|м)\s*(\d{1,2})\s*[xх×]\s*(\d+(?:[.,]\d+)?)"
+)
+_THREAD_STANDARD_RE = re.compile(
+    r"(?iu)(?<![a-zа-яё])(npt|rp|rc|g|r)\s*\d+(?:\s+\d+/\d+|/\d+)?"
+)
+# General SKU extraction deliberately does not accept short numeric tokens:
+# outside an identity operation they are too easily confused with a dimension
+# or quantity.  Compatibility has a frozen catalogue scope, so an additional
+# five-digit span may be considered *only* if the existing resolver confirms
+# it as an exact/unique identity in that snapshot.
+_COMPATIBILITY_NUMERIC_SKU_RE = re.compile(r"(?<!\d)\d{5,}(?!\d)")
+
+
+def _endpoint_for(predicate: str) -> InterfaceEndpoint | None:
+    return {
+        "control_thread": InterfaceEndpoint.THERMOSTATIC_CONTROL,
+        "connection_size": InterfaceEndpoint.THREADED_CONNECTION,
+        "connection_pattern": InterfaceEndpoint.THREADED_CONNECTION,
+        "thread_standard": InterfaceEndpoint.THREADED_CONNECTION,
+        "diameter_mm": InterfaceEndpoint.SEWER_JOINT,
+        "sewer_scope": InterfaceEndpoint.SEWER_JOINT,
+        "sewer_system_family": InterfaceEndpoint.SEWER_JOINT,
+        "integrated_circulation_pump": InterfaceEndpoint.INTEGRATED_CIRCULATION_PUMP,
+    }.get(predicate)
+
+
+def _canonical_interface_value(predicate: str, value: object) -> object:
+    if predicate == "control_thread":
+        match = _METRIC_THREAD_RE.search(str(value))
+        if match:
+            pitch = match.group(2).replace(",", ".")
+            return f"M{match.group(1)}x{pitch}"
+    if predicate == "thread_standard":
+        return str(value).casefold()
+    return value
 
 
 def _normalise(value: object) -> str:
@@ -114,7 +152,18 @@ def _explicit_sku_references(
     products: Iterable[object],
 ) -> tuple[CompatibilityProductReference, ...]:
     result: list[CompatibilityProductReference] = []
-    for token in dict.fromkeys(extract_explicit_sku_tokens(message)):
+    candidate_tokens = tuple(
+        sorted(
+            dict.fromkeys(
+                (*extract_explicit_sku_tokens(message), *(
+                    match.group(0)
+                    for match in _COMPATIBILITY_NUMERIC_SKU_RE.finditer(message)
+                ))
+            ),
+            key=lambda token: message.find(token),
+        )
+    )
+    for token in candidate_tokens:
         resolved = resolve_catalog_sku(token, products)
         if resolved.status in {SkuResolutionStatus.EXACT, SkuResolutionStatus.UNIQUE_PREFIX}:
             result.append(
@@ -338,7 +387,11 @@ def _exact_card_fact(
 
 
 class InterfaceFactService:
-    """Read-only adapter for catalogue and accepted passport interface facts."""
+    """Read-only adapter over all checked interface observations.
+
+    It deliberately returns observations before choosing a display source.  A
+    card value therefore cannot hide a contradictory, SKU-bound passport.
+    """
 
     def __init__(
         self,
@@ -352,117 +405,157 @@ class InterfaceFactService:
         self.products_by_sku = {product.sku: product for product in products}
 
     def fact(self, sku: str, predicate: str) -> tuple[InterfaceFact | None, bool]:
-        """Return a proven fact and whether its source conflicts internally."""
+        """Compatibility facade for existing deterministic relation rules."""
 
-        product = self.snapshot.product(sku)
-        if product is None:
-            return None, False
-        if predicate == "integrated_circulation_pump":
-            return self._integrated_circulation_pump_fact(sku, product)
-        card_fact, conflict = _exact_card_fact(product, predicate)
-        if conflict:
-            return None, True
-        if card_fact is not None:
-            return (
-                InterfaceFact(
-                    sku=sku,
-                    predicate=predicate,
-                    value=card_fact.value,
-                    unit=card_fact.unit,
-                    source_kind=InterfaceSourceKind.CATALOG_ATTRIBUTE,
-                    source_revision=self.snapshot.source_revision,
-                    document="catalogue",
-                    section=card_fact.provenance.source_field,
-                    excerpt=f"{card_fact.provenance.source_field}: {card_fact.provenance.raw_value}",
-                    verifier_status="catalog_card_exact",
-                ),
-                False,
-            )
-        if predicate in {"sewer_system_family", "diameter_mm"}:
-            identity = self._sewer_identity_fact(product, predicate)
-            if identity is not None:
-                return identity, False
-        if predicate == "control_thread" and self.product_fact_evidence is not None:
-            return self._passport_control_thread_fact(sku)
-        return None, False
+        resolution = self.observe(sku, predicate)
+        return (
+            resolution.selected_fact,
+            resolution.status == InterfaceFactResolutionStatus.SOURCE_CONFLICT,
+        )
 
-    def _integrated_circulation_pump_fact(
+    def observe(
         self,
         sku: str,
-        snapshot_product: CatalogAnswerProduct,
-    ) -> tuple[InterfaceFact | None, bool]:
-        """Read one boiler's built-in pump state without treating absence as no.
+        predicate: str,
+        *,
+        endpoint: InterfaceEndpoint | None = None,
+    ) -> InterfaceFactResolution:
+        """Collect verified card/passport observations for one interface fact."""
 
-        The source snapshot supplies a revision-bound card fact.  When the
-        selected product also has a mapped passport/manual, the common Legacy
-        reader checks it as a second, source-preserving proof.  An explicit
-        disagreement is a source conflict, not a tie-break by text order.
-        """
+        snapshot_product = self.snapshot.product(sku)
+        resolved_endpoint = endpoint or _endpoint_for(predicate)
+        if snapshot_product is None:
+            return InterfaceFactResolution(
+                sku=sku,
+                predicate=predicate,
+                endpoint=resolved_endpoint,
+                status=InterfaceFactResolutionStatus.INSUFFICIENT_EVIDENCE,
+                reason_codes=("interface_product_missing_from_source_snapshot",),
+            )
 
-        card_fact, card_conflict = _exact_card_fact(
-            snapshot_product, "integrated_circulation_pump"
+        observations, card_ambiguous = self._catalog_observations(
+            snapshot_product, predicate, resolved_endpoint
         )
-        if card_conflict:
-            return None, True
-        card_state = (
-            bool(card_fact.value)
-            if card_fact is not None and isinstance(card_fact.value, bool)
-            else None
+        if predicate in {"sewer_system_family", "diameter_mm"}:
+            identity = self._sewer_identity_fact(snapshot_product, predicate)
+            if identity is not None:
+                observations.append(identity.model_copy(update={"endpoint": resolved_endpoint}))
+        if predicate == "thread_standard":
+            standard = self._thread_standard_identity_fact(snapshot_product)
+            if standard is not None:
+                observations.append(standard.model_copy(update={"endpoint": resolved_endpoint}))
+        if predicate == "control_thread":
+            passport = self._passport_control_thread_observation(sku, resolved_endpoint)
+            if passport is not None:
+                observations.append(passport)
+        if predicate == "integrated_circulation_pump":
+            observations.extend(
+                self._integrated_pump_passport_observations(sku, resolved_endpoint)
+            )
+
+        # Do not make source priority a verdict.  Multiple equal observations
+        # are desirable corroboration; different canonical values are a hard
+        # source conflict.
+        values = {
+            (str(_canonical_interface_value(predicate, item.value)), item.unit)
+            for item in observations
+        }
+        if card_ambiguous or len(values) > 1:
+            return InterfaceFactResolution(
+                sku=sku,
+                predicate=predicate,
+                endpoint=resolved_endpoint,
+                status=InterfaceFactResolutionStatus.SOURCE_CONFLICT,
+                observations=tuple(observations),
+                reason_codes=(
+                    "catalogue_interface_fact_ambiguous"
+                    if card_ambiguous
+                    else "interface_fact_source_values_conflict",
+                ),
+            )
+        if not observations:
+            return InterfaceFactResolution(
+                sku=sku,
+                predicate=predicate,
+                endpoint=resolved_endpoint,
+                status=InterfaceFactResolutionStatus.INSUFFICIENT_EVIDENCE,
+                reason_codes=("interface_fact_not_confirmed",),
+            )
+        # A checked passport is the most useful citation when it agrees with
+        # the current source snapshot; the complete observations remain in the
+        # result for the outcome gate and telemetry.
+        selected = next(
+            (item for item in observations if item.source_kind == InterfaceSourceKind.PASSPORT),
+            observations[0],
         )
+        return InterfaceFactResolution(
+            sku=sku,
+            predicate=predicate,
+            endpoint=resolved_endpoint,
+            status=InterfaceFactResolutionStatus.PROVEN,
+            selected_fact=selected,
+            observations=tuple(observations),
+        )
+
+    def _catalog_observations(
+        self,
+        product: CatalogAnswerProduct,
+        predicate: str,
+        endpoint: InterfaceEndpoint | None,
+    ) -> tuple[list[InterfaceFact], bool]:
+        facts = tuple(item for item in product.facts if item.name == predicate)
+        issues = tuple(item for item in product.fact_issues if item.name == predicate)
+        observations = [
+            InterfaceFact(
+                sku=product.sku,
+                predicate=predicate,
+                value=_canonical_interface_value(predicate, fact.value),
+                unit=fact.unit,
+                source_kind=InterfaceSourceKind.CATALOG_ATTRIBUTE,
+                source_revision=self.snapshot.source_revision,
+                document="catalogue",
+                section=fact.provenance.source_field,
+                excerpt=f"{fact.provenance.source_field}: {fact.provenance.raw_value}",
+                verifier_status="catalog_card_exact",
+                endpoint=endpoint,
+                model_scope="source_snapshot",
+            )
+            for fact in facts
+        ]
+        distinct = {(str(item.value), item.unit) for item in observations}
+        return observations, bool(issues or len(distinct) > 1)
+
+    def _integrated_pump_passport_observations(
+        self,
+        sku: str,
+        endpoint: InterfaceEndpoint | None,
+    ) -> list[InterfaceFact]:
         product = self.products_by_sku.get(sku)
-        document_evidence = (
-            builtin_part_evidence(product, "насос") if product is not None else None
-        )
-        if document_evidence is not None and document_evidence.source_conflict:
-            return None, True
-        document_state = document_evidence.state if document_evidence else None
-        if (
-            card_state is not None
-            and document_state is not None
-            and card_state != document_state
-        ):
-            return None, True
-        state = document_state if document_state is not None else card_state
-        if state is None:
-            return None, False
-        if document_evidence is not None and document_evidence.source_kind == "passport":
-            return (
+        if product is None:
+            return []
+        observations: list[InterfaceFact] = []
+        for document in product.documents:
+            if not self._document_is_model_bound(document.binding_scope):
+                continue
+            state = builtin_part_state_from_text(document.text, "насос")
+            if state is None:
+                continue
+            observations.append(
                 InterfaceFact(
                     sku=sku,
                     predicate="integrated_circulation_pump",
                     value=state,
                     source_kind=InterfaceSourceKind.PASSPORT,
                     source_revision=self.snapshot.source_revision,
-                    document=document_evidence.document or "attached_product_document",
-                    section=document_evidence.section,
-                    excerpt=document_evidence.excerpt or "",
-                    # The exact attached-document reader is deterministic; it
-                    # is stricter than a semantic quote and remains distinct
-                    # from the embedding/verifier acceptance mode.
+                    document=document.filename,
+                    section="комплект/конструкция",
+                    excerpt=document.text[:500],
                     verifier_status="document_text_exact",
-                ),
-                False,
+                    endpoint=endpoint,
+                    model_scope=document.binding_scope,
+                )
             )
-        if card_fact is None:
-            return None, False
-        return (
-            InterfaceFact(
-                sku=sku,
-                predicate="integrated_circulation_pump",
-                value=state,
-                unit=card_fact.unit,
-                source_kind=InterfaceSourceKind.CATALOG_ATTRIBUTE,
-                source_revision=self.snapshot.source_revision,
-                document="catalogue",
-                section=card_fact.provenance.source_field,
-                excerpt=(
-                    f"{card_fact.provenance.source_field}: "
-                    f"{card_fact.provenance.raw_value}"
-                ),
-                verifier_status="catalog_card_exact",
-            ),
-            False,
-        )
+        return observations
 
     def _sewer_identity_fact(
         self,
@@ -491,43 +584,95 @@ class InterfaceFactService:
             section="name",
             excerpt=name,
             verifier_status="catalogue_identity_exact",
+            endpoint=InterfaceEndpoint.SEWER_JOINT,
+            model_scope="source_snapshot",
         )
 
-    def _passport_control_thread_fact(self, sku: str) -> tuple[InterfaceFact | None, bool]:
-        assert self.product_fact_evidence is not None
-        session = SessionState(
-            session_id=f"compatibility:{sku}",
-            product_focus=ProductFocusState(sku=sku, origin="compatibility_interface_lookup"),
+    def _thread_standard_identity_fact(
+        self,
+        product: CatalogAnswerProduct,
+    ) -> InterfaceFact | None:
+        match = _THREAD_STANDARD_RE.search(product.name)
+        if match is None:
+            return None
+        return InterfaceFact(
+            sku=product.sku,
+            predicate="thread_standard",
+            value=match.group(1).casefold(),
+            source_kind=InterfaceSourceKind.CATALOG_IDENTITY,
+            source_revision=self.snapshot.source_revision,
+            document="catalogue",
+            section="name",
+            excerpt=match.group(0),
+            verifier_status="catalogue_identity_exact",
+            endpoint=InterfaceEndpoint.THREADED_CONNECTION,
+            model_scope="source_snapshot",
         )
-        evidence = self.product_fact_evidence.evaluate(
-            "Какая резьба под термоголовку?",
-            session,
-            semantic_fact_name="control_thread",
+
+    @staticmethod
+    def _document_is_model_bound(binding_scope: str | None) -> bool:
+        return binding_scope in {"exact_sku", "filename_match"}
+
+    def _passport_control_thread_observation(
+        self,
+        sku: str,
+        endpoint: InterfaceEndpoint | None,
+    ) -> InterfaceFact | None:
+        """Use the existing embedding/verifier path for an exact-bound model.
+
+        A series-prefix document remains available to ordinary ProductFact,
+        but this relation requires model-bound evidence before it can turn into
+        a positive Compatibility verdict.
+        """
+
+        if self.product_fact_evidence is None:
+            return None
+        product = self.products_by_sku.get(sku)
+        if product is None:
+            return None
+        documents = tuple(
+            document
+            for document in product.documents
+            if self._document_is_model_bound(document.binding_scope)
+        )
+        if not documents:
+            return None
+        passport = self.product_fact_evidence.passport_service.answer(
+            f"Какая присоединительная резьба термоголовки у {product.name} ({sku})?",
+            document_scope=tuple(item.filename for item in documents),
+            context=f"Точный товар: {sku} — {product.name}",
+            flow="v2_compatibility_interface_fact",
+            predicate="thermostatic_head_thread",
+            canonical_sku=sku,
         )
         if (
-            evidence is None
-            or evidence.status != ProductFactStatus.ANSWERED
-            or evidence.request.product_ref.canonical_sku != sku
-            or evidence.request.predicate != "thermostatic_head_thread"
-            or evidence.value is None
-            or not evidence.document
-            or not evidence.quote
+            passport.status.value != "answered"
+            or not passport.quote
+            or not passport.document
+            or passport.verifier_status != "accepted"
         ):
-            return None, False
-        return (
-            InterfaceFact(
-                sku=sku,
-                predicate="control_thread",
-                value=str(evidence.value),
-                unit=evidence.unit,
-                source_kind=InterfaceSourceKind.PASSPORT,
-                source_revision=self.snapshot.source_revision,
-                document=evidence.document,
-                section=evidence.section,
-                excerpt=evidence.quote,
-                verifier_status=evidence.verifier_status,
-            ),
-            False,
+            return None
+        match = _METRIC_THREAD_RE.search(passport.quote)
+        if match is None:
+            return None
+        document = next(
+            (item for item in documents if item.filename == passport.document),
+            None,
+        )
+        if document is None:
+            return None
+        return InterfaceFact(
+            sku=sku,
+            predicate="control_thread",
+            value=f"M{match.group(1)}x{match.group(2).replace(',', '.')}",
+            source_kind=InterfaceSourceKind.PASSPORT,
+            source_revision=self.snapshot.source_revision,
+            document=passport.document,
+            section=passport.section,
+            excerpt=passport.quote,
+            verifier_status=passport.verifier_status,
+            endpoint=endpoint,
+            model_scope=document.binding_scope,
         )
 
 
@@ -547,18 +692,22 @@ def _all_facts(
     service: InterfaceFactService,
     request: CompatibilityRequest,
     predicates: tuple[str, ...],
-) -> tuple[dict[tuple[str, str], InterfaceFact], bool]:
+) -> tuple[dict[tuple[str, str], InterfaceFact], bool, tuple[InterfaceFact, ...]]:
     facts: dict[tuple[str, str], InterfaceFact] = {}
     conflict = False
+    observations: list[InterfaceFact] = []
     for sku in (request.left.canonical_sku, request.right.canonical_sku):
         if sku is None:
             continue
         for predicate in predicates:
-            value, has_conflict = service.fact(sku, predicate)
-            conflict = conflict or has_conflict
-            if value is not None:
-                facts[(sku, predicate)] = value
-    return facts, conflict
+            resolution = service.observe(sku, predicate)
+            observations.extend(resolution.observations)
+            conflict = conflict or (
+                resolution.status == InterfaceFactResolutionStatus.SOURCE_CONFLICT
+            )
+            if resolution.selected_fact is not None:
+                facts[(sku, predicate)] = resolution.selected_fact
+    return facts, conflict, tuple(observations)
 
 
 def _missing(
@@ -583,6 +732,77 @@ def _thread_pattern_mates(left: str, right: str) -> bool:
         "male_female": {"female_male", "male_female"},
     }
     return right in expected.get(left, set())
+
+
+def _requires_port_resolution(
+    product: CatalogAnswerProduct,
+) -> bool:
+    """A multi-port item cannot be validated from one flat connection fact."""
+
+    port_count, conflict = _exact_card_fact(product, "port_count")
+    if conflict or port_count is None:
+        return False
+    try:
+        return int(port_count.value) > 2
+    except (TypeError, ValueError):
+        return False
+
+
+def _relation_verdict(
+    relation: CompatibilityRelationKind,
+    facts: dict[tuple[str, str], InterfaceFact],
+    left: str,
+    right: str,
+) -> tuple[CompatibilityResultStatus, str]:
+    """Pure deterministic verdict used by both execution and the outcome gate."""
+
+    predicates = {
+        CompatibilityRelationKind.THERMOSTATIC_HEAD_TO_VALVE: ("control_thread",),
+        CompatibilityRelationKind.THREADED_CONNECTION: (
+            "connection_size",
+            "connection_pattern",
+            "thread_standard",
+        ),
+        CompatibilityRelationKind.SEWER_CONNECTION: (
+            "diameter_mm",
+            "sewer_scope",
+            "sewer_system_family",
+        ),
+    }[relation]
+    values = {
+        predicate: (facts[(left, predicate)].value, facts[(right, predicate)].value)
+        for predicate in predicates
+    }
+    if relation == CompatibilityRelationKind.THERMOSTATIC_HEAD_TO_VALVE:
+        return (
+            (
+                CompatibilityResultStatus.COMPATIBLE
+                if str(values["control_thread"][0]) == str(values["control_thread"][1])
+                else CompatibilityResultStatus.INCOMPATIBLE
+            ),
+            (
+                "compatibility_proven_by_two_interface_sides"
+                if str(values["control_thread"][0]) == str(values["control_thread"][1])
+                else "thermostatic_control_thread_mismatch"
+            ),
+        )
+    if relation == CompatibilityRelationKind.THREADED_CONNECTION:
+        if values["connection_size"][0] != values["connection_size"][1]:
+            return CompatibilityResultStatus.INCOMPATIBLE, "thread_connection_size_mismatch"
+        if str(values["thread_standard"][0]) != str(values["thread_standard"][1]):
+            return CompatibilityResultStatus.INCOMPATIBLE, "thread_connection_standard_mismatch"
+        if not _thread_pattern_mates(
+            str(values["connection_pattern"][0]), str(values["connection_pattern"][1])
+        ):
+            return CompatibilityResultStatus.INCOMPATIBLE, "thread_connection_pattern_not_mating"
+        return CompatibilityResultStatus.COMPATIBLE, "compatibility_proven_by_two_interface_sides"
+    if values["diameter_mm"][0] != values["diameter_mm"][1]:
+        return CompatibilityResultStatus.INCOMPATIBLE, "sewer_nominal_diameter_mismatch"
+    if values["sewer_scope"][0] != values["sewer_scope"][1]:
+        return CompatibilityResultStatus.INCOMPATIBLE, "sewer_installation_scope_mismatch"
+    if values["sewer_system_family"][0] != values["sewer_system_family"][1]:
+        return CompatibilityResultStatus.INCOMPATIBLE, "sewer_system_family_mismatch"
+    return CompatibilityResultStatus.COMPATIBLE, "compatibility_proven_by_two_interface_sides"
 
 
 def build_compatibility_result(
@@ -633,14 +853,14 @@ def build_compatibility_result(
             if left_product.product_kind in _BOILER_KINDS
             else request.right.canonical_sku
         )
-        integrated_pump, has_conflict = service.fact(
-            boiler_sku, "integrated_circulation_pump"
-        )
-        if has_conflict:
+        pump_resolution = service.observe(boiler_sku, "integrated_circulation_pump")
+        integrated_pump = pump_resolution.selected_fact
+        if pump_resolution.status == InterfaceFactResolutionStatus.SOURCE_CONFLICT:
             return CompatibilityResult(
                 status=CompatibilityResultStatus.SOURCE_CONFLICT,
                 interface_predicates=("integrated_circulation_pump",),
                 facts=(() if integrated_pump is None else (integrated_pump,)),
+                observations=pump_resolution.observations,
                 reason_codes=("boiler_integrated_pump_source_conflict",),
                 **common,
             )
@@ -649,6 +869,7 @@ def build_compatibility_result(
                 status=CompatibilityResultStatus.INSUFFICIENT_EVIDENCE,
                 interface_predicates=("integrated_circulation_pump",),
                 missing_predicates=(f"{boiler_sku}:integrated_circulation_pump",),
+                observations=pump_resolution.observations,
                 reason_codes=(
                     "boiler_integrated_pump_not_confirmed",
                     "pump_boiler_requires_hydraulic_calculation",
@@ -659,6 +880,7 @@ def build_compatibility_result(
             status=CompatibilityResultStatus.INSUFFICIENT_EVIDENCE,
             interface_predicates=("integrated_circulation_pump",),
             facts=(integrated_pump,),
+            observations=pump_resolution.observations,
             reason_codes=(
                 (
                     "boiler_integrated_pump_confirmed"
@@ -678,15 +900,32 @@ def build_compatibility_result(
 
     predicates = {
         CompatibilityRelationKind.THERMOSTATIC_HEAD_TO_VALVE: ("control_thread",),
-        CompatibilityRelationKind.THREADED_CONNECTION: ("connection_size", "connection_pattern"),
+        CompatibilityRelationKind.THREADED_CONNECTION: (
+            "connection_size",
+            "connection_pattern",
+            "thread_standard",
+        ),
         CompatibilityRelationKind.SEWER_CONNECTION: ("diameter_mm", "sewer_scope", "sewer_system_family"),
     }[request.relation]
-    facts, conflict = _all_facts(service, request, predicates)
+    if request.relation == CompatibilityRelationKind.THREADED_CONNECTION:
+        left_product = snapshot.product(request.left.canonical_sku)
+        right_product = snapshot.product(request.right.canonical_sku)
+        assert left_product is not None and right_product is not None
+        if _requires_port_resolution(left_product) or _requires_port_resolution(right_product):
+            return CompatibilityResult(
+                status=CompatibilityResultStatus.INSUFFICIENT_EVIDENCE,
+                interface_predicates=predicates,
+                missing_predicates=("resolved_connection_endpoint",),
+                reason_codes=("threaded_multiport_endpoint_not_determined",),
+                **common,
+            )
+    facts, conflict, observations = _all_facts(service, request, predicates)
     if conflict:
         return CompatibilityResult(
             status=CompatibilityResultStatus.SOURCE_CONFLICT,
             interface_predicates=predicates,
             facts=tuple(facts.values()),
+            observations=observations,
             reason_codes=("compatibility_interface_fact_source_conflict",),
             **common,
         )
@@ -696,6 +935,7 @@ def build_compatibility_result(
             status=CompatibilityResultStatus.INSUFFICIENT_EVIDENCE,
             interface_predicates=predicates,
             facts=tuple(facts.values()),
+            observations=observations,
             missing_predicates=missing,
             reason_codes=("compatibility_interface_facts_missing",),
             **common,
@@ -703,42 +943,13 @@ def build_compatibility_result(
 
     left, right = request.left.canonical_sku, request.right.canonical_sku
     assert left is not None and right is not None
-    values = {
-        predicate: (facts[(left, predicate)].value, facts[(right, predicate)].value)
-        for predicate in predicates
-    }
-    compatible = False
-    mismatch_code = ""
-    if request.relation == CompatibilityRelationKind.THERMOSTATIC_HEAD_TO_VALVE:
-        compatible = str(values["control_thread"][0]) == str(values["control_thread"][1])
-        mismatch_code = "thermostatic_control_thread_mismatch"
-    elif request.relation == CompatibilityRelationKind.THREADED_CONNECTION:
-        if values["connection_size"][0] != values["connection_size"][1]:
-            mismatch_code = "thread_connection_size_mismatch"
-        elif not _thread_pattern_mates(
-            str(values["connection_pattern"][0]), str(values["connection_pattern"][1])
-        ):
-            mismatch_code = "thread_connection_pattern_not_mating"
-        else:
-            compatible = True
-    else:
-        if values["diameter_mm"][0] != values["diameter_mm"][1]:
-            mismatch_code = "sewer_nominal_diameter_mismatch"
-        elif values["sewer_scope"][0] != values["sewer_scope"][1]:
-            mismatch_code = "sewer_installation_scope_mismatch"
-        elif values["sewer_system_family"][0] != values["sewer_system_family"][1]:
-            mismatch_code = "sewer_system_family_mismatch"
-        else:
-            compatible = True
+    status, reason = _relation_verdict(request.relation, facts, left, right)
     return CompatibilityResult(
-        status=(CompatibilityResultStatus.COMPATIBLE if compatible else CompatibilityResultStatus.INCOMPATIBLE),
+        status=status,
         interface_predicates=predicates,
         facts=tuple(facts.values()),
-        reason_codes=(
-            "compatibility_proven_by_two_interface_sides"
-            if compatible
-            else mismatch_code
-        ,),
+        observations=observations,
+        reason_codes=(reason,),
         **common,
     )
 
@@ -774,48 +985,82 @@ def validate_compatibility_result(
         if not resolved.issubset(set(request.ordered_skus)):
             passed = False
             reasons.append("compatibility_sku_outside_customer_visible_scope")
-    for fact in result.facts:
+    def validate_fact_source(fact: InterfaceFact) -> str | None:
         product = snapshot.product(fact.sku)
         if (
             fact.sku not in resolved
             or fact.source_revision != snapshot.source_revision
             or product is None
         ):
-            passed = False
-            reasons.append("compatibility_fact_scope_or_revision_invalid")
-            continue
+            return "compatibility_fact_scope_or_revision_invalid"
         if fact.source_kind == InterfaceSourceKind.CATALOG_ATTRIBUTE:
-            source, conflict = _exact_card_fact(product, fact.predicate)
-            if (
-                conflict
-                or source is None
-                or source.value != fact.value
-                or source.unit != fact.unit
-            ):
-                passed = False
-                reasons.append("compatibility_catalog_fact_does_not_match_snapshot")
+            # A SOURCE_CONFLICT result intentionally carries more than one
+            # card observation.  Validate each observation against the frozen
+            # snapshot instead of rejecting it merely because the aggregate is
+            # non-unique.
+            matching = any(
+                _canonical_interface_value(fact.predicate, item.value) == fact.value
+                and item.unit == fact.unit
+                for item in product.facts
+                if item.name == fact.predicate
+            )
+            if not matching:
+                return "compatibility_catalog_fact_does_not_match_snapshot"
         elif fact.source_kind == InterfaceSourceKind.CATALOG_IDENTITY:
-            if fact.predicate not in {"sewer_system_family", "diameter_mm"}:
-                passed = False
-                reasons.append("compatibility_identity_predicate_not_allowed")
+            if fact.predicate not in {
+                "sewer_system_family",
+                "diameter_mm",
+                "thread_standard",
+            }:
+                return "compatibility_identity_predicate_not_allowed"
         elif fact.source_kind == InterfaceSourceKind.PASSPORT:
             if (
                 fact.verifier_status not in {"accepted", "document_text_exact"}
                 or not fact.document
                 or not fact.excerpt
+                or fact.model_scope not in {"exact_sku", "filename_match"}
             ):
-                passed = False
-                reasons.append("compatibility_passport_evidence_not_verified")
+                return "compatibility_passport_evidence_not_verified"
+        return None
+
+    for fact in (*result.facts, *result.observations):
+        error = validate_fact_source(fact)
+        if error:
+            passed = False
+            reasons.append(error)
     if result.status in {CompatibilityResultStatus.COMPATIBLE, CompatibilityResultStatus.INCOMPATIBLE}:
         if len(resolved) != 2 or not result.facts or not result.interface_predicates:
             passed = False
             reasons.append("compatibility_verdict_evidence_incomplete")
-        if any(
-            predicate not in {item.predicate for item in result.facts}
+        expected_keys = {
+            (sku, predicate)
+            for sku in resolved
             for predicate in result.interface_predicates
-        ):
+        }
+        selected = {(item.sku, item.predicate): item for item in result.facts}
+        if set(selected) != expected_keys:
             passed = False
             reasons.append("compatibility_predicate_evidence_missing")
+        elif not all(item in result.observations for item in result.facts):
+            passed = False
+            reasons.append("compatibility_selected_fact_not_in_observations")
+        elif result.relation in {
+            CompatibilityRelationKind.THERMOSTATIC_HEAD_TO_VALVE,
+            CompatibilityRelationKind.THREADED_CONNECTION,
+            CompatibilityRelationKind.SEWER_CONNECTION,
+        }:
+            expected_status, expected_reason = _relation_verdict(
+                result.relation,
+                selected,
+                request.left.canonical_sku or "",
+                request.right.canonical_sku or "",
+            )
+            if result.status != expected_status:
+                passed = False
+                reasons.append("compatibility_verdict_not_recomputed_from_evidence")
+            if expected_reason not in result.reason_codes:
+                passed = False
+                reasons.append("compatibility_verdict_reason_drift")
     if result.status == CompatibilityResultStatus.REJECTED:
         passed = False
     return result.model_copy(

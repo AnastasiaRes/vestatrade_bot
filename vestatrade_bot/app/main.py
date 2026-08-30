@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import ipaddress
+import json
 import logging
 from pathlib import Path
 import secrets
@@ -10,7 +12,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
@@ -156,6 +158,82 @@ async def widget_loader() -> FileResponse:
 @app.get("/widget-demo")
 async def widget_demo() -> FileResponse:
     return FileResponse(STATIC_DIR / "widget-demo.html")
+
+
+def _is_loopback_request(request: Request) -> bool:
+    """Keep local QA controls unavailable through a network-facing route."""
+
+    host = request.client.host if request.client is not None else ""
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+@app.get("/widget-v2-preview")
+async def widget_v2_preview(request: Request) -> HTMLResponse:
+    """Serve a no-store, loopback-only widget wired to protected V2 Preview.
+
+    The ordinary demo must stay identical to the public integration: it never
+    receives a QA mode or credential.  This separate page is deliberately
+    available only when a developer has explicitly enabled both local Preview
+    and the existing QA controls, and only to a loopback client.  Its ephemeral
+    token is injected from process configuration, never put in a URL or static
+    asset.
+    """
+
+    token = settings.dialogue_v2_qa_control_token
+    if not (
+        settings.dialogue_v2_local_preview_enabled
+        and settings.dialogue_v2_qa_controls_enabled
+        and token
+        and _is_loopback_request(request)
+    ):
+        raise HTTPException(status_code=404, detail="not found")
+
+    config = json.dumps(
+        {
+            "instanceId": "local-v2-preview",
+            "dialogueMode": "v2_preview",
+            "qaToken": token,
+            "open": True,
+            "title": "AI-консультант — V2 Preview",
+            "subtitle": "Локальный защищённый режим",
+        },
+        ensure_ascii=False,
+    ).replace("</", "<\\/")
+    marker = '    <script\n      src="/widget-loader.js"'
+    document = (STATIC_DIR / "widget-demo.html").read_text(encoding="utf-8")
+    if marker not in document:
+        logger.error("V2 preview widget marker is missing from widget demo")
+        raise HTTPException(status_code=503, detail="preview widget is unavailable")
+    preview_config = (
+        "    <script>\n"
+        f"      window.VestaChatWidgetConfig = {config};\n"
+        "    </script>\n\n"
+    )
+    # The normal demo gives title/subtitle through data attributes.  Those
+    # attributes deliberately take precedence in the shared loader, so the
+    # preview must replace them in its ephemeral response rather than alter
+    # either the public demo or the loader's precedence rules.
+    document = document.replace(
+        'data-title="AI-консультант"',
+        'data-title="AI-консультант — V2 Preview"',
+        1,
+    ).replace(
+        'data-subtitle="Vesta Trading"',
+        'data-subtitle="Локальный защищённый режим"',
+        1,
+    )
+    return HTMLResponse(
+        document.replace(marker, preview_config + marker, 1),
+        headers={
+            "Cache-Control": "no-store, max-age=0",
+            "Pragma": "no-cache",
+            "Referrer-Policy": "no-referrer",
+            "X-Robots-Tag": "noindex, nofollow, noarchive",
+        },
+    )
 
 
 @app.post("/chat", response_model=ChatResponse)

@@ -67,6 +67,7 @@ def test_multiple_documents_keep_separate_sources_and_legacy_text(tmp_path) -> N
     ]
     assert all(document.page_count is None for document in product.documents)
     assert all(document.section_pages == {} for document in product.documents)
+    assert all(document.binding_scope == "sku_prefix" for document in product.documents)
     assert "Инструкция по монтажу" in (product.docs_text or "")
     assert "Технический паспорт" in (product.docs_text or "")
     assert all("/" not in document.filename for document in product.documents)
@@ -85,6 +86,8 @@ def test_exact_sku_map_does_not_match_a_longer_sku(tmp_path) -> None:
 
     assert attached == 1
     assert [document.filename for document in exact.documents] == ["manual.txt"]
+    assert exact.documents[0].binding_scope == "exact_sku"
+    assert exact.documents[0].binding_value == "MODEL-1"
     assert sibling.documents == []
 
 

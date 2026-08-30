@@ -1069,6 +1069,37 @@ def _attach_document_evidence(
     product.docs_text = current_text[:MAX_DOC_CHARS] or None
 
 
+def _document_binding_scope(
+    product: Product,
+    rule: dict[str, Any] | None,
+    *,
+    filename_fallback: bool,
+) -> tuple[str, str | None]:
+    """Return provenance for one already matched product/document pair.
+
+    This does not change document matching.  Its purpose is to distinguish an
+    exact SKU binding from a helpful but wider series/brand mapping when a
+    downstream V2 workflow needs a model-specific interface fact.
+    """
+
+    if rule:
+        exact_skus = {_doc_key(str(sku)) for sku in rule.get("skus", []) if str(sku)}
+        if _doc_key(product.sku) in exact_skus:
+            return "exact_sku", product.sku
+        prefixes = [_doc_key(prefix) for prefix in rule.get("sku_prefixes", [])]
+        matched_prefix = next(
+            (prefix for prefix in prefixes if _doc_key(product.sku).startswith(prefix)),
+            None,
+        )
+        if matched_prefix:
+            return "sku_prefix", matched_prefix
+        if rule.get("brand") or rule.get("name_contains_any"):
+            return "catalogue_query", None
+    if filename_fallback:
+        return "filename_match", product.sku
+    return "unknown", None
+
+
 def load_docs_for_products(
     products: list[Product],
     docs_dirs: Path | list[Path],
@@ -1136,7 +1167,20 @@ def load_docs_for_products(
                 _parse_valve_specification(path) if has_fitting_target else {}
             )
             for product in targets:
-                _attach_document_evidence(product, document)
+                binding_scope, binding_value = _document_binding_scope(
+                    product,
+                    rule,
+                    filename_fallback=rule is None,
+                )
+                _attach_document_evidence(
+                    product,
+                    document.model_copy(
+                        update={
+                            "binding_scope": binding_scope,
+                            "binding_value": binding_value,
+                        }
+                    ),
+                )
                 _attach_passport_power_range(product, path, boiler_power_ranges)
                 _attach_confirmed_connection_facts(product, path, text)
                 _attach_vrs_pump_specification(product, path, vrs_spec)

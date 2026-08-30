@@ -33,6 +33,7 @@ from app.v2_presentation import format_public_fact_value, public_fact_label
 
 def test_shared_v2_formatter_localizes_canonical_values_units_and_labels() -> None:
     assert public_fact_label("reinforcement") == "тип армирования"
+    assert public_fact_label("thread_standard") == "стандарт резьбы"
     assert public_fact_label("unregistered_internal_key") == "характеристика товара"
     assert (
         format_public_fact_value("glass_fiber", predicate="reinforcement")

@@ -639,6 +639,44 @@ def test_attached_document_content_is_part_of_the_v2_source_revision() -> None:
     assert first.source_revision != second.source_revision
 
 
+def test_document_binding_scope_is_part_of_the_v2_source_revision() -> None:
+    boiler = _product(
+        "BOILER-BINDING",
+        "Котел электрический 9 кВт",
+        {"Тип товара": "Котел"},
+        "boiler.pdf",
+    )
+    boiler.documents = [
+        ProductDocument(
+            filename="boiler.pdf",
+            text="Встроенный циркуляционный насос.",
+            binding_scope="exact_sku",
+            binding_value="BOILER-BINDING",
+        )
+    ]
+    changed = boiler.model_copy(
+        update={
+            "documents": [
+                ProductDocument(
+                    filename="boiler.pdf",
+                    text="Встроенный циркуляционный насос.",
+                    binding_scope="sku_prefix",
+                    binding_value="BOILER",
+                )
+            ]
+        }
+    )
+    registry = ProductContractRegistry()
+    first = build_answer_source_snapshot(
+        [boiler], [normalize_catalog_product(boiler, registry)]
+    )
+    second = build_answer_source_snapshot(
+        [changed], [normalize_catalog_product(changed, registry)]
+    )
+
+    assert first.source_revision != second.source_revision
+
+
 def test_strict_brand_model_reference_reaches_circuits_fact_without_sku() -> None:
     boiler = _product(
         "2202210",

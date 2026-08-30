@@ -30,6 +30,11 @@ class ProductDocument(BaseModel):
     text: str
     page_count: int | None = None
     section_pages: dict[str, int] = Field(default_factory=dict)
+    # Why this document is in this SKU's evidence scope.  A document bound by
+    # a series prefix may be used for retrieval, but cannot on its own prove a
+    # model-specific mechanical interface.
+    binding_scope: str = "unknown"
+    binding_value: str | None = None
 
 
 class Product(BaseModel):
