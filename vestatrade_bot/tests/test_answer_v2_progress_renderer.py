@@ -305,6 +305,34 @@ def test_seller_policy_keeps_direct_answer_primary_while_loop_guard_changes_seco
     assert applied.primary.kind == NextActionKind.ANSWER_DIRECT_QUESTION
 
 
+def test_seller_policy_keeps_explicit_capability_actions_ahead_of_loop_guard() -> None:
+    from app.dialogue_v2.seller_policy import SellerPolicy
+    from app.answer_v2.contracts import StrategyDirective
+
+    directive = StrategyDirective(
+        task_id="task-loop",
+        strategy=ResponseStrategyKind.STATE_CAPABILITY_BOUNDARY,
+        reason_codes=("stalled",),
+    )
+    for kind in (
+        NextActionKind.COMPARE,
+        NextActionKind.CHECK_COMPATIBILITY,
+        NextActionKind.CALCULATE_PRELIMINARY,
+    ):
+        plan = NextActionPlan(
+            primary=NextAction(
+                kind=kind,
+                task_id="task-loop",
+                reason_code="explicit_customer_action",
+            )
+        )
+
+        applied = SellerPolicy._apply_strategy_directive(plan, (directive,))
+
+        assert applied.primary.kind == kind
+        assert "progress_guard_strategy_directive_applied" not in applied.reason_codes
+
+
 def test_deterministic_renderer_always_emits_one_question_at_most_and_one_next_step() -> None:
     plan = _compile().answer_plan
     assert plan is not None

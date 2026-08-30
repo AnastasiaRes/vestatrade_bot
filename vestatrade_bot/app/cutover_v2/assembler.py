@@ -19,7 +19,7 @@ from app.dialogue_v2.controller import DialogueV2Outcome
 from app.dialogue_v2.contracts import TaskAct
 from app.models import ChatProductSummary, ChatResponse
 
-from .contracts import V2TurnCandidate
+from .contracts import ProductScopeEffect, V2TurnCandidate
 from .selection import preliminary_product_groups, render_selection_result
 
 
@@ -277,6 +277,20 @@ def build_v2_turn_candidate(
         # This should be unreachable, but an opaque rejected candidate is not
         # actionable in canary telemetry. Preserve a stable fail-closed cause.
         reasons.append("v2_candidate_ineligible_without_specific_gate")
+    replaces_product_scope = bool(
+        selection_result is not None
+        and selection_result.status.value == "shown"
+        and selection_result.outcome_gate_passed
+    )
+    focus_product_sku = (
+        cards[0].sku
+        if len(cards) == 1
+        and (
+            replaces_product_scope
+            or selection_result is None
+        )
+        else None
+    )
     return V2TurnCandidate(
         turn_id=turn_id,
         response=response,
@@ -303,6 +317,12 @@ def build_v2_turn_candidate(
         ),
         selection_request=selection_request,
         selection_result=selection_result,
+        product_scope_effect=(
+            ProductScopeEffect.REPLACE_FROM_SELECTION
+            if replaces_product_scope
+            else ProductScopeEffect.PRESERVE
+        ),
+        focus_product_sku=focus_product_sku,
         semantic_accepted=semantic_accepted,
         contracts_resolved=contracts_resolved,
         external_side_effect_started=False,

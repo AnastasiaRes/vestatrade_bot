@@ -19,7 +19,7 @@ from app.dialogue_v2.contracts import (
 from app.dialogue_v2.controller import DialogueV2Outcome
 from app.models import ChatResponse
 
-from .contracts import V2TurnCandidate
+from .contracts import ProductScopeEffect, V2TurnCandidate
 
 
 def _stable_id(prefix: str, *parts: object) -> str:
@@ -147,6 +147,8 @@ def build_v2_calculation_candidate(
             "response_product_kinds": (),
             "response_product_roles": (),
             "calculation_result": result,
+            "product_scope_effect": ProductScopeEffect.PRESERVE,
+            "focus_product_sku": None,
             "semantic_accepted": True,
             "contracts_resolved": True,
             "external_side_effect_started": False,

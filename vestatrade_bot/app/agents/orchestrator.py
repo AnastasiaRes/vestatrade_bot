@@ -72,6 +72,7 @@ from app.cutover_v2.contracts import (
     EarlyControlOutcome,
     EarlyControlResult,
     ExecutionMode,
+    ProductScopeEffect,
     ResponseOwner,
     TurnCommit,
 )
@@ -1472,6 +1473,29 @@ class ChatOrchestrator:
             or candidate.source_revision != snapshot.source_revision
         ):
             raise RuntimeError("stale_catalog_revision_before_v2_commit")
+        selection_result = candidate.selection_result
+        replaces_product_scope = (
+            candidate.product_scope_effect
+            == ProductScopeEffect.REPLACE_FROM_SELECTION
+        )
+        # Repeat the frozen-model invariant at the mutation boundary because
+        # Pydantic ``model_copy(update=...)`` deliberately skips validation.
+        if replaces_product_scope:
+            if (
+                selection_result is None
+                or selection_result.status != SelectionResultStatus.SHOWN
+                or not selection_result.outcome_gate_passed
+            ):
+                raise RuntimeError(
+                    "v2_product_scope_replace_without_gated_selection"
+                )
+            if (
+                tuple(item.sku for item in candidate.response.products)
+                != selection_result.ordered_skus
+            ):
+                raise RuntimeError(
+                    "v2_product_scope_replace_card_order_mismatch"
+                )
         live_epoch_id = before_turn.v2_live_epoch_id or hashlib.sha256(
             f"{before_turn.session_id}:v2-live".encode("utf-8")
         ).hexdigest()[:24]
@@ -1488,17 +1512,13 @@ class ChatOrchestrator:
             delivery_id=delivery_id,
             live_epoch_id=live_epoch_id,
             selection_id=(
-                candidate.selection_result.selection_id
-                if candidate.selection_result is not None
-                and candidate.selection_result.status == SelectionResultStatus.SHOWN
-                and candidate.selection_result.outcome_gate_passed
+                selection_result.selection_id
+                if replaces_product_scope and selection_result is not None
                 else None
             ),
             catalog_revision=(
-                candidate.selection_result.catalog_revision
-                if candidate.selection_result is not None
-                and candidate.selection_result.status == SelectionResultStatus.SHOWN
-                and candidate.selection_result.outcome_gate_passed
+                selection_result.catalog_revision
+                if replaces_product_scope and selection_result is not None
                 else None
             ),
         )
@@ -1539,40 +1559,50 @@ class ChatOrchestrator:
                     characteristics={},
                 )
             )
-        selection_result = candidate.selection_result
-        if cards:
+        if replaces_product_scope:
+            if selection_result is None:  # Defensive type narrowing.
+                raise RuntimeError(
+                    "v2_product_scope_replace_without_gated_selection"
+                )
             selected.v2_last_products = cards
-            # History and the presentation cache contain only cards that were
-            # actually delivered after the source and outcome gates above.
+            # Only a delivered, source-checked Selection owns the ordered
+            # customer-visible scope. Contextual cards in ProductFact (and any
+            # future non-selection response) must not reach this branch.
             selected.last_products = cards
             selected.shown_product_skus = [card.sku for card in cards]
-            selected.shown_result_signature = (
-                selection_result.selection_id
-                if selection_result is not None
-                else hashlib.sha256(
-                    "\x1f".join(card.sku for card in cards).encode("utf-8")
-                ).hexdigest()[:32]
-            )
+            selected.shown_result_signature = selection_result.selection_id
             if len(cards) == 1:
                 selected.product_focus = ProductFocusState(
                     sku=cards[0].sku,
-                    category=(
-                        selection_result.category
-                        if selection_result is not None
-                        else None
-                    ),
+                    category=selection_result.category,
                     origin="v2_delivered_selection",
                 )
-            elif selection_result is not None:
+            else:
                 # A list supports ordinal references but has no single "этот".
                 selected.product_focus = None
-            if (
-                selection_result is not None
-                and selection_result.status == SelectionResultStatus.SHOWN
-                and selection_result.outcome_gate_passed
-            ):
-                selected.v2_selection_id = selection_result.selection_id
-                selected.v2_source_revision = selection_result.catalog_revision
+            selected.v2_selection_id = selection_result.selection_id
+            selected.v2_source_revision = selection_result.catalog_revision
+        else:
+            # ``response.products`` describes only this HTTP response.  Keep
+            # every field of an existing ordered Selection unchanged.  For a
+            # standalone direct fact on a fresh session, retain a legacy
+            # active-view card solely for old read paths; it is deliberately
+            # not promoted to a versioned V2 Selection.
+            if cards and not selected.last_products and not selected.v2_last_products:
+                selected.last_products = cards
+            focus_sku = candidate.focus_product_sku
+            if focus_sku is not None:
+                focus_source = self._find_product_by_sku(focus_sku)
+                if (
+                    snapshot.product(focus_sku) is None
+                    or focus_source is None
+                ):
+                    raise RuntimeError("v2_product_focus_source_missing")
+                selected.product_focus = ProductFocusState(
+                    sku=focus_sku,
+                    category=focus_source.category_path or None,
+                    origin="v2_contextual_product",
+                )
         self._append_history(selected, message, candidate.response.answer)
         self._record_idempotent_response(
             selected,
@@ -1596,7 +1626,10 @@ class ChatOrchestrator:
             live_epoch_id=live_epoch_id,
             external_command_ids=(),
             committed=True,
-            reason_codes=("v2_state_and_response_committed_atomically",),
+            reason_codes=(
+                "v2_state_and_response_committed_atomically",
+                f"product_scope_{candidate.product_scope_effect.value}",
+            ),
         )
         self.sessions.save(selected)
         return candidate.response, commit
@@ -1630,6 +1663,8 @@ class ChatOrchestrator:
                     commit is not None
                     and commit.committed
                     and candidate.selection_result.status.value == "shown"
+                    and candidate.product_scope_effect
+                    == ProductScopeEffect.REPLACE_FROM_SELECTION
                 )
             if candidate.comparison_result is not None:
                 comparison_delivery = candidate.comparison_result.model_dump(
@@ -1638,8 +1673,8 @@ class ChatOrchestrator:
                 comparison_delivery["customer_visible_scope_preserved"] = bool(
                     commit is not None
                     and commit.committed
-                    and candidate.response is not None
-                    and not candidate.response.products
+                    and candidate.product_scope_effect
+                    == ProductScopeEffect.PRESERVE
                 )
             if candidate.calculation_result is not None:
                 calculation_delivery = candidate.calculation_result.model_dump(
@@ -1648,8 +1683,8 @@ class ChatOrchestrator:
                 calculation_delivery["customer_visible_scope_preserved"] = bool(
                     commit is not None
                     and commit.committed
-                    and candidate.response is not None
-                    and not candidate.response.products
+                    and candidate.product_scope_effect
+                    == ProductScopeEffect.PRESERVE
                 )
             if candidate.compatibility_result is not None:
                 compatibility_delivery = candidate.compatibility_result.model_dump(
@@ -1658,8 +1693,8 @@ class ChatOrchestrator:
                 compatibility_delivery["customer_visible_scope_preserved"] = bool(
                     commit is not None
                     and commit.committed
-                    and candidate.response is not None
-                    and not candidate.response.products
+                    and candidate.product_scope_effect
+                    == ProductScopeEffect.PRESERVE
                 )
         return {
             "schema_version": "1.0",

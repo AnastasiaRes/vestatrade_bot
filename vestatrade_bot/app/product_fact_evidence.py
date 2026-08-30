@@ -796,7 +796,15 @@ class ProductFactEvidenceService:
             return named
 
         ordinal = self._ordinal(text)
-        cards = list(session.last_products or session.v2_last_products)
+        # A versioned V2 Selection is the authoritative ordinal scope in
+        # Preview/live V2.  ``last_products`` is retained for Legacy and may
+        # legitimately contain a one-card contextual response; allowing it to
+        # win here would silently reorder or truncate ``first/second/...``.
+        cards = list(
+            session.v2_last_products
+            if session.v2_selection_id and session.v2_last_products
+            else (session.last_products or session.v2_last_products)
+        )
         if ordinal is not None:
             if 0 <= ordinal < len(cards):
                 card = cards[ordinal]

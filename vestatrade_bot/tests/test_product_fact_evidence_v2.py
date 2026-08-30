@@ -134,6 +134,43 @@ def test_ordinal_product_fact_is_bound_to_customer_visible_card() -> None:
     assert "VRS.254.18.0" in rendered
 
 
+def test_versioned_v2_selection_wins_over_legacy_context_card_for_ordinals() -> None:
+    first = _product(
+        "VRS.254.18.0",
+        "Насос VALTEC RS 25/4-180",
+        {"монтажная длина, мм": "180"},
+        "VRS-0725.pdf",
+    )
+    second = _product(
+        "2459900",
+        "Насос Wilo Star RS 25/6-130(180)-RK",
+        {"монтажная длина, мм": "130-180"},
+        "Wilo.pdf",
+    )
+    passport = _StubPassport(
+        quote="Монтажная длина для исполнений: 130 и 180 мм.",
+        document="Wilo.pdf",
+    )
+    service = _service([first, second], passport)
+    session = SessionState(
+        session_id="v2-authoritative-ordinals",
+        # A contextual card from another response must not truncate the V2
+        # Selection that owns the ordinal order.
+        last_products=[_card(first)],
+        v2_last_products=[_card(first), _card(second)],
+        v2_selection_id="selection-two-pumps",
+        v2_source_revision="catalog-revision",
+    )
+
+    evidence = service.evaluate("Какая у второго монтажная длина?", session)
+
+    assert evidence is not None
+    assert evidence.status == ProductFactStatus.ANSWERED
+    assert evidence.request.product_ref.kind == ProductReferenceKind.ORDINAL
+    assert evidence.request.product_ref.canonical_sku == second.sku
+    assert evidence.value == "130–180"
+
+
 def test_explicit_card_title_fact_answers_without_passport_search() -> None:
     valve = _product(
         "VT.217.N.04",

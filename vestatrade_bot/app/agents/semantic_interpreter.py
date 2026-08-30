@@ -1807,8 +1807,15 @@ _CALCULATE_ACTION_ALIAS_PATTERN = "|".join(
     re.escape(alias).replace(r"\ ", r"\s+")
     for alias in sorted(action_aliases("calculate"), key=len, reverse=True)
 )
+_COMPATIBILITY_ACTION_ALIAS_PATTERN = "|".join(
+    re.escape(alias).replace(r"\ ", r"\s+")
+    for alias in sorted(action_aliases("compatibility"), key=len, reverse=True)
+)
 _EXPLICIT_CALCULATION_RE = re.compile(
     rf"(?iu)(?<![\w-])(?:{_CALCULATE_ACTION_ALIAS_PATTERN})(?![\w-])"
+)
+_VISIBLE_SCOPE_COMPATIBILITY_RE = re.compile(
+    rf"(?iu)(?<![\w-])(?:{_COMPATIBILITY_ACTION_ALIAS_PATTERN})(?![\w-])"
 )
 # The modifier-coverage gate checks product evidence syntactically.  A count
 # in a total-price request is commercial input, not a hidden characteristic of
@@ -5714,6 +5721,19 @@ def repair_grounded_semantic_payload(
     ):
         normalized_acts.append(CustomerAct.COMPARE.value)
         changes.append("visible_scope_compare_action_recovered")
+
+    # A compatibility request is safe to recover only in an already delivered
+    # multi-card scope.  This restores the explicit action when the language
+    # model returns an empty or overly broad frame; the existing compatibility
+    # resolver must still bind two references from the current utterance, and
+    # its evidence gate remains solely responsible for the verdict.
+    if (
+        len(shown_product_cards) >= 2
+        and _VISIBLE_SCOPE_COMPATIBILITY_RE.search(current_message) is not None
+        and CustomerAct.COMPATIBILITY.value not in normalized_acts
+    ):
+        normalized_acts.append(CustomerAct.COMPATIBILITY.value)
+        changes.append("visible_scope_compatibility_action_recovered")
 
     # Preserve an explicit total-price request even if the model reduced it to
     # a generic product question.  This only creates a typed action; product

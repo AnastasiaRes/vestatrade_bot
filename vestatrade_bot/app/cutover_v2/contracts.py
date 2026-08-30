@@ -13,6 +13,7 @@ from app.catalog_v2.contracts import (
     ProductKind,
     SelectionRequest,
     SelectionResult,
+    SelectionResultStatus,
 )
 from app.comparison_v2.contracts import ComparisonRequest, ComparisonResult
 from app.calculation_v2.contracts import CalculationRequest, CalculationResult
@@ -45,6 +46,19 @@ class ExecutionMode(str, Enum):
     V2_INTERNAL_CANARY = "v2_internal_canary"
     V2_PRIMARY = "v2_primary"
     LEGACY_FALLBACK = "legacy_fallback"
+
+
+class ProductScopeEffect(str, Enum):
+    """Explicit persistent-scope effect of one delivered V2 response.
+
+    ``ChatResponse.products`` is a presentation payload, not a state command.
+    A ProductFact may repeat one contextual card while the active Selection
+    still contains several ordered products.  Only a checked SelectionResult
+    may replace that ordered customer-visible scope.
+    """
+
+    PRESERVE = "preserve"
+    REPLACE_FROM_SELECTION = "replace_from_selection"
 
 
 class RolloutStage(str, Enum):
@@ -186,11 +200,36 @@ class V2TurnCandidate(FrozenModel):
     calculation_result: CalculationResult | None = None
     compatibility_request: CompatibilityRequest | None = None
     compatibility_result: CompatibilityResult | None = None
+    product_scope_effect: ProductScopeEffect = ProductScopeEffect.PRESERVE
+    # A direct fact may move the deictic focus (``этот``) without changing the
+    # ordinal Selection scope (``первый/второй/...``).
+    focus_product_sku: str | None = None
     semantic_accepted: bool = False
     contracts_resolved: bool = False
     external_side_effect_started: bool = False
     eligible_for_delivery: bool = False
     rejection_reason_codes: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_product_scope_effect(self) -> "V2TurnCandidate":
+        if self.product_scope_effect != ProductScopeEffect.REPLACE_FROM_SELECTION:
+            return self
+        result = self.selection_result
+        if (
+            result is None
+            or result.status != SelectionResultStatus.SHOWN
+            or not result.outcome_gate_passed
+            or self.response is None
+        ):
+            raise ValueError(
+                "only a gated shown SelectionResult may replace product scope"
+            )
+        response_skus = tuple(product.sku for product in self.response.products)
+        if response_skus != result.ordered_skus:
+            raise ValueError(
+                "selection scope replacement must match the delivered card order"
+            )
+        return self
 
 
 class ParityDifference(FrozenModel):

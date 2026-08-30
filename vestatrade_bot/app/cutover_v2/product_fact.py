@@ -25,7 +25,7 @@ from app.product_fact_evidence import (
     render_product_fact_evidence,
 )
 
-from .contracts import V2TurnCandidate
+from .contracts import ProductScopeEffect, V2TurnCandidate
 
 
 def _stable_id(prefix: str, *parts: object) -> str:
@@ -259,6 +259,13 @@ def build_v2_product_fact_candidate(
             "product_statuses": product_statuses,
             "response_product_kinds": response_kinds,
             "response_product_roles": response_roles,
+            "product_scope_effect": ProductScopeEffect.PRESERVE,
+            "focus_product_sku": (
+                reference.canonical_sku
+                if reference.canonical_sku
+                and source_snapshot.product(reference.canonical_sku) is not None
+                else None
+            ),
             "semantic_accepted": True,
             "contracts_resolved": True,
             "external_side_effect_started": False,

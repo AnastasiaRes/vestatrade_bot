@@ -3,6 +3,7 @@ from __future__ import annotations
 from app.agents.semantic_interpreter import (
     TurnUnderstanding,
     repair_grounded_semantic_payload,
+    validate_semantic_content_coverage,
     validate_product_modifier_coverage,
 )
 
@@ -821,6 +822,39 @@ def test_visible_scope_natural_difference_question_repairs_raw_act_to_compare() 
 
     assert [item.value for item in frame.acts] == ["explain", "compare"]
     assert "visible_scope_compare_action_recovered" in changes
+
+
+def test_visible_scope_natural_compatibility_question_repairs_empty_frame() -> None:
+    candidate = _candidate(acts=())
+    candidate["operation"] = "continue"
+
+    repaired, changes = repair_grounded_semantic_payload(
+        candidate,
+        "А этот подойдёт к третьему?",
+        shown_product_cards=("FIRST", "SECOND", "THIRD"),
+        authoritative_dialogue_state=_active_state("circulation_pump", "pumps"),
+    )
+    frame = TurnUnderstanding.model_validate(repaired)
+    validate_semantic_content_coverage(frame, "А этот подойдёт к третьему?", changes)
+
+    assert [item.value for item in frame.acts] == ["compatibility"]
+    assert "visible_scope_compatibility_action_recovered" in changes
+
+
+def test_compatibility_action_is_not_invented_without_multi_card_scope() -> None:
+    candidate = _candidate(acts=())
+    candidate["operation"] = "continue"
+
+    repaired, changes = repair_grounded_semantic_payload(
+        candidate,
+        "А этот подойдёт к третьему?",
+        shown_product_cards=("FIRST",),
+        authoritative_dialogue_state=_active_state("circulation_pump", "pumps"),
+    )
+    frame = TurnUnderstanding.model_validate(repaired)
+
+    assert frame.acts == []
+    assert "visible_scope_compatibility_action_recovered" not in changes
 
 
 def test_generic_typed_product_question_recovers_selection_not_product_fact() -> None:

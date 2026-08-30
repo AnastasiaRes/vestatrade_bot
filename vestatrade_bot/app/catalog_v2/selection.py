@@ -280,13 +280,44 @@ def _selection_task(
     outcome: DialogueV2Outcome,
 ) -> tuple[Any, Any, Any, CatalogSearchPlan | None] | None:
     plan = outcome.next_action_plan
-    if plan is None or plan.primary.kind not in _SELECTION_ACTIONS:
+    if plan is None:
         return None
     state = outcome.state_after
-    task_id = plan.primary.task_id
     tasks = {item.task_id: item for item in state.tasks}
-    task = tasks.get(task_id) if task_id is not None else None
-    if task is None or task.act not in {TaskAct.FIND, TaskAct.SELECT}:
+    task = None
+    if plan.primary.kind in _SELECTION_ACTIONS:
+        task_id = plan.primary.task_id
+        selected = tasks.get(task_id) if task_id is not None else None
+        if selected is not None and selected.act in {TaskAct.FIND, TaskAct.SELECT}:
+            task = selected
+    if task is None:
+        # A compound turn may answer an information question and show the
+        # preliminary cards of one sibling Selection task in the same checked
+        # AnswerPlan.  The primary action is then EXPLAIN_TERM_OR_METHOD, but
+        # the delivered cards still require the ordinary SelectionResult and
+        # outcome gate before they may become customer-visible scope.
+        answer_plan = (
+            outcome.answer_planning.answer_plan
+            if outcome.answer_planning is not None
+            else None
+        )
+        product_task_ids = tuple(
+            dict.fromkeys(
+                item.task_id
+                for item in (answer_plan.products if answer_plan is not None else ())
+            )
+        )
+        selection_tasks = tuple(
+            tasks[task_id]
+            for task_id in product_task_ids
+            if task_id in tasks
+            and tasks[task_id].act in {TaskAct.FIND, TaskAct.SELECT}
+        )
+        # A single-category SelectionResult must never collapse cards from two
+        # independent selection tasks or a future multi-category project.
+        if len(selection_tasks) == 1:
+            task = selection_tasks[0]
+    if task is None:
         return None
     planning = outcome.catalog_planning
     if planning is None:
@@ -377,9 +408,15 @@ def build_selection_request(
         )
         for index, item in enumerate(previously_delivered_products, start=1)
     )
+    primary_kind = outcome.next_action_plan.primary.kind
+    action = (
+        _selection_action(primary_kind)
+        if primary_kind in _SELECTION_ACTIONS
+        else SelectionRequestAction.SHOW
+    )
     return SelectionRequest(
         original_utterance=original_utterance,
-        action=_selection_action(outcome.next_action_plan.primary.kind),
+        action=action,
         task_id=task.task_id,
         goal_id=task.target_goal_id,
         category=contract.category,

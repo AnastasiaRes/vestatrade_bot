@@ -16,9 +16,10 @@ from app.cutover_v2.assembler import build_v2_turn_candidate
 from app.cutover_v2.contracts import (
     CutoverDecision,
     ExecutionMode,
+    ProductScopeEffect,
     ResponseOwner,
 )
-from app.dialogue_v2.contracts import DialogueStateV2, TurnMetadata
+from app.dialogue_v2.contracts import DialogueStateV2, NextActionKind, TurnMetadata
 from app.dialogue_v2.controller import DialogueControllerV2
 from app.models import DialogueQAMode, Product
 
@@ -362,6 +363,109 @@ def test_pump_show_command_produces_verified_structured_cards() -> None:
         item.sku for item in candidate.response.products
     )
     assert candidate.selection_result.cards
+
+
+def test_compound_explanation_cards_still_require_a_gated_selection_result() -> None:
+    products = [
+        _product(
+            "VRS.254.18.0",
+            "Насос циркуляционный VALTEC RS 25/4-180",
+            "Насосное оборудование",
+            attributes={"Тип товара": "Насос"},
+        ),
+        _product(
+            "VRS.256.13.0",
+            "Насос циркуляционный VALTEC RS 25/6-130",
+            "Насосное оборудование",
+            attributes={"Тип товара": "Насос"},
+        ),
+    ]
+    opening_understanding = TurnUnderstanding.model_validate(
+        _frame(
+            operation="new",
+            acts=["find"],
+            products=[
+                {
+                    "text": "Циркуляционный насос",
+                    "canonical_type": "circulation pump",
+                    "category": "pumps",
+                    "role": "target",
+                    "evidence": "Циркуляционный насос",
+                }
+            ],
+            constraints=[
+                _known(
+                    "duty_point_flow_l_h",
+                    1.5,
+                    "расход 1,5 м3/ч",
+                    unit="m3/h",
+                ),
+                _known("duty_point_head_m", 4, "напор 4 м", unit="m"),
+            ],
+        )
+    )
+    controller = DialogueControllerV2()
+    opening, _ = _run_v2_turn(
+        controller,
+        None,
+        opening_understanding,
+        "compound-selection-opening",
+        products,
+    )
+    show_understanding, _ = _validated_repair(
+        _frame(acts=["find"]),
+        "Покажите варианты",
+        authoritative_state={
+            "active_task": {
+                "task_id": opening.state_after.tasks[0].task_id,
+                "goal_id": opening.state_after.tasks[0].target_goal_id,
+                "act": "find",
+                "status": "blocked",
+            }
+        },
+    )
+    outcome, sources = _run_v2_turn(
+        controller,
+        opening.state_after,
+        show_understanding,
+        "compound-selection",
+        products,
+    )
+    assert outcome.next_action_plan is not None
+    assert outcome.answer_planning is not None
+    assert outcome.answer_planning.answer_plan is not None
+    assert outcome.answer_planning.answer_plan.products
+    compound = outcome.model_copy(
+        update={
+            "next_action_plan": outcome.next_action_plan.model_copy(
+                update={
+                    "primary": outcome.next_action_plan.primary.model_copy(
+                        update={
+                            "kind": NextActionKind.EXPLAIN_TERM_OR_METHOD,
+                            "reason_code": "compound_information_and_selection",
+                        }
+                    )
+                }
+            )
+        }
+    )
+
+    candidate = build_v2_turn_candidate(
+        compound,
+        sources,
+        session_id="compound-selection",
+        turn_id="compound-selection",
+        original_utterance="Монтажную длину не знаю",
+    )
+
+    assert candidate.selection_result is not None
+    assert candidate.selection_result.status == SelectionResultStatus.SHOWN
+    assert candidate.selection_result.outcome_gate_passed is True
+    assert candidate.product_scope_effect == ProductScopeEffect.REPLACE_FROM_SELECTION
+    assert candidate.response is not None
+    assert candidate.selection_result.ordered_skus == tuple(
+        item.sku for item in candidate.response.products
+    )
 
 
 def test_ppr_selection_applies_service_diameter_and_reinforcement() -> None:

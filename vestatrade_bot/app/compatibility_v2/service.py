@@ -278,14 +278,15 @@ def build_compatibility_request(
                 focus = session.product_focus.sku if session.product_focus else None
                 candidates = tuple(sku for sku in visible if sku != resolved[0].canonical_sku)
                 if focus in candidates:
-                    candidates = (focus, *tuple(sku for sku in candidates if sku != focus))
-                if len(candidates) == 1:
+                    # ``этот`` is an explicit reference to the current focus,
+                    # not a request to guess among every remaining card.  It
+                    # therefore stays resolvable for selections of 3–5 cards.
                     resolved.append(
                         _reference(
                             CompatibilityReferenceKind.CURRENT_FOCUS,
                             raw="этот",
-                            sku=candidates[0],
-                            reason="deictic_in_customer_visible_v2_scope",
+                            sku=focus,
+                            reason="deictic_focus_in_customer_visible_v2_scope",
                         )
                     )
         if len(resolved) >= 2:

@@ -680,12 +680,17 @@ class SellerPolicy:
                 return action, False
             directive = by_task[action.task_id]
             # A direct customer question keeps priority.  A selection stored as
-            # secondary may still change strategy independently.
+            # secondary may still change strategy independently.  Explicit
+            # Compare, Compatibility and Calculate actions are executable
+            # customer requests too; a stalled selection questionnaire must
+            # not replace them with its escalation step.
             if action.kind in {
                 NextActionKind.ANSWER_DIRECT_QUESTION,
                 NextActionKind.ANSWER_VERIFIED_COMMERCE_QUESTION,
                 NextActionKind.REPORT_COMMERCE_EXECUTION_STATUS,
                 NextActionKind.COMPARE,
+                NextActionKind.CHECK_COMPATIBILITY,
+                NextActionKind.CALCULATE_PRELIMINARY,
                 NextActionKind.WAIT_FOR_SEMANTIC_UNDERSTANDING,
             }:
                 return action, False
