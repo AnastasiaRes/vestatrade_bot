@@ -24,6 +24,7 @@ class ComparisonResultStatus(str, Enum):
     COMPARED = "compared"
     NEED_CLARIFICATION = "need_clarification"
     NOT_COMPARABLE = "not_comparable"
+    SOURCE_CONFLICT = "source_conflict"
     REJECTED = "rejected"
 
 
@@ -32,11 +33,41 @@ class ComparisonSourceKind(str, Enum):
     CATALOG_STOCK = "catalog_stock"
     CATALOG_ATTRIBUTE = "catalog_attribute"
     CATALOG_IDENTITY = "catalog_identity"
+    PASSPORT_DOCUMENT_EXACT = "passport_document_exact"
+    PASSPORT_AND_CATALOG_CARD = "passport_and_catalog_card"
 
 
 class ComparisonCriterion(str, Enum):
     LOWEST_PRICE = "lowest_price"
     AVAILABILITY = "availability"
+
+
+class ComparisonReferenceKind(str, Enum):
+    """How one comparison subject was grounded inside a visible V2 scope."""
+
+    ORDINAL = "ordinal"
+    EXPLICIT_VISIBLE_SKU = "explicit_visible_sku"
+    NAMED_VISIBLE_PRODUCT = "named_visible_product"
+    CURRENT_FOCUS = "current_focus"
+    UNRESOLVED = "unresolved"
+
+
+class ComparisonProductReference(FrozenModel):
+    """A reference candidate; it never authorizes a catalogue search."""
+
+    kind: ComparisonReferenceKind
+    raw: str = ""
+    canonical_sku: str | None = None
+    evidence: str = ""
+    reason_code: str
+
+    @model_validator(mode="after")
+    def resolved_reference_has_a_sku(self) -> "ComparisonProductReference":
+        if self.kind != ComparisonReferenceKind.UNRESOLVED and not self.canonical_sku:
+            raise ValueError("resolved comparison reference requires a SKU")
+        if self.kind == ComparisonReferenceKind.UNRESOLVED and self.canonical_sku:
+            raise ValueError("unresolved comparison reference cannot carry a SKU")
+        return self
 
 
 class ComparisonSourceReference(FrozenModel):
@@ -50,6 +81,11 @@ class ComparisonSourceReference(FrozenModel):
     field_name: str | None = None
     source_field: str | None = None
     raw_value: str | None = None
+    document: str | None = None
+    section: str | None = None
+    quote: str | None = None
+    verifier_status: str | None = None
+    document_scope: tuple[str, ...] = ()
 
 
 class ComparisonValue(FrozenModel):
@@ -90,6 +126,8 @@ class ComparisonRequest(FrozenModel):
     original_utterance: str = Field(min_length=1, max_length=8_000)
     selection_id: str | None = None
     ordered_skus: tuple[str, ...] = ()
+    product_references: tuple[ComparisonProductReference, ...] = ()
+    reference_reason_codes: tuple[str, ...] = ()
     requested_predicates: tuple[str, ...] = ()
     criterion: ComparisonCriterion | None = None
     # ``Сравните их`` asks for facts; ``что лучше?`` asks for a decision.
@@ -122,6 +160,8 @@ class ComparisonResult(FrozenModel):
         if self.status == ComparisonResultStatus.COMPARED:
             if len(self.compared_skus) < 2 or not self.dimensions:
                 raise ValueError("compared result requires two SKUs and a dimension")
+        if self.status == ComparisonResultStatus.SOURCE_CONFLICT and not self.reason_codes:
+            raise ValueError("source conflict comparison requires a reason code")
         if self.recommendation is not None and self.status != ComparisonResultStatus.COMPARED:
             raise ValueError("recommendation requires a completed comparison")
         if self.outcome_gate_passed and self.status == ComparisonResultStatus.REJECTED:

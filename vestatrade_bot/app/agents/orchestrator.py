@@ -1232,6 +1232,7 @@ class ChatOrchestrator:
         self,
         message: str,
         before_turn: SessionState,
+        semantic: Any,
         outcome: DialogueV2Outcome,
         base_candidate: Any,
         *,
@@ -1244,6 +1245,10 @@ class ChatOrchestrator:
             outcome,
             before_turn,
             original_utterance=message,
+            semantic_references=(
+                getattr(getattr(semantic, "semantic_delta", None), "product_references", ())
+                or getattr(getattr(semantic, "understanding", None), "references", ())
+            ),
         )
         if request is None:
             return base_candidate
@@ -1260,6 +1265,7 @@ class ChatOrchestrator:
                     if before_turn.v2_last_products
                     else before_turn.last_products
                 ),
+                product_fact_evidence=self.product_fact_evidence,
             ),
             snapshot,
         )
@@ -2196,6 +2202,7 @@ class ChatOrchestrator:
                                             self._maybe_build_v2_comparison_candidate(
                                                 message,
                                                 capability_session,
+                                                semantic,
                                                 live_v2_outcome,
                                                 live_candidate,
                                                 session_id=session_id,
@@ -2516,6 +2523,7 @@ class ChatOrchestrator:
                                         self._maybe_build_v2_comparison_candidate(
                                             message,
                                             before_turn,
+                                            semantic,
                                             v2_outcome,
                                             shadow_candidate,
                                             session_id=session_id,

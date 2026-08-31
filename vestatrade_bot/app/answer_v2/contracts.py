@@ -420,6 +420,10 @@ class CatalogAnswerProduct(FrozenModel):
     url: str | None = None
     image_url: str | None = None
     updated_at: str | None = None
+    # File identities are safe to retain in the frozen source snapshot.  They
+    # let a later evidence gate prove that a passport citation belongs to this
+    # exact displayed SKU without exposing raw document text to the renderer.
+    document_scope: tuple[str, ...] = ()
     facts: tuple[CatalogFact, ...] = ()
     fact_issues: tuple[CatalogFactIssue, ...] = ()
     flow_head_points: tuple[CatalogFlowHeadPoint, ...] = ()

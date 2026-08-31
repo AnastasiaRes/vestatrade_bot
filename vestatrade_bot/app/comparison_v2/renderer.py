@@ -53,6 +53,11 @@ def _source_value(item, source_values: dict[str, str | None]) -> str | None:
 
 def render_comparison_result(result: ComparisonResult, *, names: dict[str, str]) -> str:
     if result.status == ComparisonResultStatus.NEED_CLARIFICATION:
+        if "ordinal_outside_customer_visible_v2_scope" in result.reason_codes:
+            return (
+                "В текущей выдаче нет одной из названных позиций. "
+                "Назовите две карточки из показанных — например, «первый и третий»."
+            )
         return (
             "Для сравнения нужны минимум две реально показанные карточки. "
             "Покажите ещё один вариант или назовите второй товар."
@@ -60,7 +65,21 @@ def render_comparison_result(result: ComparisonResult, *, names: dict[str, str])
     if result.status == ComparisonResultStatus.NOT_COMPARABLE:
         if "comparison_mixed_product_kind_scope" in result.reason_codes:
             return "Показанные товары относятся к разным типам; общего технического сравнения для них нет. Уточните, какие две позиции сопоставить."
+        if "comparison_explicit_predicate_insufficient_evidence" in result.reason_codes:
+            labels = ", ".join(
+                public_fact_label(item) for item in result.missing_data
+            )
+            return (
+                "Не могу доказательно сравнить показанные товары по характеристике "
+                f"«{labels}»: для одной или нескольких позиций нет подтверждённых данных."
+            )
         return "По показанным карточкам нет подтверждённого различия для сравнения. Уточните характеристику, которая важна для выбора."
+    if result.status == ComparisonResultStatus.SOURCE_CONFLICT:
+        return (
+            "По одной из сравниваемых характеристик карточка и привязанный паспорт "
+            "дают несовместимые данные. Не буду выбирать значение наугад; "
+            "уточните его у менеджера или производителя."
+        )
     if result.status == ComparisonResultStatus.REJECTED:
         return "Не могу безопасно сравнить эти карточки: их подтверждённый состав или версия каталога уже не совпадают. Покажите варианты заново."
 

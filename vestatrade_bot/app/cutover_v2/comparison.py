@@ -50,6 +50,7 @@ def build_v2_comparison_candidate(
         ComparisonResultStatus.COMPARED,
         ComparisonResultStatus.NEED_CLARIFICATION,
         ComparisonResultStatus.NOT_COMPARABLE,
+        ComparisonResultStatus.SOURCE_CONFLICT,
     }:
         return None
     products = tuple(

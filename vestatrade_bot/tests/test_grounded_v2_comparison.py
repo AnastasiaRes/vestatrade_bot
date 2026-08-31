@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from app.answer_v2.contracts import AnswerSourceSnapshot, CatalogAnswerProduct
 from app.catalog_v2.contracts import CatalogFact, CatalogProductRole, FactProvenance, ProductKind
-from app.comparison_v2.contracts import ComparisonResultStatus
+from app.comparison_v2.contracts import ComparisonResultStatus, ComparisonSourceKind
 from app.comparison_v2.renderer import render_comparison_result
 from app.comparison_v2.service import (
+    _passport_quote_contains_value,
     build_comparison_request,
     build_comparison_result,
     validate_comparison_result,
@@ -31,8 +32,16 @@ from app.dialogue_v2.contracts import (
 )
 from app.dialogue_v2.controller import DialogueV2Outcome
 from app.dialogue_v2.seller_policy import SellerPolicy
-from app.models import ProductCard, SessionState
+from app.models import ProductCard, ProductFocusState, SessionState
+from app.semantic_v2.contracts import SemanticProductReference
 from app.models import Product
+from app.product_fact_evidence import (
+    ProductFactEvidence,
+    ProductFactRequest,
+    ProductFactStatus,
+    ProductReference,
+    ProductReferenceKind,
+)
 
 
 def _fact(name: str, value: object, unit: str | None = None) -> CatalogFact:
@@ -49,7 +58,15 @@ def _fact(name: str, value: object, unit: str | None = None) -> CatalogFact:
     )
 
 
-def _product(sku: str, *, price: float, length: int, stock: str = "в наличии") -> CatalogAnswerProduct:
+def _product(
+    sku: str,
+    *,
+    price: float,
+    length: int,
+    stock: str = "в наличии",
+    document_scope: tuple[str, ...] = (),
+    facts: tuple[CatalogFact, ...] | None = None,
+) -> CatalogAnswerProduct:
     return CatalogAnswerProduct(
         sku=sku,
         name=f"Насос {sku}",
@@ -61,7 +78,8 @@ def _product(sku: str, *, price: float, length: int, stock: str = "в налич
         stock_qty=10,
         url=f"https://example.test/{sku}",
         image_url=f"https://example.test/{sku}.jpg",
-        facts=(_fact("installation_length_mm", length, "мм"),),
+        document_scope=document_scope,
+        facts=facts if facts is not None else (_fact("installation_length_mm", length, "мм"),),
     )
 
 
@@ -71,6 +89,20 @@ def _snapshot() -> AnswerSourceSnapshot:
         products=(
             _product("PUMP-180", price=5000, length=180),
             _product("PUMP-130", price=4500, length=130, stock="под заказ"),
+        ),
+    )
+
+
+def _five_product_snapshot() -> AnswerSourceSnapshot:
+    return AnswerSourceSnapshot(
+        source_revision="source-v1",
+        products=tuple(
+            _product(
+                f"PUMP-{index}",
+                price=4000 + index * 100,
+                length=120 + index * 10,
+            )
+            for index in range(1, 6)
         ),
     )
 
@@ -171,6 +203,73 @@ def _base_candidate(outcome: DialogueV2Outcome) -> V2TurnCandidate:
     )
 
 
+class _PassportComparisonEvidence:
+    """Typed stand-in for the existing ProductFact evidence seam."""
+
+    def __init__(
+        self,
+        values: dict[str, tuple[object, str | None, str, str]],
+        *,
+        conflict_skus: tuple[str, ...] = (),
+    ) -> None:
+        self.values = values
+        self.conflict_skus = set(conflict_skus)
+        self.calls: list[tuple[str, str]] = []
+
+    def evaluate_exact_product(self, *, sku: str, predicate: str) -> ProductFactEvidence:
+        self.calls.append((sku, predicate))
+        reference = ProductReference(
+            kind=ProductReferenceKind.EXACT_SKU,
+            raw=sku,
+            canonical_sku=sku,
+            candidate_skus=(sku,),
+            reason_code="comparison_exact_visible_sku",
+        )
+        request = ProductFactRequest(
+            question=f"Какая {predicate} у {sku}?",
+            predicate=predicate,
+            product_ref=reference,
+        )
+        if sku in self.conflict_skus:
+            return ProductFactEvidence(
+                status=ProductFactStatus.REJECTED,
+                request=request,
+                verifier_status="source_conflict",
+                reason_code="catalogue_document_value_conflict",
+            )
+        if sku not in self.values:
+            return ProductFactEvidence(
+                status=ProductFactStatus.NOT_FOUND,
+                request=request,
+                verifier_status="not_run",
+                reason_code="passport_evidence_not_found",
+            )
+        value, unit, document, quote = self.values[sku]
+        return ProductFactEvidence(
+            status=ProductFactStatus.ANSWERED,
+            request=request,
+            product_name=f"Насос {sku}",
+            value=value,  # type: ignore[arg-type]
+            unit=unit,
+            source_kind="passport_document_exact",
+            document=document,
+            section="таблица характеристик",
+            quote=quote,
+            verifier_status="accepted",
+            reason_code="passport_exact_control_thread_value_match",
+            document_scope=(document,),
+        )
+
+
+def test_passport_quote_numeric_gate_does_not_read_eight_inside_eighteen() -> None:
+    assert _passport_quote_contains_value(
+        "Расширительный бак: 8 литров.", 8, "л"
+    )
+    assert not _passport_quote_contains_value(
+        "Расширительный бак: 18 литров.", 8, "л"
+    )
+
+
 def test_compare_reads_only_visible_scope_and_proves_price_and_length() -> None:
     snapshot = _snapshot()
     outcome = _outcome()
@@ -201,6 +300,111 @@ def test_compare_reads_only_visible_scope_and_proves_price_and_length() -> None:
     assert [item.value for item in length.values] == [180, 130]
     assert all(item.source_ref_ids for item in length.values)
     assert all(item.sku in request.ordered_skus for item in result.sources)
+
+
+def test_compare_resolves_any_two_named_ordinals_inside_visible_scope() -> None:
+    snapshot = _five_product_snapshot()
+    outcome = _outcome()
+    session = _session(snapshot)
+
+    first_third = build_comparison_request(
+        outcome,
+        session,
+        original_utterance="Сравни первый и третий по цене.",
+    )
+    second_fourth = build_comparison_request(
+        outcome,
+        session,
+        original_utterance="Сопоставь второй с четвёртым по напору.",
+    )
+    numeric_pair = build_comparison_request(
+        outcome,
+        session,
+        original_utterance="Сравни 1 и 4 варианты по цене.",
+    )
+
+    assert first_third is not None
+    assert first_third.ordered_skus == ("PUMP-1", "PUMP-3")
+    assert second_fourth is not None
+    assert second_fourth.ordered_skus == ("PUMP-2", "PUMP-4")
+    assert numeric_pair is not None
+    assert numeric_pair.ordered_skus == ("PUMP-1", "PUMP-4")
+
+
+def test_compare_resolves_one_ordinal_and_current_focus_without_widening_scope() -> None:
+    snapshot = _five_product_snapshot()
+    outcome = _outcome()
+    session = _session(snapshot)
+    session.product_focus = ProductFocusState(sku="PUMP-4", category="pumps")
+
+    request = build_comparison_request(
+        outcome,
+        session,
+        original_utterance="Сравни первый и этот по цене.",
+    )
+
+    assert request is not None
+    assert request.ordered_skus == ("PUMP-1", "PUMP-4")
+    assert [item.kind.value for item in request.product_references] == [
+        "ordinal",
+        "current_focus",
+    ]
+
+
+def test_semantic_reference_candidate_must_be_source_spanned_and_resolves_only_visible_pair() -> None:
+    snapshot = _five_product_snapshot()
+    outcome = _outcome()
+    session = _session(snapshot)
+    references = (
+        SemanticProductReference(
+            kind="ordinal",
+            text="позицию один",
+            evidence="позицию один",
+        ),
+        SemanticProductReference(
+            kind="ordinal",
+            text="позицию четыре",
+            evidence="позицию четыре",
+        ),
+    )
+
+    request = build_comparison_request(
+        outcome,
+        session,
+        original_utterance="Сопоставь позицию один и позицию четыре.",
+        semantic_references=references,
+    )
+
+    assert request is not None
+    assert request.ordered_skus == ("PUMP-1", "PUMP-4")
+    visible_skus = {item.sku for item in session.v2_last_products}
+    assert all(item.canonical_sku in visible_skus for item in request.product_references)
+
+
+def test_compare_does_not_widen_an_out_of_scope_explicit_reference_to_all_cards() -> None:
+    snapshot = _five_product_snapshot()
+    outcome = _outcome()
+    session = _session(snapshot)
+
+    request = build_comparison_request(
+        outcome,
+        session,
+        original_utterance="Сравни первый и шестой варианты.",
+    )
+
+    assert request is not None
+    assert request.ordered_skus == ("PUMP-1",)
+    result = validate_comparison_result(
+        request,
+        build_comparison_result(request, snapshot, visible_cards=session.v2_last_products),
+        snapshot,
+    )
+    assert result.status == ComparisonResultStatus.NEED_CLARIFICATION
+    assert "ordinal_outside_customer_visible_v2_scope" in result.reason_codes
+    assert "нет одной из названных позиций" in render_comparison_result(
+        result,
+        names={item.sku: item.name for item in snapshot.products},
+    )
 
 
 def test_cheapest_result_is_a_proved_price_conclusion_not_free_recommendation() -> None:
@@ -314,6 +518,242 @@ def test_two_ordinals_compare_only_the_two_cards_named_by_the_buyer() -> None:
     assert result.outcome_gate_passed is True
     assert "PUMP-250" not in rendered
     assert "Какой критерий для вас решающий" not in rendered
+
+
+def test_plural_pair_reference_compares_only_the_first_two_visible_cards() -> None:
+    snapshot = AnswerSourceSnapshot(
+        source_revision="source-v1",
+        products=(
+            *_snapshot().products,
+            _product("PUMP-250", price=7000, length=250),
+        ),
+    )
+    outcome = _outcome()
+    session = _session(snapshot)
+
+    request = build_comparison_request(
+        outcome,
+        session,
+        original_utterance="Чем отличаются первые два?",
+    )
+
+    assert request is not None
+    assert request.ordered_skus == ("PUMP-180", "PUMP-130")
+    result = validate_comparison_result(
+        request,
+        build_comparison_result(request, snapshot, visible_cards=session.v2_last_products),
+        snapshot,
+    )
+    assert result.status == ComparisonResultStatus.COMPARED
+    assert result.compared_skus == ("PUMP-180", "PUMP-130")
+
+
+def test_explicit_passport_predicate_fills_only_snapshot_gap_for_visible_skus() -> None:
+    left = _product(
+        "HEAD-30",
+        price=1000,
+        length=180,
+        document_scope=("head-30.pdf",),
+        facts=(),
+    )
+    right = _product(
+        "HEAD-28",
+        price=1100,
+        length=180,
+        document_scope=("head-28.pdf",),
+        facts=(),
+    )
+    snapshot = AnswerSourceSnapshot(source_revision="source-v1", products=(left, right))
+    outcome = _outcome()
+    session = _session(snapshot)
+    evidence = _PassportComparisonEvidence(
+        {
+            "HEAD-30": (
+                "M30×1,5",
+                None,
+                "head-30.pdf",
+                "Посадочная резьба термоголовки M30×1,5.",
+            ),
+            "HEAD-28": (
+                "M28×1,5",
+                None,
+                "head-28.pdf",
+                "Посадочная резьба термоголовки M28×1,5.",
+            ),
+        }
+    )
+    request = build_comparison_request(
+        outcome,
+        session,
+        original_utterance="Сравните их по резьбе под термоголовку.",
+    )
+
+    assert request is not None
+    assert request.requested_predicates == ("thermostatic_head_thread",)
+    result = validate_comparison_result(
+        request,
+        build_comparison_result(
+            request,
+            snapshot,
+            visible_cards=session.v2_last_products,
+            product_fact_evidence=evidence,  # type: ignore[arg-type]
+        ),
+        snapshot,
+    )
+
+    dimension = next(
+        item for item in result.dimensions if item.predicate == "thermostatic_head_thread"
+    )
+    assert result.status == ComparisonResultStatus.COMPARED
+    assert result.outcome_gate_passed is True
+    assert [item.value for item in dimension.values] == ["M30×1,5", "M28×1,5"]
+    assert evidence.calls == [
+        ("HEAD-30", "thermostatic_head_thread"),
+        ("HEAD-28", "thermostatic_head_thread"),
+    ]
+    passport_sources = [
+        source
+        for source in result.sources
+        if source.source_kind == ComparisonSourceKind.PASSPORT_DOCUMENT_EXACT
+    ]
+    assert {source.document for source in passport_sources} == {
+        "head-30.pdf",
+        "head-28.pdf",
+    }
+    assert all(source.quote for source in passport_sources)
+
+
+def test_generic_compare_never_calls_passport_evidence() -> None:
+    snapshot = _snapshot()
+    outcome = _outcome()
+    session = _session(snapshot)
+    evidence = _PassportComparisonEvidence({})
+    request = build_comparison_request(outcome, session, original_utterance="Сравните их")
+
+    assert request is not None
+    result = build_comparison_result(
+        request,
+        snapshot,
+        visible_cards=session.v2_last_products,
+        product_fact_evidence=evidence,  # type: ignore[arg-type]
+    )
+
+    assert result.status == ComparisonResultStatus.COMPARED
+    assert evidence.calls == []
+
+
+def test_explicit_passport_compare_does_not_mask_missing_evidence_with_price() -> None:
+    left = _product(
+        "HEAD-30",
+        price=1000,
+        length=180,
+        document_scope=("head-30.pdf",),
+        facts=(),
+    )
+    right = _product(
+        "HEAD-28",
+        price=1100,
+        length=180,
+        document_scope=("head-28.pdf",),
+        facts=(),
+    )
+    snapshot = AnswerSourceSnapshot(source_revision="source-v1", products=(left, right))
+    outcome = _outcome()
+    session = _session(snapshot)
+    evidence = _PassportComparisonEvidence(
+        {
+            "HEAD-30": (
+                "M30×1,5",
+                None,
+                "head-30.pdf",
+                "Посадочная резьба термоголовки M30×1,5.",
+            ),
+        }
+    )
+    request = build_comparison_request(
+        outcome,
+        session,
+        original_utterance="Сравните их по резьбе под термоголовку.",
+    )
+
+    assert request is not None
+    result = validate_comparison_result(
+        request,
+        build_comparison_result(
+            request,
+            snapshot,
+            visible_cards=session.v2_last_products,
+            product_fact_evidence=evidence,  # type: ignore[arg-type]
+        ),
+        snapshot,
+    )
+
+    assert result.status == ComparisonResultStatus.NOT_COMPARABLE
+    assert result.outcome_gate_passed is True
+    assert result.missing_data == ("thermostatic_head_thread",)
+    assert "comparison_explicit_predicate_insufficient_evidence" in result.reason_codes
+    assert "нет подтверждённых данных" in render_comparison_result(
+        result,
+        names={item.sku: item.name for item in snapshot.products},
+    )
+
+
+def test_passport_source_conflict_is_delivered_as_a_safe_comparison_status() -> None:
+    left = _product(
+        "HEAD-30",
+        price=1000,
+        length=180,
+        document_scope=("head-30.pdf",),
+        facts=(),
+    )
+    right = _product(
+        "HEAD-28",
+        price=1100,
+        length=180,
+        document_scope=("head-28.pdf",),
+        facts=(),
+    )
+    snapshot = AnswerSourceSnapshot(source_revision="source-v1", products=(left, right))
+    outcome = _outcome()
+    session = _session(snapshot)
+    evidence = _PassportComparisonEvidence(
+        {
+            "HEAD-30": ("M30×1,5", None, "head-30.pdf", "M30×1,5"),
+            "HEAD-28": ("M28×1,5", None, "head-28.pdf", "M28×1,5"),
+        },
+        conflict_skus=("HEAD-28",),
+    )
+    request = build_comparison_request(
+        outcome,
+        session,
+        original_utterance="Сравните их по резьбе под термоголовку.",
+    )
+
+    assert request is not None
+    result = validate_comparison_result(
+        request,
+        build_comparison_result(
+            request,
+            snapshot,
+            visible_cards=session.v2_last_products,
+            product_fact_evidence=evidence,  # type: ignore[arg-type]
+        ),
+        snapshot,
+    )
+    candidate = build_v2_comparison_candidate(
+        outcome,
+        _base_candidate(outcome),
+        result,
+        snapshot,
+        session_id="comparison-conflict",
+        turn_id="comparison-conflict-turn",
+    )
+
+    assert result.status == ComparisonResultStatus.SOURCE_CONFLICT
+    assert result.outcome_gate_passed is True
+    assert candidate is not None
+    assert candidate.response is not None
+    assert "несовместимые данные" in candidate.response.answer
 
 
 def test_single_visible_card_gets_one_subject_clarification() -> None:

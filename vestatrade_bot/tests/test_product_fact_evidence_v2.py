@@ -134,6 +134,33 @@ def test_ordinal_product_fact_is_bound_to_customer_visible_card() -> None:
     assert "VRS.254.18.0" in rendered
 
 
+def test_exact_product_evidence_facade_keeps_productfact_gates_for_compare() -> None:
+    pump = _product(
+        "VRS.254.18.0",
+        "Насос VALTEC RS 25/4-180",
+        {"монтажная длина, мм": "180"},
+        "VRS-0725.pdf",
+    )
+    passport = _StubPassport(
+        quote="Монтажная длина для модели VRS.254.18.0 — 180 мм.",
+        document="VRS-0725.pdf",
+    )
+    service = _service([pump], passport)
+
+    evidence = service.evaluate_exact_product(
+        sku="VRS.254.18.0",
+        predicate="installation_length_mm",
+    )
+
+    assert evidence.status == ProductFactStatus.ANSWERED
+    assert evidence.request.product_ref.kind == ProductReferenceKind.EXACT_SKU
+    assert evidence.request.product_ref.canonical_sku == pump.sku
+    assert evidence.request.predicate == "installation_length_mm"
+    assert evidence.value == "180"
+    assert evidence.document == "VRS-0725.pdf"
+    assert len(passport.calls) == 1
+
+
 def test_versioned_v2_selection_wins_over_legacy_context_card_for_ordinals() -> None:
     first = _product(
         "VRS.254.18.0",

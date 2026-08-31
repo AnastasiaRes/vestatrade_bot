@@ -487,6 +487,59 @@ class ProductFactEvidenceService:
 
         self.catalog_by_sku = {item.sku: item for item in catalog_snapshot}
 
+    def evaluate_exact_product(
+        self,
+        *,
+        sku: str,
+        predicate: str,
+    ) -> ProductFactEvidence:
+        """Prove one predicate for one already resolved product.
+
+        Compare and Compatibility already have a frozen customer-visible SKU
+        and must not reconstruct that reference through an LLM or a catalogue
+        search.  This small facade deliberately routes through ``evaluate``
+        so the existing card/passport retrieval, verifier and document-scope
+        gates remain the sole evidence implementation.
+        """
+
+        product = self._product(sku)
+        product_ref = ProductReference(
+            kind=ProductReferenceKind.EXACT_SKU,
+            raw=sku,
+            canonical_sku=sku,
+            candidate_skus=(sku,),
+            reason_code="comparison_exact_visible_sku",
+        )
+        question = f"Какая характеристика «{public_fact_label(predicate)}» у товара {sku}?"
+        if product is None:
+            return ProductFactEvidence(
+                status=ProductFactStatus.NOT_FOUND,
+                request=ProductFactRequest(
+                    question=question,
+                    predicate=predicate,
+                    product_ref=product_ref,
+                ),
+                verifier_status="not_run",
+                reason_code="resolved_product_missing_from_catalogue",
+            )
+        # Exact SKU wins in ``resolve_reference``.  The empty session is
+        # intentional: only the already delivered product is in scope, never
+        # a stale ordinal or a global list.
+        return self.evaluate(
+            question,
+            SessionState(session_id=f"comparison-evidence:{sku}"),
+            semantic_fact_name=predicate,
+        ) or ProductFactEvidence(
+            status=ProductFactStatus.REJECTED,
+            request=ProductFactRequest(
+                question=question,
+                predicate=predicate,
+                product_ref=product_ref,
+            ),
+            verifier_status="not_run",
+            reason_code="comparison_product_fact_evidence_not_available",
+        )
+
     def evaluate(
         self,
         question: str,

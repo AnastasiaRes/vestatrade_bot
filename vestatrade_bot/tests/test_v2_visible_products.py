@@ -34,6 +34,18 @@ def test_visible_scope_keeps_order_and_resolves_ordinals_in_customer_order() -> 
     assert scope.current_focus().canonical_sku == "C"
 
 
+def test_visible_scope_resolves_plural_customer_references_as_a_bounded_pair() -> None:
+    """A plural pair must never widen a Compare request to every shown card."""
+
+    assert ordinal_indices("Чем отличаются первые два?") == (0, 1)
+    assert ordinal_indices("Сравните две первые позиции") == (0, 1)
+    assert ordinal_indices("Что важнее с первого по второй вариант?") == (0, 1)
+    assert ordinal_indices("Сравните первые 3 товара") == (0, 1, 2)
+    # Plain quantities have no product-reference grammar and remain facts,
+    # rather than being reinterpreted as a comparison pair.
+    assert ordinal_indices("Нужно первые два метра трубы") == (0,)
+
+
 def test_visible_scope_never_turns_out_of_scope_focus_or_bad_order_into_a_product() -> None:
     session = SessionState(
         session_id="visible-reference-invalid",

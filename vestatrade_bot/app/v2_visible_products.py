@@ -22,6 +22,47 @@ _ORDINALS: tuple[tuple[tuple[str, ...], int], ...] = (
     (("трет", "3-й", "3я", "3го", "третью", "третий", "третьего"), 2),
     (("четверт", "4-й", "4я", "4го", "четвёрт", "четвертый"), 3),
     (("пят", "5-й", "5я", "5го", "пятую", "пятый", "пятого"), 4),
+    (("шест", "6-й", "6я", "6го", "шестую", "шестой", "шестого"), 5),
+)
+# These are product-list references, not arbitrary counts.  ``первые два``
+# means the first *and* second delivered cards; treating only ``первые`` as a
+# reference silently widens a requested pair comparison to the whole scope.
+# Keep the grammar intentionally narrow so a quantity such as ``первые два
+# метра`` never becomes an ordinal pair.
+_ORDINAL_GROUPS: tuple[tuple[re.Pattern[str], tuple[int, ...]], ...] = (
+    (
+        re.compile(
+            r"(?iu)\b(?:перв\w*\s+(?:два|две|2)|(?:два|две|2)\s+перв\w*)"
+            r"\s+(?:вариант\w*|позиц\w*|товар\w*)\b"
+        ),
+        (0, 1),
+    ),
+    (
+        re.compile(
+            r"(?iu)\bперв\w*\s+(?:два|две|2)\b"
+            r"(?!\s+(?:метр\w*|шт\.?|штук\w*|литр\w*|миллиметр\w*))"
+        ),
+        (0, 1),
+    ),
+    (
+        re.compile(
+            r"(?iu)\b(?:два|две|2)\s+перв\w*\b"
+            r"(?!\s+(?:метр\w*|шт\.?|штук\w*|литр\w*|миллиметр\w*))"
+        ),
+        (0, 1),
+    ),
+    (
+        re.compile(r"(?iu)\bперв\w*\s+(?:три|3)\b"),
+        (0, 1, 2),
+    ),
+    (
+        re.compile(r"(?iu)\b(?:три|3)\s+перв\w*\b"),
+        (0, 1, 2),
+    ),
+    (
+        re.compile(r"(?iu)\bс\s+перв\w*\s+по\s+втор\w*\b"),
+        (0, 1),
+    ),
 )
 _DEICTIC_RE = re.compile(
     r"(?iu)\b(?:этот|эта|это|эти|этой|этого|этому|нем[уё]|не[йм]|его|ее)\b"
@@ -221,6 +262,9 @@ def ordinal_indices(message: str) -> tuple[int, ...]:
 
     text = normalise_product_reference_text(message)
     found: list[tuple[int, int]] = []
+    for pattern, indices in _ORDINAL_GROUPS:
+        for match in pattern.finditer(text):
+            found.extend((match.start(), index) for index in indices)
     for aliases, index in _ORDINALS:
         positions = [text.find(alias) for alias in aliases if text.find(alias) >= 0]
         if positions:

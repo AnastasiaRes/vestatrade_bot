@@ -110,6 +110,9 @@ def build_answer_source_snapshot(
                 url=product.url or None,
                 image_url=product.image_url or None,
                 updated_at=product.updated_at,
+                document_scope=tuple(
+                    dict.fromkeys(document.filename for document in product.documents)
+                ),
                 facts=facts,
                 fact_issues=identity.fact_issues,
                 flow_head_points=identity.flow_head_points,
