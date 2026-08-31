@@ -212,7 +212,7 @@ def get_settings() -> Settings:
         "OPENROUTER_MODEL",
         "qwen/qwen3-vl-8b-instruct",
     )
-    ollama_model = os.getenv("OLLAMA_MODEL", "qwen2.5-coder:7b")
+    ollama_model = os.getenv("OLLAMA_MODEL", "qwen3-vl:8b-instruct")
     return Settings(
         feed_url=os.getenv(
             "FEED_URL",

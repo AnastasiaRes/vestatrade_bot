@@ -75,6 +75,23 @@ def test_missing_provider_and_openrouter_key_use_ollama_defaults(
     assert settings.llm_model == "local/default"
 
 
+def test_ollama_defaults_match_the_supported_local_v2_models(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OLLAMA_MODEL", raising=False)
+    monkeypatch.delenv("OLLAMA_MODEL_STRONG", raising=False)
+    monkeypatch.delenv("OLLAMA_EMBEDDING_MODEL", raising=False)
+
+    settings = get_settings()
+
+    assert settings.llm_provider == "ollama"
+    assert settings.llm_model == "qwen3-vl:8b-instruct"
+    assert settings.llm_model_strong == "qwen3-vl:8b-instruct"
+    assert settings.embedding_model == "bge-m3"
+
+
 def test_explicit_disabled_provider_does_not_auto_enable_ollama(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

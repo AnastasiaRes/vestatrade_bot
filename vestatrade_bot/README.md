@@ -512,7 +512,8 @@ python3 scripts/build_widget_demo_catalog.py --check  # проверить, не
 |---|---|---|
 | `LLM_PROVIDER` | `ollama` | `ollama`, `openrouter` или любое другое значение = LLM выключена. `openrouter` без ключа автоматически переключается на Ollama |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Адрес Ollama |
-| `OLLAMA_MODEL` / `OLLAMA_MODEL_STRONG` | `qwen2.5-coder:7b` | Быстрая / сильная модель |
+| `OLLAMA_MODEL` / `OLLAMA_MODEL_STRONG` | `qwen3-vl:8b-instruct` | Быстрая / сильная модель |
+| `OLLAMA_EMBEDDING_MODEL` | `bge-m3` | Локальная модель поиска по паспортам |
 | `OPENROUTER_API_KEY` | — | Ключ OpenRouter |
 | `OPENROUTER_MODEL` / `OPENROUTER_MODEL_STRONG` | `qwen/qwen3-vl-8b-instruct` | Модели OpenRouter |
 | `LLM_TIMEOUT_SECONDS` | `60` | Таймаут одного вызова вне бюджета реплики |
@@ -547,6 +548,27 @@ python3 scripts/build_widget_demo_catalog.py --check  # проверить, не
 > детерминированный fallback за результат работы модели. То же видно в
 > `/health` (`llm_provider`, `llm_configured`) и в `debug.final_answer_source`
 > каждого ответа.
+
+### Запуск V2 с Ollama на другом компьютере
+
+После получения актуальной ветки и установки Python-зависимостей достаточно
+запустить:
+
+```bash
+./scripts/start_v2_ollama.sh
+```
+
+Первый запуск сам проверяет или скачивает строго `qwen3-vl:8b-instruct` и
+`bge-m3`, выполняет настоящий запрос к Ollama и собирает **тот же**
+`app/data/passport_index.json` для локального `bge-m3`. Если индекс был создан
+с OpenRouter `baai/bge-m3`, он намеренно пересобирается: смешивать векторы
+разных runtime-моделей нельзя. Второй скрипт запускает обычный `/chat` и
+витрину в режиме `V2 → Legacy fallback`; `DIALOGUE_V2_FORCE_LEGACY=true`
+остаётся мгновенным откатом для процесса.
+
+Для отдельной проверки без запуска сервера используйте
+`./scripts/prepare_ollama_v2.sh`. После успешной подготовки можно не повторять
+проверку при каждом старте, задав `V2_OLLAMA_SKIP_PREPARE=1`.
 
 ### Каталог и данные
 
