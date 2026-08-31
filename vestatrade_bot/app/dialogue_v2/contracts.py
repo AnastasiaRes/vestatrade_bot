@@ -235,9 +235,11 @@ class SelectionPreferenceKind(str, Enum):
 
     BRAND_REQUIRED = "brand_required"
     BRAND_PREFERRED = "brand_preferred"
+    BRAND_ANY = "brand_any"
     PRICE_LOWEST = "price_lowest"
     PRICE_BELOW_REFERENCE = "price_below_reference"
     STOCK_REQUIRED = "stock_required"
+    LENGTH_NEAREST_SHORTER = "length_nearest_shorter"
 
 
 class TurnMetadata(FrozenModel):
@@ -431,7 +433,7 @@ class SelectionPreferenceSignal(FrozenModel):
     kind: SelectionPreferenceKind
     task_id: str
     goal_id: str | None = None
-    value: str | bool | None = None
+    value: str | int | float | bool | None = None
     evidence: str = Field(default="", max_length=240)
     source: str
     source_turn: int = Field(ge=1)
@@ -443,8 +445,18 @@ class SelectionPreferenceSignal(FrozenModel):
             SelectionPreferenceKind.BRAND_PREFERRED,
         } and not isinstance(self.value, str):
             raise ValueError("brand preference signal requires a brand")
+        if self.kind == SelectionPreferenceKind.BRAND_ANY and self.value is not None:
+            raise ValueError("brand-any preference signal must not carry a brand")
         if self.kind == SelectionPreferenceKind.STOCK_REQUIRED and self.value is not True:
             raise ValueError("stock preference signal requires value=true")
+        if self.kind == SelectionPreferenceKind.LENGTH_NEAREST_SHORTER and (
+            not isinstance(self.value, (int, float))
+            or isinstance(self.value, bool)
+            or float(self.value) <= 0
+        ):
+            raise ValueError(
+                "nearest-shorter preference signal requires a positive length"
+            )
         if self.kind in {
             SelectionPreferenceKind.PRICE_LOWEST,
             SelectionPreferenceKind.PRICE_BELOW_REFERENCE,

@@ -18,8 +18,9 @@ from starlette.concurrency import run_in_threadpool
 
 from app.agents.orchestrator import ChatOrchestrator
 from app.chat_logger import ChatLogger
-from app.config import get_settings
+from app.config import PROJECT_ROOT, get_settings
 from app.models import ChatRequest, ChatResponse
+from app.passport_retrieval import PassportIndexNotReady, load_ready
 
 
 logging.basicConfig(
@@ -121,13 +122,37 @@ async def health() -> dict[str, Any]:
 @app.get("/ready")
 async def ready() -> JSONResponse:
     products_loaded = len(orchestrator.search_agent.products)
-    is_ready = products_loaded > 0
+    passport_status: dict[str, Any] = {
+        "required": bool(settings.embeddings_enabled),
+        "ready": not settings.embeddings_enabled,
+        "reason": "embeddings_not_configured" if not settings.embeddings_enabled else None,
+    }
+    if settings.embeddings_enabled:
+        try:
+            index = load_ready(
+                settings.products_cache_path.with_name("passport_index.json"),
+                [settings.product_docs_dir, PROJECT_ROOT / "data"],
+                settings.embedding_model,
+            )
+            passport_status.update(
+                {
+                    "ready": True,
+                    "reason": None,
+                    "model": index.model,
+                    "chunks": len(index.chunks),
+                    "source_digest": index.source_digest,
+                }
+            )
+        except PassportIndexNotReady as exc:
+            passport_status["reason"] = exc.reason_code
+    is_ready = products_loaded > 0 and bool(passport_status["ready"])
     return JSONResponse(
         status_code=200 if is_ready else 503,
         content={
             "status": "ready" if is_ready else "not_ready",
             "products_loaded": products_loaded,
             "products_loaded_from": orchestrator.products_loaded_from,
+            "passport_index": passport_status,
         },
     )
 

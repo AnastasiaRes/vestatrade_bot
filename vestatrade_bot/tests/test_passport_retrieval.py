@@ -11,13 +11,18 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from app.passport_chunks import chunk_pages
 from app.passport_retrieval import (
     KEYWORD_WEIGHT,
     PassportIndex,
+    PassportIndexNotReady,
+    _source_digest,
     build_index,
     expand_query,
     load_or_build,
+    load_ready,
 )
 
 
@@ -180,6 +185,48 @@ def test_cache_is_reused_and_not_recomputed(tmp_path: Path) -> None:
     assert embedder.calls == calls_after_build
 
 
+def test_request_path_loads_only_a_prepared_matching_index(tmp_path: Path) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    cache = tmp_path / "index.json"
+    chunks = chunk_pages(_pages(), "pump.pdf")
+    prepared = PassportIndex(
+        chunks,
+        [[1.0, 0.0, 0.0]] * len(chunks),
+        "model-a",
+        source_digest=_source_digest([docs]),
+    )
+    cache.write_text(json.dumps(prepared.to_payload()), encoding="utf-8")
+
+    loaded = load_ready(cache, [docs], "model-a")
+
+    assert loaded.model == "model-a"
+    assert loaded.has_vectors
+
+
+def test_request_path_refuses_stale_index_without_rebuilding(tmp_path: Path) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    cache = tmp_path / "index.json"
+    chunks = chunk_pages(_pages(), "pump.pdf")
+    prepared = PassportIndex(
+        chunks,
+        [[1.0, 0.0, 0.0]] * len(chunks),
+        "model-a",
+        source_digest=_source_digest([docs]),
+    )
+    cache.write_text(json.dumps(prepared.to_payload()), encoding="utf-8")
+    (docs / "new.pdf").write_bytes(b"new passport")
+
+    with pytest.raises(PassportIndexNotReady) as error:
+        load_ready(cache, [docs], "model-a")
+
+    assert error.value.reason_code == "passport_index_source_digest_mismatch"
+    assert json.loads(cache.read_text(encoding="utf-8"))["source_digest"] == (
+        prepared.source_digest
+    )
+
+
 def test_failed_embedding_model_migration_does_not_overwrite_cache(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -226,6 +273,24 @@ def test_cache_is_rebuilt_when_pdf_corpus_changes(tmp_path: Path, monkeypatch) -
 
     assert len(calls) == 2
     assert calls[0] != calls[1]
+
+
+def test_passport_cache_digest_changes_when_pdf_parser_contract_changes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+
+    monkeypatch.setattr(
+        "app.passport_retrieval._pdf_parser_signature", lambda: "pypdf=one"
+    )
+    first = _source_digest([docs])
+    monkeypatch.setattr(
+        "app.passport_retrieval._pdf_parser_signature", lambda: "pypdf=two"
+    )
+    second = _source_digest([docs])
+
+    assert first != second
 
 
 def test_keyword_weight_keeps_exact_designations_usable() -> None:

@@ -153,6 +153,16 @@ def test_single_position_is_not_a_list() -> None:
     assert split_item_list("Нужна труба PP-FIBER 20 мм — 200 м") == []
 
 
+def test_engineering_pump_measurements_are_not_a_purchase_list() -> None:
+    """Several metre values in one pump answer are not order quantities."""
+
+    assert split_item_list(
+        "При работе вода опускается примерно до 12 метров. "
+        "От земли до самой высокой точки ещё 3 метра, по участку около "
+        "35 метров трубы ПНД 32. Хотим одновременно включать два разбрызгивателя."
+    ) == []
+
+
 def test_d04_numbered_questions_split_into_five() -> None:
     from app.agents.item_list import split_question_list
 

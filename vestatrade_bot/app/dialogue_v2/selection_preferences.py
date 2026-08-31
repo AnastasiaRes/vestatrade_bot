@@ -19,6 +19,11 @@ _PRICE_KINDS = {
     SelectionPreferenceKind.PRICE_LOWEST,
     SelectionPreferenceKind.PRICE_BELOW_REFERENCE,
 }
+_BRAND_KINDS = {
+    SelectionPreferenceKind.BRAND_REQUIRED,
+    SelectionPreferenceKind.BRAND_PREFERRED,
+    SelectionPreferenceKind.BRAND_ANY,
+}
 
 
 def active_selection_preferences(
@@ -42,7 +47,11 @@ def active_selection_preferences(
     ]
     latest: dict[object, SelectionPreferenceSignal] = {}
     for item in scoped:
-        key: object = "price" if item.kind in _PRICE_KINDS else item.kind
+        key: object = (
+            "price"
+            if item.kind in _PRICE_KINDS
+            else ("brand" if item.kind in _BRAND_KINDS else item.kind)
+        )
         previous = latest.get(key)
         if previous is None or (item.source_turn, item.preference_id) > (
             previous.source_turn,

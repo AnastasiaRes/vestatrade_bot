@@ -32,8 +32,13 @@ from .contracts import (
 )
 
 
-_PRICE_RE = re.compile(r"(?iu)(?:сколько\s+стоит|какая\s+цена|цена|стоимост)")
-_STOCK_RE = re.compile(r"(?iu)(?:есть\s+ли\s+(?:он\s+)?в\s+наличии|в\s+наличии|остаток)")
+_PRICE_RE = re.compile(
+    r"(?iu)(?:сколько\s+стоит|какая\s+цен\w*|\bцен\w*|стоимост\w*)"
+)
+_STOCK_RE = re.compile(
+    r"(?iu)(?:есть\s+ли\s+(?:он\s+)?в\s+наличии|в\s+наличии|"
+    r"\bналичи\w*|остат\w*)"
+)
 _LINK_RE = re.compile(r"(?iu)(?:ссылк\w*|где\s+открыть\s+товар)")
 _CARD_RE = re.compile(r"(?iu)(?:покаж\w*\s+(?:карточк\w*|товар)|карточк\w*\s+товар)")
 _QUANTITY_RE = re.compile(r"(?iu)(?:\b\d+(?:[.,]\d+)?\s*(?:шт\.?|штук|метр\w*)\b|\bпосчита\w*)")
@@ -300,6 +305,18 @@ def build_offer_fact_request(
     else:
         return None
     task_id, goal_id = _task_for_offer(outcome)
+    # A persistent catalogue preference contains the same words as a stock
+    # question (``только в наличии`` / ``наличие не важно``), but it remains
+    # Selection.  OfferFact may answer an unquantified stock turn only when
+    # the typed planner actually created/selected a stock task.  The narrow
+    # quantity recovery below remains available for ``есть 3 шт?`` even if a
+    # short fragment was rejected by the semantic model.
+    if (
+        kind == OfferFactKind.STOCK
+        and requested_quantity is None
+        and task_id is None
+    ):
+        return None
     return OfferFactRequest(
         task_id=task_id,
         goal_id=goal_id,

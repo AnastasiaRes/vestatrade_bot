@@ -153,6 +153,37 @@ def render_selection_result(result: SelectionResult) -> str:
     if result.status.value != "shown" or not result.cards:
         raise ValueError("selection renderer requires shown cards")
     count = len(result.cards)
+    if result.controlled_relaxation_differences:
+        lines = [
+            "Точного варианта с запрошенной длиной и подтверждённым наличием "
+            "не нашёл.",
+            f"Показываю {_preliminary_count_phrase(count)} короче — диаметр и "
+            "наружное применение сохранены.",
+        ]
+        seen: set[tuple[str, str, str]] = set()
+        for difference in result.controlled_relaxation_differences:
+            requested = format_public_fact_value(
+                difference.requested_value,
+                predicate=difference.fact_name,
+                imply_unit=True,
+            )
+            actual = format_public_fact_value(
+                difference.candidate_value,
+                predicate=difference.fact_name,
+                imply_unit=True,
+            )
+            key = (difference.fact_name, requested, actual)
+            if key in seen:
+                continue
+            seen.add(key)
+            lines.append(
+                f"Отличие: {_label(difference.fact_name)} {actual} вместо "
+                f"запрошенных {requested}."
+            )
+        lines.append(
+            "Это явно разрешённая замена по длине, а не точное совпадение."
+        )
+        return "\n".join(lines)
     if result.availability_analog:
         lines = [
             "Точного варианта с подтверждённым наличием в каталоге нет.",

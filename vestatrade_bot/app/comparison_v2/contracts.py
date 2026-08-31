@@ -48,6 +48,7 @@ class ComparisonReferenceKind(str, Enum):
     ORDINAL = "ordinal"
     EXPLICIT_VISIBLE_SKU = "explicit_visible_sku"
     NAMED_VISIBLE_PRODUCT = "named_visible_product"
+    EXPLICIT_CATALOG_PRODUCT = "explicit_catalog_product"
     CURRENT_FOCUS = "current_focus"
     UNRESOLVED = "unresolved"
 
@@ -135,7 +136,12 @@ class ComparisonRequest(FrozenModel):
     # comparison into an unnecessary sales question.
     needs_deciding_criterion: bool = False
     source_revision: str | None = None
-    scope_origin: Literal["v2_delivered", "legacy_unversioned", "none"]
+    scope_origin: Literal[
+        "v2_delivered",
+        "explicit_catalog_pair",
+        "legacy_unversioned",
+        "none",
+    ]
 
 
 class ComparisonResult(FrozenModel):

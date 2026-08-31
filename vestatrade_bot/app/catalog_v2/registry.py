@@ -365,7 +365,12 @@ CONTROL_THREAD = _fact(
 )
 MOUNTING_LENGTH = _fact(
     "mounting_length_mm",
-    aliases=("mounting_length", "installation_length", "length"),
+    aliases=(
+        "mounting_length",
+        "installation_length",
+        "installation_length_mm",
+        "length",
+    ),
     unit_family="length_mm",
     required=True,
     decision=True,
@@ -1403,6 +1408,35 @@ class ProductContractRegistry:
 
     def for_kind(self, kind: ProductKind) -> ProductContract | None:
         return self._by_kind.get(kind)
+
+    def canonical_fact_name(
+        self,
+        kind: ProductKind,
+        name_or_alias: object,
+    ) -> str | None:
+        """Resolve one fact name through the product contract vocabulary.
+
+        Capability services may expose a customer-facing predicate whose name
+        is an alias of the catalogue fact (for example
+        ``installation_length_mm`` for ``mounting_length_mm``).  Resolve it
+        here so Compare, Selection and future capabilities do not grow their
+        own incompatible alias tables.  Ambiguous aliases fail closed.
+        """
+
+        contract = self.for_kind(kind)
+        identity = normalize_identity(name_or_alias)
+        if contract is None or not identity:
+            return None
+        matches = {
+            fact.name
+            for fact in contract.fact_definitions
+            if identity
+            in {
+                normalize_identity(fact.name),
+                *(normalize_identity(alias) for alias in fact.aliases),
+            }
+        }
+        return next(iter(matches)) if len(matches) == 1 else None
 
     def resolve_task(
         self,

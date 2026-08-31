@@ -382,6 +382,17 @@ TOPICS: tuple[CommerceTopic, ...] = (
 
 # Номер заказа — это не артикул: 5–9 цифр рядом со словом «заказ».
 _ORDER_NUMBER_RE = re.compile(r"\bзаказ\w*\s*(?:№|N|#)?\s*(\d{4,9})\b")
+_CONTEXTUAL_ORDER_NUMBER_RE = re.compile(
+    r"^\s*(?:номер(?:\s+заказа)?\s*)?(?:№|N|#)?\s*(\d{4,9})\s*[.!?]?\s*$",
+    re.IGNORECASE,
+)
+_COMMERCE_CONTINUATION_EMAIL_RE = re.compile(
+    r"[\w.+-]+@(?:[\w-]+\.)+[A-Za-zА-Яа-яЁё]{2,}",
+    re.IGNORECASE,
+)
+_COMMERCE_CONTINUATION_PHONE_RE = re.compile(
+    r"(?:\+?\d[\s()./-]*){10,}",
+)
 
 
 def order_number(message: str) -> str | None:
@@ -389,6 +400,35 @@ def order_number(message: str) -> str | None:
 
     match = _ORDER_NUMBER_RE.search(normalize_text(message))
     return match.group(1) if match else None
+
+
+def contextual_order_number(message: str) -> str | None:
+    """Read a short order reference only inside an active order dialogue.
+
+    A bare five-digit value is never a global order detector: it may be a SKU,
+    price or quantity.  The caller must first prove that Legacy asked for the
+    order reference in the current session.
+    """
+
+    match = _CONTEXTUAL_ORDER_NUMBER_RE.fullmatch(message)
+    return match.group(1) if match else None
+
+
+def is_commerce_topic_continuation(message: str, topic_key: str | None) -> bool:
+    """Recognise a deterministic short reply to an active Legacy topic.
+
+    This deliberately starts with ``order_status``.  Other commerce topics
+    have richer payloads, and a broad short-message lease would steal valid
+    catalogue turns from V2.
+    """
+
+    if topic_key != "order_status":
+        return False
+    return bool(
+        contextual_order_number(message)
+        or _COMMERCE_CONTINUATION_EMAIL_RE.search(message)
+        or _COMMERCE_CONTINUATION_PHONE_RE.search(message)
+    )
 
 
 _TOPIC_NEGATION_RE = re.compile(r"\bне\s+(?:про|о|об|за|нужн\w*)\b[^.!?]{0,14}$")
@@ -469,6 +509,7 @@ def compose_commerce_answer(
             city=city,
             requested_city=requested_city,
             with_volatile_caveat=with_volatile_caveat,
+            already_known=already_known,
         )
         if grounded:
             prefix = f"Вижу номер заказа {order_id}. " if order_id else ""
@@ -808,6 +849,7 @@ def _grounded_answer(
     city: str | None,
     requested_city: str | None = None,
     with_volatile_caveat: bool = True,
+    already_known: tuple[str, ...] = (),
 ) -> str | None:
     """Ответ по теме, если он целиком собран из подтверждённых фактов.
 
@@ -860,11 +902,22 @@ def _grounded_answer(
         return policy + (f" {draft}" if draft else "") + tail
 
     if topic.key == "order_status" and facts.response_time:
-        return (
+        head = (
             f"{topic.note} Это проверит менеджер — обычно ответ "
-            f"{facts.response_time}. Чтобы он разобрался быстро, нужно: "
-            f"{'; '.join(topic.needs)}. Напишите это здесь — передам вместе с "
-            "историей разговора."
+            f"{facts.response_time}."
+        )
+        outstanding = [
+            need for need in topic.needs if need not in already_known
+        ]
+        if outstanding:
+            return (
+                f"{head} Чтобы он разобрался быстро, осталось указать: "
+                f"{'; '.join(outstanding)}. Напишите это здесь — передам "
+                "вместе с историей разговора."
+            )
+        return (
+            f"{head} Все основные данные уже есть. Напишите «передай "
+            "менеджеру» — я подготовлю обращение вместе с историей разговора."
         )
     if topic.key == "b2b_quote":
         lead = facts.lead_times.get("просчёт спецификации")

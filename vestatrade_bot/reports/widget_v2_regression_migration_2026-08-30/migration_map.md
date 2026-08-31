@@ -13,6 +13,31 @@ The 52 failures are the unchanged historical Legacy baseline; no new failure
 ID was introduced.  The public route and canary configuration were not
 changed.
 
+## Stage-2 protected Preview checks: pending answers and monotonic facts
+
+The following checks extend the continuity gate through the protected V2
+delivery boundary. They use structured semantic frames only to isolate
+memory/reducer behaviour from LLM variance; the real V2 controller, selection
+assembly, source gate, renderer and session commit still execute.
+
+- **pending boiler → valves → explicit return to boiler**: the answer
+  `ГВС не нужна` binds to the reactivated boiler goal, not to the newer valve
+  task; boiler facts and valve facts remain separate and the boiler selection
+  is delivered by V2;
+- **explicit area correction**: correcting `150 м²` to `240 м²` replaces only
+  `area_m2`, retains fuel and circuit facts, and refreshes the delivered scope
+  from the smaller boiler list to the source-backed larger model.
+
+The executable checks are
+`tests/test_v2_historical_continuity_gate.py::test_returned_goal_receives_its_pending_answer_without_valve_fact_leakage`
+and
+`tests/test_v2_historical_continuity_gate.py::test_explicit_correction_replaces_only_the_named_goal_fact_in_preview`.
+
+The more specialised Legacy requirements below retain their current migration
+status until each has its own V2 behavioural assertion. The two checks above
+are a shared guard for the reducer/delivery seam, not a reason to silently
+mark an unrelated well, warm-floor or Project requirement as complete.
+
 ## Meaning of this map
 
 The 52 failing Legacy node IDs are an archive of buyer-facing requirements,
@@ -40,7 +65,7 @@ is V2; a Legacy fallback never counts as a pass.
 | test_live_architecture_regressions_2026_08_24.py::test_link_word_does_not_erase_requested_product_attributes | A direct offer action does not discard goal-bound facts. | covered_now |
 | test_live_dialog_context_memory_regressions.py::test_return_to_warm_floor_recalls_summary_without_mutating_well_goal | Return is goal-specific and must not mutate a different goal. The generic mechanism is covered; the warm-floor capability itself is future work. | future_capability |
 | test_live_catalog_goal_switch_regressions.py::test_radiator_type_correction_and_explicit_stock_relaxation_do_not_mix | Facts stay bound to their goal; stock relaxation belongs to that goal only. | next_v2_gate |
-| test_live_catalog_goal_switch_regressions.py::test_natural_stock_relaxation_removes_previous_strict_filter | A deliberate relaxation replaces only the stock requirement. | next_v2_gate |
+| test_live_catalog_goal_switch_regressions.py::test_natural_stock_relaxation_removes_previous_strict_filter | A deliberate relaxation replaces only the stock requirement. Protected Preview gate: `test_preview_explicit_stock_relaxation_replaces_only_its_goal_filter`. | covered_now |
 | test_pump_intent_context_regressions.py::test_explicit_switch_from_pending_pump_to_boiler_is_respected | An explicit switch changes active goal without deleting the suspended pump task. | next_v2_gate |
 | test_engineering_dialog_state_regressions.py::test_pending_question_has_stable_id_and_does_not_loop_verbatim | A pending question is typed, stable and advances after a useful answer. | next_v2_gate |
 | test_engineering_dialog_state_regressions.py::test_total_volume_correction_clears_assumed_flow | An explicit correction replaces the conflicting fact and retracts derived assumptions. | next_v2_gate |
@@ -93,18 +118,18 @@ uses partial matching for those shapes.
 
 | Legacy node ID | V2 target | Status |
 | --- | --- | --- |
-| test_assisted_unknown_selection_regressions_2026_08_24.py::test_spoken_area_and_first_turn_unknowns_start_preliminary_radiator_flow | Preliminary radiator cards preserve their stated unknowns. | next_v2_gate |
-| test_boiler_power_priority_regressions.py::test_arbitrary_power_pages_have_truthful_stock_and_alternative_notes | Stock and availability analogue are distinct, source-backed outcomes. | next_v2_gate |
-| test_boiler_safety_context_regressions.py::test_electric_choice_with_repeated_constraints_keeps_context_and_does_not_loop | Boiler fuel and circuit facts persist through a repeated answer. | next_v2_gate |
+| test_assisted_unknown_selection_regressions_2026_08_24.py::test_spoken_area_and_first_turn_unknowns_start_preliminary_radiator_flow | Preliminary radiator cards preserve their stated unknowns. Protected Preview gate: `test_preview_radiator_room_area_is_only_a_source_backed_preliminary_proxy`. | covered_now |
+| test_boiler_power_priority_regressions.py::test_arbitrary_power_pages_have_truthful_stock_and_alternative_notes | Stock and availability analogue are distinct, source-backed outcomes. Protected Preview gate: `test_preview_boiler_availability_analog_keeps_fuel_and_circuits_hard`. | covered_now |
+| test_boiler_safety_context_regressions.py::test_electric_choice_with_repeated_constraints_keeps_context_and_does_not_loop | Boiler fuel and circuit facts persist through a repeated answer. Protected Preview gate: `test_preview_repeated_electric_choice_does_not_forget_area_or_reask_fuel`. | covered_now |
 | test_dialog_scenarios.py::test_unknown_boiler_flow_asks_voltage_after_no_gas | The next boiler question follows known fuel and does not restart selection. | next_v2_gate |
-| test_dialog_scenarios.py::test_sewer_dialog_accumulates_slots_and_asks_only_missing | Sewer facts accumulate and produce one relevant question. | next_v2_gate |
-| test_dialog_scenarios.py::test_sewer_dialog_uses_collected_slots_for_final_search | Collected sewer facts are applied to the final search. | next_v2_gate |
-| test_dialog_scenarios.py::test_oversized_boiler_is_only_presented_as_nearest_assortment_option | A more powerful boiler is explicitly an availability analogue, never a confirmed fit. | next_v2_gate |
+| test_dialog_scenarios.py::test_sewer_dialog_accumulates_slots_and_asks_only_missing | Sewer facts accumulate and produce one relevant question. Protected Preview gate: `test_preview_sewer_facts_accumulate_across_turns_before_selection`. | covered_now |
+| test_dialog_scenarios.py::test_sewer_dialog_uses_collected_slots_for_final_search | Collected sewer facts are applied to the final search. Protected Preview gate: `test_preview_sewer_facts_accumulate_across_turns_before_selection`. | covered_now |
+| test_dialog_scenarios.py::test_oversized_boiler_is_only_presented_as_nearest_assortment_option | A more powerful boiler is explicitly an availability analogue, never a confirmed fit. Protected Preview gate: `test_preview_boiler_availability_analog_keeps_fuel_and_circuits_hard`. | covered_now |
 | test_dialog_scenarios.py::test_boiler_consultation_remembers_shorthand_area_and_uses_passport | Spoken area remains available to selection and a later grounded fact. | next_v2_gate |
-| test_dialog_scenarios.py::test_more_boilers_does_not_reset_pending_type_and_area | A show command does not clear known boiler facts. | next_v2_gate |
-| test_engineering_requirements_regressions.py::test_well_pump_components_without_calculated_head_do_not_unlock_products | Missing safety-critical well-pump facts block selection. | next_v2_gate |
-| test_engineering_requirements_regressions.py::test_well_pump_flow_and_head_are_hard_filters | Well-pump flow and head are hard filters. | next_v2_gate |
-| test_live_catalog_goal_switch_regressions.py::test_plain_radiator_type_without_size_still_requires_size | An insufficient radiator request asks one relevant question. | next_v2_gate |
+| test_dialog_scenarios.py::test_more_boilers_does_not_reset_pending_type_and_area | A show command does not clear known boiler facts. Protected Preview gate: `test_preview_more_boilers_keeps_known_type_and_area_until_circuits_answered`. | covered_now |
+| test_engineering_requirements_regressions.py::test_well_pump_components_without_calculated_head_do_not_unlock_products | Missing safety-critical borehole inputs block cards. V2 asks the first concrete input required by the shared deterministic calculation; it never asks the buyer to invent a calculated head. Protected Preview gate: `test_preview_borehole_pump_asks_for_pipe_before_calculating_head`. | covered_now_v2_only |
+| test_engineering_requirements_regressions.py::test_well_pump_flow_and_head_are_hard_filters | V2 derives a preliminary required head with the existing Legacy Darcy–Weisbach normalizer, then applies required head/flow as hard lower bounds against card maxima. A result remains preliminary until a Q/H curve is checked. Protected Preview gates: `test_preview_borehole_pump_derives_preliminary_head_and_filters_ratings`, `test_preview_borehole_explicit_duty_stays_preliminary_not_engineering_match`. | covered_now_v2_only |
+| test_live_catalog_goal_switch_regressions.py::test_plain_radiator_type_without_size_still_requires_size | An insufficient radiator request asks one relevant question. Protected Preview gate: `test_preview_bare_radiator_starts_with_physical_size_not_material`. | covered_now |
 | test_live_dialogue_regressions_2026_08_24.py::test_d10_ordinary_request_is_not_filtered_away | A valid small-diameter request is not rejected as noise. | next_v2_gate |
 | test_live_dialog_context_memory_regressions.py::test_irrigation_well_dialog_keeps_context_and_estimates_standard_hose | Irrigation/well selection needs a dedicated contract before migration. | future_capability |
 | test_live_dialog_context_memory_regressions.py::test_irrigation_well_accepts_several_facts_in_one_natural_turn | Multi-fact irrigation extraction awaits that contract. | future_capability |
@@ -124,6 +149,23 @@ uses partial matching for those shapes.
 
 ## Shared safety
 
+### Stage-3 audit result
+
+The seven historical safety cases were exercised before and after protected
+V2-mode coverage.  Six water-heater failures were stale test expectations:
+the guard had already stopped routing, cleared customer/product state and
+delivered no cards, but the renderer retained bounded private
+``_safety_*`` de-duplication metadata.  The tests now explicitly prohibit
+foreign customer/product slots while allowing only that private,
+non-customer-visible trace.
+
+One behavioral defect was real.  A source-backed 380 V boundary for a known
+electric boiler was lost on a repeated follow-up such as ``«А через
+переходник?»`` because the generic repeat template replaced the model-specific
+answer.  The shared safety renderer now preserves a source-backed 380 V fact
+through the repetition.  Protected tests also prove that the water-heater
+safety boundary is applied before Legacy, Shadow and V2 Preview routing.
+
 | Legacy node ID | V2 target | Status |
 | --- | --- | --- |
 | test_safety_handoff_edge_regressions.py::test_electrical_followup_stays_safe_but_passport_question_is_not_hijacked | Safety intercepts only the risky instruction; a safe factual request remains reachable. | shared_safety |
@@ -136,10 +178,12 @@ uses partial matching for those shapes.
 
 ## Test-review candidates
 
-The six water-heater tests are marked shared_safety, not stale automatically.
-Their reported failure needs a small behavioral audit: if the guard blocks the
-message and only a diagnostic key made the old assertion on slots fail, the
-assertion becomes stale_test_review. Otherwise the guard is a P0 defect.
+The water-heater audit is complete.  The six slot assertions were stale only
+with respect to bounded private repeat metadata; their safety behavior was
+already correct.  The electrical follow-up found a real loss of a
+model-specific 380 V boundary and is now protected by regression tests.  These
+cases remain ``shared_safety`` because they must hold independently of the
+selected answer owner.
 
 The following complex Legacy-only scenarios remain requirements but cannot
 truthfully be marked V2-ready until their capability exists:
@@ -154,5 +198,62 @@ truthfully be marked V2-ready until their capability exists:
 2. Add V2 behavioral tests for the pending-question and correction group.
 3. Add V2 Selection tests for boiler, sewer, radiator and well-pump hard
    constraints.
-4. Audit the seven shared safety scenarios.
+4. Audit the seven shared safety scenarios. **Completed:** retain the shared
+   boundary and its V2-mode regression coverage.
 5. Only then design the structured Legacy-to-V2 owner bridge.
+
+## Borehole-pump transfer — 31 August
+
+The two historical borehole requirements are now covered in protected V2
+Preview without changing the public Legacy route.
+
+- V2 uses an adapter over the existing deterministic
+  `normalize_engineering_slots()` calculation. It accepts typed level, lift,
+  horizontal run, pressure, flow and discharge-pipe inputs; it does not use an
+  LLM to calculate a head.
+- Until those inputs are complete, V2 asks for the first concrete missing
+  value. With otherwise complete geometry it asks for discharge-pipe diameter
+  (and accepts outer PE diameter plus SDR), rather than asking a customer to
+  invent a system head.
+- The derived `required_head_m` and customer `required_flow_l_h` are hard
+  lower bounds against separate feed ratings `max_head_m` / `max_flow_l_h`.
+  The route and pipe facts are never catalogue filters.
+- Both candidate ratings must exist in the current source snapshot. A card
+  with only maximum head is rejected, not shown as an unverified preliminary
+  candidate. This matters for feed SKU `11677`: its current card has a
+  confirmed maximum head but no confirmed maximum-flow field, so V2 correctly
+  declines to present it for a calculated head-and-flow request.
+- Even when both ratings are present, the selection is explicitly
+  preliminary: maximum ratings are not a Q/H curve and do not prove a working
+  point. The renderer states that the manufacturer curve still needs checking.
+
+Covered by:
+
+- `test_preview_borehole_pump_asks_for_pipe_before_calculating_head`;
+- `test_preview_borehole_pump_derives_preliminary_head_and_filters_ratings`;
+- `test_preview_borehole_explicit_duty_stays_preliminary_not_engineering_match`;
+- `test_preview_borehole_pump_does_not_show_card_without_confirmed_flow_rating`.
+
+## Capability-aware remediation — 31 August
+
+The live boiler, pump and pipe dialogues exposed failures at ownership seams,
+not a need to copy the Legacy orchestrator into V2.  The following Legacy
+requirements now have explicit V2 owners:
+
+| Requirement inherited from Legacy | V2 owner | Enforcement |
+| --- | --- | --- |
+| A pump message with Q/H must not become a fitting item list. | `cutover_v2.capability_registry` + item-list boundary | Each list row needs a product noun; active typed pump facts block the unrelated item-list capability. |
+| Legacy may help only with a capability V2 does not own. | `CapabilityBoundaryDecision` + `LegacyScopeBridge` | Fallback is decided before execution; accepted Legacy products are revalidated against the current source snapshot. |
+| «Есть в наличии?» is not «показывай только в наличии». | `OfferFactService` and typed Selection preferences | A direct stock question keeps the exact product visible, including zero stock; only an explicit selection constraint filters candidates. |
+| Spoken Q/H, DN and sewer length survive short and full turns. | `SemanticInterpreter` deterministic anchors + `SemanticTurnDeltaV1` | Registry-backed units and exact evidence override a noncanonical LLM field; reducer merge remains monotonic. |
+| «Бренд не важен» clears an older brand preference only in this goal. | goal-scoped `SelectionPreferenceSignal` | `brand_any` neutralizes required/preferred brand without touching technical facts or other goals. |
+| Explicit named models can be compared from the first turn. | named-product resolver + Grounded Compare | Both products must resolve exactly in the current snapshot; LLM may propose references, but catalog identity and comparison evidence decide. |
+| Product-fact aliases used in Compare have one authority. | `ProductContractRegistry.canonical_fact_name` | `installation_length_mm` resolves to catalog `mounting_length_mm`; Compare does not keep a second alias dictionary. |
+| A multi-fact passport question must not silently drop one predicate. | existing `ProductFactEvidenceService` bundle | Each predicate is retrieved and gated separately; an unsupported optional field does not erase accepted sibling facts. |
+| «Ближайшая короче» is allowed only after explicit consent. | `length_nearest_shorter` preference + catalog planner + seller policy | Only sewer length may change, diameter/scope/stock stay hard; result is `present_controlled_analog`, never an exact recommendation. |
+| Passport retrieval must fail closed on an incompatible index. | existing passport readiness/index contract | Model, source digest and chunk metadata are checked before evidence retrieval; no second index was added. |
+
+The public route, Legacy state and canary percentage are intentionally outside
+this migration.  Protected Preview can exercise the typed seam; an unsupported
+future capability remains a boundary or a validated Legacy fallback rather
+than an unverified V2 claim.

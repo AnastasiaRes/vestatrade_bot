@@ -1108,7 +1108,12 @@ CAPABILITY_CONSTRAINT_ONTOLOGY: tuple[dict[str, Any], ...] = (
             "is_in_stock",
             "inventory_availability",
         ],
+        # Keep the action declaration for grounding/rejecting model-proposed
+        # CHECK_STOCK acts, but never derive that act from the durable filter.
+        # A direct enquiry is recovered from the customer's wording and a
+        # resolved product reference, not from this stored coordinate.
         "action": "check_stock",
+        "derive_action_from_constraint": False,
         "action_evidence_aliases": [
             "в наличии",
             "из наличия",

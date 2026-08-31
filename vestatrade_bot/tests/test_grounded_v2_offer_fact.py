@@ -285,6 +285,25 @@ def test_named_single_product_card_uses_catalogue_identity_without_readiness() -
     assert [item.sku for item in candidate.response.products] == ["2202210"]
 
 
+def test_named_product_price_accepts_inflected_price_and_stock_wording() -> None:
+    snapshot = _boiler_snapshot()
+    request = build_offer_fact_request(
+        _outcome(),
+        SessionState(session_id="named-boiler-price"),
+        snapshot,
+        original_utterance="Покажите цену и наличие Arderia E9",
+    )
+
+    assert request is not None
+    assert request.fact_kind == OfferFactKind.PRICE
+    assert request.product_ref.kind == OfferFactReferenceKind.NAMED_PRODUCT
+    assert request.product_ref.canonical_sku == "2202210"
+    result = build_offer_fact_result(request, snapshot)
+    assert result.status == OfferFactStatus.ANSWERED
+    assert result.sku == "2202210"
+    assert result.value == 35_365
+
+
 def test_quantified_stock_checks_resolved_product_without_calculation() -> None:
     snapshot = _boiler_snapshot()
     for message, expected in (

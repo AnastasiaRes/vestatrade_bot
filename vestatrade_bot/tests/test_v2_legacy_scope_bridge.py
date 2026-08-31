@@ -11,9 +11,13 @@ from __future__ import annotations
 from app.agents.orchestrator import ChatOrchestrator
 from app.config import get_settings
 from app.cutover_v2.legacy_scope_bridge import (
+    LegacyCapabilityResultStatus,
     LegacyScopeBridgeStatus,
     bridge_validated_legacy_selection_scope,
+    validate_legacy_capability_result,
 )
+from app.cutover_v2.capability_registry import resolve_capability_coverage
+from app.cutover_v2.registry import default_registry
 from app.dialogue_v2.contracts import (
     CustomerTask,
     DialogueStateV2,
@@ -217,3 +221,39 @@ def test_legacy_direct_offer_card_cannot_be_promoted_to_selection_scope(tmp_path
     assert bridged.audit.status == LegacyScopeBridgeStatus.NOT_APPLICABLE
     assert "legacy_scope_no_active_selection_task" in bridged.audit.reason_codes
     assert bridged.state_after == state
+
+
+def test_allowlisted_legacy_item_list_cards_pass_source_gate(tmp_path) -> None:
+    bot = _bot(tmp_path)
+    coverage = resolve_capability_coverage(
+        "Насос PUMP-ONE — 2 шт, насос PUMP-TWO — 3 шт",
+        None,
+        default_registry(),
+    )
+
+    audit = validate_legacy_capability_result(
+        coverage,
+        _legacy_response(bot, ("PUMP-ONE", "PUMP-TWO")),
+        bot.answer_source_snapshot_v2,
+    )
+
+    assert audit.status == LegacyCapabilityResultStatus.ACCEPTED
+    assert audit.ordered_skus == ("PUMP-ONE", "PUMP-TWO")
+
+
+def test_allowlisted_legacy_item_list_duplicate_cards_fail_closed(tmp_path) -> None:
+    bot = _bot(tmp_path)
+    coverage = resolve_capability_coverage(
+        "Насос PUMP-ONE — 2 шт, насос PUMP-TWO — 3 шт",
+        None,
+        default_registry(),
+    )
+
+    audit = validate_legacy_capability_result(
+        coverage,
+        _legacy_response(bot, ("PUMP-ONE", "PUMP-ONE")),
+        bot.answer_source_snapshot_v2,
+    )
+
+    assert audit.status == LegacyCapabilityResultStatus.REJECTED
+    assert audit.reason_codes == ("legacy_scope_duplicate_public_sku",)

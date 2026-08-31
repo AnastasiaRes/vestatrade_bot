@@ -1541,7 +1541,7 @@ def test_invalid_stock_status_is_repaired_only_with_durable_requirement_evidence
     assert "availability_requirement_status_repaired" in result.structural_repairs
 
 
-def test_typed_availability_constraint_becomes_action_and_persistent_fact() -> None:
+def test_typed_availability_constraint_remains_persistent_selection_fact() -> None:
     payload = {
         "schema_version": "1.1",
         "language": "ru",
@@ -1581,15 +1581,12 @@ def test_typed_availability_constraint_becomes_action_and_persistent_fact() -> N
 
     assert result.status == "accepted"
     assert result.understanding is not None
-    assert [item.value for item in result.understanding.acts] == [
-        "select",
-        "check_stock",
-    ]
+    assert [item.value for item in result.understanding.acts] == ["select"]
     assert len(result.understanding.constraints) == 1
     assert result.understanding.constraints[0].name == "stock_availability"
     assert result.understanding.constraints[0].value is True
     assert result.understanding.constraints[0].polarity.value == "required"
-    assert "typed_availability_requirement_added_check_stock" in (
+    assert "typed_availability_requirement_added_check_stock" not in (
         result.structural_repairs
     )
 
@@ -1687,7 +1684,7 @@ def test_numeric_physical_fact_cannot_be_copied_without_current_number() -> None
     )
 
 
-def test_stock_availability_schema_aliases_become_typed_requirement_and_action() -> None:
+def test_stock_availability_schema_aliases_remain_selection_requirement() -> None:
     for fact_name in (
         "stock_availability",
         "availability_status",
@@ -1735,10 +1732,7 @@ def test_stock_availability_schema_aliases_become_typed_requirement_and_action()
 
         assert result.status == "accepted"
         assert result.understanding is not None
-        assert [item.value for item in result.understanding.acts] == [
-            "select",
-            "check_stock",
-        ]
+        assert [item.value for item in result.understanding.acts] == ["select"]
         assert len(result.understanding.constraints) == 1
         fact = result.understanding.constraints[0]
         assert fact.name == "stock_availability"
@@ -2392,9 +2386,14 @@ def test_typed_circulation_pump_designation_recovers_grounded_constraints() -> N
         assert result.status == "accepted"
         assert result.understanding is not None
         assert result.understanding.products[0].evidence == evidence
-        assert {
+        actual = {
             item.name: item.value for item in result.understanding.constraints
-        } == expected
+        }
+        # A catalogue-known brand in the same exact designation is a useful
+        # typed selection coordinate, not a spurious engineering dimension.
+        if evidence.casefold().startswith("wilo"):
+            expected = {**expected, "brand": "WILO"}
+        assert actual == expected
         assert all(
             item.applies_to_product == 0
             for item in result.understanding.constraints

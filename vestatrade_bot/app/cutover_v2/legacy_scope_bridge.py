@@ -15,6 +15,10 @@ from enum import Enum
 from pydantic import BaseModel, ConfigDict
 
 from app.answer_v2.contracts import AnswerSourceSnapshot
+from app.cutover_v2.contracts import (
+    CapabilityCoverageDecision,
+    CapabilityCoverageStatus,
+)
 from app.dialogue_v2.contracts import DialogueStateV2, TaskAct, TaskStatus
 from app.dialogue_v2.reducer import record_validated_legacy_selection_scope
 from app.models import ChatResponse
@@ -24,6 +28,26 @@ class LegacyScopeBridgeStatus(str, Enum):
     IMPORTED = "imported"
     NOT_APPLICABLE = "not_applicable"
     REJECTED = "rejected"
+
+
+class LegacyCapabilityResultStatus(str, Enum):
+    """Outcome gate for an allowlisted Legacy capability response."""
+
+    ACCEPTED = "accepted"
+    NOT_APPLICABLE = "not_applicable"
+    REJECTED = "rejected"
+
+
+class LegacyCapabilityResultAudit(BaseModel):
+    """Source-safe audit produced before a Legacy response is delivered."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    status: LegacyCapabilityResultStatus
+    capability_ids: tuple[str, ...] = ()
+    source_revision: str | None = None
+    ordered_skus: tuple[str, ...] = ()
+    reason_codes: tuple[str, ...] = ()
 
 
 class LegacyScopeBridgeAudit(BaseModel):
@@ -130,6 +154,64 @@ def _source_cards_match(
             if getattr(card, field_name) != getattr(source, field_name):
                 return (), (f"legacy_scope_card_{field_name}_mismatch",)
     return ordered_skus, ()
+
+
+def validate_legacy_capability_result(
+    coverage: CapabilityCoverageDecision | None,
+    response: ChatResponse,
+    snapshot: AnswerSourceSnapshot | None,
+) -> LegacyCapabilityResultAudit:
+    """Fail closed on unsafe cards returned by an allowlisted Legacy owner.
+
+    The gate is intentionally narrow.  It validates only structured product
+    cards and never parses Legacy prose.  Capabilities without cards keep
+    their existing typed owner boundary; an item-list response with cards must
+    contain unique, exact source-snapshot projections before it can be shown.
+    """
+
+    if (
+        coverage is None
+        or not coverage.enforced
+        or coverage.status != CapabilityCoverageStatus.LEGACY_READY
+    ):
+        return LegacyCapabilityResultAudit(
+            status=LegacyCapabilityResultStatus.NOT_APPLICABLE,
+            reason_codes=("legacy_result_capability_not_enforced",),
+        )
+    if "legacy.item_list" not in coverage.capability_ids:
+        return LegacyCapabilityResultAudit(
+            status=LegacyCapabilityResultStatus.NOT_APPLICABLE,
+            capability_ids=coverage.capability_ids,
+            reason_codes=("legacy_result_no_structured_card_gate",),
+        )
+    if not response.products:
+        return LegacyCapabilityResultAudit(
+            status=LegacyCapabilityResultStatus.ACCEPTED,
+            capability_ids=coverage.capability_ids,
+            source_revision=(snapshot.source_revision if snapshot else None),
+            reason_codes=("legacy_result_contains_no_public_cards",),
+        )
+    if snapshot is None:
+        return LegacyCapabilityResultAudit(
+            status=LegacyCapabilityResultStatus.REJECTED,
+            capability_ids=coverage.capability_ids,
+            reason_codes=("legacy_result_source_snapshot_missing",),
+        )
+    ordered_skus, reason_codes = _source_cards_match(response, snapshot)
+    if reason_codes:
+        return LegacyCapabilityResultAudit(
+            status=LegacyCapabilityResultStatus.REJECTED,
+            capability_ids=coverage.capability_ids,
+            source_revision=snapshot.source_revision,
+            reason_codes=reason_codes,
+        )
+    return LegacyCapabilityResultAudit(
+        status=LegacyCapabilityResultStatus.ACCEPTED,
+        capability_ids=coverage.capability_ids,
+        source_revision=snapshot.source_revision,
+        ordered_skus=ordered_skus,
+        reason_codes=("legacy_result_cards_source_snapshot_exact",),
+    )
 
 
 def bridge_validated_legacy_selection_scope(

@@ -30,6 +30,7 @@ from .contracts import (
     NextActionPlan,
     ResponseStrategyKind,
     RequestedInformationOutput,
+    SelectionPreferenceKind,
     ShadowDeliveryStatus,
     TaskAct,
     TaskStatus,
@@ -877,6 +878,30 @@ class SellerPolicy:
                     reason_code="product_contract_requires_decision_fact",
                 )
             if readiness.status == ReadinessStatus.EXACT_READY:
+                # An exact-ready contract can still contain one explicit,
+                # typed customer relaxation.  It must be presented as an
+                # analogue with visible differences, never promoted to the
+                # ordinary exact-match recommendation path.  The catalogue
+                # planner remains responsible for proving that only the
+                # authorised sewer length changed.
+                if any(
+                    item.kind == SelectionPreferenceKind.LENGTH_NEAREST_SHORTER
+                    and (
+                        item.task_id == task_id
+                        or (
+                            goal_id is not None
+                            and item.goal_id == goal_id
+                        )
+                    )
+                    for item in state.selection_preferences
+                ):
+                    return NextAction(
+                        kind=NextActionKind.PRESENT_CONTROLLED_ANALOG,
+                        task_id=task_id,
+                        reason_code=(
+                            "customer_authorized_nearest_shorter_analog"
+                        ),
+                    )
                 if task.act == TaskAct.SELECT:
                     return NextAction(
                         kind=NextActionKind.RECOMMEND_ONE,

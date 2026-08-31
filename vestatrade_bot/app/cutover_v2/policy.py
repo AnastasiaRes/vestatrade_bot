@@ -7,6 +7,9 @@ import hashlib
 from pydantic import BaseModel, ConfigDict, Field
 
 from .contracts import (
+    CapabilityCoverageDecision,
+    CapabilityCoverageStatus,
+    CapabilityOwner,
     CutoverDecision,
     EarlyControlOutcome,
     EarlyControlResult,
@@ -68,6 +71,7 @@ def _decision(
             "catalog_contract": "1.0",
             "answer_plan": "1.0",
             "cutover": "1.0",
+            "capability_coverage": "1.0",
         },
         catalog_revision=(candidate.catalog_revision if candidate else None),
         fallback_allowed=not bool(
@@ -125,6 +129,7 @@ def decide_cutover(
     runtime: CutoverRuntime,
     *,
     session_fingerprint: str,
+    capability_coverage: CapabilityCoverageDecision | None = None,
 ) -> CutoverDecision:
     """Choose an owner from typed inputs only, without performing I/O."""
 
@@ -164,7 +169,28 @@ def decide_cutover(
             ExecutionMode.LEGACY_ONLY,
             "migration_registry_invalid",
         )
-    if candidate is None or not candidate.semantic_accepted:
+    # Capability ownership is an additional deterministic gate inside the
+    # existing cutover, not a second router.  Only a versioned, allowlisted and
+    # explicitly enforced Legacy capability may pre-empt a V2 candidate.  V2
+    # coverage never bypasses the candidate delivery proof checks below.
+    if (
+        capability_coverage is not None
+        and capability_coverage.enforced
+        and capability_coverage.status == CapabilityCoverageStatus.LEGACY_READY
+        and capability_coverage.owner == CapabilityOwner.LEGACY
+    ):
+        return _decision(
+            ResponseOwner.LEGACY,
+            ExecutionMode.LEGACY_ONLY,
+            "capability_owner_legacy",
+            *capability_coverage.capability_ids,
+            *capability_coverage.reason_codes,
+            candidate=candidate,
+        )
+    if candidate is None or (
+        not candidate.semantic_accepted
+        and candidate.capability_boundary_result is None
+    ):
         return _decision(
             ResponseOwner.LEGACY,
             ExecutionMode.LEGACY_FALLBACK,

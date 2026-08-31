@@ -10,17 +10,21 @@ $ErrorActionPreference = 'Stop'
 $ProjectDir = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Set-Location $ProjectDir
 
+$ProjectPython = Join-Path $ProjectDir '.venv\Scripts\python.exe'
+$ParentPython = Join-Path (Split-Path $ProjectDir -Parent) '.venv\Scripts\python.exe'
 $PythonBin = if ($env:PYTHON_BIN) {
     $env:PYTHON_BIN
+} elseif (Test-Path $ProjectPython) {
+    $ProjectPython
 } else {
-    Join-Path $ProjectDir '.venv\Scripts\python.exe'
+    $ParentPython
 }
 $ChatModel = if ($env:OLLAMA_MODEL) { $env:OLLAMA_MODEL } else { 'qwen3-vl:8b-instruct' }
 $EmbeddingModel = if ($env:OLLAMA_EMBEDDING_MODEL) { $env:OLLAMA_EMBEDDING_MODEL } else { 'bge-m3' }
 $OllamaUrl = if ($env:OLLAMA_BASE_URL) { $env:OLLAMA_BASE_URL } else { 'http://127.0.0.1:11434' }
 
 if (-not (Test-Path $PythonBin)) {
-    throw 'Python environment is missing. Create .venv and install requirements.txt first.'
+    throw 'Python environment is missing. Create .venv beside the project or its parent and install requirements.txt first.'
 }
 if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
     throw 'Ollama CLI is not installed or is not on PATH. Install Ollama, start it, then run this script again.'

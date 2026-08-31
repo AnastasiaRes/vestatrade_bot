@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+from importlib import metadata as importlib_metadata
 import json
 import logging
 import math
@@ -41,6 +42,18 @@ from app.passport_chunks import Chunk, chunk_pages
 logger = logging.getLogger(__name__)
 
 INDEX_VERSION = 1
+# Extraction output depends not only on the PDF bytes, but also on the parser
+# and its AES support. Without this fingerprint a cache built while
+# ``cryptography`` was missing could be reused after the dependency is fixed.
+PARSER_CONTRACT_VERSION = "passport-parser-contract-v1"
+
+
+class PassportIndexNotReady(RuntimeError):
+    """The deploy-prepared passport index is absent or stale."""
+
+    def __init__(self, reason_code: str) -> None:
+        super().__init__(reason_code)
+        self.reason_code = reason_code
 # Топ-8, а не топ-5: на проверочном наборе два нужных куска стояли на седьмом
 # месте. Три лишних куска — это около полутора тысяч знаков контекста для
 # модели, что на фоне вызова LLM ничего не стоит.
@@ -367,6 +380,19 @@ class PassportIndex:
         )
 
 
+def _pdf_parser_signature() -> str:
+    """Return the dependency contract that determines extracted PDF text."""
+
+    versions: list[str] = [PARSER_CONTRACT_VERSION]
+    for distribution in ("pypdf", "cryptography"):
+        try:
+            version = importlib_metadata.version(distribution)
+        except importlib_metadata.PackageNotFoundError:
+            version = "missing"
+        versions.append(f"{distribution}={version}")
+    return "\n".join(versions)
+
+
 def _source_digest(docs_dirs: list[Path]) -> str:
     """Fingerprint the local PDF corpus without reading every file body.
 
@@ -400,6 +426,7 @@ def _source_digest(docs_dirs: list[Path]) -> str:
             entries.append(
                 f"{path.resolve()}\0{stat.st_size}\0{stat.st_mtime_ns}"
             )
+    entries.append(_pdf_parser_signature())
     return hashlib.sha256("\n".join(entries).encode("utf-8")).hexdigest()
 
 
@@ -512,4 +539,36 @@ def load_or_build(
         )
     except OSError as exc:  # pragma: no cover - кэш не критичен
         logger.warning("Не удалось сохранить индекс паспортов: %s", exc)
+    return index
+
+
+def load_ready(
+    cache_path: Path,
+    docs_dirs: list[Path],
+    model: str,
+) -> PassportIndex:
+    """Load an exact prepared index; never build embeddings in `/chat`."""
+
+    if not cache_path.exists():
+        raise PassportIndexNotReady("passport_index_cache_missing")
+    source_digest = _source_digest(docs_dirs)
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, KeyError) as exc:
+        raise PassportIndexNotReady("passport_index_cache_invalid") from exc
+    if payload.get("version") != INDEX_VERSION:
+        raise PassportIndexNotReady("passport_index_version_mismatch")
+    if payload.get("model") != model:
+        raise PassportIndexNotReady("passport_index_model_mismatch")
+    if payload.get("source_digest") != source_digest:
+        raise PassportIndexNotReady("passport_index_source_digest_mismatch")
+    index = PassportIndex.from_payload(
+        payload,
+        model,
+        expected_source_digest=source_digest,
+    )
+    if index is None:
+        raise PassportIndexNotReady("passport_index_payload_rejected")
+    if not index.chunks or not index.has_vectors:
+        raise PassportIndexNotReady("passport_index_vectors_missing")
     return index

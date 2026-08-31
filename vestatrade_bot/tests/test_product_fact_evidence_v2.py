@@ -381,6 +381,35 @@ def test_named_pipe_series_answers_only_on_catalogue_consensus() -> None:
     }
 
 
+def test_temperature_threshold_question_reads_maximum_then_compares() -> None:
+    pipe = _product(
+        "VTp.700.FB20.25",
+        "Труба PP-FIBER PN 20 25 MM",
+        {"максимальная рабочая температура, °с": "90"},
+        "VTp.700.FB20-0425.pdf",
+    )
+    passport = _StubPassport(
+        quote="Максимальная рабочая температура труб составляет 90 °C.",
+        document="VTp.700.FB20-0425.pdf",
+    )
+    service = _service([pipe], passport)
+    session = SessionState(session_id="pipe-threshold", last_products=[_card(pipe)])
+
+    evidence = service.evaluate(
+        "Эта труба точно выдерживает 90 °C?",
+        session,
+    )
+
+    assert evidence is not None
+    assert evidence.status == ProductFactStatus.ANSWERED
+    assert evidence.request.predicate == "maximum_operating_temperature_c"
+    assert evidence.request.threshold_value == 90
+    assert evidence.request.threshold_operator == "at_least"
+    rendered = render_product_fact_evidence(evidence)
+    assert rendered.startswith("Да.")
+    assert "90 °C" in rendered
+
+
 def test_immediate_named_series_focus_carries_the_next_pressure_predicate() -> None:
     products = [
         _product(
@@ -902,3 +931,50 @@ def test_exact_boiler_passport_can_answer_expansion_tank_volume() -> None:
     assert evidence.document == "63109b6ad4cd19.27758769.pdf"
     assert evidence.verifier_status == "accepted"
     assert "8 л" in render_product_fact_evidence(evidence)
+
+
+def test_compound_boiler_question_evaluates_pump_and_tank_independently() -> None:
+    boiler = _product(
+        "8216262000",
+        "Котел электрический E.C.A. Arceus ST 6",
+        {},
+        "63109b6ad4cd19.27758769.pdf",
+    )
+    boiler.brand = "E.C.A"
+    boiler.documents = [
+        boiler.documents[0].model_copy(
+            update={
+                "binding_scope": "exact_sku",
+                "binding_value": boiler.sku,
+                "text": (
+                    "Встроенный циркуляционный насос. "
+                    "Расширительный бак (8 литров)."
+                ),
+            }
+        )
+    ]
+    passport = _StubPassport(
+        quote="Расширительный бак (8 литров)",
+        document="63109b6ad4cd19.27758769.pdf",
+    )
+    service = _service([boiler], passport)
+
+    evidence = service.evaluate_many(
+        "У котла E.C.A. Arceus ST 6 внутри есть циркуляционный насос и "
+        "расширительный бак?",
+        SessionState(session_id="eca-compound-parts"),
+    )
+
+    assert [item.request.predicate for item in evidence] == [
+        "integrated_circulation_pump",
+        "expansion_tank_volume_l",
+    ]
+    assert [item.status for item in evidence] == [
+        ProductFactStatus.ANSWERED,
+        ProductFactStatus.ANSWERED,
+    ]
+    assert evidence[0].value == "есть"
+    assert evidence[1].value == 8
+    assert {
+        item.request.product_ref.canonical_sku for item in evidence
+    } == {"8216262000"}

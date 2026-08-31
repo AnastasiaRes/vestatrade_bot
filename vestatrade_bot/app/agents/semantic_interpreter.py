@@ -188,8 +188,8 @@ SEMANTIC_INTERPRETER_PROMPT = """
   одновременно просит цену, наличие или ссылку;
 - разовый вопрос «есть ли товар в наличии?» кодируй как check_stock без
   constraint: это запрос сведений, а не разрешение скрыть отсутствующий товар;
-- устойчивое условие выбора «только/именно из наличия» кодируй одновременно
-  как find/select, check_stock и constraint stock_availability=true,
+- устойчивое условие выбора «только/именно из наличия» кодируй как find/select
+  и constraint stock_availability=true, без check_stock,
   status=known, polarity=required, привязанный к целевому товару;
 - явное снятие этого условия («наличие неважно») кодируй как operation=refine,
   constraint stock_availability=true, status=known, polarity=excluded; не
@@ -349,8 +349,9 @@ candidate от первого прохода. Верни исправленны�
    request_quote. Просьба временно удержать товар — reserve_product, даже если
    покупатель использует разговорный глагол.
    Разовый вопрос о наличии — check_stock без constraint. Условие выбрать
-   только доступный сейчас товар требует check_stock рядом с find/select и
-   product-scoped constraint stock_availability=true, known, required. Явное
+   только доступный сейчас товар требует find/select и product-scoped
+   constraint stock_availability=true, known, required, но не check_stock.
+   Явное
    «наличие неважно» снимает фильтр через stock_availability=true, known,
    excluded и не создаёт check_stock без отдельного вопроса. Разрешение
    показать товары без подтверждённого наличия или даже отсутствующие означает
@@ -549,9 +550,15 @@ class SelectionPreferenceKind(str, Enum):
 
     BRAND_REQUIRED = "brand_required"
     BRAND_PREFERRED = "brand_preferred"
+    BRAND_ANY = "brand_any"
     PRICE_LOWEST = "price_lowest"
     PRICE_BELOW_REFERENCE = "price_below_reference"
     STOCK_REQUIRED = "stock_required"
+    # A narrow, customer-authorised engineering relaxation.  It is accepted
+    # only for an already confirmed sewer-pipe length and is consumed by the
+    # catalogue planner as ``actual <= requested``.  Diameter and sewer scope
+    # remain ordinary hard facts.
+    LENGTH_NEAREST_SHORTER = "length_nearest_shorter"
 
 
 class SelectionStrategyKind(str, Enum):
@@ -673,7 +680,7 @@ class SelectionPreference(StrictModel):
     """One explicit, source-grounded preference within a selection task."""
 
     kind: SelectionPreferenceKind
-    value: str | bool | None = None
+    value: str | int | float | bool | None = None
     evidence: str = Field(min_length=1, max_length=240)
 
     @model_validator(mode="after")
@@ -683,8 +690,16 @@ class SelectionPreference(StrictModel):
             SelectionPreferenceKind.BRAND_PREFERRED,
         } and not isinstance(self.value, str):
             raise ValueError("brand preference requires a brand value")
+        if self.kind == SelectionPreferenceKind.BRAND_ANY and self.value is not None:
+            raise ValueError("brand-any preference must not carry a brand value")
         if self.kind == SelectionPreferenceKind.STOCK_REQUIRED and self.value is not True:
             raise ValueError("stock preference requires value=true")
+        if self.kind == SelectionPreferenceKind.LENGTH_NEAREST_SHORTER and (
+            not isinstance(self.value, (int, float))
+            or isinstance(self.value, bool)
+            or float(self.value) <= 0
+        ):
+            raise ValueError("nearest-shorter preference requires a positive length")
         if self.kind in {
             SelectionPreferenceKind.PRICE_LOWEST,
             SelectionPreferenceKind.PRICE_BELOW_REFERENCE,
@@ -1201,6 +1216,10 @@ _SPOKEN_MILLIMETRE_UNIT_RE = re.compile(
     r"\s*(?P<unit>мм|миллиметр\w*)(?![\w])",
     flags=re.IGNORECASE,
 )
+_SPOKEN_LENGTH_UNIT_RE = re.compile(
+    r"\s*(?P<unit>мм|миллиметр\w*|см|сантиметр\w*|м|метр\w*)(?![\w])",
+    flags=re.IGNORECASE,
+)
 _AREA_ANCHOR_RE = re.compile(
     r"(?<![\w])(?P<value>\d+(?:[.,]\d+)?)\s*"
     r"(?P<unit>(?:м|m)\s*[²2]|кв\.?\s*(?:м|m)|"
@@ -1213,6 +1232,14 @@ _FLOW_ANCHOR_RE = re.compile(
     r"l\s*/\s*min(?:ute)?|l\s*/\s*h|m\s*[³3]\s*/\s*h|"
     r"литр\w*\s+в\s+минут\w*)\b",
     flags=re.IGNORECASE,
+)
+_CONVERSATIONAL_CUBIC_FLOW_RE = re.compile(
+    r"(?iu)(?<![\w])(?P<value>\d+(?:[.,]\d+)?)\s*"
+    r"(?P<unit>куб\w*(?:\s+(?:в|за)\s+час\w*)?)\b"
+)
+_CONVERSATIONAL_LITRES_PER_HOUR_RE = re.compile(
+    r"(?iu)(?<![\w])(?P<value>\d+(?:[.,]\d+)?)\s*"
+    r"(?P<unit>литр\w*\s+(?:в|за)\s+час\w*)\b"
 )
 _PIPE_QUANTITY_ANCHOR_RE = re.compile(
     r"(?<![\w])(?P<value>\d+(?:[.,]\d+)?)\s*"
@@ -1238,6 +1265,16 @@ _THERMOSTATIC_HEAD_KIT_RE = re.compile(
 _BOILER_CIRCUITS_UNKNOWN_RE = re.compile(
     r"(?iu)\b(?:количеств\w*\s+)?контур\w*[^.!?\n]{0,32}"
     r"\b(?:не\s+зна\w*|неизвест\w*|пока\s+не\s+определ\w*)\b"
+)
+_BOILER_DHW_REQUIRED_RE = re.compile(
+    r"(?iu)(?:\b(?:хот\w*|нуж\w*|долж\w*|получ\w*|готов\w*|"
+    r"обеспеч\w*|греть)\b[^.!?\n]{0,48}\bгоряч\w*\s+вод\w*\b|"
+    r"\bгоряч\w*\s+вод\w*\b[^.!?\n]{0,64}\b(?:от\s+котл\w*|"
+    r"кот[её]л\w*\s+(?:буд\w*|долж\w*|нуж\w*)))"
+)
+_BOILER_EXTERNAL_DHW_RE = re.compile(
+    r"(?iu)\b(?:отдельн\w*|друг\w*)\s+"
+    r"(?:бойлер\w*|водонагревател\w*)\b"
 )
 _HEAD_ANCHOR_RES = (
     re.compile(
@@ -2001,6 +2038,13 @@ _VISIBLE_SCOPE_COMPARE_RE = re.compile(
     r"\bчто\s+лучше\b"
     r")"
 )
+_EXPLICIT_NAMED_PAIR_COMPARE_RE = re.compile(
+    r"(?iu)(?:"
+    r"\b(?:сравн\w*|сопостав\w*)\b[\s\S]{1,180}\b(?:и|с)\b[\s\S]{1,180}|"
+    r"\bчем\s+отлич\w*\b[\s\S]{1,180}\b(?:и|от)\b[\s\S]{1,180}|"
+    r"\bразниц\w*\s+между\b[\s\S]{1,180}\bи\b[\s\S]{1,180}"
+    r")"
+)
 _PRICE_PREFERENCE_RE = re.compile(
     r"(?iu)\b(?:подешевле|деш[её]\w*|сам\w*\s+деш[её]\w*|"
     r"бюджетн\w*|недорог\w*|(?:цен\w*\s+)?ниже\s+по\s+цене|"
@@ -2017,6 +2061,21 @@ _STOCK_CHECK_QUESTION_RE = re.compile(
     r"(?iu)(?:\b(?:есть|имеется|остал(?:ся|ись)|будет)\b[^.!?]{0,48}"
     r"\b(?:в\s+наличии|на\s+складе)\b|"
     r"\b(?:в\s+наличии|на\s+складе)\s*\?\s*$)"
+)
+_AVAILABILITY_ANALOG_REQUEST_RE = re.compile(
+    r"(?iu)\b(?:близк\w*|аналог\w*|замен\w*)\b[^.!?]{0,64}"
+    r"\b(?:в\s+наличии|из\s+наличия|на\s+складе)\b|"
+    r"\b(?:в\s+наличии|из\s+наличия|на\s+складе)\b[^.!?]{0,64}"
+    r"\b(?:близк\w*|аналог\w*|замен\w*)\b"
+)
+_SEWER_NEAREST_SHORTER_RE = re.compile(
+    r"(?isu)^(?=[\s\S]*\b(?:короч\w*|покороче)\b)"
+    r"(?=[\s\S]*\b(?:ближайш\w*|можно|возьм\w*|подойд[её]т)\b)[\s\S]*$"
+)
+_BRAND_NOT_IMPORTANT_RE = re.compile(
+    r"(?iu)(?:\b(?:бренд|марка|производитель|фирма)\w*\b[^.!?]{0,40}"
+    r"\b(?:не\s+(?:важ\w*|принципиал\w*)|без\s+разниц\w*|люб\w*)\b|"
+    r"\b(?:люб\w*|неважн\w*)\s+(?:бренд|марка|производитель|фирма)\w*\b)"
 )
 _GENERIC_PRODUCT_SELECTION_QUESTION_RE = re.compile(
     r"(?iu)\b(?:какой|какую|какие)\b[\s\S]{0,96}?"
@@ -2323,6 +2382,7 @@ def _recover_selection_preferences(
     constraints: list[dict[str, Any]],
     normalized_products: list[dict[str, Any]],
     changes: list[str],
+    authoritative_dialogue_state: dict[str, Any] | None = None,
 ) -> None:
     """Recover a small high-precision preference vocabulary before V2 state.
 
@@ -2375,6 +2435,28 @@ def _recover_selection_preferences(
         _STOCK_CHECK_QUESTION_RE.search(current_message) is not None
         and _STOCK_REQUIRED_RE.search(current_message) is None
     )
+    availability_analog_request = _AVAILABILITY_ANALOG_REQUEST_RE.search(
+        current_message
+    )
+    if availability_analog_request is not None:
+        # This is a request to continue the existing Selection with an
+        # in-stock analogue, not a direct stock fact about the focused card.
+        # The catalogue contract still decides whether any hard coordinate is
+        # permitted to change and exposes every proven difference.
+        direct_stock_question = False
+        acts = [
+            str(getattr(item, "value", item))
+            for item in (repaired_turn.get("acts") or [])
+            if str(getattr(item, "value", item))
+            != CustomerAct.CHECK_STOCK.value
+        ]
+        if not {
+            CustomerAct.FIND.value,
+            CustomerAct.SELECT.value,
+        }.intersection(acts):
+            acts.append(CustomerAct.FIND.value)
+        repaired_turn["acts"] = acts
+        changes.append("availability_analog_recovered_as_selection")
     if direct_stock_question:
         raw_preferences[:] = [
             item
@@ -2526,8 +2608,40 @@ def _recover_selection_preferences(
         changes.append(reason_code)
 
     applies_to_product = 0 if normalized_products else None
+    brand_not_important = _BRAND_NOT_IMPORTANT_RE.search(current_message)
+    if brand_not_important is not None:
+        evidence = brand_not_important.group(0).strip()
+        raw_preferences[:] = [
+            item
+            for item in raw_preferences
+            if not (
+                isinstance(item, dict)
+                and str(item.get("kind") or "")
+                in {
+                    SelectionPreferenceKind.BRAND_REQUIRED.value,
+                    SelectionPreferenceKind.BRAND_PREFERRED.value,
+                }
+            )
+        ]
+        append(SelectionPreferenceKind.BRAND_ANY, evidence)
+        constraints[:] = [
+            item for item in constraints if str(item.get("name") or "") != "brand"
+        ]
+        constraints.append(
+            ConstraintFact(
+                name="brand",
+                value=None,
+                status=ConstraintStatus.UNKNOWN,
+                polarity=ConstraintPolarity.PREFERRED,
+                applies_to_product=applies_to_product,
+                evidence=evidence,
+            ).model_dump(mode="json")
+        )
+        ensure_selection_execution(evidence)
+        changes.append("brand_preference_explicitly_cleared")
+
     brand_preference = explicit_brand_preference()
-    if brand_preference is not None:
+    if brand_preference is not None and brand_not_important is None:
         kind, evidence, brand = brand_preference
         append(kind, evidence, brand)
         set_brand_constraint(
@@ -2546,7 +2660,10 @@ def _recover_selection_preferences(
         )
         ensure_selection_execution(evidence)
 
-    stock_required = _STOCK_REQUIRED_RE.search(current_message)
+    stock_required = (
+        _STOCK_REQUIRED_RE.search(current_message)
+        or availability_analog_request
+    )
     if stock_required is not None and not direct_stock_question:
         evidence = stock_required.group(0)
         append(SelectionPreferenceKind.STOCK_REQUIRED, evidence, True)
@@ -2560,6 +2677,79 @@ def _recover_selection_preferences(
             )
             changes.append("required_stock_constraint_recovered")
         ensure_selection_execution(evidence)
+
+    nearest_shorter = _SEWER_NEAREST_SHORTER_RE.search(current_message)
+    if nearest_shorter is not None and authoritative_dialogue_state is not None:
+        active_goal_id = str(
+            authoritative_dialogue_state.get("active_goal_id") or ""
+        )
+        active_goal = next(
+            (
+                item
+                for item in authoritative_dialogue_state.get("goals", ())
+                if isinstance(item, dict)
+                and str(item.get("goal_id") or "") == active_goal_id
+            ),
+            None,
+        )
+        sewer_goal = bool(
+            active_goal
+            and (
+                str(active_goal.get("category") or "") == "sewer"
+                or str(active_goal.get("canonical_type") or "") == "sewer_pipe"
+            )
+        )
+        prior_length = next(
+            (
+                item
+                for item in authoritative_dialogue_state.get("active_facts", ())
+                if isinstance(item, dict)
+                and str(item.get("goal_id") or "") == active_goal_id
+                and str(item.get("name") or "") == "length_mm"
+                and str(item.get("status") or "") == "known"
+                and isinstance(item.get("value"), (int, float))
+                and not isinstance(item.get("value"), bool)
+            ),
+            None,
+        )
+        if sewer_goal and prior_length is not None:
+            evidence = current_message[:240]
+            acts = [
+                str(getattr(item, "value", item))
+                for item in (repaired_turn.get("acts") or [])
+                if str(getattr(item, "value", item))
+                not in {
+                    CustomerAct.CHECK_STOCK.value,
+                    # The customer authorized one explicit relaxation.  This
+                    # is a request to find and show the bounded alternative,
+                    # never permission to recommend it as an exact match.
+                    CustomerAct.SELECT.value,
+                }
+            ]
+            if CustomerAct.FIND.value not in acts:
+                acts.append(CustomerAct.FIND.value)
+            repaired_turn["acts"] = acts
+            changes.append("sewer_nearest_shorter_recovered_as_selection")
+            append(
+                SelectionPreferenceKind.LENGTH_NEAREST_SHORTER,
+                evidence,
+                prior_length["value"],
+            )
+            ensure_selection_execution(evidence)
+            # "nearest shorter" is useful only among cards that can actually
+            # be supplied.  The explicit phrase may say "if in stock" without
+            # the strict word "only"; keep that requirement typed here.
+            append(SelectionPreferenceKind.STOCK_REQUIRED, evidence, True)
+            if not _has_constraint_name(constraints, {"stock_availability"}):
+                _append_known_constraint(
+                    constraints,
+                    name="stock_availability",
+                    value=True,
+                    evidence=evidence,
+                    applies_to_product=applies_to_product,
+                )
+                changes.append("nearest_shorter_requires_confirmed_stock")
+            changes.append("sewer_nearest_shorter_relaxation_recovered")
 
     price = _PRICE_PREFERENCE_RE.search(current_message)
     if price is None or _VISIBLE_SCOPE_COMPARE_RE.search(current_message) is not None:
@@ -3112,6 +3302,66 @@ def _recover_bounded_selection_category_and_facts(
         if isinstance(pending, dict)
         else ""
     )
+    if sewer_target:
+        spoken_lengths: list[tuple[float, int, int, str]] = []
+        for mention in extract_spoken_cardinal_mentions(
+            current_message,
+            minimum=1,
+            maximum=1000,
+        ):
+            unit_match = _SPOKEN_LENGTH_UNIT_RE.match(
+                current_message[mention.end :]
+            )
+            if unit_match is None:
+                continue
+            # Spoken metres can mean either the catalogue length of one pipe
+            # or the total amount the customer wants to buy.  Override an LLM
+            # value only when the typed pending question or the local wording
+            # explicitly identifies product length.  This keeps
+            # ``длиной три метра`` deterministic without turning every
+            # ``нужно три метра трубы`` into an item-size constraint.
+            local_prefix = current_message[max(0, mention.start - 32) : mention.start]
+            if pending_name != "length_mm" and re.search(
+                r"(?iu)\bдлин\w*\s*$",
+                local_prefix,
+            ) is None:
+                continue
+            spoken_lengths.append(
+                (
+                    mention.value,
+                    mention.start,
+                    mention.end + unit_match.end(),
+                    unit_match.group("unit"),
+                )
+            )
+        if len(spoken_lengths) == 1:
+            raw_value, start, end, raw_unit = spoken_lengths[0]
+            canonical_length = _canonical_registry_length_mm(
+                f"{raw_value:g}",
+                raw_unit,
+            )
+            if canonical_length is not None:
+                value, unit = canonical_length
+                evidence = current_message[start:end].strip()
+                constraints[:] = [
+                    item
+                    for item in constraints
+                    if _canonical_constraint_fact_name(
+                        str(item.get("name") or "")
+                    )
+                    not in {"length_mm", "requested_quantity_m"}
+                ]
+                _append_known_constraint(
+                    constraints,
+                    name="length_mm",
+                    value=value,
+                    unit=unit,
+                    evidence=evidence,
+                    applies_to_product=target_index,
+                )
+                if pending_name == "length_mm":
+                    repaired_turn["answers_pending_question"] = True
+                changes.append("spoken_sewer_length_anchor_recovered")
     if sewer_target and pending_name == "diameter_mm":
         spoken_metric_mentions = extract_spoken_cardinal_mentions(
             current_message,
@@ -3304,6 +3554,13 @@ def _recover_bounded_selection_category_and_facts(
             for value, evidence in grounded_circuits
             if evidence is not None
         ]
+        dhw_required = _BOILER_DHW_REQUIRED_RE.search(current_message)
+        if (
+            not grounded_circuits
+            and dhw_required is not None
+            and _BOILER_EXTERNAL_DHW_RE.search(current_message) is None
+        ):
+            grounded_circuits = [(2, dhw_required.group(0).strip())]
         if len(grounded_circuits) == 1:
             circuits, evidence = grounded_circuits[0]
             # A direct answer to the pending contour question is a confirmed
@@ -4835,10 +5092,14 @@ def _product_family(item: dict[str, Any]) -> str | None:
         return "radiator"
     if "радиатор" in canonical_type:
         return "radiator"
-    if category == ProductCategory.PIPES.value and (
-        canonical_type in {"pipe", "pex_pipe", "труба"}
+    if (
+        category in {ProductCategory.PIPES.value, ProductCategory.SEWER.value}
+        and (
+        canonical_type in {"pipe", "pex_pipe", "sewer_pipe", "sewer pipe", "труба"}
         or "pex" in canonical_type
         or "pe-x" in canonical_type
+        or "канализацион" in canonical_type
+        )
     ):
         return "pipe"
     return None
@@ -5563,6 +5824,20 @@ def _typed_numeric_anchors(current_message: str) -> list[dict[str, Any]]:
                 else "duty_point_flow_l_h"
             ),
         )
+    for match in _CONVERSATIONAL_CUBIC_FLOW_RE.finditer(current_message):
+        add(
+            match,
+            family="pump",
+            name="duty_point_flow_l_h",
+            unit_override="m3/h",
+        )
+    for match in _CONVERSATIONAL_LITRES_PER_HOUR_RE.finditer(current_message):
+        add(
+            match,
+            family="pump",
+            name="duty_point_flow_l_h",
+            unit_override="l/h",
+        )
     for match in _PIPE_QUANTITY_ANCHOR_RE.finditer(current_message):
         raw_unit = _normalize_evidence(match.group("unit"))
         window = current_message[
@@ -5609,7 +5884,7 @@ def _typed_numeric_anchors(current_message: str) -> list[dict[str, Any]]:
         add(match, family="pipe", name="operating_pressure_bar", unit_override="bar")
     for pattern in _PIPE_DIAMETER_ANCHOR_RES:
         for match in pattern.finditer(current_message):
-            add(match, family="pipe", name="diameter_mm")
+            add(match, family="pipe", name="diameter_mm", unit_override="mm")
 
     unique: list[dict[str, Any]] = []
     seen: set[tuple[str, int, int, str]] = set()
@@ -6651,13 +6926,48 @@ def repair_grounded_semantic_payload(
     # With that scope and an unambiguous current-turn phrase we can repair the
     # action before the reducer creates its task, while leaving product choice,
     # values and any recommendation to the existing comparison evidence gate.
-    if (
-        len(shown_product_cards) >= 2
-        and _VISIBLE_SCOPE_COMPARE_RE.search(current_message) is not None
-        and CustomerAct.COMPARE.value not in normalized_acts
+    comparison_phrase = _VISIBLE_SCOPE_COMPARE_RE.search(current_message)
+    explicit_model_tokens = {
+        match.group(0).casefold()
+        for match in _MIXED_IDENTIFIER_TOKEN_RE.finditer(current_message)
+    }
+    typed_current_products = tuple(
+        item
+        for item in normalized_products
+        if _product_family(item) is not None
+    )
+    explicit_named_pair = bool(
+        comparison_phrase is not None
+        and _EXPLICIT_NAMED_PAIR_COMPARE_RE.search(current_message) is not None
+        and (
+            len(explicit_model_tokens) >= 2
+            or len(typed_current_products) >= 2
+        )
+    )
+    if comparison_phrase is not None and (
+        len(shown_product_cards) >= 2 or explicit_named_pair
     ):
-        normalized_acts.append(CustomerAct.COMPARE.value)
-        changes.append("visible_scope_compare_action_recovered")
+        # Price and availability are comparison dimensions here, not separate
+        # offer-fact tasks.  Keeping those noisy LLM acts can let a direct
+        # price lookup outrank the grounded Compare planner.
+        normalized_acts = [
+            item
+            for item in normalized_acts
+            if item
+            not in {
+                CustomerAct.CHECK_PRICE.value,
+                CustomerAct.CHECK_STOCK.value,
+            }
+        ]
+        if CustomerAct.COMPARE.value not in normalized_acts:
+            normalized_acts.append(CustomerAct.COMPARE.value)
+        changes.append(
+            (
+                "visible_scope_compare_action_recovered"
+                if len(shown_product_cards) >= 2
+                else "explicit_named_pair_compare_action_recovered"
+            )
+        )
 
     # A compatibility request is safe to recover either from an already
     # delivered multi-card scope or from two explicit identity-shaped spans in
@@ -7197,6 +7507,10 @@ def repair_grounded_semantic_payload(
                         capability_rule,
                     )
                     and action in {item.value for item in CustomerAct}
+                    and capability_rule.get(
+                        "derive_action_from_constraint",
+                        True,
+                    )
                 ):
                     current_acts = list(repaired.get("acts") or [])
                     if action not in current_acts:
@@ -7361,6 +7675,7 @@ def repair_grounded_semantic_payload(
         normalized_constraints,
         normalized_products,
         changes,
+        authoritative_dialogue_state,
     )
     # The bounded recovery may add or correct the one current target product;
     # keep the strict validator and all later stages on the same typed frame.

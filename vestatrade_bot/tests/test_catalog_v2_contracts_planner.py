@@ -46,6 +46,8 @@ from app.dialogue_v2.contracts import (
     NextAction,
     NextActionKind,
     NextActionPlan,
+    SelectionPreferenceKind,
+    SelectionPreferenceSignal,
     TurnMetadata,
 )
 from app.dialogue_v2.controller import DialogueControllerV2
@@ -1523,6 +1525,91 @@ def test_exact_pump_plan_enforces_every_hard_constraint(catalog) -> None:
     rejected = next(item for item in plan.candidate_assessments if item.sku == "VRS.256.18.0")
     assert rejected.status == CandidateStatus.REJECTED
     assert "mounting_length_mm" in rejected.mismatched_hard_facts
+
+
+def test_sewer_nearest_shorter_relaxes_only_length_and_requires_stock() -> None:
+    provenance = FactProvenance(
+        source="attribute",
+        source_field="test",
+        raw_value="test",
+        parser="test",
+    )
+
+    def sewer(sku: str, length: int, stock: int) -> CatalogProductSnapshot:
+        return CatalogProductSnapshot(
+            sku=sku,
+            name=sku,
+            category="sewer",
+            product_kind=ProductKind.SEWER_PIPE,
+            role=CatalogProductRole.BASE_PRODUCT,
+            stock_status="в наличии" if stock else "нет в наличии",
+            stock_qty=stock,
+            facts=(
+                CatalogFact(name="diameter_mm", value=110, unit="mm", provenance=provenance),
+                CatalogFact(name="length_mm", value=length, unit="mm", provenance=provenance),
+                CatalogFact(name="sewer_scope", value="external", provenance=provenance),
+            ),
+        )
+
+    snapshot = (
+        sewer("EXACT-OUT", 3000, 0),
+        sewer("SHORT-IN", 2000, 3),
+        sewer("LONG-IN", 4000, 3),
+    )
+    outcome = _run(
+        _semantic(
+            [_product("sewer pipe", "sewer")],
+            [
+                _fact("diameter_mm", 110, "mm"),
+                _fact("length_mm", 3000, "mm"),
+                _fact("sewer_scope", "external", None),
+            ],
+            acts=["find"],
+        ),
+        snapshot,
+    )
+    task_id = outcome.next_action_plan.primary.task_id
+    assert task_id is not None
+    goal_id = outcome.state_after.active_goal_id
+    state = outcome.state_after.model_copy(
+        update={
+            "selection_preferences": (
+                SelectionPreferenceSignal(
+                    preference_id="nearest-shorter",
+                    kind=SelectionPreferenceKind.LENGTH_NEAREST_SHORTER,
+                    # A follow-up FIND may be a new discovery task for the
+                    # same sewer goal.  The explicit engineering relaxation
+                    # belongs to that goal and must not disappear merely
+                    # because SELECT/FIND task identity changed.
+                    task_id="earlier-selection-task",
+                    goal_id=goal_id,
+                    value=3000,
+                    evidence="ближайшую короче",
+                    source="test",
+                    source_turn=2,
+                ),
+            )
+        }
+    )
+    planning = plan_catalog_search(
+        state,
+        outcome.next_action_plan,
+        outcome.catalog_planning.readiness_assessments,
+        snapshot,
+        ProductContractRegistry(),
+        contract_resolutions=outcome.catalog_planning.contract_resolutions,
+    )
+    plan = planning.search_plans[0]
+
+    assert plan.in_stock_required is True
+    assert plan.relaxed_skus == ("SHORT-IN",)
+    assert "EXACT-OUT" not in (*plan.eligible_skus, *plan.relaxed_skus)
+    longer = next(item for item in plan.candidate_assessments if item.sku == "LONG-IN")
+    shorter = next(item for item in plan.candidate_assessments if item.sku == "SHORT-IN")
+    assert longer.status == CandidateStatus.REJECTED
+    assert "controlled_relaxation_rejects_longer_length" in longer.reason_codes
+    assert shorter.controlled_customer_relaxation is True
+    assert shorter.relaxations[0].candidate_value == 2000
 
 
 def test_continue_with_confirmed_facts_still_runs_catalogue_verification(catalog) -> None:

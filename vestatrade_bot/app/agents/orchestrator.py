@@ -64,6 +64,10 @@ from app.dialogue_v2.contracts import DialogueStateV2, NextActionKind, TurnMetad
 from app.dialogue_v2.controller import DialogueControllerV2, DialogueV2Outcome
 from app.dialogue_v2.reducer import record_response_delivery
 from app.cutover_v2.assembler import build_v2_turn_candidate
+from app.cutover_v2.capability_boundary import (
+    build_v2_uncovered_capability_boundary_candidate,
+)
+from app.cutover_v2.capability_registry import resolve_capability_coverage
 from app.cutover_v2.calculation import build_v2_calculation_candidate
 from app.cutover_v2.engineering_boundary import (
     build_v2_hydraulic_system_boundary_candidate,
@@ -74,13 +78,21 @@ from app.cutover_v2.preview_continuation import (
 from app.cutover_v2.compatibility import build_v2_compatibility_candidate
 from app.cutover_v2.comparison import build_v2_comparison_candidate
 from app.cutover_v2.legacy_scope_bridge import (
+    LegacyCapabilityResultAudit,
+    LegacyCapabilityResultStatus,
     LegacyScopeBridgeResult,
     LegacyScopeBridgeStatus,
     bridge_validated_legacy_selection_scope,
+    validate_legacy_capability_result,
 )
-from app.cutover_v2.product_fact import build_v2_product_fact_candidate
+from app.cutover_v2.product_fact import (
+    build_v2_product_fact_bundle_candidate,
+    build_v2_product_fact_candidate,
+)
 from app.cutover_v2.offer_fact import build_v2_offer_fact_candidate
 from app.cutover_v2.contracts import (
+    CapabilityCoverageStatus,
+    CapabilityTurnContext,
     EarlyControlOutcome,
     EarlyControlResult,
     ExecutionMode,
@@ -131,8 +143,10 @@ from .commerce_topics import (
     compose_commerce_answer,
     compose_discount_supplement,
     compose_store_contact_answer,
+    contextual_order_number,
     extract_any_city,
     find_city,
+    is_commerce_topic_continuation,
     match_commerce_topic,
     order_number,
 )
@@ -1173,10 +1187,26 @@ class ChatOrchestrator:
             )
             if request is not None:
                 semantic_fact_name = request.fact_name
-        evidence = self.product_fact_evidence.evaluate(
+        semantic_fact_names = tuple(
+            dict.fromkeys(
+                str(item.fact_name)
+                for item in getattr(understanding, "information_requests", ())
+                if getattr(item, "fact_name", None)
+            )
+        )
+        evidences = self.product_fact_evidence.evaluate_many(
             message,
             before_turn,
-            semantic_fact_name=semantic_fact_name,
+            semantic_fact_names=semantic_fact_names,
+        )
+        evidence = (
+            evidences[0]
+            if evidences
+            else self.product_fact_evidence.evaluate(
+                message,
+                before_turn,
+                semantic_fact_name=semantic_fact_name,
+            )
         )
         if evidence is None:
             return base_candidate
@@ -1220,13 +1250,24 @@ class ChatOrchestrator:
             # price question) merely because this bounded adapter does not own
             # that predicate.
             return base_candidate
-        candidate = build_v2_product_fact_candidate(
-            outcome,
-            base_candidate,
-            evidence,
-            self.answer_source_snapshot_v2,
-            session_id=session_id,
-            turn_id=turn_id,
+        candidate = (
+            build_v2_product_fact_bundle_candidate(
+                outcome,
+                base_candidate,
+                evidences,
+                self.answer_source_snapshot_v2,
+                session_id=session_id,
+                turn_id=turn_id,
+            )
+            if len(evidences) > 1
+            else build_v2_product_fact_candidate(
+                outcome,
+                base_candidate,
+                evidence,
+                self.answer_source_snapshot_v2,
+                session_id=session_id,
+                turn_id=turn_id,
+            )
         )
         return candidate or base_candidate
 
@@ -1247,6 +1288,7 @@ class ChatOrchestrator:
             outcome,
             before_turn,
             original_utterance=message,
+            source_snapshot=self.answer_source_snapshot_v2,
             semantic_references=(
                 getattr(getattr(semantic, "semantic_delta", None), "product_references", ())
                 or getattr(getattr(semantic, "understanding", None), "references", ())
@@ -1944,6 +1986,8 @@ class ChatOrchestrator:
         commit: TurnCommit | None = None,
         parity: Any | None = None,
         legacy_scope_bridge: LegacyScopeBridgeResult | None = None,
+        legacy_capability_gate: LegacyCapabilityResultAudit | None = None,
+        capability_coverage: Any | None = None,
         error: str | None = None,
     ) -> dict[str, Any]:
         candidate_summary = None
@@ -1951,6 +1995,7 @@ class ChatOrchestrator:
         comparison_delivery = None
         calculation_delivery = None
         product_fact_delivery = None
+        product_fact_deliveries = None
         offer_fact_delivery = None
         compatibility_delivery = None
         if candidate is not None:
@@ -1999,6 +2044,11 @@ class ChatOrchestrator:
                     and candidate.product_scope_effect
                     == ProductScopeEffect.PRESERVE
                 )
+            if candidate.product_fact_deliveries:
+                product_fact_deliveries = [
+                    item.model_dump(mode="json")
+                    for item in candidate.product_fact_deliveries
+                ]
             if candidate.offer_fact_result is not None:
                 offer_fact_delivery = candidate.offer_fact_result.model_dump(
                     mode="json"
@@ -2052,17 +2102,28 @@ class ChatOrchestrator:
                 ),
             },
             "early_control": early_control,
+            "capability_coverage": (
+                capability_coverage.model_dump(mode="json")
+                if capability_coverage is not None
+                else None
+            ),
             "decision": decision,
             "candidate": candidate_summary,
             "selection_delivery": selection_delivery,
             "comparison_delivery": comparison_delivery,
             "calculation_delivery": calculation_delivery,
             "product_fact_delivery": product_fact_delivery,
+            "product_fact_deliveries": product_fact_deliveries,
             "offer_fact_delivery": offer_fact_delivery,
             "compatibility_delivery": compatibility_delivery,
             "legacy_scope_bridge": (
                 legacy_scope_bridge.audit.model_dump(mode="json")
                 if legacy_scope_bridge is not None
+                else None
+            ),
+            "legacy_capability_gate": (
+                legacy_capability_gate.model_dump(mode="json")
+                if legacy_capability_gate is not None
                 else None
             ),
             "arbitration": arbitration,
@@ -2142,9 +2203,11 @@ class ChatOrchestrator:
                         live_decision = None
                         live_arbitration = None
                         live_commit = None
+                        capability_coverage = None
                         cutover_error = None
                         live_turn_id = None
                         legacy_scope_bridge = None
+                        legacy_capability_gate = None
                         with budget_scope:
                             self._request_agents.composer = ResponseComposerAgent(self.llm_client)
                             self._request_agents.consultant = ConsultantAgent(
@@ -2269,6 +2332,85 @@ class ChatOrchestrator:
                                             )
                                             if preview_continuation is not None:
                                                 live_candidate = preview_continuation
+                                        current_v2_state = (
+                                            before_turn.dialogue_state_v2
+                                            or DialogueStateV2()
+                                        )
+                                        active_v2_goal = next(
+                                            (
+                                                goal
+                                                for goal in current_v2_state.product_goals
+                                                if goal.goal_id
+                                                == current_v2_state.active_goal_id
+                                            ),
+                                            None,
+                                        )
+                                        pending_v2_fact = (
+                                            current_v2_state.answer_plan_summary.question_fact
+                                            if current_v2_state.answer_plan_summary
+                                            is not None
+                                            else None
+                                        )
+                                        capability_context = CapabilityTurnContext(
+                                            legacy_commerce_topic=(
+                                                str(
+                                                    before_turn.slots.get(
+                                                        "commerce_topic"
+                                                    )
+                                                    or ""
+                                                )
+                                                or None
+                                            ),
+                                            active_goal_canonical_type=(
+                                                active_v2_goal.canonical_type
+                                                if active_v2_goal is not None
+                                                else None
+                                            ),
+                                            pending_question_fact=pending_v2_fact,
+                                        )
+                                        capability_coverage = (
+                                            resolve_capability_coverage(
+                                                message,
+                                                live_candidate,
+                                                self.cutover_registry_v2.registry(),
+                                                turn_context=capability_context,
+                                            )
+                                        )
+                                        live_runtime = self._stage6_runtime(
+                                            before_turn,
+                                            qa_mode,
+                                        )
+                                        if (
+                                            capability_coverage.status
+                                            == CapabilityCoverageStatus.UNRESOLVED
+                                            # Public-primary cannot hand an
+                                            # unclassified turn to the broad
+                                            # Legacy generator.  Protected QA
+                                            # preview deliberately keeps its
+                                            # existing validated Legacy-card
+                                            # bridge so migration engineers can
+                                            # still observe and import a
+                                            # source-checked fallback scope.
+                                            and live_runtime.public_primary_enabled
+                                        ):
+                                            uncovered_boundary = (
+                                                build_v2_uncovered_capability_boundary_candidate(
+                                                    live_candidate,
+                                                    self.answer_source_snapshot_v2,
+                                                    session_id=session_id,
+                                                    turn_id=turn_id,
+                                                )
+                                            )
+                                            if uncovered_boundary is not None:
+                                                live_candidate = uncovered_boundary
+                                                capability_coverage = (
+                                                    resolve_capability_coverage(
+                                                        message,
+                                                        live_candidate,
+                                                        self.cutover_registry_v2.registry(),
+                                                        turn_context=capability_context,
+                                                    )
+                                                )
                                         # Record every live-attempt outcome,
                                         # including candidates rejected before
                                         # arbitration.  Otherwise the release
@@ -2283,8 +2425,9 @@ class ChatOrchestrator:
                                             early_control,
                                             live_candidate,
                                             self.cutover_registry_v2.registry(),
-                                            self._stage6_runtime(before_turn, qa_mode),
+                                            live_runtime,
                                             session_fingerprint=session_fingerprint,
+                                            capability_coverage=capability_coverage,
                                         )
                                         live_arbitration = arbitrate_turn(
                                             live_decision,
@@ -2306,6 +2449,7 @@ class ChatOrchestrator:
                                                     candidate=live_candidate,
                                                     arbitration=live_arbitration,
                                                     commit=live_commit,
+                                                    capability_coverage=capability_coverage,
                                                 )
                                             )
                                             finish_turn_trace(
@@ -2340,6 +2484,92 @@ class ChatOrchestrator:
                                         session_fingerprint=session_fingerprint,
                                     )
                             response = self._handle_chat(session_id, message)
+                            legacy_capability_gate = validate_legacy_capability_result(
+                                capability_coverage,
+                                response,
+                                self.answer_source_snapshot_v2,
+                            )
+                            if (
+                                legacy_capability_gate.status
+                                == LegacyCapabilityResultStatus.REJECTED
+                                and live_candidate is not None
+                                and live_turn_id is not None
+                            ):
+                                # Legacy has already produced a response in its
+                                # isolated owner path.  Do not deliver or retain
+                                # its mutated state when the structured-card
+                                # outcome gate disproves that response.
+                                self.sessions.restore(before_turn)
+                                boundary_candidate = (
+                                    build_v2_uncovered_capability_boundary_candidate(
+                                        live_candidate,
+                                        self.answer_source_snapshot_v2,
+                                        session_id=session_id,
+                                        turn_id=live_turn_id,
+                                        additional_reason_codes=(
+                                            "legacy_capability_result_rejected",
+                                            *legacy_capability_gate.reason_codes,
+                                        ),
+                                    )
+                                )
+                                if boundary_candidate is None:
+                                    raise RuntimeError(
+                                        "legacy_capability_result_rejected_without_boundary"
+                                    )
+                                boundary_coverage = resolve_capability_coverage(
+                                    message,
+                                    boundary_candidate,
+                                    self.cutover_registry_v2.registry(),
+                                    turn_context=capability_context,
+                                )
+                                boundary_decision = decide_cutover(
+                                    early_control,
+                                    boundary_candidate,
+                                    self.cutover_registry_v2.registry(),
+                                    self._stage6_runtime(before_turn, qa_mode),
+                                    session_fingerprint=hashlib.sha256(
+                                        session_id.encode("utf-8")
+                                    ).hexdigest(),
+                                    capability_coverage=boundary_coverage,
+                                )
+                                boundary_arbitration = arbitrate_turn(
+                                    boundary_decision,
+                                    boundary_candidate,
+                                )
+                                if (
+                                    boundary_arbitration.response_owner
+                                    != ResponseOwner.V2
+                                ):
+                                    raise RuntimeError(
+                                        "legacy_capability_boundary_not_deliverable"
+                                    )
+                                response, boundary_commit = self._commit_v2_response(
+                                    before_turn,
+                                    message,
+                                    client_turn_id,
+                                    live_turn_id,
+                                    boundary_decision,
+                                    boundary_candidate,
+                                )
+                                record_cutover_v2(
+                                    self._cutover_trace_payload(
+                                        early_control=early_control,
+                                        decision=boundary_decision,
+                                        candidate=boundary_candidate,
+                                        arbitration=boundary_arbitration,
+                                        commit=boundary_commit,
+                                        legacy_capability_gate=(
+                                            legacy_capability_gate
+                                        ),
+                                        capability_coverage=boundary_coverage,
+                                    )
+                                )
+                                finish_turn_trace(
+                                    trace,
+                                    response=response,
+                                    state_after=self.sessions.snapshot(session_id),
+                                )
+                                return response
 
                         # Run only after the legacy response is fully produced.
                         # The result is never copied to intent, session, search
@@ -2381,6 +2611,12 @@ class ChatOrchestrator:
                             and cutover_error is None
                             and live_v2_outcome is not None
                             and live_v2_outcome.status == "applied"
+                            and not (
+                                capability_coverage is not None
+                                and capability_coverage.enforced
+                                and capability_coverage.status
+                                == CapabilityCoverageStatus.LEGACY_READY
+                            )
                         ):
                             state_with_v2 = self.sessions.snapshot(session_id)
                             state_with_v2.dialogue_state_v2 = (
@@ -2493,6 +2729,12 @@ class ChatOrchestrator:
                                 )
                                 if (
                                     v2_outcome.status == "applied"
+                                    and not (
+                                        capability_coverage is not None
+                                        and capability_coverage.enforced
+                                        and capability_coverage.status
+                                        == CapabilityCoverageStatus.LEGACY_READY
+                                    )
                                     and (
                                         self.settings.dialogue_state_v2_shadow_enabled
                                         or self._stage3_shadow_enabled()
@@ -2575,6 +2817,24 @@ class ChatOrchestrator:
                                         self.sessions.snapshot(session_id),
                                         self._public_product_kinds_v2(response),
                                     )
+                                    shadow_capability_coverage = (
+                                        resolve_capability_coverage(
+                                            message,
+                                            shadow_candidate,
+                                            self.cutover_registry_v2.registry(),
+                                            turn_context=CapabilityTurnContext(
+                                                legacy_commerce_topic=(
+                                                    str(
+                                                        before_turn.slots.get(
+                                                            "commerce_topic"
+                                                        )
+                                                        or ""
+                                                    )
+                                                    or None
+                                                ),
+                                            ),
+                                        )
+                                    )
                                     shadow_decision = decide_cutover(
                                         early_control,
                                         shadow_candidate,
@@ -2592,6 +2852,9 @@ class ChatOrchestrator:
                                         session_fingerprint=hashlib.sha256(
                                             session_id.encode("utf-8")
                                         ).hexdigest(),
+                                        capability_coverage=(
+                                            shadow_capability_coverage
+                                        ),
                                     )
                                     record_cutover_v2(
                                         self._cutover_trace_payload(
@@ -2599,6 +2862,9 @@ class ChatOrchestrator:
                                             decision=shadow_decision,
                                             candidate=shadow_candidate,
                                             parity=parity,
+                                            capability_coverage=(
+                                                shadow_capability_coverage
+                                            ),
                                         )
                                     )
                             except Exception as shadow_exc:
@@ -2644,6 +2910,8 @@ class ChatOrchestrator:
                                     arbitration=live_arbitration,
                                     parity=parity,
                                     legacy_scope_bridge=legacy_scope_bridge,
+                                    legacy_capability_gate=legacy_capability_gate,
+                                    capability_coverage=capability_coverage,
                                     error=cutover_error,
                                 )
                             )
@@ -2653,6 +2921,8 @@ class ChatOrchestrator:
                                     early_control=early_control,
                                     decision=live_decision,
                                     legacy_scope_bridge=legacy_scope_bridge,
+                                    legacy_capability_gate=legacy_capability_gate,
+                                    capability_coverage=capability_coverage,
                                     error=cutover_error,
                                 )
                             )
@@ -2661,6 +2931,8 @@ class ChatOrchestrator:
                                 self._cutover_trace_payload(
                                     early_control=early_control,
                                     legacy_scope_bridge=legacy_scope_bridge,
+                                    legacy_capability_gate=legacy_capability_gate,
+                                    capability_coverage=capability_coverage,
                                     error=cutover_error,
                                 )
                             )
@@ -14869,17 +15141,27 @@ class ChatOrchestrator:
         named_city = find_city(message, facts)
         requested_delivery_city = extract_any_city(message)
         if topic is None:
+            active_topic_key = str(session.slots.get("commerce_topic") or "")
+            if is_commerce_topic_continuation(message, active_topic_key):
+                topic = next(
+                    (item for item in TOPICS if item.key == active_topic_key),
+                    None,
+                )
             # «Я в Санкт-Петербурге» само по себе коммерческой темой не
             # выглядит, но если это ответ на наш же вопрос «какой у вас
             # город?» — разговор обязан продолжиться с той же темы, а не
             # уехать в общий подбор.
             awaiting = str(session.slots.get("awaiting_city_for") or "")
-            if not awaiting:
-                return None
-            topic = next((item for item in TOPICS if item.key == awaiting), None)
+            if topic is None and awaiting:
+                topic = next((item for item in TOPICS if item.key == awaiting), None)
             if topic is None:
                 return None
-            if not named_city and not requested_delivery_city:
+            if (
+                awaiting
+                and not named_city
+                and not requested_delivery_city
+                and not is_commerce_topic_continuation(message, topic.key)
+            ):
                 # Покупатель дожимает, не назвав город. Живой прогон (A09):
                 # такая реплика не попадала ни в одну тему и уходила в
                 # small talk — бот терял нить собственного вопроса.
@@ -14895,6 +15177,12 @@ class ChatOrchestrator:
             return None
 
         order_id = order_number(message)
+        if (
+            order_id is None
+            and topic.key == "order_status"
+            and session.slots.get("commerce_topic") == "order_status"
+        ):
+            order_id = contextual_order_number(message)
         if order_id:
             session.slots["order_id"] = order_id
         known: list[str] = []

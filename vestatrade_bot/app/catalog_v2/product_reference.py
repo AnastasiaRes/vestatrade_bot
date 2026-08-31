@@ -45,6 +45,12 @@ def _normalise(value: object) -> str:
     return " ".join(str(value or "").casefold().replace("ё", "е").split())
 
 
+def _model_identity(value: object) -> str:
+    """Compare an already extracted model marker across harmless punctuation."""
+
+    return re.sub(r"[^a-zа-я0-9]+", "", _normalise(value))
+
+
 def _brand(product: _CatalogProduct) -> str:
     """Read the feed brand from either a Product or source-snapshot facts."""
 
@@ -70,7 +76,7 @@ def resolve_strict_named_catalog_product(
 
     normalized = _normalise(utterance)
     model_markers = tuple(
-        _normalise(match.group(0)).replace(" ", "")
+        _model_identity(match.group(0))
         for match in _MODEL_MARKER_RE.finditer(utterance)
     )
     if not model_markers:
@@ -84,7 +90,7 @@ def resolve_strict_named_catalog_product(
         brand = _brand(product)
         if not brand or brand not in normalized:
             continue
-        product_name = _normalise(product.name).replace(" ", "")
+        product_name = _model_identity(product.name)
         if any(marker and marker in product_name for marker in model_markers):
             candidates.append(product)
 
@@ -109,3 +115,75 @@ def resolve_strict_named_catalog_product(
         raw=utterance[:240],
         reason_code="strict_brand_model_catalogue_match_missing",
     )
+
+
+def resolve_strict_named_catalog_products(
+    utterance: str,
+    products: Iterable[_CatalogProduct],
+) -> tuple[NamedProductResolution, ...]:
+    """Resolve each explicit brand/model marker independently and exactly.
+
+    This plural form is for relations such as Compare.  It does not perform
+    fuzzy search: every model marker present in the customer span must map to
+    exactly one feed product whose brand is also written in that utterance.
+    A duplicated series row or a missing model remains unresolved instead of
+    selecting the nearest title.
+    """
+
+    materialized = tuple(products)
+    normalized = _normalise(utterance)
+    markers = tuple(
+        dict.fromkeys(
+            (
+                match.group(0),
+                _model_identity(match.group(0)),
+            )
+            for match in _MODEL_MARKER_RE.finditer(utterance)
+        )
+    )
+    resolutions: list[NamedProductResolution] = []
+    seen_skus: set[str] = set()
+    for raw_marker, marker in markers:
+        candidates: list[_CatalogProduct] = []
+        for product in materialized:
+            brand = _brand(product)
+            product_name = _model_identity(product.name)
+            if (
+                brand
+                and brand in normalized
+                and marker
+                and marker in product_name
+            ):
+                candidates.append(product)
+        unique = tuple({item.sku: item for item in candidates}.values())
+        if len(unique) == 1:
+            if unique[0].sku in seen_skus:
+                continue
+            seen_skus.add(unique[0].sku)
+            resolutions.append(
+                NamedProductResolution(
+                    status=NamedProductResolutionStatus.EXACT,
+                    raw=raw_marker,
+                    canonical_sku=unique[0].sku,
+                    candidate_skus=(unique[0].sku,),
+                    reason_code="strict_brand_model_catalogue_pair_match",
+                )
+            )
+        elif len(unique) > 1:
+            resolutions.append(
+                NamedProductResolution(
+                    status=NamedProductResolutionStatus.AMBIGUOUS,
+                    raw=raw_marker,
+                    candidate_skus=tuple(item.sku for item in unique),
+                    reason_code="strict_brand_model_catalogue_pair_ambiguous",
+                )
+            )
+        else:
+            resolutions.append(
+                NamedProductResolution(
+                    status=NamedProductResolutionStatus.NONE,
+                    raw=raw_marker,
+                    reason_code="strict_brand_model_catalogue_pair_missing",
+                )
+            )
+    return tuple(resolutions)

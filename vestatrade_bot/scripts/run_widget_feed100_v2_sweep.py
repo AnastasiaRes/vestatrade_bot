@@ -29,6 +29,13 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = ROOT / "reports" / "widget_v2_full_feed_roles_2026-08-30" / "feed100_sweep"
 DEFAULT_CACHE = ROOT / "app" / "data" / "products_cache.json"
 
+_HOLDOUT_MESSAGES = (
+    "Проверьте, пожалуйста, позицию {sku}: стоимость и остаток.",
+    "По артикулу {sku} нужна карточка: сколько стоит и доступна ли сейчас?",
+    "Товар {sku}: есть сейчас на складе? Нужна также цена.",
+    "Покажите карточку {sku} со стоимостью и наличием.",
+)
+
 
 def _fingerprint(session_id: str) -> str:
     digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
@@ -134,6 +141,12 @@ def _checkpoint(path: Path, result: dict[str, Any]) -> None:
     )
 
 
+def _message_for(*, sku: str, index: int, variant: str) -> str:
+    if variant == "standard":
+        return f"Какая цена и наличие у товара {sku}?"
+    return _HOLDOUT_MESSAGES[(index - 1) % len(_HOLDOUT_MESSAGES)].format(sku=sku)
+
+
 def _render(result: dict[str, Any]) -> str:
     rows = result["rows"]
     latencies = [float(row["result"].get("latency_sec") or 0) for row in rows]
@@ -224,6 +237,12 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=180.0)
     parser.add_argument("--pause", type=float, default=0.35)
     parser.add_argument("--limit", type=int)
+    parser.add_argument(
+        "--message-variant",
+        choices=("standard", "holdout"),
+        default="standard",
+        help="Use alternate natural-language SKU questions without changing checks.",
+    )
     args = parser.parse_args()
 
     token = os.environ.get("DIALOGUE_QA_TOKEN", "")
@@ -238,6 +257,7 @@ def main() -> int:
         "created_at": datetime.now(timezone.utc).astimezone().isoformat(),
         "base_url": args.base_url.rstrip("/"),
         "feed_cache": str(args.cache),
+        "message_variant": args.message_variant,
         "rows": [],
     }
     for index, product in enumerate(products, start=1):
@@ -247,7 +267,7 @@ def main() -> int:
         }
         sku = str(expected["sku"] or "")
         session_id = f"feed100-{run_id}-{index:03d}"
-        message = f"Какая цена и наличие у товара {sku}?"
+        message = _message_for(sku=sku, index=index, variant=args.message_variant)
         result = _post(
             args.base_url,
             token,

@@ -79,11 +79,13 @@ class SemanticSelectionPreference(FrozenSemanticModel):
     kind: Literal[
         "brand_required",
         "brand_preferred",
+        "brand_any",
         "price_lowest",
         "price_below_reference",
         "stock_required",
+        "length_nearest_shorter",
     ]
-    value: str | bool | None = None
+    value: str | int | float | bool | None = None
     evidence: str = Field(min_length=1, max_length=240)
     validation_status: Literal["accepted", "ambiguous", "rejected"] = "accepted"
 

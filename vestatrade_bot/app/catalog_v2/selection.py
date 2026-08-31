@@ -806,6 +806,16 @@ def build_selection_result(
         and candidate.availability_analog
         for relaxation in candidate.relaxations
     )
+    controlled_relaxation_differences = tuple(
+        relaxation
+        for card in cards
+        if (candidate := candidate_by_sku.get(card.sku)) is not None
+        and candidate.controlled_customer_relaxation
+        for relaxation in candidate.relaxations
+    )
+    if controlled_relaxation_differences:
+        is_preliminary = True
+        reason = "customer_authorized_controlled_relaxation"
     preliminary_fact_names = tuple(
         dict.fromkeys(
             (
@@ -938,6 +948,7 @@ def build_selection_result(
         presentation_groups=presentation_groups,
         availability_analog=availability_analog,
         availability_analog_differences=availability_analog_differences,
+        controlled_relaxation_differences=controlled_relaxation_differences,
         source_backed_conflicts=source_backed_conflicts,
         passport_flow_head_evidence=passport_flow_head_evidence,
         excluded_candidate_reason_codes=exclusions,

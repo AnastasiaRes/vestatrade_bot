@@ -122,6 +122,29 @@ DIALOGUES = [
 ]
 
 
+def _load_dialogues(path: Path | None) -> list[tuple[str, str, list[str]]]:
+    if path is None:
+        return DIALOGUES
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, list):
+        raise SystemExit("dialogues JSON must be a list")
+    result: list[tuple[str, str, list[str]]] = []
+    for index, item in enumerate(payload, start=1):
+        if not isinstance(item, dict):
+            raise SystemExit(f"dialogue {index} must be an object")
+        title = str(item.get("title") or "").strip()
+        note = str(item.get("note") or "").strip()
+        turns = item.get("turns")
+        if not title or not note or not isinstance(turns, list) or not all(
+            isinstance(turn, str) and turn.strip() for turn in turns
+        ):
+            raise SystemExit(f"dialogue {index} needs title, note, and non-empty turns")
+        result.append((title, note, [turn.strip() for turn in turns]))
+    if not result:
+        raise SystemExit("dialogues JSON must not be empty")
+    return result
+
+
 def _post_chat(
     base_url: str,
     token: str,
@@ -354,13 +377,15 @@ def _mode_summary(mode: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _render_markdown(results: dict[str, Any]) -> str:
+def _render_markdown(
+    results: dict[str, Any], *, dialogue_count: int, turns_per_mode: int
+) -> str:
     lines = [
         "# Полный прогон виджет-бота: Legacy / Shadow / V2 Preview",
         "",
         f"Дата: {results['created_at']}",
         f"Маршрут: `{results['base_url']}/chat` (тот же контракт, что у widget-loader.js)",
-        f"Сценариев: {len(DIALOGUES)}, ходов на режим: {sum(len(item[2]) for item in DIALOGUES)}",
+        f"Сценариев: {dialogue_count}, ходов на режим: {turns_per_mode}",
         "",
         "## Конфигурация стенда",
         "",
@@ -471,6 +496,11 @@ def main() -> int:
     parser.add_argument("--modes", default="legacy,shadow,v2_preview")
     parser.add_argument("--timeout", type=float, default=300.0)
     parser.add_argument("--pause", type=float, default=0.8)
+    parser.add_argument(
+        "--dialogues-json",
+        type=Path,
+        help="Optional immutable dialogue manifest for a holdout run.",
+    )
     args = parser.parse_args()
 
     token = os.environ.get("DIALOGUE_QA_TOKEN", "")
@@ -480,6 +510,7 @@ def main() -> int:
     allowed = {"legacy", "shadow", "v2_preview", "auto"}
     if any(mode not in allowed for mode in modes):
         raise SystemExit(f"Unsupported mode; allowed: {sorted(allowed)}")
+    dialogues = _load_dialogues(args.dialogues_json)
 
     run_id = uuid.uuid4().hex[:10]
     results: dict[str, Any] = {
@@ -492,12 +523,13 @@ def main() -> int:
         _checkpoint(args.output_dir, results)
         raise SystemExit(f"Stand is unavailable: {results['health']}")
 
-    total_turns = len(modes) * sum(len(item[2]) for item in DIALOGUES)
+    turns_per_mode = sum(len(item[2]) for item in dialogues)
+    total_turns = len(modes) * turns_per_mode
     completed = 0
     for mode in modes:
         mode_result = {"mode": mode, "dialogues": []}
         results["modes"].append(mode_result)
-        for dialogue_index, (title, note, messages) in enumerate(DIALOGUES, start=1):
+        for dialogue_index, (title, note, messages) in enumerate(dialogues, start=1):
             session_id = f"widget-{run_id}-{mode}-{dialogue_index:02d}"
             dialogue = {
                 "title": title,
@@ -544,7 +576,11 @@ def main() -> int:
         mode_result["summary"] = _mode_summary(mode_result)
     _checkpoint(args.output_dir, results)
     (args.output_dir / "report.md").write_text(
-        _render_markdown(results),
+        _render_markdown(
+            results,
+            dialogue_count=len(dialogues),
+            turns_per_mode=turns_per_mode,
+        ),
         encoding="utf-8",
     )
     print(f"\nJSON: {args.output_dir / 'responses.json'}", flush=True)

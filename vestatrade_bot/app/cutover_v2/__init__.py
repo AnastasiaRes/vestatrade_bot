@@ -1,7 +1,15 @@
 """Stage 6A gated cutover contracts and deterministic coordination."""
 
 from .assembler import ChatResponseAssemblerV2
+from .capability_registry import resolve_capability_coverage
 from .contracts import (
+    CapabilityCoverageDecision,
+    CapabilityCoverageStatus,
+    CapabilityTurnContext,
+    CapabilityBoundaryResult,
+    CapabilityMaturity,
+    CapabilityOwner,
+    CapabilityRule,
     CutoverDecision,
     EarlyControlOutcome,
     EarlyControlResult,
@@ -35,6 +43,13 @@ __all__ = [
     "CutoverPolicy",
     "CutoverRuntime",
     "ChatResponseAssemblerV2",
+    "CapabilityCoverageDecision",
+    "CapabilityCoverageStatus",
+    "CapabilityTurnContext",
+    "CapabilityBoundaryResult",
+    "CapabilityMaturity",
+    "CapabilityOwner",
+    "CapabilityRule",
     "EarlyControlOutcome",
     "EarlyControlResult",
     "ExecutionMode",
@@ -54,4 +69,5 @@ __all__ = [
     "decide_cutover",
     "default_registry",
     "load_registry",
+    "resolve_capability_coverage",
 ]

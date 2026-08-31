@@ -106,7 +106,12 @@ def render_comparison_result(result: ComparisonResult, *, names: dict[str, str])
                 f"{_value(price.value, price.unit, price.predicate, source_value=_source_value(price, source_values))}."
             )
 
-    lines = ["Сравнение показанных вариантов:", *_reference_list(result, names)]
+    heading = (
+        "Сравнение названных моделей:"
+        if "comparison_from_explicit_catalog_pair" in result.reason_codes
+        else "Сравнение показанных вариантов:"
+    )
+    lines = [heading, *_reference_list(result, names)]
     for dimension in result.dimensions:
         if not dimension.values:
             continue

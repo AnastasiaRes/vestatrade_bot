@@ -273,6 +273,7 @@ def build_v2_product_fact_candidate(
             "response_product_kinds": response_kinds,
             "response_product_roles": response_roles,
             "product_fact_delivery": delivery,
+            "product_fact_deliveries": (delivery,),
             "product_scope_effect": ProductScopeEffect.PRESERVE,
             "focus_product_sku": (
                 reference.canonical_sku
@@ -285,5 +286,93 @@ def build_v2_product_fact_candidate(
             "external_side_effect_started": False,
             "eligible_for_delivery": True,
             "rejection_reason_codes": (),
+        }
+    )
+
+
+def build_v2_product_fact_bundle_candidate(
+    outcome: DialogueV2Outcome,
+    base_candidate: V2TurnCandidate,
+    evidences: tuple[ProductFactEvidence, ...],
+    source_snapshot: AnswerSourceSnapshot | None,
+    *,
+    session_id: str,
+    turn_id: str,
+) -> V2TurnCandidate | None:
+    """Compose independent checked facts without a second evidence path."""
+
+    if len(evidences) < 2 or source_snapshot is None:
+        return None
+    references = {item.request.product_ref.canonical_sku for item in evidences}
+    candidate_sets = {item.request.product_ref.candidate_skus for item in evidences}
+    if len(references) != 1 or len(candidate_sets) != 1:
+        return None
+    candidate = build_v2_product_fact_candidate(
+        outcome,
+        base_candidate,
+        evidences[0],
+        source_snapshot,
+        session_id=session_id,
+        turn_id=turn_id,
+    )
+    if candidate is None or candidate.response is None:
+        return None
+    deliveries = tuple(
+        ProductFactDelivery(
+            status=item.status.value,
+            canonical_sku=item.request.product_ref.canonical_sku,
+            predicate=item.request.predicate,
+            value=item.value,
+            unit=item.unit,
+            source_kind=item.source_kind,
+            document=item.document,
+            section=item.section,
+            evidence_fragment=item.quote,
+            verifier_status=item.verifier_status,
+            reason_code=item.reason_code,
+        )
+        for item in evidences
+    )
+    plan_id = _stable_id(
+        "product_fact_bundle_plan",
+        turn_id,
+        *(item.predicate for item in deliveries),
+        *(item.status for item in deliveries),
+    )
+    response = candidate.response.model_copy(
+        update={
+            "answer": "\n".join(
+                dict.fromkeys(
+                    render_product_fact_evidence(item) for item in evidences
+                )
+            )
+        }
+    )
+    state_after = candidate.state_after
+    if state_after.answer_plan_summary is not None:
+        state_after = state_after.model_copy(
+            update={
+                "answer_plan_summary": state_after.answer_plan_summary.model_copy(
+                    update={"plan_id": plan_id}
+                )
+            }
+        )
+    return candidate.model_copy(
+        update={
+            "response": response,
+            "state_after": state_after,
+            "answer_plan_id": plan_id,
+            "rendered_answer_id": plan_id,
+            "response_digest": _digest_response(response),
+            "answer_status": (
+                AnswerPlanStatus.READY
+                if all(
+                    item.status == ProductFactStatus.ANSWERED
+                    for item in evidences
+                )
+                else AnswerPlanStatus.PARTIAL
+            ),
+            "product_fact_delivery": deliveries[0],
+            "product_fact_deliveries": deliveries,
         }
     )

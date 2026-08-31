@@ -17,12 +17,15 @@ from app.catalog_v2.contracts import (
     CatalogFact,
     FactProvenance,
     ProductKind,
+    ReadinessStatus,
+    TaskReadinessAssessment,
 )
 from app.catalog_v2.registry import canonical_brand, resolve_brand_mentions
 from app.dialogue_v2.contracts import (
     CustomerTask,
     DeliveredSelectionScope,
     DialogueStateV2,
+    NextActionKind,
     ProductCategory,
     SelectionPreferenceKind,
     SelectionPreferenceSignal,
@@ -31,6 +34,8 @@ from app.dialogue_v2.contracts import (
     TurnMetadata,
 )
 from app.dialogue_v2.reducer import reduce_dialogue_state
+from app.dialogue_v2.seller_policy import SellerPolicy
+from app.dialogue_v2.selection_preferences import active_selection_preferences
 
 
 def _frame(*, acts: list[str] | None = None) -> dict[str, object]:
@@ -161,6 +166,65 @@ def test_semantic_repair_keeps_brand_price_and_stock_preferences_typed() -> None
     assert ("stock_availability", True, "required") in facts
 
 
+def test_nearest_shorter_preference_is_presented_as_controlled_analog() -> None:
+    task = _task().model_copy(
+        update={
+            "act": TaskAct.SELECT,
+            "source_turn": 2,
+            "last_addressed_turn": 2,
+        }
+    )
+    preference = SelectionPreferenceSignal(
+        preference_id="pref-nearest-shorter",
+        kind=SelectionPreferenceKind.LENGTH_NEAREST_SHORTER,
+        task_id=task.task_id,
+        goal_id=task.target_goal_id,
+        value=3000,
+        evidence="ближайшую короче",
+        source="test",
+        source_turn=2,
+    )
+    state = DialogueStateV2(
+        turn_number=2,
+        active_goal_id=task.target_goal_id,
+        tasks=(task,),
+        selection_preferences=(preference,),
+    )
+    readiness = TaskReadinessAssessment(
+        task_id=task.task_id,
+        goal_id=task.target_goal_id,
+        contract_id="pipe.sewer.v1",
+        product_kind=ProductKind.SEWER_PIPE,
+        status=ReadinessStatus.EXACT_READY,
+    )
+
+    decision = SellerPolicy().decide(
+        state,
+        readiness_assessments=(readiness,),
+    )
+
+    assert decision.primary.kind == NextActionKind.PRESENT_CONTROLLED_ANALOG
+    assert decision.primary.reason_code == (
+        "customer_authorized_nearest_shorter_analog"
+    )
+
+
+def test_in_stock_analogue_followup_stays_with_selection() -> None:
+    frame = _repair(
+        "Есть что-нибудь максимально близкое из наличия?",
+        acts=["check_stock"],
+    )
+
+    assert "check_stock" not in {item.value for item in frame.acts}
+    assert "find" in {item.value for item in frame.acts}
+    assert {(item.kind.value, item.value) for item in frame.selection_preferences} == {
+        ("stock_required", True),
+    }
+    assert {(item.name, item.value) for item in frame.constraints} == {
+        ("stock_availability", True),
+    }
+
+
 def test_brand_aliases_are_catalogue_bound_and_not_valtec_only() -> None:
     assert canonical_brand("Вальтек") == "VALTEC"
     assert canonical_brand("Вило") == "WILO"
@@ -183,6 +247,37 @@ def test_semantic_repair_recovers_preference_for_any_known_brand() -> None:
     }
     facts = {(item.name, item.value, item.polarity.value) for item in frame.constraints}
     assert ("brand", "WILO", "required") in facts
+
+
+def test_customer_can_explicitly_clear_an_older_brand_preference() -> None:
+    frame = _repair("Бренд не принципиален, покажите подходящие варианты")
+
+    assert {(item.kind.value, item.value) for item in frame.selection_preferences} == {
+        ("brand_any", None),
+    }
+    brand = next(item for item in frame.constraints if item.name == "brand")
+    assert brand.status.value == "unknown"
+    assert brand.value is None
+
+    old = _preference(SelectionPreferenceKind.BRAND_PREFERRED, value="WILO")
+    neutral = SelectionPreferenceSignal(
+        preference_id="pref-brand-any",
+        kind=SelectionPreferenceKind.BRAND_ANY,
+        task_id="pump-task",
+        goal_id="pump-goal",
+        value=None,
+        evidence="бренд не принципиален",
+        source="test",
+        source_turn=3,
+    )
+    active = active_selection_preferences(
+        _state(old, neutral),
+        task_id="pump-task",
+        goal_id="pump-goal",
+    )
+    assert [(item.kind, item.value) for item in active] == [
+        (SelectionPreferenceKind.BRAND_ANY, None)
+    ]
 
 
 def test_semantic_repair_treats_one_named_brand_in_selection_as_required() -> None:

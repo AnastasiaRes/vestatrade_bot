@@ -12,13 +12,17 @@ $ErrorActionPreference = 'Stop'
 $ProjectDir = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Set-Location $ProjectDir
 
+$ProjectPython = Join-Path $ProjectDir '.venv\Scripts\python.exe'
+$ParentPython = Join-Path (Split-Path $ProjectDir -Parent) '.venv\Scripts\python.exe'
 $PythonBin = if ($env:PYTHON_BIN) {
     $env:PYTHON_BIN
+} elseif (Test-Path $ProjectPython) {
+    $ProjectPython
 } else {
-    Join-Path $ProjectDir '.venv\Scripts\python.exe'
+    $ParentPython
 }
 if (-not (Test-Path $PythonBin)) {
-    throw 'Python environment is missing. Create .venv and install requirements.txt first.'
+    throw 'Python environment is missing. Create .venv beside the project or its parent and install requirements.txt first.'
 }
 
 $env:LLM_PROVIDER = 'ollama'

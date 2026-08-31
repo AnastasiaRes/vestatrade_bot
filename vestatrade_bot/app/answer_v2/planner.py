@@ -368,6 +368,7 @@ def _candidate_is_presentable(
         and not candidate.mismatched_hard_facts
         and (
             candidate.availability_analog
+            or candidate.controlled_customer_relaxation
             or not any(
                 item.fact_name in hard_constraint_names
                 for item in candidate.relaxations
@@ -1361,7 +1362,10 @@ def build_answer_plan(
                     )
                     continue
                 if candidate.mismatched_hard_facts or (
-                    not candidate.availability_analog
+                    not (
+                        candidate.availability_analog
+                        or candidate.controlled_customer_relaxation
+                    )
                     and any(
                         item.fact_name in hard_constraint_names
                         for item in candidate.relaxations

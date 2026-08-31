@@ -302,6 +302,218 @@ def test_compare_reads_only_visible_scope_and_proves_price_and_length() -> None:
     assert all(item.sku in request.ordered_skus for item in result.sources)
 
 
+def test_compare_resolves_product_fact_alias_through_catalog_registry() -> None:
+    snapshot = AnswerSourceSnapshot(
+        source_revision="source-v1",
+        products=(
+            _product(
+                "PUMP-180",
+                price=5000,
+                length=180,
+                facts=(_fact("mounting_length_mm", 180, "мм"),),
+            ),
+            _product(
+                "PUMP-130",
+                price=4500,
+                length=130,
+                facts=(_fact("mounting_length_mm", 130, "мм"),),
+            ),
+        ),
+    )
+    session = _session(snapshot)
+    request = build_comparison_request(
+        _outcome(),
+        session,
+        original_utterance="Сравните их по монтажной длине",
+    )
+
+    assert request is not None
+    result = validate_comparison_result(
+        request,
+        build_comparison_result(
+            request,
+            snapshot,
+            visible_cards=session.v2_last_products,
+        ),
+        snapshot,
+    )
+
+    assert result.status == ComparisonResultStatus.COMPARED
+    length = next(
+        item for item in result.dimensions
+        if item.predicate == "installation_length_mm"
+    )
+    assert [item.value for item in length.values] == [180, 130]
+    assert all(item.source_ref_ids for item in length.values)
+
+
+def test_compare_can_read_two_strictly_named_catalog_models_without_selection_scope() -> None:
+    products = (
+        CatalogAnswerProduct(
+            sku="2201376",
+            name="Котел газовый настенный Arderia SB28 28 кВт",
+            product_kind=ProductKind.GAS_BOILER,
+            role=CatalogProductRole.BASE_PRODUCT,
+            price=91_000,
+            currency="RUB",
+            stock_status="в наличии",
+            stock_qty=2,
+            url="https://example.test/2201376",
+            facts=(_fact("brand", "Arderia"), _fact("power_kw", 28, "кВт")),
+        ),
+        CatalogAnswerProduct(
+            sku="2201377",
+            name="Котел газовый настенный Arderia SB32 32 кВт",
+            product_kind=ProductKind.GAS_BOILER,
+            role=CatalogProductRole.BASE_PRODUCT,
+            price=99_000,
+            currency="RUB",
+            stock_status="в наличии",
+            stock_qty=1,
+            url="https://example.test/2201377",
+            facts=(_fact("brand", "Arderia"), _fact("power_kw", 32, "кВт")),
+        ),
+    )
+    snapshot = AnswerSourceSnapshot(source_revision="source-v1", products=products)
+    request = build_comparison_request(
+        _outcome(),
+        SessionState(session_id="named-pair"),
+        original_utterance="Чем Arderia SB28 отличается от Arderia SB32?",
+        source_snapshot=snapshot,
+    )
+
+    assert request is not None
+    assert request.scope_origin == "explicit_catalog_pair"
+    assert request.selection_id is None
+    assert request.ordered_skus == ("2201376", "2201377")
+    result = validate_comparison_result(
+        request,
+        build_comparison_result(request, snapshot, visible_cards=()),
+        snapshot,
+    )
+
+    assert result.status == ComparisonResultStatus.COMPARED
+    assert result.outcome_gate_passed is True
+    assert "comparison_from_explicit_catalog_pair" in result.reason_codes
+    rendered = render_comparison_result(
+        result,
+        names={item.sku: item.name for item in products},
+    )
+    assert "Сравнение названных моделей" in rendered
+    assert "2201376" in rendered and "2201377" in rendered
+
+
+def test_explicitly_requested_equal_price_and_stock_are_still_shown() -> None:
+    products = (
+        CatalogAnswerProduct(
+            sku="2201376",
+            name="Котел газовый Arderia SB28 28 кВт",
+            product_kind=ProductKind.GAS_BOILER,
+            role=CatalogProductRole.BASE_PRODUCT,
+            price=38_535,
+            currency="RUB",
+            stock_status="в наличии",
+            stock_qty=2,
+            url="https://example.test/2201376",
+            facts=(_fact("brand", "Arderia"), _fact("power_kw", 28, "кВт")),
+        ),
+        CatalogAnswerProduct(
+            sku="2201377",
+            name="Котел газовый Arderia SB32 32 кВт",
+            product_kind=ProductKind.GAS_BOILER,
+            role=CatalogProductRole.BASE_PRODUCT,
+            price=38_535,
+            currency="RUB",
+            stock_status="в наличии",
+            stock_qty=2,
+            url="https://example.test/2201377",
+            facts=(_fact("brand", "Arderia"), _fact("power_kw", 32, "кВт")),
+        ),
+    )
+    snapshot = AnswerSourceSnapshot(source_revision="source-v1", products=products)
+    request = build_comparison_request(
+        _outcome(),
+        SessionState(session_id="named-equal-offer-facts"),
+        original_utterance=(
+            "Сравните Arderia SB28 и Arderia SB32 по мощности, цене и наличию."
+        ),
+        source_snapshot=snapshot,
+    )
+
+    assert request is not None
+    result = validate_comparison_result(
+        request,
+        build_comparison_result(request, snapshot, visible_cards=()),
+        snapshot,
+    )
+
+    assert result.status == ComparisonResultStatus.COMPARED
+    assert result.outcome_gate_passed is True
+    assert {item.predicate for item in result.dimensions} >= {
+        "power_kw",
+        "price",
+        "availability",
+    }
+    rendered = render_comparison_result(
+        result,
+        names={item.sku: item.name for item in products},
+    )
+    assert "38535" in rendered
+    assert "налич" in rendered.casefold()
+
+
+def test_compare_returns_proved_requested_fields_and_marks_one_missing_field() -> None:
+    snapshot = AnswerSourceSnapshot(
+        source_revision="source-v1",
+        products=(
+            _product(
+                "PUMP-A",
+                price=5000,
+                length=180,
+                facts=(
+                    _fact("installation_length_mm", 180, "мм"),
+                    _fact("max_head_m", 4, "м"),
+                ),
+            ),
+            _product(
+                "PUMP-B",
+                price=4500,
+                length=130,
+                facts=(_fact("max_head_m", 6, "м"),),
+            ),
+        ),
+    )
+    session = _session(snapshot)
+    request = build_comparison_request(
+        _outcome(),
+        session,
+        original_utterance=(
+            "Сравни их по цене, максимальному напору и монтажной длине."
+        ),
+    )
+
+    assert request is not None
+    result = validate_comparison_result(
+        request,
+        build_comparison_result(
+            request,
+            snapshot,
+            visible_cards=session.v2_last_products,
+        ),
+        snapshot,
+    )
+
+    assert result.status == ComparisonResultStatus.COMPARED
+    assert result.outcome_gate_passed is True
+    assert "installation_length_mm" in result.missing_data
+    assert "comparison_partial_requested_predicates" in result.reason_codes
+    assert {item.predicate for item in result.dimensions} >= {
+        "price",
+        "max_head_m",
+        "installation_length_mm",
+    }
+
+
 def test_compare_resolves_any_two_named_ordinals_inside_visible_scope() -> None:
     snapshot = _five_product_snapshot()
     outcome = _outcome()

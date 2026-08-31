@@ -597,6 +597,20 @@ def test_commerce_answer_states_what_is_needed(bot: ChatOrchestrator) -> None:
     assert "телефон" in answer or "почт" in answer
 
 
+def test_short_order_reference_continues_the_active_commerce_topic(
+    bot: ChatOrchestrator,
+) -> None:
+    bot.handle_chat("a06-short-reference", "Где мой заказ?")
+
+    response = bot.handle_chat("a06-short-reference", "Номер 148237")
+    answer = normalize_text(response.answer)
+
+    assert "148237" in response.answer
+    assert "осталось указать" in answer
+    assert "телефон" in answer or "почт" in answer
+    assert "номер заказа;" not in answer
+
+
 def test_repeated_commerce_topic_moves_forward(bot: ChatOrchestrator) -> None:
     """B21: три одинаковых ответа про спецификацию подряд — буксование."""
     answers = [

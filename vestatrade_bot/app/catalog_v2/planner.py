@@ -12,6 +12,7 @@ from app.dialogue_v2.contracts import (
     DialogueStateV2,
     NextActionKind,
     NextActionPlan,
+    SelectionPreferenceKind,
 )
 from app.sku_resolution import SkuResolutionStatus, resolve_catalog_sku
 
@@ -106,6 +107,54 @@ def _requires_in_stock_candidates(
         latest.polarity == ConstraintPolarity.REQUIRED
         and latest.value is True
     )
+
+
+def _nearest_shorter_length_limit(
+    dialogue_state: DialogueStateV2,
+    assessment: TaskReadinessAssessment,
+) -> float | None:
+    """Return one explicit, goal-scoped sewer length relaxation.
+
+    This is not inferred from a missing exact match.  The semantic gate must
+    have recorded the buyer's current-turn permission, and the value must
+    equal the still-active hard ``length_mm`` fact for the same goal.
+    """
+
+    preferences = tuple(
+        item
+        for item in dialogue_state.selection_preferences
+        if item.kind == SelectionPreferenceKind.LENGTH_NEAREST_SHORTER
+        and (
+            (
+                assessment.goal_id is not None
+                and item.goal_id == assessment.goal_id
+            )
+            or (
+                assessment.goal_id is None
+                and item.goal_id is None
+                and item.task_id == assessment.task_id
+            )
+        )
+        and isinstance(item.value, (int, float))
+        and not isinstance(item.value, bool)
+    )
+    if not preferences:
+        return None
+    latest = max(preferences, key=lambda item: (item.source_turn, item.preference_id))
+    requested = next(
+        (
+            item.value
+            for item in assessment.confirmed_hard_facts
+            if item.name == "length_mm"
+            and item.status == "known"
+            and isinstance(item.value, (int, float))
+            and not isinstance(item.value, bool)
+        ),
+        None,
+    )
+    if requested is None or abs(float(requested) - float(latest.value)) > 1e-9:
+        return None
+    return float(requested)
 
 
 def _executable_catalog_task_ids(
@@ -688,12 +737,111 @@ def _availability_analog_assessments(
     return tuple(amended), exact_out_of_stock
 
 
+def _apply_nearest_shorter_sewer_length(
+    ordinary: tuple[CandidateAssessment, ...],
+    pool: tuple[CatalogProductSnapshot, ...],
+    requested_length_mm: float | None,
+) -> tuple[CandidateAssessment, ...]:
+    """Apply the one currently supported directional customer relaxation.
+
+    A shorter pipe is never inferred as interchangeable.  This function runs
+    only after a typed, goal-scoped permission was registered.  It rejects
+    longer and source-unknown lengths, preserves every other candidate check,
+    and records the exact requested/actual difference for the outcome gate and
+    renderer.
+    """
+
+    if requested_length_mm is None:
+        return ordinary
+    by_sku = {item.sku: item for item in pool}
+    amended: list[CandidateAssessment] = []
+    for candidate in ordinary:
+        product = by_sku.get(candidate.sku)
+        actual = (
+            _numeric_catalog_fact(product, "length_mm")
+            if product is not None
+            else None
+        )
+        if actual is None:
+            amended.append(
+                candidate.model_copy(
+                    update={
+                        "status": CandidateStatus.REJECTED,
+                        "missing_hard_facts": tuple(
+                            dict.fromkeys((*candidate.missing_hard_facts, "length_mm"))
+                        ),
+                        "reason_codes": tuple(
+                            dict.fromkeys(
+                                (*candidate.reason_codes, "controlled_length_source_missing")
+                            )
+                        ),
+                    }
+                )
+            )
+            continue
+        if actual > requested_length_mm + 1e-9:
+            amended.append(
+                candidate.model_copy(
+                    update={
+                        "status": CandidateStatus.REJECTED,
+                        "mismatched_hard_facts": tuple(
+                            dict.fromkeys(
+                                (*candidate.mismatched_hard_facts, "length_mm")
+                            )
+                        ),
+                        "reason_codes": tuple(
+                            dict.fromkeys(
+                                (*candidate.reason_codes, "controlled_relaxation_rejects_longer_length")
+                            )
+                        ),
+                    }
+                )
+            )
+            continue
+        if abs(actual - requested_length_mm) <= 1e-9:
+            amended.append(
+                candidate.model_copy(
+                    update={
+                        "matched_hard_facts": tuple(
+                            dict.fromkeys((*candidate.matched_hard_facts, "length_mm"))
+                        ),
+                    }
+                )
+            )
+            continue
+        relaxation = CatalogRelaxation(
+            fact_name="length_mm",
+            requested_value=(
+                int(requested_length_mm)
+                if requested_length_mm.is_integer()
+                else requested_length_mm
+            ),
+            candidate_value=int(actual) if actual.is_integer() else actual,
+            reason_code="customer_authorized_nearest_shorter_length",
+        )
+        amended.append(
+            candidate.model_copy(
+                update={
+                    "relaxations": tuple((*candidate.relaxations, relaxation)),
+                    "controlled_customer_relaxation": True,
+                    "reason_codes": tuple(
+                        dict.fromkeys(
+                            (*candidate.reason_codes, relaxation.reason_code)
+                        )
+                    ),
+                }
+            )
+        )
+    return tuple(amended)
+
+
 def _make_search_plan(
     assessment: TaskReadinessAssessment,
     contract: ProductContract,
     catalog_snapshot: tuple[CatalogProductSnapshot, ...],
     *,
     in_stock_required: bool = False,
+    nearest_shorter_length_mm: float | None = None,
 ) -> CatalogSearchPlan:
     hard, soft = _constraints(assessment, contract)
     sku_resolution = None
@@ -717,6 +865,16 @@ def _make_search_plan(
                 else item
                 for item in hard
             )
+    # Candidate constraints must be derived only after identity resolution.
+    # Otherwise a unique partial article (VT.1500) remains in this cached
+    # tuple even though the public search plan correctly reports the resolved
+    # canonical SKU (VT.1500.0.0), and the exact candidate rejects itself.
+    candidate_hard = (
+        tuple(item for item in hard if item.name != "length_mm")
+        if nearest_shorter_length_mm is not None
+        and contract.product_kind == ProductKind.SEWER_PIPE
+        else hard
+    )
     hard_names = {item.name for item in hard}
     known_constraint_names = {
         item.name for item in (*hard, *soft)
@@ -784,7 +942,7 @@ def _make_search_plan(
             _assess_candidate(
                 product,
                 contract,
-                hard,
+                candidate_hard,
                 soft,
                 unavailable_hard,
                 in_stock_required=in_stock_required,
@@ -792,12 +950,17 @@ def _make_search_plan(
             for product in sorted(pool, key=lambda item: item.sku)
         )
     )
+    assessments = _apply_nearest_shorter_sewer_length(
+        assessments,
+        pool,
+        nearest_shorter_length_mm,
+    )
     assessments, availability_analog_exact_out_of_stock_skus = (
         _availability_analog_assessments(
             assessment,
             contract,
             pool,
-            hard,
+            candidate_hard,
             soft,
             assessments,
         )
@@ -828,7 +991,7 @@ def _make_search_plan(
         stages.append(CatalogSearchStage.STRICT_SAME_KIND)
         if compatible_kinds != {contract.product_kind}:
             stages.append(CatalogSearchStage.COMPATIBLE_ANALOG)
-        if soft:
+        if soft or nearest_shorter_length_mm is not None:
             stages.append(CatalogSearchStage.RELAX_ONE_SOFT_CONSTRAINT)
         if availability_analog_exact_out_of_stock_skus:
             stages.append(CatalogSearchStage.COMPATIBLE_ANALOG)
@@ -850,6 +1013,8 @@ def _make_search_plan(
         reasons.append(f"sku_resolution_{sku_resolution.status.value}")
     if in_stock_required:
         reasons.append("in_stock_requirement_from_typed_fact")
+    if nearest_shorter_length_mm is not None:
+        reasons.append("customer_authorized_nearest_shorter_length")
     if availability_analog_exact_out_of_stock_skus:
         reasons.append("availability_analog_after_confirmed_out_of_stock_exact_match")
     if ambiguous_sku_prefix:
@@ -897,6 +1062,7 @@ def _search_plan_signature(
     contract: ProductContract,
     *,
     in_stock_required: bool = False,
+    nearest_shorter_length_mm: float | None = None,
 ) -> tuple[object, ...]:
     """Identity of catalogue work, excluding the act-specific task id."""
 
@@ -913,6 +1079,7 @@ def _search_plan_signature(
         assessment.refused_facts,
         assessment.deferred_facts,
         in_stock_required,
+        nearest_shorter_length_mm,
     )
 
 
@@ -1022,10 +1189,19 @@ def plan_catalog_search(
             dialogue_state,
             assessment,
         )
+        nearest_shorter_length_mm = _nearest_shorter_length_limit(
+            dialogue_state,
+            assessment,
+        )
+        if nearest_shorter_length_mm is not None:
+            # The buyer asked for a supply alternative, not a merely similar
+            # catalogue row.  Unknown or zero stock cannot satisfy it.
+            in_stock_required = True
         signature = _search_plan_signature(
             assessment,
             contract,
             in_stock_required=in_stock_required,
+            nearest_shorter_length_mm=nearest_shorter_length_mm,
         )
         if signature in seen_searches:
             duplicate_searches += 1
@@ -1037,6 +1213,7 @@ def plan_catalog_search(
                 contract,
                 snapshot,
                 in_stock_required=in_stock_required,
+                nearest_shorter_length_mm=nearest_shorter_length_mm,
             )
         )
 

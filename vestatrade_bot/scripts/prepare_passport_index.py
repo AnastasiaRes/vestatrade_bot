@@ -9,6 +9,7 @@ vector cache intact.
 
 from __future__ import annotations
 
+import importlib.util
 import sys
 from pathlib import Path
 
@@ -26,6 +27,12 @@ def main() -> int:
     settings = get_settings()
     if not settings.embeddings_enabled:
         print("Passport index: FAILED (embeddings are not configured)")
+        return 2
+    if importlib.util.find_spec("cryptography") is None:
+        print(
+            "Passport index: FAILED (cryptography is missing; run "
+            f"{sys.executable} -m pip install -r requirements.txt first)"
+        )
         return 2
 
     cache_path = settings.products_cache_path.with_name("passport_index.json")

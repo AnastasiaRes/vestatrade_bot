@@ -35,9 +35,12 @@ def _repair(
     *,
     acts: tuple[str, ...] = ("select",),
     state: dict[str, object] | None = None,
+    constraints: tuple[dict[str, object], ...] = (),
 ) -> tuple[TurnUnderstanding, tuple[str, ...]]:
+    candidate = _candidate(acts=acts)
+    candidate["constraints"] = list(constraints)
     repaired, repairs = repair_grounded_semantic_payload(
-        _candidate(acts=acts),
+        candidate,
         message,
         authoritative_dialogue_state=state,
     )
@@ -129,6 +132,144 @@ def test_sewer_length_in_metres_binds_to_active_goal_in_millimetres() -> None:
     assert frame.operation.value == "continue"
     assert _facts(frame)["length_mm"] == (3000, "mm")
     assert "sewer_length_anchor_recovered" in changes
+
+
+def test_sewer_nearest_shorter_is_goal_scoped_and_keeps_stock_required() -> None:
+    state = _active_state("sewer_pipe", "sewer")
+    state["active_facts"] = [
+        {
+            "name": "length_mm",
+            "value": 3000,
+            "unit": "mm",
+            "status": "known",
+            "goal_id": "goal-1",
+        }
+    ]
+
+    frame, repairs = _repair(
+        "Диаметр не меняйте. Длину можно взять ближайшую короче, если она есть в наличии.",
+        acts=("find",),
+        state=state,
+    )
+
+    assert {(item.kind.value, item.value) for item in frame.selection_preferences} == {
+        ("length_nearest_shorter", 3000),
+        ("stock_required", True),
+    }
+    assert ("stock_availability", True) in {
+        (item.name, item.value) for item in frame.constraints
+    }
+    assert "sewer_nearest_shorter_relaxation_recovered" in repairs
+
+
+def test_sewer_nearest_shorter_can_refer_to_saved_length_elliptically() -> None:
+    state = _active_state("sewer_pipe", "sewer")
+    state["active_facts"] = [
+        {
+            "name": "length_mm",
+            "value": 3000,
+            "unit": "mm",
+            "status": "known",
+            "goal_id": "goal-1",
+        }
+    ]
+
+    frame, repairs = _repair(
+        "Трёхметровой нет? Тогда возьмём ближайшую короче из наличия, "
+        "но наружную и DN110 не меняйте.",
+        acts=("select", "check_stock"),
+        state=state,
+    )
+
+    assert "check_stock" not in {item.value for item in frame.acts}
+    assert {item.value for item in frame.acts} == {"find"}
+    assert ("length_nearest_shorter", 3000) in {
+        (item.kind.value, item.value) for item in frame.selection_preferences
+    }
+    assert "sewer_nearest_shorter_relaxation_recovered" in repairs
+
+
+def test_explicit_named_model_pair_is_compare_not_independent_price_lookup() -> None:
+    frame, repairs = _repair(
+        "Чем отличаются Arderia SB28 и Arderia SB32 по мощности, цене и наличию?",
+        acts=("check_price", "check_stock"),
+    )
+
+    assert {item.value for item in frame.acts} == {"compare"}
+    assert "explicit_named_pair_compare_action_recovered" in repairs
+
+
+def test_single_named_model_price_question_stays_offer_fact() -> None:
+    frame, repairs = _repair(
+        "Сколько стоит Arderia SB28?",
+        acts=("check_price",),
+    )
+
+    assert {item.value for item in frame.acts} == {"check_price"}
+    assert "explicit_named_pair_compare_action_recovered" not in repairs
+
+
+def test_spoken_sewer_length_binds_to_pending_length_not_quantity() -> None:
+    state = _active_state("sewer_pipe", "sewer")
+    state["pending_decision_question"] = {"fact_name": "length_mm"}
+
+    frame, changes = _repair("Длина три метра.", state=state)
+
+    assert _facts(frame)["length_mm"] == (3000, "mm")
+    assert "requested_quantity_m" not in _facts(frame)
+    assert "spoken_sewer_length_anchor_recovered" in changes
+
+
+def test_full_sewer_opening_keeps_spoken_length_and_dn_as_hard_facts() -> None:
+    frame, changes = _repair(
+        "От дома до септика нужна рыжая труба DN110, длиной три метра, "
+        "только из наличия."
+    )
+
+    assert [(item.canonical_type, item.category.value) for item in frame.products] == [
+        ("sewer_pipe", "sewer")
+    ]
+    assert _facts(frame)["sewer_scope"] == ("external", None)
+    assert _facts(frame)["diameter_mm"] == (110, "mm")
+    assert _facts(frame)["length_mm"] == (3000, "mm")
+    assert "requested_quantity_m" not in _facts(frame)
+    assert "spoken_sewer_length_anchor_recovered" in changes
+
+
+def test_spoken_sewer_length_overrides_noncanonical_llm_string() -> None:
+    frame, changes = _repair(
+        "Нужна наружная канализационная труба DN110 длиной три метра.",
+        constraints=(
+            {
+                "name": "length_mm",
+                "value": "три метра",
+                "unit": "mm",
+                "status": "known",
+                "polarity": "required",
+                "evidence": "длиной три метра",
+            },
+        ),
+    )
+
+    assert _facts(frame)["length_mm"] == (3000, "mm")
+    assert "spoken_sewer_length_anchor_recovered" in changes
+
+
+def test_spoken_sewer_quantity_is_not_silently_recast_as_item_length() -> None:
+    frame, _ = _repair("Для канализации нужно три метра трубы.")
+
+    assert "length_mm" not in _facts(frame)
+
+
+def test_conversational_pump_flow_variants_bind_to_same_pending_fact() -> None:
+    state = _active_state("circulation_pump", "pumps")
+    state["pending_decision_question"] = {"fact_name": "duty_point_flow_l_h"}
+
+    decimal, _ = _repair("Расход 1,8 куба в час.", state=state)
+    litres, _ = _repair("1800 литров в час.", state=state)
+
+    assert _facts(decimal)["duty_point_flow_l_h"] == (1.8, "m3/h")
+    assert _facts(litres)["duty_point_flow_l_h"] == (1800, "l/h")
 
 
 def test_radiator_valve_followup_keeps_shape_size_and_kit_requirement() -> None:
@@ -324,6 +465,31 @@ def test_pending_boiler_dhw_answer_recovers_two_circuits() -> None:
 
     assert _facts(frame)["circuits"] == (2, None)
     assert "boiler_circuits_recovered_from_closed_alias" in changes
+
+
+def test_natural_boiler_dhw_requirement_recovers_two_circuits() -> None:
+    state = _active_state("gas_boiler", "boilers")
+    state["pending_decision_question"] = {"fact_name": "circuits"}
+
+    frame, changes = _repair(
+        "Горячую воду тоже хотим получать от котла.",
+        state=state,
+    )
+
+    assert _facts(frame)["circuits"] == (2, None)
+    assert "boiler_circuits_recovered_from_closed_alias" in changes
+
+
+def test_external_water_heater_does_not_require_two_circuit_boiler() -> None:
+    state = _active_state("gas_boiler", "boilers")
+    state["pending_decision_question"] = {"fact_name": "circuits"}
+
+    frame, _ = _repair(
+        "Горячую воду будет давать отдельный водонагреватель.",
+        state=state,
+    )
+
+    assert "circuits" not in _facts(frame)
 
 
 def test_short_boiler_fuel_and_circuit_reply_recovers_both_facts() -> None:

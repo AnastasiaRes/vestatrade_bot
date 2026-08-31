@@ -8,6 +8,11 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from app.answer_v2.contracts import AnswerSourceSnapshot, CatalogAnswerProduct
+from app.catalog_v2.product_reference import (
+    NamedProductResolutionStatus,
+    resolve_strict_named_catalog_products,
+)
+from app.catalog_v2.registry import ProductContractRegistry
 from app.dialogue_v2.contracts import NextActionKind, TaskAct
 from app.dialogue_v2.controller import DialogueV2Outcome
 from app.models import SessionState
@@ -453,14 +458,74 @@ def _resolve_comparison_reference_set(
     )
 
 
+def _resolve_explicit_catalog_pair(
+    original_utterance: str,
+    source_snapshot: AnswerSourceSnapshot | None,
+) -> _ComparisonReferenceResolution:
+    """Resolve two or more fully named feed models without creating a scope.
+
+    This is a comparison-only read seam.  It neither searches by similarity
+    nor writes the named products into customer-visible Selection state.
+    """
+
+    if source_snapshot is None:
+        return _ComparisonReferenceResolution()
+    resolutions = resolve_strict_named_catalog_products(
+        original_utterance,
+        source_snapshot.products,
+    )
+    if not resolutions:
+        return _ComparisonReferenceResolution()
+    references: list[ComparisonProductReference] = []
+    reasons: list[str] = []
+    for item in resolutions:
+        if (
+            item.status == NamedProductResolutionStatus.EXACT
+            and item.canonical_sku is not None
+        ):
+            references.append(
+                ComparisonProductReference(
+                    kind=ComparisonReferenceKind.EXPLICIT_CATALOG_PRODUCT,
+                    raw=item.raw,
+                    canonical_sku=item.canonical_sku,
+                    evidence=item.raw,
+                    reason_code=item.reason_code,
+                )
+            )
+        else:
+            references.append(
+                ComparisonProductReference(
+                    kind=ComparisonReferenceKind.UNRESOLVED,
+                    raw=item.raw,
+                    evidence=item.raw,
+                    reason_code=item.reason_code,
+                )
+            )
+            reasons.append(item.reason_code)
+    ordered = tuple(
+        dict.fromkeys(
+            item.canonical_sku
+            for item in references
+            if item.canonical_sku is not None
+        )
+    )
+    return _ComparisonReferenceResolution(
+        references=tuple(references),
+        ordered_skus=ordered,
+        reason_codes=tuple(dict.fromkeys(reasons)),
+        explicit_request=True,
+    )
+
+
 def build_comparison_request(
     outcome: DialogueV2Outcome,
     session: SessionState,
     *,
     original_utterance: str,
     semantic_references: Iterable[object] = (),
+    source_snapshot: AnswerSourceSnapshot | None = None,
 ) -> ComparisonRequest | None:
-    """Project only a typed COMPARE action and customer-visible scope."""
+    """Project a typed COMPARE action into one source-gated read scope."""
 
     task = _comparison_task(outcome)
     if task is None:
@@ -468,8 +533,24 @@ def build_comparison_request(
     # A legacy list may be read by Shadow for diagnostics, but has no stored
     # revision / selection identity and therefore can never pass V2 delivery.
     visible_scope = customer_visible_v2_scope(session)
-    reference_set = _ComparisonReferenceResolution()
-    if visible_scope.is_valid:
+    reference_set = _resolve_explicit_catalog_pair(
+        original_utterance,
+        source_snapshot,
+    )
+    explicit_pair = bool(
+        len(reference_set.ordered_skus) >= 2
+        and not reference_set.reason_codes
+        and all(
+            item.kind == ComparisonReferenceKind.EXPLICIT_CATALOG_PRODUCT
+            for item in reference_set.references
+        )
+    )
+    if explicit_pair:
+        ordered_skus = reference_set.ordered_skus
+        origin = "explicit_catalog_pair"
+        selection_id = None
+        revision = source_snapshot.source_revision if source_snapshot else None
+    elif visible_scope.is_valid:
         reference_set = _resolve_comparison_reference_set(
             original_utterance,
             visible_scope,
@@ -554,8 +635,16 @@ def _source_ref(
 
 
 def _exact_fact(product: CatalogAnswerProduct, predicate: str):
-    values = tuple(item for item in product.facts if item.name == predicate)
-    issues = tuple(item for item in product.fact_issues if item.name == predicate)
+    catalog_predicate = (
+        ProductContractRegistry().canonical_fact_name(
+            product.product_kind,
+            predicate,
+        )
+        or predicate
+    )
+    accepted_names = {predicate, catalog_predicate}
+    values = tuple(item for item in product.facts if item.name in accepted_names)
+    issues = tuple(item for item in product.fact_issues if item.name in accepted_names)
     distinct = {(str(item.value), item.unit) for item in values}
     if issues or len(distinct) != 1:
         return None
@@ -818,10 +907,23 @@ def build_comparison_result(
 
     if request.scope_origin == "none":
         return ComparisonResult(status=ComparisonResultStatus.NEED_CLARIFICATION, task_id=request.task_id, goal_id=request.goal_id, selection_id=request.selection_id, source_revision=request.source_revision, reason_codes=("comparison_scope_missing",))
-    if request.scope_origin != "v2_delivered":
+    if request.scope_origin not in {"v2_delivered", "explicit_catalog_pair"}:
         return ComparisonResult(status=ComparisonResultStatus.REJECTED, task_id=request.task_id, goal_id=request.goal_id, selection_id=request.selection_id, compared_skus=request.ordered_skus, source_revision=request.source_revision, reason_codes=("comparison_scope_not_v2_versioned",))
-    if not request.selection_id or not request.source_revision:
+    if request.scope_origin == "v2_delivered" and (
+        not request.selection_id or not request.source_revision
+    ):
         return ComparisonResult(status=ComparisonResultStatus.REJECTED, task_id=request.task_id, goal_id=request.goal_id, selection_id=request.selection_id, compared_skus=request.ordered_skus, source_revision=request.source_revision, reason_codes=("comparison_selection_identity_missing",))
+    if request.scope_origin == "explicit_catalog_pair" and (
+        request.selection_id is not None
+        or not request.source_revision
+        or set(request.ordered_skus)
+        != {
+            item.canonical_sku
+            for item in request.product_references
+            if item.kind == ComparisonReferenceKind.EXPLICIT_CATALOG_PRODUCT
+        }
+    ):
+        return ComparisonResult(status=ComparisonResultStatus.REJECTED, task_id=request.task_id, goal_id=request.goal_id, selection_id=request.selection_id, compared_skus=request.ordered_skus, source_revision=request.source_revision, reason_codes=("comparison_explicit_catalog_pair_identity_failed",))
     if request.source_revision != source_snapshot.source_revision:
         return ComparisonResult(status=ComparisonResultStatus.REJECTED, task_id=request.task_id, goal_id=request.goal_id, selection_id=request.selection_id, compared_skus=request.ordered_skus, source_revision=request.source_revision, reason_codes=("comparison_source_revision_stale",))
     if len(request.ordered_skus) < 2:
@@ -847,7 +949,10 @@ def build_comparison_result(
     for sku in request.ordered_skus:
         product = source_snapshot.product(sku)
         card = cards_by_sku.get(sku)
-        if product is None or card is None or not _is_same_visible_card(product, card):
+        if product is None or (
+            request.scope_origin == "v2_delivered"
+            and (card is None or not _is_same_visible_card(product, card))
+        ):
             return ComparisonResult(status=ComparisonResultStatus.REJECTED, task_id=request.task_id, goal_id=request.goal_id, selection_id=request.selection_id, compared_skus=request.ordered_skus, source_revision=request.source_revision, reason_codes=("comparison_visible_card_source_gate_failed",))
         products.append(product)
     typed_products = tuple(products)
@@ -883,7 +988,11 @@ def build_comparison_result(
             missing.append(predicate)
         if _has_proven_difference(dimension):
             dimensions.append(dimension)
-        elif predicate in request.requested_predicates and dimension.missing_skus:
+        elif predicate in request.requested_predicates:
+            # An explicitly requested coordinate remains useful even when the
+            # two proved values are equal (same price/stock is itself an
+            # answer).  The comparison gate below still requires at least one
+            # genuine difference before the overall result can be COMPARED.
             dimensions.append(dimension)
 
     if source_conflict_skus:
@@ -914,7 +1023,11 @@ def build_comparison_result(
             if item.predicate in request.requested_predicates and item.missing_skus
         )
     )
-    if explicit_missing:
+    proved = tuple(item for item in dimensions if _has_proven_difference(item))
+    proved_requested = tuple(
+        item for item in proved if item.predicate in request.requested_predicates
+    )
+    if explicit_missing and not proved_requested:
         return ComparisonResult(
             status=ComparisonResultStatus.NOT_COMPARABLE,
             task_id=request.task_id,
@@ -929,7 +1042,6 @@ def build_comparison_result(
             reason_codes=("comparison_explicit_predicate_insufficient_evidence",),
         )
 
-    proved = tuple(item for item in dimensions if _has_proven_difference(item))
     if not proved:
         return ComparisonResult(status=ComparisonResultStatus.NOT_COMPARABLE, task_id=request.task_id, goal_id=request.goal_id, selection_id=request.selection_id, compared_skus=request.ordered_skus, requested_predicates=request.requested_predicates, dimensions=tuple(dimensions), sources=tuple(sources), missing_data=tuple(dict.fromkeys(missing)), source_revision=source_snapshot.source_revision, reason_codes=("comparison_no_proven_difference",))
 
@@ -954,7 +1066,7 @@ def build_comparison_result(
         if decision_dimensions:
             labels = ", ".join(item.label for item in decision_dimensions[:3])
             question = f"Какой критерий для вас решающий: {labels}?"
-    return ComparisonResult(status=ComparisonResultStatus.COMPARED, task_id=request.task_id, goal_id=request.goal_id, selection_id=request.selection_id, compared_skus=request.ordered_skus, requested_predicates=request.requested_predicates, dimensions=tuple(dimensions), sources=tuple(sources), missing_data=tuple(dict.fromkeys(missing)), recommendation=recommendation, deciding_question=question, source_revision=source_snapshot.source_revision, reason_codes=("comparison_from_customer_visible_v2_scope",))
+    return ComparisonResult(status=ComparisonResultStatus.COMPARED, task_id=request.task_id, goal_id=request.goal_id, selection_id=request.selection_id, compared_skus=request.ordered_skus, requested_predicates=request.requested_predicates, dimensions=tuple(dimensions), sources=tuple(sources), missing_data=tuple(dict.fromkeys(missing)), recommendation=recommendation, deciding_question=question, source_revision=source_snapshot.source_revision, reason_codes=(("comparison_from_explicit_catalog_pair",) if request.scope_origin == "explicit_catalog_pair" else ("comparison_from_customer_visible_v2_scope",)) + (("comparison_partial_requested_predicates",) if explicit_missing else ()))
 
 
 def validate_comparison_result(

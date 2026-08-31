@@ -24,6 +24,7 @@ from app.models import ChatResponse
 
 
 CUTOVER_SCHEMA_VERSION = "1.0"
+CAPABILITY_COVERAGE_SCHEMA_VERSION = "1.0"
 
 
 class FrozenModel(BaseModel):
@@ -38,6 +39,29 @@ class ResponseOwner(str, Enum):
     SAFETY = "safety"
     LEGACY = "legacy"
     V2 = "v2"
+
+
+class CapabilityOwner(str, Enum):
+    """Declared executor for one bounded conversational capability."""
+
+    V2 = "v2"
+    LEGACY = "legacy"
+    BOUNDARY = "boundary"
+
+
+class CapabilityMaturity(str, Enum):
+    READY = "ready"
+    PARTIAL = "partial"
+    SHADOW = "shadow"
+    BLOCKED = "blocked"
+
+
+class CapabilityCoverageStatus(str, Enum):
+    V2_READY = "v2_ready"
+    LEGACY_READY = "legacy_ready"
+    BOUNDARY_REQUIRED = "boundary_required"
+    AMBIGUOUS = "ambiguous"
+    UNRESOLVED = "unresolved"
 
 
 class ExecutionMode(str, Enum):
@@ -132,17 +156,94 @@ class MigrationCell(FrozenModel):
         return self
 
 
+class CapabilityRule(FrozenModel):
+    """One versioned ownership declaration inside the cutover registry.
+
+    ``detector`` names an existing typed or deterministic seam.  It is not a
+    prompt label and does not route a response on its own; the pure coverage
+    resolver maps detector evidence to one of these declared rules.
+    """
+
+    schema_version: Literal["1.0"] = CAPABILITY_COVERAGE_SCHEMA_VERSION
+    capability_id: str = Field(min_length=1, max_length=160)
+    owner: CapabilityOwner
+    maturity: CapabilityMaturity
+    detector: str = Field(min_length=1, max_length=120)
+    outcome_gate: str = Field(min_length=1, max_length=160)
+    task_acts: tuple[TaskAct, ...] = ()
+    next_actions: tuple[NextActionKind, ...] = ()
+    product_kinds: tuple[ProductKind, ...] = ()
+    reason_codes: tuple[str, ...] = ()
+
+
+class CapabilityCoverageDecision(FrozenModel):
+    """Deterministic, telemetry-safe owner recommendation for one turn."""
+
+    schema_version: Literal["1.0"] = CAPABILITY_COVERAGE_SCHEMA_VERSION
+    registry_version: str = Field(min_length=1, max_length=160)
+    status: CapabilityCoverageStatus
+    owner: CapabilityOwner | None = None
+    capability_ids: tuple[str, ...] = ()
+    task_acts: tuple[TaskAct, ...] = ()
+    product_kinds: tuple[ProductKind, ...] = ()
+    next_action: NextActionKind | None = None
+    evidence_codes: tuple[str, ...] = ()
+    reason_codes: tuple[str, ...] = ()
+    enforced: bool = False
+
+    @model_validator(mode="after")
+    def validate_owner(self) -> "CapabilityCoverageDecision":
+        ready = {
+            CapabilityCoverageStatus.V2_READY: CapabilityOwner.V2,
+            CapabilityCoverageStatus.LEGACY_READY: CapabilityOwner.LEGACY,
+            CapabilityCoverageStatus.BOUNDARY_REQUIRED: CapabilityOwner.BOUNDARY,
+        }
+        expected = ready.get(self.status)
+        if expected is not None and self.owner != expected:
+            raise ValueError("ready capability coverage requires its declared owner")
+        if self.status in {
+            CapabilityCoverageStatus.AMBIGUOUS,
+            CapabilityCoverageStatus.UNRESOLVED,
+        } and self.owner is not None:
+            raise ValueError("unresolved capability coverage cannot select an owner")
+        if self.enforced and self.status in {
+            CapabilityCoverageStatus.AMBIGUOUS,
+            CapabilityCoverageStatus.UNRESOLVED,
+        }:
+            raise ValueError("unresolved capability coverage cannot be enforced")
+        return self
+
+
+class CapabilityTurnContext(FrozenModel):
+    """Minimal existing-session context allowed into ownership resolution.
+
+    This is a projection of the current Legacy session, not another dialogue
+    state.  Customer contacts and order numbers are deliberately excluded;
+    only the active deterministic topic label crosses the cutover seam.
+    """
+
+    schema_version: Literal["1.0"] = CAPABILITY_COVERAGE_SCHEMA_VERSION
+    legacy_commerce_topic: str | None = Field(default=None, max_length=80)
+    active_goal_canonical_type: str | None = Field(default=None, max_length=120)
+    pending_question_fact: str | None = Field(default=None, max_length=120)
+
+
 class MigrationRegistry(FrozenModel):
     schema_version: Literal["1.0"] = CUTOVER_SCHEMA_VERSION
     registry_id: str = Field(min_length=1, max_length=120)
     revision: str = Field(min_length=1, max_length=160)
     cells: tuple[MigrationCell, ...] = ()
+    capability_registry_version: str = Field(default="1.0", min_length=1, max_length=80)
+    capabilities: tuple[CapabilityRule, ...] = ()
 
     @model_validator(mode="after")
     def unique_cells(self) -> "MigrationRegistry":
         cell_ids = [cell.cell_id for cell in self.cells]
         if len(cell_ids) != len(set(cell_ids)):
             raise ValueError("migration cell ids must be unique")
+        capability_ids = [item.capability_id for item in self.capabilities]
+        if len(capability_ids) != len(set(capability_ids)):
+            raise ValueError("capability ids must be unique")
         return self
 
 
@@ -207,6 +308,15 @@ class EngineeringBoundaryResult(FrozenModel):
     reason_codes: tuple[str, ...]
 
 
+class CapabilityBoundaryResult(FrozenModel):
+    """Fail-closed result when neither implementation owns the turn safely."""
+
+    status: Literal["capability_not_ready"]
+    capability_id: Literal["uncovered_turn"]
+    source_revision: str
+    reason_codes: tuple[str, ...]
+
+
 class V2TurnCandidate(FrozenModel):
     schema_version: Literal["1.0"] = CUTOVER_SCHEMA_VERSION
     turn_id: str
@@ -235,11 +345,13 @@ class V2TurnCandidate(FrozenModel):
     calculation_request: CalculationRequest | None = None
     calculation_result: CalculationResult | None = None
     product_fact_delivery: ProductFactDelivery | None = None
+    product_fact_deliveries: tuple[ProductFactDelivery, ...] = ()
     offer_fact_request: OfferFactRequest | None = None
     offer_fact_result: OfferFactResult | None = None
     compatibility_request: CompatibilityRequest | None = None
     compatibility_result: CompatibilityResult | None = None
     engineering_boundary_result: EngineeringBoundaryResult | None = None
+    capability_boundary_result: CapabilityBoundaryResult | None = None
     product_scope_effect: ProductScopeEffect = ProductScopeEffect.PRESERVE
     # A direct fact may move the deictic focus (``этот``) without changing the
     # ordinal Selection scope (``первый/второй/...``).

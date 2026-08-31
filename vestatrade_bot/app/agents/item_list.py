@@ -57,6 +57,23 @@ _UNIT_CANON = (
 # Слишком короткий фрагмент позицией не бывает: «и 5 шт» товар не называет.
 _MIN_WORDS = 2
 
+# A Legacy item-list turn must contain a product noun in every counted row.
+# This is deliberately narrower than the general catalogue vocabulary: the
+# parser is an execution boundary, not a discovery classifier.  Engineering
+# answers such as ``уровень 12 м, трасса 35 м`` must not become purchase rows.
+_PRODUCT_ANCHOR_RE = re.compile(
+    r"\b(?:труб\w*|угольник\w*|муфт\w*|фитинг\w*|кран\w*|"
+    r"клапан\w*|насос\w*|кот[её]л\w*|радиатор\w*|термоголовк\w*|"
+    r"тройник\w*|переходник\w*|ниппел\w*|футорк\w*|штуцер\w*|"
+    r"коллектор\w*|заглушк\w*|ревизи\w*|манжет\w*)\b",
+    re.IGNORECASE,
+)
+_PURCHASE_PREFIX_RE = re.compile(
+    r"\b(?:нуж\w*|куп\w*|заказ\w*|возьм\w*|взять|позиц\w*|"
+    r"количеств\w*|требу\w*)\b",
+    re.IGNORECASE,
+)
+
 
 @dataclass(frozen=True)
 class RequestedItem:
@@ -104,12 +121,21 @@ def split_item_list(message: str, *, min_items: int = 2) -> list[RequestedItem]:
         # «— 5 шт. Всё есть?» в поисковый запрос попадать не должен.
         head = fragment[: quantity_match.start()].strip(" \t-–—.,:")
         tail = fragment[quantity_match.end() :].strip(" \t-–—.,:")
-        query = head if len(head.split()) >= _MIN_WORDS else tail
+        head_has_product = _PRODUCT_ANCHOR_RE.search(head) is not None
+        tail_has_product = _PRODUCT_ANCHOR_RE.search(tail) is not None
+        if head_has_product:
+            query = head
+        elif tail_has_product and _PURCHASE_PREFIX_RE.search(head):
+            # ``Нужно 30 м трубы ПНД`` is a valid row.  A measurement such as
+            # ``по участку 35 м трубы`` is not: its prefix has no purchase act.
+            query = tail
+        else:
+            continue
         query = _QUANTITY_TAIL_RE.sub("", query).strip(" \t-–—.")
         if len(query.split()) < _MIN_WORDS:
             continue
         # Во фрагменте должно остаться название товара, а не только размер.
-        if not re.search(r"[а-яёa-z]{4,}", query, re.IGNORECASE):
+        if not _PRODUCT_ANCHOR_RE.search(query):
             continue
         items.append(
             RequestedItem(

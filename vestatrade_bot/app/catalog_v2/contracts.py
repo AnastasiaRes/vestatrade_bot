@@ -356,6 +356,9 @@ class CandidateAssessment(FrozenModel):
     # Set only by the catalogue planner's fail-closed availability-analogue
     # pass.  It is never inferred from a generic relaxed candidate.
     availability_analog: bool = False
+    # True only when the buyer explicitly authorised this exact directional
+    # relaxation and the planner re-checked it against the source snapshot.
+    controlled_customer_relaxation: bool = False
     provenance: tuple[FactProvenance, ...] = ()
     # Present only when the exact requested flow is a verified table point.
     # It proves that point of the curve, not that the entire installation is
@@ -554,6 +557,7 @@ class SelectionResult(FrozenModel):
     # an exact fit and is rendered with the factual difference(s) below.
     availability_analog: bool = False
     availability_analog_differences: tuple[CatalogRelaxation, ...] = ()
+    controlled_relaxation_differences: tuple[CatalogRelaxation, ...] = ()
     source_backed_conflicts: tuple[SelectionSourceConflict, ...] = ()
     passport_flow_head_evidence: tuple[PassportFlowHeadEvaluation, ...] = ()
     excluded_candidate_reason_codes: dict[str, tuple[str, ...]] = Field(

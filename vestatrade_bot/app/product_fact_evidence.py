@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Protocol
+from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -27,7 +27,11 @@ from app.component_evidence import builtin_part_evidence
 from app.config import PROJECT_ROOT, Settings
 from app.diagnostic_telemetry import record_passport_event
 from app.models import Product, SessionState
-from app.passport_retrieval import expand_query, load_or_build
+from app.passport_retrieval import (
+    PassportIndexNotReady,
+    expand_query,
+    load_ready,
+)
 from app.sku_resolution import (
     SkuResolutionStatus,
     extract_explicit_sku_tokens,
@@ -79,6 +83,9 @@ class ProductFactRequest(FrozenModel):
     question: str
     predicate: str
     product_ref: ProductReference
+    threshold_value: int | float | None = None
+    threshold_unit: str | None = None
+    threshold_operator: Literal["at_least"] | None = None
 
 
 class PassportEvidenceStatus(str, Enum):
@@ -173,10 +180,9 @@ class PassportEvidenceService:
                 document_scope=documents,
             )
         try:
-            index = load_or_build(
+            index = load_ready(
                 self.settings.products_cache_path.with_name("passport_index.json"),
                 [self.settings.product_docs_dir, PROJECT_ROOT / "data"],
-                self.llm_client.embed,
                 self.settings.embedding_model,
             )
             vectors = self.llm_client.embed([expand_query(question)])
@@ -260,6 +266,23 @@ class PassportEvidenceService:
                 section=verified.section,
                 ordinal=verified.ordinal,
                 verifier_status="accepted",
+                document_scope=documents,
+            )
+        except PassportIndexNotReady as exc:
+            record_passport_event(
+                event="passport_retrieval",
+                status="not_ready",
+                reason=exc.reason_code,
+                flow=flow,
+                predicate=predicate,
+                canonical_sku=canonical_sku,
+                embedding_model=self.settings.embedding_model,
+                document_scope=list(documents),
+            )
+            return PassportEvidenceResult(
+                status=PassportEvidenceStatus.REJECTED,
+                verifier_status="not_run",
+                rejection_reason=exc.reason_code,
                 document_scope=documents,
             )
         except Exception as exc:  # retrieval must never break the customer turn
@@ -414,6 +437,11 @@ _EXPANSION_TANK_VOLUME_RE = re.compile(
     r"(?iu)расширительн\w*\s+бак\w*[^\d]{0,32}"
     r"(?P<value>\d+(?:[.,]\d+)?)\s*(?:л(?![\w/])|литр\w*)"
 )
+_TEMPERATURE_THRESHOLD_RE = re.compile(
+    r"(?iu)\b(?:выдерж\w*|рассчитан\w*|подойд[её]т\w*)\b"
+    r"[^.!?\n]{0,48}?(?P<value>\d+(?:[.,]\d+)?)\s*"
+    r"(?P<unit>°?\s*[cс]|градус\w*)\b"
+)
 def _normalise(text: object) -> str:
     return " ".join(str(text or "").casefold().replace("ё", "е").split())
 
@@ -546,11 +574,12 @@ class ProductFactEvidenceService:
         session: SessionState,
         *,
         semantic_fact_name: str | None = None,
+        forced_predicate: str | None = None,
     ) -> ProductFactEvidence | None:
         if not _QUESTION_RE.search(question.strip()):
             return None
         product_ref = self.resolve_reference(question, session)
-        predicate = self._predicate(question, semantic_fact_name)
+        predicate = forced_predicate or self._predicate(question, semantic_fact_name)
         if predicate is None:
             predicate = self._catalog_card_predicate(
                 _normalise(question),
@@ -565,6 +594,27 @@ class ProductFactEvidenceService:
             question=question,
             predicate=predicate,
             product_ref=product_ref,
+            threshold_value=(
+                float(threshold.group("value").replace(",", "."))
+                if (
+                    predicate == "maximum_operating_temperature_c"
+                    and (threshold := _TEMPERATURE_THRESHOLD_RE.search(question))
+                    is not None
+                )
+                else None
+            ),
+            threshold_unit=(
+                "°C"
+                if predicate == "maximum_operating_temperature_c"
+                and _TEMPERATURE_THRESHOLD_RE.search(question) is not None
+                else None
+            ),
+            threshold_operator=(
+                "at_least"
+                if predicate == "maximum_operating_temperature_c"
+                and _TEMPERATURE_THRESHOLD_RE.search(question) is not None
+                else None
+            ),
         )
         if product_ref.kind == ProductReferenceKind.UNRESOLVED:
             # Candidate suggestions are not a product scope.  In particular,
@@ -782,6 +832,71 @@ class ProductFactEvidenceService:
             reason_code=reason,
             document_scope=documents,
         )
+
+    def explicit_predicates(self, question: str) -> tuple[str, ...]:
+        """Return independently grounded predicates written in one question.
+
+        This is deliberately not a general semantic parser.  It only exposes
+        already registered ProductFact predicates with unambiguous phrases so
+        a compound question cannot silently lose its second requested fact.
+        """
+
+        text = _normalise(question)
+        positioned: list[tuple[int, str]] = []
+        pump = re.search(
+            r"(?iu)(?:встроенн\w*|внутри|в\s+котл\w*)[^?.!]{0,40}насос\w*|"
+            r"насос\w*[^?.!]{0,40}(?:встроен\w*|внутри|в\s+котл\w*)",
+            question,
+        )
+        if pump is not None:
+            positioned.append((pump.start(), "integrated_circulation_pump"))
+        tank = re.search(r"(?iu)расширительн\w*\s+бак\w*", question)
+        if tank is not None:
+            positioned.append((tank.start(), "expansion_tank_volume_l"))
+        for spec in FACT_SPECS:
+            if spec.predicate in {item[1] for item in positioned}:
+                continue
+            if _matches_groups(text, spec.question_groups):
+                positions = [
+                    text.find(token)
+                    for alternatives in spec.question_groups
+                    for token in alternatives
+                    if token in text
+                ]
+                positioned.append((min(positions) if positions else 0, spec.predicate))
+        return tuple(
+            dict.fromkeys(
+                predicate for _position, predicate in sorted(positioned)
+            )
+        )
+
+    def evaluate_many(
+        self,
+        question: str,
+        session: SessionState,
+        *,
+        semantic_fact_names: tuple[str, ...] = (),
+    ) -> tuple[ProductFactEvidence, ...]:
+        """Evaluate each explicit predicate through the same evidence gates."""
+
+        predicates = list(self.explicit_predicates(question))
+        for semantic_name in semantic_fact_names:
+            predicate = _SEMANTIC_PREDICATE_ALIASES.get(
+                _normalise(semantic_name).replace(" ", "_")
+            )
+            if predicate and predicate not in predicates:
+                predicates.append(predicate)
+        evidence: list[ProductFactEvidence] = []
+        for predicate in predicates:
+            item = self.evaluate(
+                question,
+                session,
+                semantic_fact_name=predicate,
+                forced_predicate=predicate,
+            )
+            if item is not None:
+                evidence.append(item)
+        return tuple(evidence)
 
     @staticmethod
     def _exact_passport_thermostatic_thread_evidence(
@@ -1183,6 +1298,8 @@ class ProductFactEvidenceService:
     @staticmethod
     def _predicate(question: str, semantic_fact_name: str | None) -> str | None:
         text = _normalise(question)
+        if _TEMPERATURE_THRESHOLD_RE.search(question) is not None:
+            return "maximum_operating_temperature_c"
         if "почему" in text and "мощн" in text:
             return "selection_power_rationale"
         if any(marker in text for marker in ("подойдет", "подойдёт", "совместим")):
@@ -1473,6 +1590,24 @@ def render_product_fact_evidence(evidence: ProductFactEvidence) -> str:
             unit=evidence.unit,
         )
         answer = f"{subject}. {label.capitalize()} — {value}."
+        request = evidence.request
+        if (
+            request.threshold_operator == "at_least"
+            and request.threshold_value is not None
+            and predicate == "maximum_operating_temperature_c"
+        ):
+            try:
+                maximum = float(str(evidence.value).replace(",", "."))
+            except ValueError:
+                maximum = None
+            if maximum is not None:
+                requested = float(request.threshold_value)
+                requested_text = f"{requested:g} °C"
+                answer = (
+                    ("Да. " if maximum >= requested else "Нет. ")
+                    + f"Для указанной температуры {requested_text}: "
+                    + f"{label} товара — {value}."
+                )
         if (
             evidence.quote
             and evidence.document
