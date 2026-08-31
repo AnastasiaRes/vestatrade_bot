@@ -893,6 +893,7 @@ class ChatOrchestrator:
                 self.settings.dialogue_v2_shadow_compare_enabled
                 or self.settings.dialogue_v2_live_delivery_enabled
                 or self.settings.dialogue_v2_internal_canary_enabled
+                or self.settings.dialogue_v2_public_primary_enabled
                 or self.settings.dialogue_v2_local_preview_enabled
             )
         )
@@ -923,6 +924,7 @@ class ChatOrchestrator:
                     self.settings.dialogue_v2_internal_canary_enabled
                     and self.settings.dialogue_v2_internal_canary_percent > 0
                 )
+                or self.settings.dialogue_v2_public_primary_enabled
                 or self.settings.dialogue_v2_local_preview_enabled
             )
             and not self.settings.commerce_external_execution_enabled
@@ -1548,6 +1550,9 @@ class ChatOrchestrator:
             internal_canary_percent=(
                 self.settings.dialogue_v2_internal_canary_percent
             ),
+            public_primary_enabled=(
+                self.settings.dialogue_v2_public_primary_enabled
+            ),
             local_preview_enabled=(
                 self.settings.dialogue_v2_local_preview_enabled
             ),
@@ -2034,6 +2039,9 @@ class ChatOrchestrator:
                 ),
                 "internal_canary_percent": (
                     self.settings.dialogue_v2_internal_canary_percent
+                ),
+                "public_primary_enabled": (
+                    self.settings.dialogue_v2_public_primary_enabled
                 ),
                 "local_preview_enabled": (
                     self.settings.dialogue_v2_local_preview_enabled

@@ -310,6 +310,47 @@ def test_protected_qa_preview_bypasses_rollout_assignment_but_not_candidate_gate
     assert rejected.owner_candidate == ResponseOwner.LEGACY
 
 
+def test_explicit_public_primary_uses_v2_only_after_candidate_gates() -> None:
+    decision = decide_cutover(
+        EarlyControlResult(),
+        _candidate(),
+        default_registry(),
+        _runtime(
+            internal_canary_enabled=False,
+            internal_canary_percent=0,
+            public_primary_enabled=True,
+        ),
+        session_fingerprint="ordinary-public-session",
+    )
+
+    assert decision.owner_candidate == ResponseOwner.V2
+    assert decision.execution_mode == ExecutionMode.V2_PRIMARY
+    assert "approved_explicit_public_v2_primary" in decision.reason_codes
+
+    rejected = decide_cutover(
+        EarlyControlResult(),
+        _candidate(eligible_for_delivery=False, contracts_resolved=False),
+        default_registry(),
+        _runtime(public_primary_enabled=True),
+        session_fingerprint="ordinary-public-session",
+    )
+    assert rejected.owner_candidate == ResponseOwner.LEGACY
+    assert rejected.execution_mode == ExecutionMode.LEGACY_FALLBACK
+
+
+def test_explicit_public_primary_keeps_external_actions_off() -> None:
+    decision = decide_cutover(
+        EarlyControlResult(),
+        _candidate(),
+        default_registry(),
+        _runtime(public_primary_enabled=True, external_actions_enabled=True),
+        session_fingerprint="ordinary-public-session",
+    )
+
+    assert decision.owner_candidate == ResponseOwner.LEGACY
+    assert "v2_public_primary_external_actions_not_disabled" in decision.reason_codes
+
+
 def test_existing_session_without_assignment_is_not_switched_mid_task() -> None:
     decision = decide_cutover(
         EarlyControlResult(),

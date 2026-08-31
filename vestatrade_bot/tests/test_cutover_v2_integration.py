@@ -107,6 +107,21 @@ def _qa_settings(tmp_path):
     )
 
 
+def _public_primary_settings(tmp_path):
+    return _qa_settings(tmp_path).model_copy(
+        update={
+            "diagnostic_trace_path": tmp_path / "public-primary.jsonl",
+            "dialogue_v2_routing_enabled": True,
+            "dialogue_v2_live_delivery_enabled": True,
+            "dialogue_v2_public_primary_enabled": True,
+            "dialogue_v2_internal_canary_enabled": False,
+            "dialogue_v2_internal_canary_percent": 0,
+            "dialogue_v2_qa_controls_enabled": False,
+            "dialogue_v2_qa_control_token": None,
+        }
+    )
+
+
 def _eligible_session(registry_revision: str) -> str:
     for index in range(20_000):
         session_id = f"new-canary-{index}"
@@ -243,6 +258,46 @@ def test_protected_qa_preview_uses_v2_without_public_rollout_flags(
     assert trace["runtime"]["qa_mode"] == "v2_preview"
     assert trace["cutover_v2"]["decision"]["owner_candidate"] == "v2"
     assert "approved_protected_qa_v2_preview" in trace["cutover_v2"]["decision"]["reason_codes"]
+
+
+def test_public_primary_uses_v2_for_an_ordinary_chat_request(
+    sample_products,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    settings = _public_primary_settings(tmp_path)
+    bot = ChatOrchestrator(
+        settings=settings,
+        products=sample_products,
+        llm_client=_NoNetworkClient(settings),
+    )
+    state_after = DialogueStateV2(turn_number=1)
+    outcome = DialogueV2Outcome(
+        status="applied",
+        state_before=DialogueStateV2(),
+        state_after=state_after,
+    )
+    monkeypatch.setattr(bot.semantic_interpreter, "interpret", lambda *_args: {"status": "accepted"})
+    monkeypatch.setattr(bot, "_run_stage6_v2_candidate", lambda *_args: outcome)
+    monkeypatch.setattr(
+        "app.agents.orchestrator.build_v2_turn_candidate",
+        lambda *_args, **_kwargs: _candidate("public-v2", state_after, bot),
+    )
+    monkeypatch.setattr(
+        bot,
+        "_handle_chat",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("Legacy ran for an accepted public V2 candidate")
+        ),
+    )
+
+    response = bot.handle_chat("public-v2", "Сколько стоит VT.228.N.04?")
+
+    assert response.products[0].sku == "VT.228.N.04"
+    trace = json.loads(settings.diagnostic_trace_path.read_text().splitlines()[0])
+    assert trace["runtime"]["qa_mode"] is None
+    assert trace["cutover_v2"]["decision"]["owner_candidate"] == "v2"
+    assert "approved_explicit_public_v2_primary" in trace["cutover_v2"]["decision"]["reason_codes"]
 
 
 def test_qa_preview_bridges_only_verified_legacy_selection_cards_to_v2_state(

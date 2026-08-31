@@ -28,6 +28,10 @@ class CutoverRuntime(BaseModel):
     live_delivery_enabled: bool = False
     internal_canary_enabled: bool = False
     internal_canary_percent: int = Field(default=0, ge=0, le=5)
+    # Deliberately separate from a canary percentage.  It is an explicit
+    # operator decision to route ordinary /chat requests V2-first, while
+    # retaining every V2 delivery gate and the Legacy fallback below.
+    public_primary_enabled: bool = False
     local_preview_enabled: bool = False
     # Protected per-request QA preview.  It bypasses rollout registry/cohort
     # assignment, but never semantic, contract, grounding or safety gates.
@@ -206,6 +210,39 @@ def decide_cutover(
             ResponseOwner.V2,
             ExecutionMode.V2_PRIMARY,
             "approved_protected_qa_v2_preview",
+            eligible=True,
+            candidate=candidate,
+        )
+
+    # An explicit public-primary decision is intentionally evaluated only
+    # *after* semantic, contract, grounding and candidate-delivery checks
+    # above.  It does not turn an invalid V2 result into a public response:
+    # the ordinary LEGACY_FALLBACK branches remain authoritative for those
+    # cases.  ``force_legacy`` was checked before this block and is an
+    # immediate operator rollback.
+    if runtime.public_primary_enabled:
+        if not runtime.live_delivery_enabled:
+            return _decision(
+                ResponseOwner.LEGACY,
+                ExecutionMode.LEGACY_FALLBACK,
+                "v2_public_primary_live_delivery_disabled",
+                candidate=candidate,
+            )
+        if (
+            runtime.external_actions_enabled
+            or candidate.pending_command_ids
+            or candidate.external_side_effect_started
+        ):
+            return _decision(
+                ResponseOwner.LEGACY,
+                ExecutionMode.LEGACY_ONLY,
+                "v2_public_primary_external_actions_not_disabled",
+                candidate=candidate,
+            )
+        return _decision(
+            ResponseOwner.V2,
+            ExecutionMode.V2_PRIMARY,
+            "approved_explicit_public_v2_primary",
             eligible=True,
             candidate=candidate,
         )

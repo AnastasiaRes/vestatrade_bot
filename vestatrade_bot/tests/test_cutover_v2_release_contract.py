@@ -54,6 +54,18 @@ def test_local_preview_flag_is_opt_in_and_defaults_off(monkeypatch) -> None:
         get_settings.cache_clear()
 
 
+def test_public_primary_flag_is_explicit_and_defaults_off(monkeypatch) -> None:
+    get_settings.cache_clear()
+    monkeypatch.delenv("DIALOGUE_V2_PUBLIC_PRIMARY_ENABLED", raising=False)
+    try:
+        assert get_settings().dialogue_v2_public_primary_enabled is False
+        get_settings.cache_clear()
+        monkeypatch.setenv("DIALOGUE_V2_PUBLIC_PRIMARY_ENABLED", "true")
+        assert get_settings().dialogue_v2_public_primary_enabled is True
+    finally:
+        get_settings.cache_clear()
+
+
 def test_per_request_qa_controls_require_explicit_switch_and_token(monkeypatch) -> None:
     get_settings.cache_clear()
     monkeypatch.delenv("DIALOGUE_V2_QA_CONTROLS_ENABLED", raising=False)

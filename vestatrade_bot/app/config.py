@@ -143,6 +143,10 @@ class Settings(BaseModel):
     dialogue_v2_live_delivery_enabled: bool = False
     dialogue_v2_internal_canary_enabled: bool = False
     dialogue_v2_internal_canary_percent: int = 0
+    # Explicit, all-traffic V2-first route.  It remains off by default and
+    # still runs every semantic/catalog/source/outcome gate before delivery.
+    # A rejected V2 candidate is handled by the existing Legacy fallback.
+    dialogue_v2_public_primary_enabled: bool = False
     # Local demo escape hatch for a reviewed V2_PRIMARY registry cell.  This
     # remains independent of the production/internal-canary rollout controls
     # and is fail-closed unless every live gate is explicitly enabled.
@@ -380,6 +384,10 @@ def get_settings() -> Settings:
         ),
         dialogue_v2_internal_canary_percent=_bounded_rollout_percent(
             "DIALOGUE_V2_INTERNAL_CANARY_PERCENT"
+        ),
+        dialogue_v2_public_primary_enabled=_env_bool(
+            "DIALOGUE_V2_PUBLIC_PRIMARY_ENABLED",
+            False,
         ),
         dialogue_v2_local_preview_enabled=_env_bool(
             "DIALOGUE_V2_LOCAL_PREVIEW_ENABLED",

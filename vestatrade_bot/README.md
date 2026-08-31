@@ -68,6 +68,31 @@ canary или менять публичный маршрут. После нас�
 Для автоматического перезапуска при изменении кода используйте
 `V2_PREVIEW_RELOAD=1 ./scripts/start_v2_preview.sh`.
 
+### Обычный виджет через V2-first
+
+V2-first использует тот же публичный путь, что и прежний бот:
+
+```text
+виджет сайта → /chat → V2 → Legacy fallback при отклонении V2-gate
+```
+
+Для включения на сервере требуются одновременно:
+
+```dotenv
+DIALOGUE_V2_ROUTING_ENABLED=true
+DIALOGUE_V2_LIVE_DELIVERY_ENABLED=true
+DIALOGUE_V2_PUBLIC_PRIMARY_ENABLED=true
+DIALOGUE_V2_INTERNAL_CANARY_ENABLED=false
+DIALOGUE_V2_INTERNAL_CANARY_PERCENT=0
+DIALOGUE_V2_FORCE_LEGACY=false
+COMMERCE_EXTERNAL_EXECUTION_ENABLED=false
+```
+
+V2 остаётся первым владельцем только после успешных semantic, contract,
+source и outcome-gates. Если хотя бы один из них не проходит, этот конкретный
+ход отвечает Legacy. Для немедленного отката достаточно выставить
+`DIALOGUE_V2_FORCE_LEGACY=true` и перезапустить сервис.
+
 При старте сервер загружает каталог: локальный XML (`FEED_FILE_PATH`), иначе
 удалённый фид (`FEED_URL`), иначе последний кэш `app/data/products_cache.json`.
 Пока каталог не загружен, `/ready` отвечает `503`. Пустой результат парсинга
