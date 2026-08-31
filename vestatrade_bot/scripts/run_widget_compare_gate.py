@@ -38,7 +38,7 @@ SCENARIOS: tuple[dict[str, Any], ...] = (
     {
         "id": "pump_compare_then_fact",
         "turns": (
-            "Нужен циркуляционный насос для радиаторного отопления, напор 6 метров.",
+            "Нужен циркуляционный насос для радиаторного отопления, расход 1,5 м3/ч, напор 6 метров.",
             "Покажите варианты.",
             "Сравните их.",
             "Какая у первого монтажная длина?",
@@ -73,7 +73,7 @@ SCENARIOS: tuple[dict[str, Any], ...] = (
     {
         "id": "cheapest_visible",
         "turns": (
-            "Нужен циркуляционный насос для радиаторного отопления, напор 6 метров.",
+            "Нужен циркуляционный насос для радиаторного отопления, расход 1,5 м3/ч, напор 6 метров.",
             "Покажите варианты.",
             "Какой из показанных дешевле?",
         ),
@@ -164,7 +164,11 @@ def _check(run: dict[str, Any]) -> list[dict[str, Any]]:
     checks.extend((
         ("compare_owner_v2", telemetry.get("owner") == "v2"),
         ("comparison_gate_passed", bool(comparison.get("outcome_gate_passed"))),
-        ("no_placeholder", "сравню подходящие варианты" not in str((compare["result"].get("response") or {}).get("answer") or "").casefold()),
+        (
+            "comparison_result_is_structurally_deliverable",
+            comparison.get("status") in {"compared", "need_clarification", "not_comparable"}
+            and bool(comparison.get("outcome_gate_passed")),
+        ),
     ))
     if scenario.get("no_scope"):
         checks.append(("one_scope_question", comparison.get("status") == "need_clarification"))

@@ -721,12 +721,31 @@ def build_selection_result(
         cards
         and search is not None
         and search.availability_analog_exact_out_of_stock_skus
-        and not availability_analog
     ):
-        # The answer planner must not combine a hidden unavailable exact card
-        # with its availability analogue.  A selection scope is a customer
-        # contract, so this stale/mixed response fails closed.
-        card_gate_failed = True
+        # An unavailable *exact* product is still a truthful catalogue result:
+        # the customer may want its price, link or a supply check.  What is
+        # unsafe is mixing it into one visible selection scope with an
+        # in-stock availability analogue, because the renderer would then
+        # describe both as one recommendation.  Permit the exact-only case;
+        # reject only a stale/mixed exact-plus-analogue card set.
+        exact_out_of_stock_skus = set(
+            search.availability_analog_exact_out_of_stock_skus
+        )
+        presented_exact_out_of_stock = {
+            card.sku for card in cards if card.sku in exact_out_of_stock_skus
+        }
+        presented_analog_skus = {
+            card.sku
+            for card in cards
+            if (
+                candidate_by_sku.get(card.sku) is not None
+                and candidate_by_sku[card.sku].availability_analog
+            )
+        }
+        if presented_exact_out_of_stock and presented_analog_skus:
+            card_gate_failed = True
+        elif presented_analog_skus and not availability_analog:
+            card_gate_failed = True
 
     missing_critical = (
         readiness.recommended_question_fact

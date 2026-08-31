@@ -323,9 +323,15 @@ FACT_SPECS = (
         predicate="thermostatic_head_thread",
         label="резьба под термоголовку",
         unit=None,
-        question_groups=(("резьб",), ("термоголов", "головк")),
+        question_groups=(
+            ("резьб",),
+            ("термоголов", "головк", "посадочн", "присоединительн"),
+        ),
         attribute_keys=("резьба под термоголовку",),
-        quote_groups=(("резьб",), ("термостат", "головк")),
+        quote_groups=(
+            ("резьб",),
+            ("термостат", "головк", "посадочн", "присоединительн"),
+        ),
     ),
     FactSpec(
         predicate="circuits",
@@ -383,6 +389,10 @@ _QUESTION_RE = re.compile(
     r"\?|^\s*(?:как|какой|какая|какое|какие|можно|нужно|почему|чем|что|сколько|где)\b",
     re.IGNORECASE,
 )
+_METRIC_THREAD_RE = re.compile(
+    r"(?iu)(?<![\w])(?:m|м)\s*(?P<diameter>\d+(?:[.,]\d+)?)\s*"
+    r"(?:x|х|×)\s*(?P<pitch>\d+(?:[.,]\d+)?)(?![\w])"
+)
 def _normalise(text: object) -> str:
     return " ".join(str(text or "").casefold().replace("ё", "е").split())
 
@@ -412,6 +422,16 @@ def _quote_contains_value(quote: str, value: str) -> bool:
         numbers = re.findall(r"\d+(?:[.,]\d+)?", value)
         return bool(numbers and all(number.replace(",", ".") in normalized_quote.replace(",", ".") for number in numbers))
     return any(candidate and candidate in normalized_quote for candidate in alternatives)
+
+
+def _metric_threads_from_quote(quote: str) -> tuple[str, ...]:
+    """Extract only explicitly written metric threads from verified evidence."""
+
+    values = {
+        f"M{match.group('diameter').replace('.', ',')}×{match.group('pitch').replace('.', ',')}"
+        for match in _METRIC_THREAD_RE.finditer(quote)
+    }
+    return tuple(sorted(values))
 
 
 class ProductFactEvidenceService:
@@ -570,6 +590,15 @@ class ProductFactEvidenceService:
             predicate=predicate,
             canonical_sku=product_ref.canonical_sku,
         )
+        passport_thread = self._exact_passport_thermostatic_thread_evidence(
+            products,
+            request,
+            passport,
+            product_name=product_name,
+            document_scope=documents,
+        )
+        if passport_thread is not None:
+            return passport_thread
         if (
             passport.status == PassportEvidenceStatus.ANSWERED
             and passport.quote
@@ -669,6 +698,70 @@ class ProductFactEvidenceService:
             verifier_status=passport.verifier_status,
             reason_code=reason,
             document_scope=documents,
+        )
+
+    @staticmethod
+    def _exact_passport_thermostatic_thread_evidence(
+        products: list[Product],
+        request: ProductFactRequest,
+        passport: PassportEvidenceResult,
+        *,
+        product_name: str,
+        document_scope: tuple[str, ...],
+    ) -> ProductFactEvidence | None:
+        """Permit one exact passport-only control-thread fact.
+
+        Product cards do not consistently duplicate the M30×1,5 interface of
+        thermostat heads.  The normal card-consensus branch must remain the
+        rule for other predicates.  This narrow exception is safe only for an
+        exact single product, an in-scope document accepted by the existing
+        verifier and exactly one metric thread written in the verified quote.
+        """
+
+        if request.predicate != "thermostatic_head_thread":
+            return None
+        if len(products) != 1 or request.product_ref.canonical_sku != products[0].sku:
+            return None
+        if (
+            passport.status != PassportEvidenceStatus.ANSWERED
+            or passport.verifier_status != "accepted"
+            or not passport.quote
+            or passport.document not in document_scope
+        ):
+            return None
+        spec = next(item for item in FACT_SPECS if item.predicate == request.predicate)
+        if not _matches_groups(_normalise(passport.quote), spec.quote_groups):
+            return None
+        threads = _metric_threads_from_quote(passport.quote)
+        if len(threads) != 1:
+            return None
+        value = threads[0]
+        record_passport_event(
+            event="product_fact_evidence_gate",
+            status="accepted",
+            flow="v2_product_fact",
+            predicate=request.predicate,
+            canonical_sku=request.product_ref.canonical_sku,
+            candidate_skus=list(request.product_ref.candidate_skus),
+            document_scope=list(document_scope),
+            source_document=passport.document,
+            source_section=passport.section,
+            verifier_status=passport.verifier_status,
+            reason="passport_exact_control_thread_value_match",
+            evidence_fragment=passport.quote,
+        )
+        return ProductFactEvidence(
+            status=ProductFactStatus.ANSWERED,
+            request=request,
+            product_name=product_name,
+            value=value,
+            source_kind="passport_document_exact",
+            document=passport.document,
+            section=passport.section,
+            quote=passport.quote,
+            verifier_status="accepted",
+            reason_code="passport_exact_control_thread_value_match",
+            document_scope=document_scope,
         )
 
     @staticmethod

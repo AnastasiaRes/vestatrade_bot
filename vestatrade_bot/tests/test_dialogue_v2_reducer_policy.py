@@ -758,6 +758,40 @@ def test_policy_does_not_ask_for_resolved_or_unavailable_fact(status: str) -> No
         assert plan.primary.kind == NextActionKind.SHOW_PRELIMINARY_OPTIONS
 
 
+def test_boiler_unknown_circuits_explains_the_decision_without_promising_cards() -> None:
+    """An explicit unknown circuit count is not a preliminary-card success."""
+
+    result = _reduce(
+        None,
+        _turn(
+            operation="new",
+            acts=["select"],
+            products=[_product("gas_boiler", "boilers")],
+            constraints=[_fact("circuits", status="unknown")],
+        ),
+        "boiler-circuits-unknown",
+    )
+    task = result.state.tasks[0]
+    readiness = TaskReadinessAssessment(
+        task_id=task.task_id,
+        goal_id=task.target_goal_id,
+        contract_id="boiler.gas.v1",
+        product_kind=ProductKind.GAS_BOILER,
+        status=ReadinessStatus.BLOCKED,
+        unknown_facts=("circuits",),
+        reason_codes=("unavailable_fact_not_reasked",),
+    )
+
+    plan = SellerPolicy().decide(
+        result.state,
+        readiness_assessments=(readiness,),
+    )
+
+    assert plan.primary.kind == NextActionKind.EXPLAIN_HOW_TO_FIND_FACT
+    assert plan.primary.fact_name == "circuits"
+    assert plan.primary.reason_code == "boiler_circuits_explicitly_unknown"
+
+
 @pytest.mark.parametrize("status", ["known", "unknown"])
 def test_repeated_selection_and_same_fact_are_not_false_progress(status: str) -> None:
     first = _reduce(

@@ -20,6 +20,7 @@ from app.agents.semantic_interpreter import (
     TurnUnderstanding,
 )
 from app.catalog_v2.normalization import normalize_fact_value, normalize_unit_label
+from app.catalog_v2.registry import DEFAULT_CONTRACTS
 
 from .contracts import (
     ResolvedEntityRef,
@@ -83,6 +84,43 @@ def _ordered_multi_goal_evidence(
     return match.group(0) if match is not None else None
 
 
+def _registry_numeric_unit(
+    predicate: str,
+    unit: str | None,
+) -> tuple[float, str] | None:
+    """Find one fact conversion in the existing catalog contract registry."""
+
+    normalized_unit = normalize_unit_label(unit)
+    if normalized_unit is None:
+        return None
+    candidates = [
+        definition
+        for contract in DEFAULT_CONTRACTS
+        for definition in contract.fact_definitions
+        if definition.name == predicate and normalized_unit in definition.unit_conversions
+    ]
+    if not candidates:
+        return None
+    conversions = {
+        (
+            float(definition.unit_conversions[normalized_unit]),
+            next(
+                (
+                    name
+                    for name, multiplier in definition.unit_conversions.items()
+                    if multiplier == 1.0
+                ),
+                None,
+            ),
+        )
+        for definition in candidates
+    }
+    if len(conversions) != 1:
+        return None
+    multiplier, canonical_unit = next(iter(conversions))
+    return (multiplier, canonical_unit) if canonical_unit is not None else None
+
+
 def _actions(frame: TurnUnderstanding, message: str) -> tuple[SemanticActionCandidate, ...]:
     actions: list[SemanticActionCandidate] = []
     seen: set[str] = set()
@@ -99,6 +137,12 @@ def _actions(frame: TurnUnderstanding, message: str) -> tuple[SemanticActionCand
         downstream = act.value
         action = _ACT_TO_CAPABILITY.get(downstream, downstream)
         if unsupported_explicit and downstream in {"find", "select"}:
+            continue
+        if "project" in unsupported_explicit and downstream == "calculate":
+            # A hydraulic/system-design request is not quantity × catalogue
+            # price arithmetic.  Keep the explicit future-facing PROJECT
+            # action in SemanticTurnDelta and let the bounded V2 capability
+            # boundary own its presentation.
             continue
         if (
             "project" in unsupported_explicit
@@ -125,6 +169,8 @@ def _actions(frame: TurnUnderstanding, message: str) -> tuple[SemanticActionCand
         seen.add(action)
 
     for action, evidence in explicit:
+        if action == "calculate" and "project" in explicit_names:
+            continue
         if action in seen:
             continue
         downstream = {
@@ -188,6 +234,9 @@ def _canonical_fact_value(
     numeric_predicates = {
         "area_m2",
         "diameter_mm",
+        "length_mm",
+        "mounting_length_mm",
+        "installation_length_mm",
         "operating_temperature_c",
         "duty_point_head_m",
         "max_head_m",
@@ -209,21 +258,23 @@ def _canonical_fact_value(
         elif "двадцать пят" in text or "двадцат" in text:
             numeric_value = 25
     candidate_value = numeric_value if numeric_value is not None else value
+    registry_conversion = _registry_numeric_unit(predicate, canonical_unit)
     if (
-        predicate in {"duty_point_flow_l_h", "max_flow_l_h"}
-        and canonical_unit == "m3/h"
+        registry_conversion is not None
         and isinstance(candidate_value, (int, float))
         and not isinstance(candidate_value, bool)
     ):
-        converted = float(candidate_value) * 1000.0
+        multiplier, _canonical_unit = registry_conversion
+        converted = float(candidate_value) * multiplier
         return int(converted) if converted.is_integer() else converted
     return normalize_fact_value(predicate, candidate_value)
 
 
 def _canonical_fact_unit(predicate: str, unit: str | None) -> str | None:
     canonical = normalize_unit_label(unit)
-    if predicate in {"duty_point_flow_l_h", "max_flow_l_h"} and canonical == "m3/h":
-        return "l/h"
+    registry_conversion = _registry_numeric_unit(predicate, canonical)
+    if registry_conversion is not None:
+        return registry_conversion[1]
     if predicate == "area_m2" and canonical in {"m2", "м2", "m²", "м²"}:
         return "m2"
     return canonical
@@ -273,6 +324,11 @@ def build_semantic_turn_delta(
         "pump_product_goal_recovered",
         "valve_product_goal_recovered",
         "external_sewer_goal_recovered",
+        "sewer_length_anchor_recovered",
+        "radiator_valve_connection_size_recovered",
+        "radiator_valve_shape_recovered",
+        "radiator_valve_kit_target_recovered",
+        "boiler_circuits_unknown_recovered",
     }
     provenance = (
         "deterministic_anchor"

@@ -142,6 +142,15 @@ PRODUCT_TYPE_ONTOLOGY: tuple[dict[str, Any], ...] = (
         "aliases": ["радиаторный клапан", "клапан для радиатора"],
     },
     {
+        "canonical_type": "radiator_valve_kit",
+        "category": "radiator_fittings",
+        "aliases": [
+            "комплект радиаторной арматуры",
+            "комплект терморегулирования",
+            "радиаторный комплект с термоголовкой",
+        ],
+    },
+    {
         "canonical_type": "thermostatic_head",
         "category": "radiator_fittings",
         "aliases": ["термоголовка", "термостатическая головка"],
@@ -949,6 +958,45 @@ CONSTRAINT_FACT_ONTOLOGY: dict[str, tuple[dict[str, Any], ...]] = {
         },
     ),
 }
+
+# Radiator controls share the same canonical fact vocabulary as the V2
+# contracts.  Keeping it here makes the semantic gate and reducer recognise
+# that a nominal connection size or valve geometry belongs to radiator
+# fittings, rather than treating it as a fact owned only by ball valves.
+# ``thermostatic_head`` is a component requirement, not a claim about a
+# particular thread; the latter remains ``control_thread`` and must be
+# evidence-backed when it is used for compatibility.
+_RADIATOR_VALVE_CONSTRAINT_FACTS: tuple[dict[str, Any], ...] = (
+    {
+        "name": "connection_size",
+        "meaning": "nominal radiator-valve connection size",
+        "aliases": ["размер присоединения", "размер подключения", "1/2", "G1/2"],
+    },
+    {
+        "name": "valve_shape",
+        "meaning": "radiator-valve body geometry",
+        "aliases": ["прямой", "прямая", "угловой", "угловая"],
+        "closed_values": [
+            {"value": "straight", "aliases": ["прямой", "прямая"]},
+            {"value": "angle", "aliases": ["угловой", "угловая"]},
+        ],
+    },
+    {
+        "name": "thermostatic_head",
+        "meaning": "the requested assembly includes a thermostatic head",
+        "aliases": ["с термоголовкой", "с термостатической головкой"],
+    },
+    {
+        "name": "control_thread",
+        "meaning": "confirmed thermostatic-head mounting thread",
+        "aliases": ["резьба под термоголовку", "посадочная резьба", "M30x1,5"],
+    },
+)
+CONSTRAINT_FACT_ONTOLOGY["radiator_valve"] = _RADIATOR_VALVE_CONSTRAINT_FACTS
+CONSTRAINT_FACT_ONTOLOGY["radiator_valve_kit"] = _RADIATOR_VALVE_CONSTRAINT_FACTS
+CONSTRAINT_FACT_ONTOLOGY["thermostatic_head"] = (
+    _RADIATOR_VALVE_CONSTRAINT_FACTS[-1],
+)
 CONSTRAINT_FACT_ONTOLOGY["gas_boiler"] = CONSTRAINT_FACT_ONTOLOGY["boiler"]
 CONSTRAINT_FACT_ONTOLOGY["electric_boiler"] = CONSTRAINT_FACT_ONTOLOGY["boiler"]
 
@@ -1173,7 +1221,16 @@ ACTION_ALIAS_ONTOLOGY: tuple[dict[str, Any], ...] = (
     },
     {
         "action": "project",
-        "aliases": ["собери проект", "собрать котельную", "комплект на объект"],
+        "aliases": [
+            "собери проект",
+            "собрать котельную",
+            "комплект на объект",
+            "гидравлический расчёт",
+            "гидравлический расчет",
+            "гидравлическое сопротивление",
+            "рассчитайте систему",
+            "рассчитать систему",
+        ],
     },
     {
         "action": "show",

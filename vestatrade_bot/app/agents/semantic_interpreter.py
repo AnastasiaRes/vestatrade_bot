@@ -20,7 +20,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from app.catalog_v2.normalization import parse_pump_designation
+from app.catalog_v2.normalization import normalize_unit_label, parse_pump_designation
 from app.catalog_v2.registry import (
     DEFAULT_CONTRACTS,
     canonical_brand,
@@ -1203,6 +1203,21 @@ _PIPE_QUANTITY_CONTEXT_RE = re.compile(
     r"quantity|need|order|buy)\b",
     flags=re.IGNORECASE,
 )
+_SEWER_LENGTH_ANCHOR_RE = re.compile(
+    r"(?iu)\b(?:длин\w*|отрез\w*|участ\w*)\s*[:=]?\s*"
+    r"(?P<value>\d+(?:[.,]\d+)?)\s*"
+    r"(?P<unit>мм|mm|см|cm|м|m|миллиметр\w*|сантиметр\w*|метр\w*)\b"
+)
+_RADIATOR_VALVE_SHAPE_RE = re.compile(
+    r"(?iu)\b(?P<shape>прям\w*|углов\w*)\b"
+)
+_THERMOSTATIC_HEAD_KIT_RE = re.compile(
+    r"(?iu)\b(?:с\s+)?термо(?:статическ\w*\s+)?головк\w*\b"
+)
+_BOILER_CIRCUITS_UNKNOWN_RE = re.compile(
+    r"(?iu)\b(?:количеств\w*\s+)?контур\w*[^.!?\n]{0,32}"
+    r"\b(?:не\s+зна\w*|неизвест\w*|пока\s+не\s+определ\w*)\b"
+)
 _HEAD_ANCHOR_RES = (
     re.compile(
         r"(?<![\w])(?P<value>\d+(?:[.,]\d+)?)\s*"
@@ -2111,6 +2126,7 @@ def _bounded_fact_followup_targets_active_goal(
         return bool(
             _EXTERNAL_SEWER_RE.search(current_message)
             or _SPOKEN_SEWER_DIAMETER_RE.search(current_message)
+            or _SEWER_LENGTH_ANCHOR_RE.search(current_message)
         )
     if category == ProductCategory.PIPES.value or canonical_type in {
         "pipe",
@@ -2131,6 +2147,22 @@ def _bounded_fact_followup_targets_active_goal(
             _SPOKEN_PUMP_FLOW_RE.search(current_message)
             or _SPOKEN_PUMP_HEAD_RE.search(current_message)
         )
+    if category == ProductCategory.RADIATOR_FITTINGS.value or canonical_type in {
+        "radiator_valve",
+        "radiator_valve_kit",
+        "thermostatic_head",
+    }:
+        return bool(
+            _VALVE_SIZE_RE.search(current_message)
+            or _RADIATOR_VALVE_SHAPE_RE.search(current_message)
+            or _THERMOSTATIC_HEAD_KIT_RE.search(current_message)
+        )
+    if category == ProductCategory.BOILERS.value or canonical_type in {
+        "boiler",
+        "gas_boiler",
+        "electric_boiler",
+    }:
+        return _BOILER_CIRCUITS_UNKNOWN_RE.search(current_message) is not None
     return False
 
 
@@ -2166,6 +2198,54 @@ def _append_known_constraint(
             evidence=evidence,
         ).model_dump(mode="json")
     )
+
+
+def _canonical_registry_length_mm(
+    raw_value: str,
+    raw_unit: str,
+) -> tuple[int | float, str] | None:
+    """Convert one explicit length through the contract registry.
+
+    This is intentionally a small adapter over ``DEFAULT_CONTRACTS`` rather
+    than another unit table in the semantic layer.  The word-form handling
+    only identifies the unit written by the customer; the multiplier and the
+    canonical storage unit remain the catalog contract's authority.
+    """
+
+    unit_text = _normalize_evidence(raw_unit)
+    if unit_text.startswith("милли"):
+        unit = "mm"
+    elif unit_text.startswith("сантим"):
+        unit = "cm"
+    elif unit_text.startswith("метр"):
+        unit = "m"
+    else:
+        unit = normalize_unit_label(raw_unit)
+    if unit is None:
+        return None
+    try:
+        number = float(raw_value.replace(",", "."))
+    except ValueError:
+        return None
+    definitions = [
+        definition
+        for contract in DEFAULT_CONTRACTS
+        for definition in contract.fact_definitions
+        if definition.name == "length_mm"
+    ]
+    if not definitions:
+        return None
+    conversions = definitions[0].unit_conversions
+    factor = conversions.get(unit)
+    canonical_unit = next(
+        (label for label, multiplier in conversions.items() if multiplier == 1.0),
+        None,
+    )
+    if factor is None or canonical_unit is None:
+        return None
+    converted = number * factor
+    value: int | float = int(converted) if converted.is_integer() else converted
+    return value, canonical_unit
 
 
 def _recover_selection_preferences(
@@ -2548,6 +2628,13 @@ def _recover_bounded_selection_category_and_facts(
     active_goal = _active_authoritative_goal(authoritative_state)
     active_category = str((active_goal or {}).get("category") or "")
     active_type = str((active_goal or {}).get("canonical_type") or "")
+    current_operation = str(
+        getattr(
+            repaired_turn.get("operation"),
+            "value",
+            repaired_turn.get("operation") or "",
+        )
+    )
     radiator_main = _RADIATOR_MAIN_RE.search(current_message)
     if active_category == ProductCategory.PIPES.value and radiator_main is not None:
         # In an established pipe task, phrases such as «для батарей» describe
@@ -2576,6 +2663,34 @@ def _recover_bounded_selection_category_and_facts(
             if len(retained_products) != len(normalized_products):
                 normalized_products[:] = retained_products
                 changes.append("pipe_service_radiator_product_false_positive_dropped")
+
+    # A short answer to an established radiator-valve task may say
+    # ``с термоголовкой``.  It is a requirement for the same assembly, not a
+    # new conversation topic.  Keeping an LLM-proposed ``radiator_valve_kit``
+    # as a second target would make unscoped facts such as ``1/2`` bind to a
+    # newly-created goal, leaving the actual valve task unchanged.  Preserve
+    # the component requirement below and let the facts inherit the active
+    # valve goal instead.  An explicit new/switch request remains a real new
+    # target and is deliberately not changed here.
+    if (
+        active_category == ProductCategory.RADIATOR_FITTINGS.value
+        and active_type.casefold()
+        in {"radiator_valve", "radiator valve", "radiator_valve_kit", "radiator valve kit"}
+        and current_operation in {GoalOperation.CONTINUE.value, GoalOperation.REFINE.value}
+        and _THERMOSTATIC_HEAD_KIT_RE.search(current_message) is not None
+    ):
+        retained_products = [
+            item
+            for item in normalized_products
+            if not (
+                item.get("role") == ProductRole.TARGET.value
+                and str(item.get("canonical_type") or "").casefold()
+                in {"radiator_valve_kit", "radiator valve kit"}
+            )
+        ]
+        if len(retained_products) != len(normalized_products):
+            normalized_products[:] = retained_products
+            changes.append("radiator_valve_kit_followup_bound_to_active_goal")
     target_indexes = [
         index
         for index, item in enumerate(normalized_products)
@@ -2777,6 +2892,33 @@ def _recover_bounded_selection_category_and_facts(
         or active_category
         in {ProductCategory.PIPES.value, ProductCategory.SEWER.value}
     )
+    sewer_target = bool(
+        product_types.intersection({"sewer_pipe", "sewer pipe"})
+        or ProductCategory.SEWER.value in product_categories
+        or active_category == ProductCategory.SEWER.value
+        or active_type.casefold() in {"sewer_pipe", "sewer pipe"}
+    )
+    sewer_length = _SEWER_LENGTH_ANCHOR_RE.search(current_message)
+    if (
+        sewer_target
+        and sewer_length is not None
+        and not _has_constraint_name(constraints, {"length_mm", "length", "pipe_length"})
+    ):
+        canonical_length = _canonical_registry_length_mm(
+            sewer_length.group("value"),
+            sewer_length.group("unit"),
+        )
+        if canonical_length is not None:
+            value, unit = canonical_length
+            _append_known_constraint(
+                constraints,
+                name="length_mm",
+                value=value,
+                unit=unit,
+                evidence=sewer_length.group(0).strip(),
+                applies_to_product=target_index,
+            )
+            changes.append("sewer_length_anchor_recovered")
 
     def ontology_evidence(aliases: tuple[str, ...]) -> str | None:
         normalized_message = _normalize_evidence(current_message)
@@ -2938,6 +3080,28 @@ def _recover_bounded_selection_category_and_facts(
                 applies_to_product=target_index,
             )
             changes.append("boiler_circuits_recovered_from_closed_alias")
+
+        unknown_circuits = _BOILER_CIRCUITS_UNKNOWN_RE.search(current_message)
+        if (
+            unknown_circuits is not None
+            and not _has_constraint_name(constraints, {"circuits"})
+        ):
+            # This is a bounded terminal answer to the current question, not
+            # an absence of all boiler facts.  The reducer's monotonic merge
+            # then leaves fuel, power and every other accepted requirement in
+            # the active boiler goal untouched.
+            constraints.append(
+                ConstraintFact(
+                    name="circuits",
+                    value=None,
+                    status=ConstraintStatus.UNKNOWN,
+                    polarity=ConstraintPolarity.REQUIRED,
+                    applies_to_product=target_index,
+                    evidence=unknown_circuits.group(0).strip(),
+                ).model_dump(mode="json")
+            )
+            repaired_turn["answers_pending_question"] = True
+            changes.append("boiler_circuits_unknown_recovered")
 
     spoken_diameter = _SPOKEN_PIPE_DIAMETER_RE.search(current_message)
     if (
@@ -3102,12 +3266,41 @@ def _recover_bounded_selection_category_and_facts(
         )
         changes.append("spoken_numeric_anchor_recovered")
 
-    valve_target = bool(
+    ball_valve_target = bool(
         product_types.intersection({"ball valve", "ball_valve", "valve"})
         or ProductCategory.VALVES.value in product_categories
         or active_category == ProductCategory.VALVES.value
     )
-    if valve_target and re.search(r"\bтип\s+резьб\w*\b", current_message, re.IGNORECASE):
+    radiator_valve_target = bool(
+        product_types.intersection(
+            {"radiator_valve", "radiator valve", "radiator_valve_kit", "radiator valve kit"}
+        )
+        or ProductCategory.RADIATOR_FITTINGS.value in product_categories
+        or active_category == ProductCategory.RADIATOR_FITTINGS.value
+        or active_type.casefold()
+        in {"radiator_valve", "radiator valve", "radiator_valve_kit", "radiator valve kit"}
+    )
+    kit_match = _THERMOSTATIC_HEAD_KIT_RE.search(current_message)
+    if radiator_valve_target and kit_match is not None:
+        # A thermic head is a typed requirement for the same valve assembly.
+        # Do not turn a bounded follow-up into another target goal: the
+        # reducer must retain the established task so all facts are bound and
+        # readiness can ask only for the next genuinely missing interface
+        # fact.
+        if not _has_constraint_name(
+            constraints,
+            {"thermostatic_head", "thermostatic_head_required"},
+        ):
+            _append_known_constraint(
+                constraints,
+                name="thermostatic_head",
+                value=True,
+                evidence=kit_match.group(0).strip(),
+                applies_to_product=target_index,
+            )
+        changes.append("radiator_valve_kit_requirement_recovered")
+
+    if ball_valve_target and re.search(r"\bтип\s+резьб\w*\b", current_message, re.IGNORECASE):
         terminal_statuses = {
             ConstraintStatus.UNKNOWN.value,
             ConstraintStatus.REFUSED.value,
@@ -3128,7 +3321,7 @@ def _recover_bounded_selection_category_and_facts(
         closed_value_aliases("ball_valve", "connection_pattern", "female_female")
     )
     if (
-        valve_target
+        ball_valve_target
         and (
             connection_pair is not None
             or connection_ontology_evidence is not None
@@ -3152,7 +3345,7 @@ def _recover_bounded_selection_category_and_facts(
         changes.append("connection_pattern_recovered_from_explicit_pair")
     valve_size = _VALVE_SIZE_RE.search(current_message)
     if (
-        valve_target
+        (ball_valve_target or radiator_valve_target)
         and valve_size is not None
         and not _has_constraint_name(constraints, {"connection_size", "thread_size"})
     ):
@@ -3163,7 +3356,27 @@ def _recover_bounded_selection_category_and_facts(
             evidence=valve_size.group(0),
             applies_to_product=target_index,
         )
-        changes.append("valve_connection_size_recovered")
+        changes.append(
+            "radiator_valve_connection_size_recovered"
+            if radiator_valve_target and not ball_valve_target
+            else "valve_connection_size_recovered"
+        )
+    radiator_shape = _RADIATOR_VALVE_SHAPE_RE.search(current_message)
+    if (
+        radiator_valve_target
+        and radiator_shape is not None
+        and not _has_constraint_name(constraints, {"valve_shape", "shape", "body_shape"})
+    ):
+        shape_text = radiator_shape.group("shape").casefold().replace("ё", "е")
+        _append_known_constraint(
+            constraints,
+            name="valve_shape",
+            value="straight" if shape_text.startswith("прям") else "angle",
+            evidence=radiator_shape.group(0),
+            applies_to_product=target_index,
+            polarity=ConstraintPolarity.PREFERRED,
+        )
+        changes.append("radiator_valve_shape_recovered")
 
 
 def _numeric_string_declared_unit_is_ungrounded(

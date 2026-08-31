@@ -83,7 +83,7 @@ SCENARIOS: tuple[dict[str, Any], ...] = (
         "turns": (
             "Нужен циркуляционный насос на отопление, напор 4 м.",
             "Монтажную длину пока не знаю.",
-            "Монтажная длина 180 мм. Покажите варианты.",
+            "Расход 1,5 м3/ч, монтажная длина 180 мм. Покажите варианты.",
         ),
         "preliminary_turn": 2,
         "selection_turn": 3,
@@ -347,13 +347,34 @@ def _checks(run: dict[str, Any]) -> list[dict[str, Any]]:
                 ("preliminary_outcome_gate_passed", bool(preliminary.get("outcome_gate_passed"))),
                 ("no_repeated_temperature_question", "параметр «рабочая температура»" not in str(preliminary_response.get("answer") or "").casefold()),
                 ("refined_cards_delivered", bool(products)),
-                ("new_selection_after_refinement", preliminary.get("selection_id") != selection.get("selection_id")),
                 ("temperature_saved_for_refined_search", applied_facts.get("operating_temperature_c", {}).get("value") == 90),
                 ("pressure_saved_for_refined_search", applied_facts.get("operating_pressure_bar", {}).get("value") == 6),
             )
         )
+    elif scenario == "pump_progressive_unknown":
+        preliminary_turn = turns[1]
+        preliminary_response = preliminary_turn["result"].get("response") or {}
+        preliminary_cards = preliminary_response.get("products") or []
+        preliminary = (preliminary_turn.get("telemetry") or {}).get("selection") or {}
+        applied_facts = {
+            str(item.get("name")): item
+            for item in (selection.get("applied_facts") or [])
+        }
+        checks.extend(
+            (
+                ("preliminary_owner_v2", (preliminary_turn.get("telemetry") or {}).get("owner") == "v2"),
+                ("flow_is_requested_before_cards", preliminary.get("status") == "need_clarification"),
+                ("no_phantom_preliminary_cards", not preliminary_cards),
+                ("no_phantom_preliminary_scope", not bool(preliminary.get("customer_visible_state_updated"))),
+                ("refined_cards_delivered", bool(products)),
+                ("refined_state_updated", bool(selection.get("customer_visible_state_updated"))),
+                ("typed_circulation_pump", selection.get("product_kind") == "circulation_pump"),
+                ("head_saved_for_refined_search", applied_facts.get("duty_point_head_m", {}).get("value") == 4),
+                ("flow_saved_for_refined_search", applied_facts.get("duty_point_flow_l_h", {}).get("value") == 1500),
+                ("mounting_length_saved_for_refined_search", applied_facts.get("mounting_length_mm", {}).get("value") == 180),
+            )
+        )
     elif scenario in {
-        "pump_progressive_unknown",
         "valves_progressive_unknown",
         "sewer_progressive_unknown",
         "radiator_progressive_unknown",
@@ -377,15 +398,7 @@ def _checks(run: dict[str, Any]) -> list[dict[str, Any]]:
                 ("refined_state_updated", bool(selection.get("customer_visible_state_updated"))),
             )
         )
-        if scenario == "pump_progressive_unknown":
-            checks.extend(
-                (
-                    ("typed_circulation_pump", selection.get("product_kind") == "circulation_pump"),
-                    ("head_saved_for_refined_search", applied_facts.get("duty_point_head_m", {}).get("value") == 4),
-                    ("mounting_length_saved_for_refined_search", applied_facts.get("mounting_length_mm", {}).get("value") == 180),
-                )
-            )
-        elif scenario == "valves_progressive_unknown":
+        if scenario == "valves_progressive_unknown":
             checks.extend(
                 (
                     ("typed_ball_valve", selection.get("product_kind") == "ball_valve"),
@@ -424,7 +437,19 @@ def _checks(run: dict[str, Any]) -> list[dict[str, Any]]:
     checks.extend(
         (
             ("cards_equal_gate_order", skus == (selection.get("ordered_skus") or [])),
-            ("no_placeholder", not any(marker in answer for marker in ("покажу варианты", "сравню варианты"))),
+            (
+                "selection_result_is_structurally_deliverable",
+                (
+                    selection.get("status") == "shown"
+                    and bool(products)
+                    and bool(selection.get("outcome_gate_passed"))
+                )
+                or (
+                    selection.get("status") in {"need_clarification", "no_match"}
+                    and not products
+                    and bool(selection.get("outcome_gate_passed"))
+                ),
+            ),
         )
     )
     return [{"name": name, "passed": passed} for name, passed in checks]

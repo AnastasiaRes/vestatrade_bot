@@ -799,3 +799,39 @@ def test_strict_brand_model_reference_reaches_circuits_fact_without_sku() -> Non
     assert evidence.request.product_ref.kind == ProductReferenceKind.NAMED_PRODUCT
     assert evidence.request.product_ref.canonical_sku == "2202210"
     assert evidence.request.predicate == "circuits"
+
+
+def test_exact_passport_thread_can_answer_without_a_duplicate_card_attribute() -> None:
+    """VT.5000's exact, verified document is sufficient for M30×1,5.
+
+    The card does not duplicate this interface fact.  The V2 evidence gate may
+    still answer only because the requested product has one exact document,
+    the verifier accepted the quote and the value is explicitly present there.
+    """
+
+    head = _product(
+        "VT.5000.0.0",
+        "Термостатическая головка VALTEC VT.5000",
+        {},
+        "0962d51dab5c3219f584820a92d556aa.pdf",
+    )
+    passport = _StubPassport(
+        quote="Присоединительная резьба термостатической головки: M30×1,5.",
+        document="0962d51dab5c3219f584820a92d556aa.pdf",
+    )
+    service = _service([head], passport)
+    session = SessionState(session_id="vt5000", last_products=[_card(head)])
+
+    evidence = service.evaluate(
+        "Какая у VT.5000 посадочная резьба?",
+        session,
+    )
+
+    assert evidence is not None
+    assert evidence.status == ProductFactStatus.ANSWERED
+    assert evidence.request.product_ref.canonical_sku == "VT.5000.0.0"
+    assert evidence.request.predicate == "thermostatic_head_thread"
+    assert evidence.value == "M30×1,5"
+    assert evidence.source_kind == "passport_document_exact"
+    assert evidence.document == "0962d51dab5c3219f584820a92d556aa.pdf"
+    assert evidence.verifier_status == "accepted"

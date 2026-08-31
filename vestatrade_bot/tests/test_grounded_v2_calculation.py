@@ -26,6 +26,10 @@ from app.catalog_v2.contracts import (
 )
 from app.config import get_settings
 from app.cutover_v2.calculation import build_v2_calculation_candidate
+from app.cutover_v2.engineering_boundary import (
+    build_v2_hydraulic_system_boundary_candidate,
+    hydraulic_system_calculation_evidence,
+)
 from app.cutover_v2.contracts import (
     CutoverDecision,
     ExecutionMode,
@@ -455,6 +459,39 @@ def test_calculate_wins_only_over_same_turn_price_fact() -> None:
         ),
     )
     assert SellerPolicy().decide(state).primary.kind == NextActionKind.CALCULATE_PRELIMINARY
+
+
+def test_hydraulic_system_question_never_enters_catalogue_price_calculate() -> None:
+    """Port the existing Legacy safety boundary through the V2 candidate seam."""
+
+    message = "Рассчитайте гидравлическое сопротивление двухтрубной системы для дома 250 м²"
+    snapshot = _snapshot()
+    outcome = _outcome()
+
+    assert hydraulic_system_calculation_evidence(message) == "гидравлическое сопротивление"
+    candidate = build_v2_hydraulic_system_boundary_candidate(
+        message,
+        outcome,
+        _base_candidate(outcome),
+        snapshot,
+        session_id="hydraulic-boundary",
+        turn_id="hydraulic-boundary-turn",
+    )
+
+    assert candidate is not None
+    assert candidate.eligible_for_delivery is True
+    assert candidate.calculation_result is None
+    assert candidate.engineering_boundary_result is not None
+    assert candidate.engineering_boundary_result.topic == "hydraulic_system_calculation"
+    assert candidate.response is not None
+    assert candidate.response.products == []
+    assert "гидравлическое сопротивление" in candidate.response.answer.lower()
+    assert "цен" not in candidate.response.answer.lower()
+    assert candidate.product_scope_effect.value == "preserve"
+
+
+def test_product_price_calculation_is_not_mistaken_for_hydraulic_system_design() -> None:
+    assert hydraulic_system_calculation_evidence("Посчитай 2 штуки второго") is None
 
 
 def test_source_snapshot_exposes_only_explicit_price_per_metre_fact() -> None:

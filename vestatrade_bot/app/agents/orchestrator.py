@@ -65,6 +65,12 @@ from app.dialogue_v2.controller import DialogueControllerV2, DialogueV2Outcome
 from app.dialogue_v2.reducer import record_response_delivery
 from app.cutover_v2.assembler import build_v2_turn_candidate
 from app.cutover_v2.calculation import build_v2_calculation_candidate
+from app.cutover_v2.engineering_boundary import (
+    build_v2_hydraulic_system_boundary_candidate,
+)
+from app.cutover_v2.preview_continuation import (
+    build_v2_preview_continuation_candidate,
+)
 from app.cutover_v2.compatibility import build_v2_compatibility_candidate
 from app.cutover_v2.comparison import build_v2_comparison_candidate
 from app.cutover_v2.legacy_scope_bridge import (
@@ -1364,6 +1370,16 @@ class ChatOrchestrator:
         """
 
         snapshot = self.answer_source_snapshot_v2
+        boundary_candidate = build_v2_hydraulic_system_boundary_candidate(
+            message,
+            outcome,
+            base_candidate,
+            snapshot,
+            session_id=session_id,
+            turn_id=turn_id,
+        )
+        if boundary_candidate is not None:
+            return boundary_candidate
         if snapshot is None:
             return base_candidate
         request = build_calculation_request(
@@ -2227,6 +2243,17 @@ class ChatOrchestrator:
                                                 turn_id=turn_id,
                                             )
                                         )
+                                        if qa_mode == DialogueQAMode.V2_PREVIEW:
+                                            preview_continuation = (
+                                                build_v2_preview_continuation_candidate(
+                                                    live_v2_outcome,
+                                                    live_candidate,
+                                                    self.answer_source_snapshot_v2,
+                                                    session_id=session_id,
+                                                )
+                                            )
+                                            if preview_continuation is not None:
+                                                live_candidate = preview_continuation
                                         # Record every live-attempt outcome,
                                         # including candidates rejected before
                                         # arbitration.  Otherwise the release

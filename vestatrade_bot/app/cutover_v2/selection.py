@@ -180,6 +180,21 @@ def render_selection_result(result: SelectionResult) -> str:
         )
         return "\n".join(lines)
     if not result.is_preliminary:
+        all_out_of_stock = bool(result.cards) and all(
+            card.stock_qty == 0
+            or "нет в наличии" in card.stock_status.casefold()
+            for card in result.cards
+        )
+        if all_out_of_stock:
+            if count == 1:
+                return (
+                    "Подходящий вариант в каталоге найден, но сейчас его нет "
+                    "в наличии. Карточка ниже."
+                )
+            return (
+                f"Подобрал {count} подходящих {_variant_word(count)}, но сейчас "
+                "все они отсутствуют в наличии. Карточки ниже."
+            )
         if count == 1:
             return "Нашёл подходящий вариант. Карточка ниже."
         if "price_below_delivered_scope_reference" in result.ordering_reason_codes:

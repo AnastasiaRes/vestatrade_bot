@@ -971,6 +971,66 @@ def test_boiler_exact_in_stock_never_turns_into_availability_analog() -> None:
     assert candidate.selection_result.ordered_skus == (exact_in_stock.sku,)
 
 
+def test_exact_out_of_stock_boiler_is_a_truthful_card_not_a_source_gate_failure() -> None:
+    """No in-stock analogue must not hide the exact product the buyer asked for."""
+
+    exact_out_of_stock = _product(
+        "electric-18-out",
+        "Котёл электрический 18 кВт одноконтурный",
+        "Котельное оборудование",
+        attributes={
+            "Тип товара": "Котёл",
+            "Тип котла": "Электрический",
+            "Мощность, кВт": "18",
+            "Количество контуров": "Одноконтурный",
+        },
+    ).model_copy(
+        update={"stock_status": "нет в наличии", "stock_qty": 0}
+    )
+    opening = TurnUnderstanding.model_validate(
+        _frame(
+            operation="new",
+            acts=["find"],
+            products=[
+                {
+                    "text": "электрический котёл",
+                    "canonical_type": "electric_boiler",
+                    "category": "boilers",
+                    "role": "target",
+                    "evidence": "электрический котёл",
+                }
+            ],
+            constraints=[
+                _known("boiler_type", "electric", "электрический"),
+                _known("power_kw", 18, "18 кВт", unit="kW"),
+                _known("circuits", 1, "только отопление"),
+            ],
+        )
+    )
+    outcome, sources = _run_v2_turn(
+        DialogueControllerV2(),
+        None,
+        opening,
+        "boiler-exact-out-of-stock",
+        [exact_out_of_stock],
+    )
+    candidate = build_v2_turn_candidate(
+        outcome,
+        sources,
+        session_id="boiler-exact-out-of-stock",
+        turn_id="boiler-exact-out-of-stock",
+        original_utterance="Нужен электрический одноконтурный котёл 18 кВт",
+    )
+
+    assert candidate.eligible_for_delivery is True
+    assert candidate.selection_result is not None
+    assert candidate.selection_result.availability_analog is False
+    assert candidate.selection_result.ordered_skus == (exact_out_of_stock.sku,)
+    assert candidate.response is not None
+    assert candidate.response.products[0].stock_status == "нет в наличии"
+    assert "нет в наличии" in candidate.response.answer
+
+
 def test_explicit_boiler_power_with_too_small_declared_area_stays_preliminary() -> None:
     boiler = _product(
         "electric-9",

@@ -194,6 +194,19 @@ class ProductFactDelivery(FrozenModel):
     reason_code: str
 
 
+class EngineeringBoundaryResult(FrozenModel):
+    """A truthful boundary for an engineering calculation V2 cannot perform."""
+
+    status: Literal["capability_not_ready"]
+    topic: Literal["hydraulic_system_calculation"]
+    task_id: str | None = None
+    goal_id: str | None = None
+    source_revision: str | None = None
+    evidence: str
+    required_inputs: tuple[str, ...]
+    reason_codes: tuple[str, ...]
+
+
 class V2TurnCandidate(FrozenModel):
     schema_version: Literal["1.0"] = CUTOVER_SCHEMA_VERSION
     turn_id: str
@@ -226,6 +239,7 @@ class V2TurnCandidate(FrozenModel):
     offer_fact_result: OfferFactResult | None = None
     compatibility_request: CompatibilityRequest | None = None
     compatibility_result: CompatibilityResult | None = None
+    engineering_boundary_result: EngineeringBoundaryResult | None = None
     product_scope_effect: ProductScopeEffect = ProductScopeEffect.PRESERVE
     # A direct fact may move the deictic focus (``этот``) without changing the
     # ordinal Selection scope (``первый/второй/...``).

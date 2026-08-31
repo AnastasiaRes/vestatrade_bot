@@ -113,6 +113,44 @@ def test_short_pipe_fragments_bind_to_existing_pipe_goal() -> None:
     assert _facts(frame)["operating_temperature_c"] == (90, "c")
 
 
+def test_sewer_length_in_metres_binds_to_active_goal_in_millimetres() -> None:
+    """A short answer must use the existing registry length conversion.
+
+    ``3 метра`` is deliberately accepted only in an established sewer task
+    which is waiting for product length.  It is not a global numeric/SKU or
+    quantity heuristic.
+    """
+
+    state = _active_state("sewer_pipe", "sewer")
+    state["pending_decision_question"] = {"fact_name": "length_mm"}
+
+    frame, changes = _repair("Длина 3 метра.", state=state)
+
+    assert frame.operation.value == "continue"
+    assert _facts(frame)["length_mm"] == (3000, "mm")
+    assert "sewer_length_anchor_recovered" in changes
+
+
+def test_radiator_valve_followup_keeps_shape_size_and_kit_requirement() -> None:
+    """Three short modifiers belong to one active radiator-fitting task."""
+
+    state = _active_state("radiator_valve", "radiator_fittings")
+    state["pending_decision_question"] = {"fact_name": "connection_size"}
+
+    frame, changes = _repair("Прямая, 1/2, с термоголовкой.", state=state)
+
+    assert frame.operation.value == "continue"
+    assert _facts(frame)["connection_size"] == ("1/2", None)
+    assert _facts(frame)["valve_shape"] == ("straight", None)
+    assert _facts(frame)["thermostatic_head"] == (True, None)
+    # The component requirement belongs to the established valve goal; it
+    # must not create a second target that steals the size/shape facts.
+    assert frame.products == []
+    assert "radiator_valve_connection_size_recovered" in changes
+    assert "radiator_valve_shape_recovered" in changes
+    assert "radiator_valve_kit_requirement_recovered" in changes
+
+
 def test_pipe_pressure_anchor_is_canonicalized_in_an_active_pipe_context() -> None:
     candidate = _candidate()
     candidate["constraints"] = [
@@ -287,6 +325,20 @@ def test_short_boiler_fuel_and_circuit_reply_recovers_both_facts() -> None:
     assert "boiler_type_recovered_from_closed_alias" in changes
 
 
+def test_boiler_unknown_circuits_is_bound_without_resetting_the_goal() -> None:
+    """An unknown answer describes one field, never a new boiler request."""
+
+    state = _active_state("gas_boiler", "boilers")
+    state["pending_decision_question"] = {"fact_name": "circuits"}
+    frame, changes = _repair("Количество контуров пока не знаю.", state=state)
+
+    assert frame.operation.value == "continue"
+    assert [(item.name, item.status.value) for item in frame.constraints] == [
+        ("circuits", "unknown")
+    ]
+    assert "boiler_circuits_unknown_recovered" in changes
+
+
 def test_explicit_boiler_circuit_count_recovers_without_confusing_power() -> None:
     repaired, changes = repair_grounded_semantic_payload(
         _candidate(),
@@ -398,6 +450,34 @@ def test_engineering_pump_notation_has_same_working_point() -> None:
     canonical = {item.predicate: (item.canonical_value, item.canonical_unit) for item in delta.fact_updates}
     assert gate.accepted
     assert canonical["duty_point_flow_l_h"] == (1500, "l/h")
+
+
+def test_length_fact_uses_the_same_registry_conversion_as_catalog_readiness() -> None:
+    from app.semantic_v2.bridge import build_semantic_turn_delta
+
+    candidate = _candidate()
+    candidate["constraints"] = [
+        {
+            "name": "length_mm",
+            "value": "3",
+            "unit": "м",
+            "status": "known",
+            "polarity": "required",
+            "applies_to_product": None,
+            "evidence": "Длина 3 м",
+        }
+    ]
+    frame = TurnUnderstanding.model_validate(candidate)
+
+    delta, gate = build_semantic_turn_delta(
+        frame,
+        message="Длина 3 м",
+        turn_id="sewer-length-registry",
+    )
+
+    assert gate.accepted
+    assert delta.fact_updates[0].canonical_value == 3000
+    assert delta.fact_updates[0].canonical_unit == "mm"
 
 
 def test_valve_spoken_connection_pattern_and_size_are_recovered() -> None:
@@ -1086,6 +1166,26 @@ def test_explicit_total_price_phrase_recovers_calculate_action() -> None:
 
     assert {item.value for item in frame.acts} >= {"calculate"}
     assert "explicit_calculation_action_recovered" in changes
+
+
+def test_hydraulic_system_request_preserves_project_instead_of_price_calculate() -> None:
+    from app.semantic_v2.bridge import build_semantic_turn_delta
+
+    frame = TurnUnderstanding.model_validate(_candidate(acts=("calculate",)))
+    message = "Рассчитайте гидравлическое сопротивление двухтрубной системы для дома 250 м²"
+
+    delta, gate = build_semantic_turn_delta(
+        frame,
+        message=message,
+        turn_id="hydraulic-project",
+    )
+
+    assert gate.accepted
+    assert any(
+        item.action == "project" and item.downstream_action is None
+        for item in delta.action_candidates
+    )
+    assert not any(item.action == "calculate" for item in delta.action_candidates)
 
 
 def test_ordered_multiple_typed_targets_are_preserved_as_project_intent() -> None:

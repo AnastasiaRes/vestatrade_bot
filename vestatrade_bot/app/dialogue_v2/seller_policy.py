@@ -5,7 +5,11 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from app.answer_v2.contracts import StrategyDirective
-from app.catalog_v2.contracts import ReadinessStatus, TaskReadinessAssessment
+from app.catalog_v2.contracts import (
+    ProductKind,
+    ReadinessStatus,
+    TaskReadinessAssessment,
+)
 from app.commerce_v2.contracts import (
     CapabilityMode,
     CommerceReadinessAssessment,
@@ -895,6 +899,27 @@ class SellerPolicy:
                 ReadinessStatus.UNSUPPORTED,
                 ReadinessStatus.AMBIGUOUS,
             }:
+                # A buyer's explicit "I do not know the number of circuits"
+                # is not permission to present a boiler that could belong to
+                # the wrong family.  Keep fuel and power in the existing
+                # state, but explain the one unresolved decision in plain
+                # terms instead of promising preliminary cards that the
+                # catalogue gate correctly refuses to produce.
+                if (
+                    readiness.product_kind
+                    in {
+                        ProductKind.BOILER,
+                        ProductKind.GAS_BOILER,
+                        ProductKind.ELECTRIC_BOILER,
+                    }
+                    and "circuits" in readiness.unknown_facts
+                ):
+                    return NextAction(
+                        kind=NextActionKind.EXPLAIN_HOW_TO_FIND_FACT,
+                        task_id=task_id,
+                        fact_name="circuits",
+                        reason_code="boiler_circuits_explicitly_unknown",
+                    )
                 return NextAction(
                     kind=NextActionKind.SHOW_PRELIMINARY_OPTIONS,
                     task_id=task_id,
