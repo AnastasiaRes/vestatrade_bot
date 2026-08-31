@@ -62,6 +62,14 @@ def test_clarification_copy_is_human_and_does_not_repeat_service_words() -> None
     assert "уточните" not in circuits.question.casefold()
 
 
+def test_irrigation_water_source_has_a_specific_question() -> None:
+    presentation = clarification_presentation("water_source")
+
+    assert "скважины" in presentation.question
+    assert "колодца" in presentation.question
+    assert presentation.include_learn_instruction is False
+
+
 def test_comparison_never_shows_canonical_predicates_values_or_units() -> None:
     sources = (
         ComparisonSourceReference(

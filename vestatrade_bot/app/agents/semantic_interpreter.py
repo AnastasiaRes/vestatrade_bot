@@ -44,7 +44,7 @@ from .domain_ontology import (
 from .numeric_semantics import extract_spoken_cardinal_mentions
 
 
-SEMANTIC_PROMPT_VERSION = "turn-understanding-v1.23"
+SEMANTIC_PROMPT_VERSION = "turn-understanding-v1.24"
 SEMANTIC_INTERPRETER_PROMPT = """
 Ты — семантический интерпретатор одного нового сообщения покупателя магазина
 инженерной сантехники. Верни только JSON по переданной схеме.
@@ -2064,6 +2064,52 @@ _CIRCULATION_PUMP_RE = re.compile(
     r"(?iu)(?<![\w-])(?:циркуляци\w*\s+нас+ос\w*|циркуляционник\w*|"
     r"насос\w*\s+(?:для|на)\s+(?:радиатор\w*|отоплен\w*))"
 )
+_IRRIGATION_PUMP_RE = re.compile(
+    r"(?iu)(?<![\w-])(?:"
+    r"насос\w*[^.!?\n]{0,60}(?:для|на)\s+полив\w*|"
+    r"(?:для|на)\s+полив\w*[^.!?\n]{0,60}насос\w*|"
+    r"поливочн\w*\s+насос\w*"
+    r")(?![\w-])"
+)
+_IRRIGATION_SOURCE_PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
+    (
+        "borehole",
+        "borehole_pump",
+        re.compile(r"(?iu)(?<![\w-])(?:из\s+)?скважин\w*(?![\w-])"),
+    ),
+    (
+        "well",
+        "pump_station",
+        re.compile(r"(?iu)(?<![\w-])(?:из\s+)?колодц\w*(?![\w-])"),
+    ),
+    (
+        "tank",
+        "drainage_pump",
+        re.compile(
+            r"(?iu)(?<![\w-])(?:из\s+)?(?:бочк\w*|[её]мкост\w*|резервуар\w*)(?![\w-])"
+        ),
+    ),
+)
+_IRRIGATION_WATER_DEPTH_RE = re.compile(
+    r"(?iu)(?:"
+    r"до\s+(?:воды|зеркала\s+воды)|"
+    r"глубин\w*\s+(?:до\s+)?воды|"
+    r"вод\w*\s+на\s+глубин\w*"
+    r")[^.!?\n\d]{0,24}(?P<value>\d+(?:[,.]\d+)?)\s*(?P<unit>м|метр\w*)"
+)
+
+
+def _irrigation_source_match(
+    current_message: str,
+) -> tuple[str, str, re.Match[str]] | None:
+    """Return one explicit irrigation source and its safe existing pump path."""
+
+    matches = [
+        (source, canonical_type, match)
+        for source, canonical_type, pattern in _IRRIGATION_SOURCE_PATTERNS
+        if (match := pattern.search(current_message)) is not None
+    ]
+    return matches[0] if len(matches) == 1 else None
 _BALL_VALVE_RE = re.compile(
     r"(?iu)(?<![\w-])(?:valtec\s+base|кран\w*\s+base|шаров\w*\s+(?:кран\w*\s+)?(?:base|б[эе]йс))"
 )
@@ -2164,6 +2210,8 @@ def _bounded_fact_followup_targets_active_goal(
         "circulation_pump",
         "circulation pump",
     }:
+        if canonical_type in {"irrigation_pump", "irrigation pump"}:
+            return _irrigation_source_match(current_message) is not None
         return bool(
             _SPOKEN_PUMP_FLOW_RE.search(current_message)
             or _SPOKEN_PUMP_HEAD_RE.search(current_message)
@@ -2786,8 +2834,125 @@ def _recover_bounded_selection_category_and_facts(
                 else "explicit_sku_overrode_stale_goal"
             )
 
+    irrigation_match = _IRRIGATION_PUMP_RE.search(current_message)
+    irrigation_source = _irrigation_source_match(current_message)
+    irrigation_active = active_type.casefold() in {
+        "irrigation_pump",
+        "irrigation pump",
+    }
+    if irrigation_match is not None or (irrigation_active and irrigation_source is not None):
+        source_value = irrigation_source[0] if irrigation_source is not None else None
+        source_target_type = irrigation_source[1] if irrigation_source is not None else "irrigation_pump"
+        source_evidence = (
+            irrigation_source[2].group(0).strip()
+            if irrigation_source is not None
+            else irrigation_match.group(0).strip()
+        )
+        irrigation_targets = [
+            index
+            for index, item in enumerate(normalized_products)
+            if item.get("role") == ProductRole.TARGET.value
+        ]
+        if len(irrigation_targets) == 1:
+            target_index = irrigation_targets[0]
+            target = normalized_products[target_index]
+            target["canonical_type"] = source_target_type
+            target["category"] = ProductCategory.PUMPS.value
+            target["text"] = source_evidence
+            target["evidence"] = source_evidence
+        elif not irrigation_targets:
+            normalized_products.append(
+                ProductMention(
+                    text=source_evidence,
+                    canonical_type=source_target_type,
+                    category=ProductCategory.PUMPS,
+                    role=ProductRole.TARGET,
+                    evidence=source_evidence,
+                ).model_dump(mode="json")
+            )
+            target_index = len(normalized_products) - 1
+        # "Полив" is a stronger purpose anchor than an LLM's accidental
+        # circulation classification.  Do not preserve a wrong pump_type in
+        # typed state merely because it appeared in the raw candidate.
+        constraints[:] = [
+            item
+            for item in constraints
+            if _normalize_schema_identifier(item.get("name"))
+            not in {"pump_type", "pump_application"}
+        ]
+        if source_value is not None and not _has_constraint_name(
+            constraints,
+            {"water_source", "source_water"},
+        ):
+            _append_known_constraint(
+                constraints,
+                name="water_source",
+                value=source_value,
+                evidence=source_evidence,
+                applies_to_product=target_index,
+            )
+        if irrigation_source is not None:
+            changes.append("irrigation_source_pump_goal_recovered")
+            if irrigation_active:
+                repaired_turn["operation"] = GoalOperation.CORRECT.value
+        else:
+            changes.append("irrigation_pump_goal_recovered")
+
+    borehole_irrigation_target = bool(
+        irrigation_source is not None
+        and irrigation_source[0] == "borehole"
+        and (
+            irrigation_match is not None
+            or irrigation_active
+            or any(
+                str(item.get("canonical_type") or "").casefold()
+                in {"borehole_pump", "borehole pump"}
+                for item in normalized_products
+            )
+        )
+    )
+    water_depth = _IRRIGATION_WATER_DEPTH_RE.search(current_message)
+    if borehole_irrigation_target and water_depth is not None:
+        # ``до воды 18 м`` is a source-side water level.  It is never a
+        # customer head requirement or a model maximum head.  Remove only
+        # current-turn LLM misclassifications before adding the canonical
+        # static level used by the established borehole adapter.  In
+        # particular, an explicit phrase ``до воды`` cannot be a *dynamic*
+        # level: that value is measured while a pump runs and is a different
+        # customer fact.
+        constraints[:] = [
+            item
+            for item in constraints
+            if _normalize_schema_identifier(item.get("name"))
+            not in {
+                "max_head_m",
+                "head_m",
+                "required_head_m",
+                "required_head",
+                "dynamic_water_level_m",
+            }
+        ]
+        if not _has_constraint_name(
+            constraints,
+            {"static_water_level_m"},
+        ):
+            _append_known_constraint(
+                constraints,
+                name="static_water_level_m",
+                value=float(water_depth.group("value").replace(",", ".")),
+                unit="m",
+                evidence=water_depth.group(0).strip(),
+                applies_to_product=target_index,
+            )
+        changes.append("irrigation_borehole_water_level_recovered")
+
     pump_match = _CIRCULATION_PUMP_RE.search(current_message)
-    if pump_match is not None and not normalized_products:
+    if (
+        pump_match is not None
+        and irrigation_match is None
+        and not irrigation_active
+        and not normalized_products
+    ):
         normalized_products.append(
             ProductMention(
                 text=pump_match.group(0),

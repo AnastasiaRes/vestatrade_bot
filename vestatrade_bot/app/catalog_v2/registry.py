@@ -412,6 +412,32 @@ MAX_FLOW = _fact(
     strength=FactStrength.SOFT,
     fields=("макс. производительность, л/ч",),
 )
+# The source is a customer-side fact, not an attribute of a catalogue card.
+# It belongs to the existing generic pump contract so the same registry is the
+# authority for semantic grounding, readiness and telemetry.  It becomes
+# required only for the ``irrigation_pump`` selection goal in readiness below.
+PUMP_WATER_SOURCE = _fact(
+    "water_source",
+    aliases=("source_water", "источник воды", "откуда вода"),
+    value_type=FactValueType.TEXT,
+    decision=True,
+    comparison=ComparisonMode.EXACT,
+    candidate_filterable=False,
+    catalog_verifiable=False,
+    learn="identify_irrigation_water_source",
+)
+PUMP_TYPE = _fact(
+    "pump_type",
+    aliases=("pump_application", "назначение насоса", "тип насоса"),
+    value_type=FactValueType.TEXT,
+    required=True,
+    decision=True,
+    comparison=ComparisonMode.EXACT,
+    learn="identify_pump_application",
+)
+OPEN_WATER_REQUIRED_HEAD = MAX_HEAD.model_copy(
+    update={"learn_method_code": "estimate_open_water_delivery_head"}
+)
 # The borehole contract deliberately distinguishes the customer's required
 # duty from catalogue *maximum* ratings. A maximum head/flow can reject a
 # clearly insufficient pump, but it does not prove the working point on a
@@ -1130,10 +1156,8 @@ DEFAULT_CONTRACTS: tuple[ProductContract, ...] = (
     ),
     _contract(
         "pump.generic.v1", ProductKind.PUMP, "pumps",
-        ("pump", "насос"), BASE,
-        (_fact("pump_type", aliases=("water_source",), value_type=FactValueType.TEXT,
-               required=True, decision=True, comparison=ComparisonMode.EXACT,
-               learn="identify_pump_application"),),
+        ("pump", "насос", "irrigation pump", "насос для полива"), BASE,
+        (PUMP_TYPE, PUMP_WATER_SOURCE),
         candidates=(ProductKind.CIRCULATION_PUMP, ProductKind.DHW_CIRCULATION_PUMP,
                     ProductKind.BOREHOLE_PUMP, ProductKind.DRAINAGE_PUMP,
                     ProductKind.PUMP_STATION),
@@ -1196,7 +1220,8 @@ DEFAULT_CONTRACTS: tuple[ProductContract, ...] = (
     ),
     _contract(
         "pump.drainage.v1", ProductKind.DRAINAGE_PUMP, "pumps",
-        ("drainage pump", "дренажный насос"), BASE, (MAX_HEAD, MAX_FLOW),
+        ("drainage pump", "дренажный насос"), BASE,
+        (OPEN_WATER_REQUIRED_HEAD, MAX_FLOW),
         catalog_categories=("насосное оборудование", "прокачиваем скидки"),
         invariants=("max_head_m",),
         preliminary_identity_fact_groups=(("max_head_m", "max_flow_l_h"),),

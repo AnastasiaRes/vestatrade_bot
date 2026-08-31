@@ -17,6 +17,20 @@ from app.catalog_v2.registry import brand_ontology_values
 
 PRODUCT_TYPE_ONTOLOGY: tuple[dict[str, Any], ...] = (
     {
+        # This is a selection goal, not a new catalogue product kind.  The
+        # deterministic V2 anchor resolves the water source before choosing
+        # one of the existing borehole/surface/drainage contracts.
+        "canonical_type": "irrigation_pump",
+        "category": "pumps",
+        "aliases": [
+            "насос для полива",
+            "насос на полив",
+            "поливочный насос",
+            "насос для огорода",
+            "насос для газона",
+        ],
+    },
+    {
         "canonical_type": "circulation_pump",
         "category": "pumps",
         "aliases": [
@@ -256,6 +270,40 @@ _HOT_WATER_SERVICE_ALIASES = (
 
 
 CONSTRAINT_FACT_ONTOLOGY: dict[str, tuple[dict[str, Any], ...]] = {
+    "irrigation_pump": (
+        {
+            "name": "water_source",
+            "meaning": "water source for irrigation; it determines the safe pump family before any catalogue search",
+            "aliases": [
+                "источник воды",
+                "из скважины",
+                "из колодца",
+                "из бочки",
+                "из ёмкости",
+                "из резервуара",
+            ],
+            "closed_values": [
+                {
+                    "value": "borehole",
+                    "aliases": ["скважина", "из скважины"],
+                },
+                {
+                    "value": "well",
+                    "aliases": ["колодец", "из колодца"],
+                },
+                {
+                    "value": "tank",
+                    "aliases": [
+                        "бочка",
+                        "из бочки",
+                        "ёмкость",
+                        "емкость",
+                        "резервуар",
+                    ],
+                },
+            ],
+        },
+    ),
     "circulation_pump": (
         {
             "name": "diameter_mm",

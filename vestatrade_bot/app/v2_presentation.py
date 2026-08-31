@@ -227,6 +227,12 @@ _CLARIFICATION_PRESENTATIONS = {
         "отопление или канализация? Для канализации нужен отдельный тип трубы.",
         include_learn_instruction=False,
     ),
+    "water_source": ClarificationPresentation(
+        "Для полива откуда берёте воду: из скважины, колодца или из "
+        "бочки/ёмкости? От источника зависит безопасный тип насоса; "
+        "циркуляционный насос для полива не подходит.",
+        include_learn_instruction=False,
+    ),
     "diameter_mm": ClarificationPresentation(
         "Какой размер присоединения или трубы нужен? Его обычно указывают на "
         "старом насосе, трубе или в паспорте.",

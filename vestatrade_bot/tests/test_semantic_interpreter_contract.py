@@ -2402,6 +2402,149 @@ def test_typed_circulation_pump_designation_recovers_grounded_constraints() -> N
         assert "pump_designation_constraint_recovered" in result.structural_repairs
 
 
+def test_irrigation_pump_overrides_ungrounded_circulation_candidate() -> None:
+    """An explicit irrigation purpose wins over an LLM's pump-family guess."""
+
+    payload = {
+        "schema_version": "1.3",
+        "language": "ru",
+        "operation": "new",
+        "acts": ["select"],
+        "products": [
+            {
+                "text": "насос",
+                "canonical_type": "circulation_pump",
+                "category": "pumps",
+                "role": "target",
+                "evidence": "насос",
+            }
+        ],
+        "constraints": [],
+        "references": [],
+        "ambiguities": [],
+        "workflow_controls": [],
+        "selection_controls": [],
+        "selection_preferences": [],
+        "selection_strategy": {"kind": "standard", "evidence": None},
+        "information_requests": [],
+        "answers_pending_question": False,
+        "confidence": 0.95,
+    }
+
+    result = SemanticInterpreter(SemanticJSONClient(payload)).interpret(
+        "Нужен насос для полива на даче",
+        SessionState(session_id="irrigation-purpose-anchor"),
+    )
+
+    assert result.status == "accepted"
+    assert result.understanding is not None
+    assert result.understanding.products[0].canonical_type == "irrigation_pump"
+    assert result.understanding.products[0].evidence == "насос для полива"
+    assert "irrigation_pump_goal_recovered" in result.structural_repairs
+
+
+def test_irrigation_borehole_depth_is_not_misread_as_pump_head() -> None:
+    """Water depth is a typed borehole input, never a ready-made pump head."""
+
+    payload = {
+        "schema_version": "1.3",
+        "language": "ru",
+        "operation": "new",
+        "acts": ["select"],
+        "products": [
+            {
+                "text": "насос",
+                "canonical_type": "circulation_pump",
+                "category": "pumps",
+                "role": "target",
+                "evidence": "насос",
+            }
+        ],
+        "constraints": [
+            {
+                # A live LLM can mistake a depth stated as "до воды" for a
+                # dynamic level.  The deterministic anchor must correct that
+                # without treating the number as pump head.
+                "name": "dynamic_water_level_m",
+                "value": 18,
+                "unit": "m",
+                "status": "known",
+                "polarity": "required",
+                "applies_to_product": 0,
+                "evidence": "до воды около 18 метров",
+            }
+        ],
+        "references": [],
+        "ambiguities": [],
+        "workflow_controls": [],
+        "selection_controls": [],
+        "selection_preferences": [],
+        "selection_strategy": {"kind": "standard", "evidence": None},
+        "information_requests": [],
+        "answers_pending_question": False,
+        "confidence": 0.95,
+    }
+
+    result = SemanticInterpreter(SemanticJSONClient(payload)).interpret(
+        "Нужен насос для полива из скважины, до воды около 18 метров",
+        SessionState(session_id="irrigation-borehole-depth"),
+    )
+
+    assert result.status == "accepted"
+    assert result.understanding is not None
+    assert result.understanding.products[0].canonical_type == "borehole_pump"
+    facts = {item.name: item for item in result.understanding.constraints}
+    assert facts["water_source"].value == "borehole"
+    assert facts["static_water_level_m"].value == 18
+    assert facts["static_water_level_m"].unit == "m"
+    assert "max_head_m" not in facts
+    assert "required_head_m" not in facts
+    assert "dynamic_water_level_m" not in facts
+    assert "irrigation_borehole_water_level_recovered" in result.structural_repairs
+
+
+def test_irrigation_tank_uses_existing_open_water_pump_path() -> None:
+    """A barrel is not a circulation-loop request and keeps a typed source."""
+
+    payload = {
+        "schema_version": "1.3",
+        "language": "ru",
+        "operation": "new",
+        "acts": ["select"],
+        "products": [
+            {
+                "text": "насос",
+                "canonical_type": "circulation_pump",
+                "category": "pumps",
+                "role": "target",
+                "evidence": "насос",
+            }
+        ],
+        "constraints": [],
+        "references": [],
+        "ambiguities": [],
+        "workflow_controls": [],
+        "selection_controls": [],
+        "selection_preferences": [],
+        "selection_strategy": {"kind": "standard", "evidence": None},
+        "information_requests": [],
+        "answers_pending_question": False,
+        "confidence": 0.95,
+    }
+
+    result = SemanticInterpreter(SemanticJSONClient(payload)).interpret(
+        "Нужен насос для полива из бочки",
+        SessionState(session_id="irrigation-tank"),
+    )
+
+    assert result.status == "accepted"
+    assert result.understanding is not None
+    assert result.understanding.products[0].canonical_type == "drainage_pump"
+    assert {
+        item.name: item.value for item in result.understanding.constraints
+    } == {"water_source": "tank"}
+
+
 def test_ambiguous_pump_mounting_designation_does_not_invent_length() -> None:
     evidence = "Model 25/6-130(180)"
     payload = {

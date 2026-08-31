@@ -1332,6 +1332,100 @@ def test_preview_circulation_pump_with_duty_point_shows_preliminary_cards_immedi
     }
 
 
+def test_preview_irrigation_pump_asks_source_then_uses_borehole_boundary(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Irrigation never enters the circulation-pump or false-no-match path."""
+
+    candidate = _product(
+        "WELL-60",
+        "Скважинный насос WELL-60",
+        "Насосное оборудование",
+        attributes={
+            "Тип товара": "Скважинный насос",
+            "Максимальный напор, м": "60",
+            "Макс. производительность, л/ч": "3000",
+        },
+    )
+    settings = _preview_settings(tmp_path)
+    bot = ChatOrchestrator(settings=settings, products=[candidate])
+    first = _frame(
+        product={
+            "text": "насос для полива",
+            "canonical_type": "irrigation_pump",
+            "category": "pumps",
+            "role": "target",
+            "evidence": "насос для полива",
+        },
+    )
+    second = _frame(
+        product={
+            "text": "из скважины",
+            "canonical_type": "borehole_pump",
+            "category": "pumps",
+            "role": "target",
+            "evidence": "из скважины",
+        },
+        constraints=[
+            _known("water_source", "borehole", "из скважины"),
+            _known(
+                "static_water_level_m",
+                18,
+                "до воды около 18 метров",
+                unit="m",
+            ),
+        ],
+        operation="correct",
+        answers_pending_question=True,
+    )
+    understandings = iter((first, second))
+    monkeypatch.setattr(
+        bot.semantic_interpreter,
+        "interpret",
+        lambda _message, _before: _semantic(next(understandings)),
+    )
+
+    initial = _preview_response(
+        bot,
+        session_id="v2-irrigation-borehole",
+        turn_id="v2-irrigation-borehole-1",
+        message="Нужен насос для полива на даче",
+    )
+    assert initial.products == []
+    assert "скважин" in initial.answer.lower()
+    assert "циркуляцион" in initial.answer.lower()
+
+    follow_up = _preview_response(
+        bot,
+        session_id="v2-irrigation-borehole",
+        turn_id="v2-irrigation-borehole-2",
+        message="Из скважины, до воды около 18 метров",
+    )
+
+    assert follow_up.products == []
+    assert "нет товара" not in follow_up.answer.lower()
+    assert "поднять воду" in follow_up.answer.lower()
+    state = bot.sessions.snapshot("v2-irrigation-borehole").live_dialogue_state_v2
+    assert state is not None
+    active_goal = next(item for item in state.product_goals if item.goal_id == state.active_goal_id)
+    assert active_goal.canonical_type == "borehole_pump"
+    facts = {
+        item.name: item.value
+        for item in state.constraints
+        if item.active and item.goal_id == active_goal.goal_id
+    }
+    assert facts["static_water_level_m"] == 18
+    assert "required_head_m" not in facts
+    traces = [
+        json.loads(line)
+        for line in settings.diagnostic_trace_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(traces) == 2
+    assert all(trace["cutover_v2"]["decision"]["owner_candidate"] == "v2" for trace in traces)
+
+
 def test_preview_borehole_pump_asks_for_pipe_before_calculating_head(
     tmp_path,
     monkeypatch,

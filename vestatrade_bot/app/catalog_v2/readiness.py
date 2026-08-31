@@ -337,6 +337,26 @@ def assess_task_readiness(
         item for item in product_contract.fact_definitions
         if item.required_for_exact
     ]
+    goal = next(
+        (
+            item
+            for item in dialogue_state.product_goals
+            if item.goal_id == customer_task.target_goal_id
+        ),
+        None,
+    )
+    irrigation_goal = (
+        product_contract.contract_id == "pump.generic.v1"
+        and _normalized_fact_token(getattr(goal, "canonical_type", ""))
+        == "irrigation_pump"
+    )
+    # A generic pump request normally needs its application.  The anchored
+    # irrigation goal has already established that application; searching or
+    # asking for a circulation-pump dimension before the water source would
+    # be unsafe.  Keep this as a narrow adapter over the same generic contract
+    # rather than adding a second state machine or catalogue route.
+    if irrigation_goal:
+        required = [definition_by_name["water_source"]]
     known_names = {
         item.name for item in (*hard, *soft) if item.status == "known"
     }
@@ -383,7 +403,9 @@ def assess_task_readiness(
     # requirement.  Do not make an explicitly named item disappear merely
     # because an old task carried incomplete selection slots.
     anchor_groups = (
-        () if "sku" in known_names else product_contract.preliminary_identity_fact_groups
+        ()
+        if "sku" in known_names
+        else (("water_source",) if irrigation_goal else product_contract.preliminary_identity_fact_groups)
     )
     for raw_group in anchor_groups:
         group = tuple(
