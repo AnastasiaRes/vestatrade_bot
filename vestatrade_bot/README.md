@@ -570,6 +570,16 @@ python3 scripts/build_widget_demo_catalog.py --check  # проверить, не
 `./scripts/prepare_ollama_v2.sh`. После успешной подготовки можно не повторять
 проверку при каждом старте, задав `V2_OLLAMA_SKIP_PREPARE=1`.
 
+На Windows используйте нативный PowerShell-скрипт из `cmd` или PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\Start-V2Ollama.ps1
+```
+
+Он выполняет ту же подготовку и запускает виджет по адресу
+`http://127.0.0.1:8010/widget-demo`. `ExecutionPolicy Bypass` действует только
+на этот один запуск и не меняет постоянные настройки Windows.
+
 ### Каталог и данные
 
 | Переменная | По умолчанию | Назначение |
