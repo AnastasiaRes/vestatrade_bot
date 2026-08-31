@@ -224,7 +224,7 @@ def get_settings() -> Settings:
         openrouter_model=openrouter_model,
         openrouter_embedding_model=os.getenv(
             "OPENROUTER_EMBEDDING_MODEL",
-            "openai/text-embedding-3-small",
+            "baai/bge-m3",
         ),
         # Сильная модель для подбора/консультанта. По умолчанию = дешёвой,
         # чтобы без настройки ничего не ломалось; в .env можно указать мощнее.

@@ -198,7 +198,7 @@ class OpenRouterClient:
             return "https://openrouter.ai/api/v1/embeddings"
         return None
 
-    def embed(self, texts: list[str], *, batch_size: int = 96) -> list[list[float]] | None:
+    def embed(self, texts: list[str], *, batch_size: int = 32) -> list[list[float]] | None:
         """Посчитать векторы для набора текстов.
 
         Возвращает ``None``, когда провайдер недоступен или ответ не разобрать:
@@ -224,23 +224,57 @@ class OpenRouterClient:
             )
             return None
 
+        # Embedding providers accept a list, but their maximum batch size and
+        # rate limits are distinct from chat-completion limits.  In particular
+        # a large passport corpus can otherwise fail part-way through an
+        # indexing run.  Keep a conservative default and retry only the
+        # unfinished batch; accepting a partial vector list would corrupt the
+        # index.
         vectors: list[list[float]] = []
         started_at = monotonic()
         batch_count = 0
         with httpx.Client(timeout=self._timeout(120.0)) as client:
             for start in range(0, len(texts), batch_size):
                 batch = texts[start : start + batch_size]
-                batch_count += 1
-                try:
-                    response = client.post(
-                        endpoint,
-                        headers=headers,
-                        json={"model": model, "input": batch},
+                payload: dict[str, Any] | None = None
+                last_error: Exception | None = None
+                for attempt in range(self.settings.llm_max_retries + 1):
+                    batch_count += 1
+                    try:
+                        response = client.post(
+                            endpoint,
+                            headers=headers,
+                            json={"model": model, "input": batch},
+                        )
+                        response.raise_for_status()
+                        candidate = response.json()
+                        if not isinstance(candidate, dict):
+                            raise ValueError("embedding response is not an object")
+                        payload = candidate
+                        break
+                    except httpx.HTTPStatusError as exc:
+                        last_error = exc
+                        retryable = (
+                            exc.response.status_code == 429
+                            or exc.response.status_code >= 500
+                        )
+                    except (httpx.RequestError, httpx.HTTPError) as exc:
+                        last_error = exc
+                        retryable = True
+                    except (ValueError, TypeError) as exc:
+                        last_error = exc
+                        retryable = False
+                    if retryable and attempt < self.settings.llm_max_retries:
+                        self._wait_before_retry(attempt)
+                        continue
+                    break
+                if payload is None:
+                    logger.warning(
+                        "Эмбеддинги недоступны (%s), batch=%s: %s",
+                        model,
+                        start // batch_size + 1,
+                        last_error,
                     )
-                    response.raise_for_status()
-                    payload = response.json()
-                except Exception as exc:
-                    logger.warning("Эмбеддинги недоступны (%s): %s", model, exc)
                     record_embedding_event(
                         event="embedding_request",
                         provider=self.settings.llm_provider,

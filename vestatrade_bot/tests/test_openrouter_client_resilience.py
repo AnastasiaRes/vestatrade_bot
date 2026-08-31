@@ -88,6 +88,14 @@ def _response(status_code: int = 200) -> httpx.Response:
     )
 
 
+def _embedding_response(status_code: int = 200) -> httpx.Response:
+    return httpx.Response(
+        status_code,
+        request=httpx.Request("POST", _ENDPOINT),
+        json={"data": [{"embedding": [0.25, 0.75]}]},
+    )
+
+
 def _request_error(kind: str) -> httpx.RequestError:
     request = httpx.Request("POST", _ENDPOINT)
     if kind == "connect":
@@ -296,6 +304,19 @@ def test_non_retryable_4xx_does_not_retry_or_open_circuit(monkeypatch) -> None:
     assert rejected.llm_used is False
     assert next_call.llm_used is True
     assert next_call.content == "ok"
+    assert factory.post_count == 2
+
+
+def test_embedding_retries_a_transient_provider_failure(monkeypatch) -> None:
+    factory = _ClientFactory([_embedding_response(429), _embedding_response()])
+    monkeypatch.setattr(client_module.httpx, "Client", factory)
+    settings = _openrouter_client().settings.model_copy(
+        update={"llm_max_retries": 1, "llm_retry_delay_seconds": 0.0}
+    )
+
+    vectors = OpenRouterClient(settings=settings).embed(["passport fragment"])
+
+    assert vectors == [[0.25, 0.75]]
     assert factory.post_count == 2
 
 

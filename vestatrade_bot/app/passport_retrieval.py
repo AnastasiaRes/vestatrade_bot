@@ -494,6 +494,16 @@ def load_or_build(
         model,
         source_digest=source_digest,
     )
+    # A temporary transport failure must not replace a previously usable
+    # model-specific index with a vectorless payload.  The caller can still
+    # perform this turn's safe keyword retrieval, while the next turn retries
+    # the rebuild against the intact cache.
+    if index.chunks and not index.has_vectors:
+        logger.warning(
+            "Индекс паспортов для %s не сохранён: эмбеддинги не построены",
+            model,
+        )
+        return index
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text(

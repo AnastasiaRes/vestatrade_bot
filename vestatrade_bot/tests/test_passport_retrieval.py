@@ -180,6 +180,33 @@ def test_cache_is_reused_and_not_recomputed(tmp_path: Path) -> None:
     assert embedder.calls == calls_after_build
 
 
+def test_failed_embedding_model_migration_does_not_overwrite_cache(
+    tmp_path: Path, monkeypatch
+) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    cache = tmp_path / "index.json"
+    chunks = chunk_pages(_pages(), "pump.pdf")
+    original = PassportIndex(
+        chunks,
+        [[1.0, 0.0, 0.0]] * len(chunks),
+        "model-a",
+        # SHA-256 of the empty test document directory.  It makes this a
+        # genuine embedding-model migration rather than a corpus migration.
+        source_digest="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    )
+    cache.write_text(json.dumps(original.to_payload()), encoding="utf-8")
+    monkeypatch.setattr("app.passport_retrieval.read_chunks", lambda _dirs: chunks)
+
+    def unavailable(_texts: list[str]):
+        return None
+
+    rebuilt = load_or_build(cache, [docs], unavailable, "model-b")
+
+    assert not rebuilt.has_vectors
+    assert json.loads(cache.read_text(encoding="utf-8"))["model"] == "model-a"
+
+
 def test_cache_is_rebuilt_when_pdf_corpus_changes(tmp_path: Path, monkeypatch) -> None:
     docs = tmp_path / "docs"
     docs.mkdir()
