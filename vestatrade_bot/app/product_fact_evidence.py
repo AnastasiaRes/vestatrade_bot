@@ -349,6 +349,21 @@ FACT_SPECS = (
         attribute_keys=(),
         quote_groups=(("насос",),),
     ),
+    FactSpec(
+        predicate="expansion_tank_volume_l",
+        label="объём расширительного бака",
+        unit="л",
+        question_groups=(
+            ("расширительн",),
+            ("бак",),
+            ("объем", "емкост", "сколько", "литр"),
+        ),
+        attribute_keys=(
+            "объём расширительного бака, л",
+            "объем расширительного бака, л",
+        ),
+        quote_groups=(("расширительн",), ("бак",), ("литр", " л")),
+    ),
 )
 
 _SEMANTIC_PREDICATE_ALIASES = {
@@ -367,6 +382,8 @@ _SEMANTIC_PREDICATE_ALIASES = {
     "integrated_circulation_pump": "integrated_circulation_pump",
     "built_in_pump": "integrated_circulation_pump",
     "builtin_pump": "integrated_circulation_pump",
+    "expansion_tank_volume": "expansion_tank_volume_l",
+    "expansion_tank_volume_l": "expansion_tank_volume_l",
 }
 
 _CARD_FACT_LABELS = {
@@ -392,6 +409,10 @@ _QUESTION_RE = re.compile(
 _METRIC_THREAD_RE = re.compile(
     r"(?iu)(?<![\w])(?:m|м)\s*(?P<diameter>\d+(?:[.,]\d+)?)\s*"
     r"(?:x|х|×)\s*(?P<pitch>\d+(?:[.,]\d+)?)(?![\w])"
+)
+_EXPANSION_TANK_VOLUME_RE = re.compile(
+    r"(?iu)расширительн\w*\s+бак\w*[^\d]{0,32}"
+    r"(?P<value>\d+(?:[.,]\d+)?)\s*(?:л(?![\w/])|литр\w*)"
 )
 def _normalise(text: object) -> str:
     return " ".join(str(text or "").casefold().replace("ё", "е").split())
@@ -599,6 +620,15 @@ class ProductFactEvidenceService:
         )
         if passport_thread is not None:
             return passport_thread
+        passport_tank = self._exact_passport_expansion_tank_volume_evidence(
+            products,
+            request,
+            passport,
+            product_name=product_name,
+            document_scope=documents,
+        )
+        if passport_tank is not None:
+            return passport_tank
         if (
             passport.status == PassportEvidenceStatus.ANSWERED
             and passport.quote
@@ -761,6 +791,79 @@ class ProductFactEvidenceService:
             quote=passport.quote,
             verifier_status="accepted",
             reason_code="passport_exact_control_thread_value_match",
+            document_scope=document_scope,
+        )
+
+    @staticmethod
+    def _exact_passport_expansion_tank_volume_evidence(
+        products: list[Product],
+        request: ProductFactRequest,
+        passport: PassportEvidenceResult,
+        *,
+        product_name: str,
+        document_scope: tuple[str, ...],
+    ) -> ProductFactEvidence | None:
+        """Accept one scalar tank volume only from an exact verified document.
+
+        A boiler-family manual may contain several models or several unrelated
+        volumes.  The result is therefore admitted only for one exactly
+        resolved SKU, an attached in-scope document and exactly one value
+        syntactically bound to ``расширительный бак`` in the verifier-approved
+        quote.  Missing wording remains insufficient evidence.
+        """
+
+        if request.predicate != "expansion_tank_volume_l":
+            return None
+        if len(products) != 1 or request.product_ref.canonical_sku != products[0].sku:
+            return None
+        if (
+            passport.status != PassportEvidenceStatus.ANSWERED
+            or passport.verifier_status != "accepted"
+            or not passport.quote
+            or passport.document not in document_scope
+        ):
+            return None
+        bound_documents = tuple(
+            document
+            for document in products[0].documents
+            if document.filename == passport.document
+            and document.binding_scope in {"exact_sku", "filename_match"}
+        )
+        if len(bound_documents) != 1:
+            return None
+        matches = tuple(_EXPANSION_TANK_VOLUME_RE.finditer(passport.quote))
+        if len(matches) != 1:
+            return None
+        raw_value = float(matches[0].group("value").replace(",", "."))
+        if not 0 < raw_value <= 1000:
+            return None
+        value: int | float = int(raw_value) if raw_value.is_integer() else raw_value
+        record_passport_event(
+            event="product_fact_evidence_gate",
+            status="accepted",
+            flow="v2_product_fact",
+            predicate=request.predicate,
+            canonical_sku=request.product_ref.canonical_sku,
+            candidate_skus=list(request.product_ref.candidate_skus),
+            document_scope=list(document_scope),
+            source_document=passport.document,
+            source_section=passport.section,
+            verifier_status=passport.verifier_status,
+            reason="passport_exact_expansion_tank_volume_match",
+            evidence_fragment=passport.quote,
+        )
+        return ProductFactEvidence(
+            status=ProductFactStatus.ANSWERED,
+            request=request,
+            product_name=product_name,
+            value=value,
+            unit="л",
+            source_kind="passport_document_exact",
+            document=passport.document,
+            section=passport.section,
+            quote=passport.quote,
+            verifier_status="accepted",
+            reason_code="passport_exact_expansion_tank_volume_match",
             document_scope=document_scope,
         )
 

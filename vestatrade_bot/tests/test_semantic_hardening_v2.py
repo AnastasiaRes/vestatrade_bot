@@ -293,6 +293,22 @@ def test_boiler_area_anchor_is_customer_requirement_not_power() -> None:
     assert "circuits" not in _facts(frame)
 
 
+def test_spoken_boiler_power_is_canonicalized_only_with_power_unit() -> None:
+    state = _active_state("gas_boiler", "boilers")
+
+    for message in (
+        "Нужен газовый котёл на двадцать четыре киловатта.",
+        "Мощность около двадцати четырёх киловатт.",
+        "Газовый котёл, двадцать четыре кВт.",
+    ):
+        frame, changes = _repair(message, state=state)
+        assert _facts(frame)["power_kw"] == (24, "kW")
+        assert "spoken_boiler_power_anchor_recovered" in changes
+
+    unrelated, _ = _repair("Нужно двадцать четыре трубы.", state=state)
+    assert "power_kw" not in _facts(unrelated)
+
+
 def test_pending_boiler_dhw_answer_recovers_two_circuits() -> None:
     candidate = _candidate()
     candidate["answers_pending_question"] = True
@@ -605,6 +621,22 @@ def test_short_external_sewer_scope_and_spoken_diameter_bind_to_active_goal() ->
     model_frame = TurnUnderstanding.model_validate(repaired)
     assert _facts(model_frame)["diameter_mm"] == (110, "mm")
     assert "spoken_sewer_diameter_anchor_canonicalized" in model_changes
+
+
+def test_spoken_metric_diameter_answers_typed_sewer_question() -> None:
+    state = _active_state("sewer_pipe", "sewer")
+    state["pending_decision_question"] = {
+        "fact_name": "diameter_mm",
+        "goal_id": "goal-1",
+        "task_id": "task-1",
+    }
+
+    frame, changes = _repair("Пятьдесят миллиметров.", state=state)
+
+    assert frame.operation.value == "continue"
+    assert frame.answers_pending_question is True
+    assert _facts(frame)["diameter_mm"] == (50, "mm")
+    assert "pending_spoken_metric_answer_recovered" in changes
 
 
 def test_generic_show_product_type_is_canonicalized_from_shared_registry() -> None:

@@ -447,6 +447,17 @@ CONSTRAINT_FACT_ONTOLOGY: dict[str, tuple[dict[str, Any], ...]] = {
             "aliases": ["мощность", "кВт"],
         },
         {
+            "name": "expansion_tank_volume_l",
+            "meaning": "verified built-in expansion tank volume in litres",
+            "aliases": [
+                "объем расширительного бака",
+                "объём расширительного бака",
+                "емкость расширительного бака",
+                "ёмкость расширительного бака",
+                "расширительный бак на сколько литров",
+            ],
+        },
+        {
             "name": "area_m2",
             "meaning": "heated building area stated by the customer, in square metres",
             "aliases": [

@@ -329,6 +329,8 @@ def build_semantic_turn_delta(
         "radiator_valve_shape_recovered",
         "radiator_valve_kit_target_recovered",
         "boiler_circuits_unknown_recovered",
+        "spoken_boiler_power_anchor_recovered",
+        "pending_spoken_metric_answer_recovered",
     }
     provenance = (
         "deterministic_anchor"

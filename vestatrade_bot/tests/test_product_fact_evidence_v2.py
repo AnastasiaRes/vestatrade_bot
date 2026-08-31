@@ -835,3 +835,43 @@ def test_exact_passport_thread_can_answer_without_a_duplicate_card_attribute() -
     assert evidence.source_kind == "passport_document_exact"
     assert evidence.document == "0962d51dab5c3219f584820a92d556aa.pdf"
     assert evidence.verifier_status == "accepted"
+
+
+def test_exact_boiler_passport_can_answer_expansion_tank_volume() -> None:
+    """A verified exact-model quote may expose the built-in tank volume."""
+
+    boiler = _product(
+        "8216262000",
+        "Котел электрический E.C.A. Arceus ST 6",
+        {},
+        "63109b6ad4cd19.27758769.pdf",
+    )
+    boiler.documents = [
+        boiler.documents[0].model_copy(
+            update={
+                "binding_scope": "exact_sku",
+                "binding_value": boiler.sku,
+            }
+        )
+    ]
+    passport = _StubPassport(
+        quote="Расширительный бак (8 литров)",
+        document="63109b6ad4cd19.27758769.pdf",
+    )
+    service = _service([boiler], passport)
+
+    evidence = service.evaluate(
+        "Какой объём расширительного бака у котла 8216262000?",
+        SessionState(session_id="eca-expansion-tank"),
+    )
+
+    assert evidence is not None
+    assert evidence.status == ProductFactStatus.ANSWERED
+    assert evidence.request.product_ref.canonical_sku == "8216262000"
+    assert evidence.request.predicate == "expansion_tank_volume_l"
+    assert evidence.value == 8
+    assert evidence.unit == "л"
+    assert evidence.source_kind == "passport_document_exact"
+    assert evidence.document == "63109b6ad4cd19.27758769.pdf"
+    assert evidence.verifier_status == "accepted"
+    assert "8 л" in render_product_fact_evidence(evidence)

@@ -163,6 +163,13 @@ def _fact(
         "power_kw": {"kw": 1.0, "квт": 1.0, "w": 0.001, "вт": 0.001},
         "area_m2": {"m2": 1.0, "м2": 1.0, "m²": 1.0, "м²": 1.0},
         "power_w": {"w": 1.0, "вт": 1.0, "kw": 1000.0, "квт": 1000.0},
+        "volume_l": {
+            "l": 1.0,
+            "л": 1.0,
+            "литр": 1.0,
+            "литра": 1.0,
+            "литров": 1.0,
+        },
         "flow": {"l/h": 1.0, "л/ч": 1.0, "l/min": 60.0, "л/мин": 60.0, "m3/h": 1000.0, "м3/ч": 1000.0},
         "percent": {"%": 1.0, "percent": 1.0, "процент": 1.0},
         "pressure_bar": {
@@ -656,6 +663,21 @@ INTEGRATED_CIRCULATION_PUMP = _fact(
     comparison=ComparisonMode.EXACT,
     fields=("насос", "циркуляционный насос"),
     parsers=("integrated_circulation_pump",),
+)
+EXPANSION_TANK_VOLUME = _fact(
+    "expansion_tank_volume_l",
+    aliases=(
+        "expansion_tank_volume",
+        "объем расширительного бака",
+        "объём расширительного бака",
+        "емкость расширительного бака",
+        "ёмкость расширительного бака",
+    ),
+    unit_family="volume_l",
+    strength=FactStrength.SOFT,
+    comparison=ComparisonMode.NUMERIC,
+    candidate_filterable=False,
+    catalog_verifiable=False,
 )
 CHAMBER = _fact(
     "combustion_chamber",
@@ -1191,7 +1213,7 @@ DEFAULT_CONTRACTS: tuple[ProductContract, ...] = (
     _contract(
         "boiler.generic.v1", ProductKind.BOILER, "boilers",
         ("boiler", "котел", "котел отопления"), BASE,
-        (FUEL_TYPE, POWER_KW, BUILDING_AREA, CIRCUITS, INTEGRATED_CIRCULATION_PUMP, CHAMBER, DECLARED_HEATED_AREA),
+        (FUEL_TYPE, POWER_KW, BUILDING_AREA, CIRCUITS, INTEGRATED_CIRCULATION_PUMP, EXPANSION_TANK_VOLUME, CHAMBER, DECLARED_HEATED_AREA),
         candidates=(ProductKind.GAS_BOILER, ProductKind.ELECTRIC_BOILER),
         invariants=("boiler_type", "circuits"),
         required_alternatives=(("power_kw", ("area_m2",)),),
@@ -1201,7 +1223,7 @@ DEFAULT_CONTRACTS: tuple[ProductContract, ...] = (
     _contract(
         "boiler.gas.v1", ProductKind.GAS_BOILER, "boilers",
         ("gas boiler", "газовый котел"), BASE,
-        (SPECIALIZED_FUEL_TYPE, POWER_KW, BUILDING_AREA, CIRCUITS, INTEGRATED_CIRCULATION_PUMP, CHAMBER, DECLARED_HEATED_AREA),
+        (SPECIALIZED_FUEL_TYPE, POWER_KW, BUILDING_AREA, CIRCUITS, INTEGRATED_CIRCULATION_PUMP, EXPANSION_TANK_VOLUME, CHAMBER, DECLARED_HEATED_AREA),
         catalog_types=("котел",), invariants=("boiler_type", "circuits"),
         required_alternatives=(("power_kw", ("area_m2",)),),
         preliminary_identity_fact_groups=(("power_kw", "area_m2"),),
@@ -1210,7 +1232,7 @@ DEFAULT_CONTRACTS: tuple[ProductContract, ...] = (
     _contract(
         "boiler.electric.v1", ProductKind.ELECTRIC_BOILER, "boilers",
         ("electric boiler", "электрический котел", "электрокотел"), BASE,
-        (SPECIALIZED_FUEL_TYPE, POWER_KW, BUILDING_AREA, CIRCUITS, INTEGRATED_CIRCULATION_PUMP, DECLARED_HEATED_AREA), catalog_types=("котел",),
+        (SPECIALIZED_FUEL_TYPE, POWER_KW, BUILDING_AREA, CIRCUITS, INTEGRATED_CIRCULATION_PUMP, EXPANSION_TANK_VOLUME, DECLARED_HEATED_AREA), catalog_types=("котел",),
         invariants=("boiler_type", "circuits"),
         required_alternatives=(("power_kw", ("area_m2",)),),
         preliminary_identity_fact_groups=(("power_kw", "area_m2"),),

@@ -35,6 +35,7 @@ _FACT_LABELS = {
     "dynamic_water_level_m": "динамический уровень воды",
     "duty_point_flow_l_h": "расход в рабочей точке",
     "duty_point_head_m": "напор в рабочей точке",
+    "expansion_tank_volume_l": "объём расширительного бака",
     "filter_method": "тип фильтрации",
     "handle_type": "тип ручки",
     "heat_output_w": "тепловая мощность",

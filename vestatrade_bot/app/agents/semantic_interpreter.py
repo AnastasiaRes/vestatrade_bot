@@ -41,9 +41,10 @@ from .domain_ontology import (
     closed_value_aliases,
     semantic_ontology_payload,
 )
+from .numeric_semantics import extract_spoken_cardinal_mentions
 
 
-SEMANTIC_PROMPT_VERSION = "turn-understanding-v1.21"
+SEMANTIC_PROMPT_VERSION = "turn-understanding-v1.22"
 SEMANTIC_INTERPRETER_PROMPT = """
 Ты — семантический интерпретатор одного нового сообщения покупателя магазина
 инженерной сантехники. Верни только JSON по переданной схеме.
@@ -59,6 +60,10 @@ SEMANTIC_INTERPRETER_PROMPT = """
 - сохраняй отрицания, предпочтения, неизвестные и отложенные параметры;
 - бытовые названия можно канонизировать, но исходный фрагмент всегда сохрани
   в evidence;
+- словесное число рядом с явно названной единицей или в ответе на typed
+  pending-вопрос не теряй: сохрани исходный фрагмент, предполагаемый predicate
+  и единицу. Не вычисляй значение и не назначай ему другую размерность — это
+  проверит детерминированный normalizer после тебя;
 - технические модификаторы внутри названия товара (тип, исполнение, размер,
   мощность, длина, присоединение и другие явно названные характеристики)
   также вынеси в отдельные constraints; не оставляй их только внутри product;
@@ -1178,6 +1183,14 @@ _POWER_RANGE_ANCHOR_RE = re.compile(
     r"(?:[-\u2013\u2014]|до|to)\s*"
     r"(?P<maximum>\d+(?:[.,]\d+)?)\s*"
     r"(?P<unit>к\s*вт|kw)(?![\w])",
+    flags=re.IGNORECASE,
+)
+_SPOKEN_POWER_UNIT_RE = re.compile(
+    r"\s*(?P<unit>к\s*вт|киловатт\w*)(?![\w])",
+    flags=re.IGNORECASE,
+)
+_SPOKEN_MILLIMETRE_UNIT_RE = re.compile(
+    r"\s*(?P<unit>мм|миллиметр\w*)(?![\w])",
     flags=re.IGNORECASE,
 )
 _AREA_ANCHOR_RE = re.compile(
@@ -2919,6 +2932,64 @@ def _recover_bounded_selection_category_and_facts(
                 applies_to_product=target_index,
             )
             changes.append("sewer_length_anchor_recovered")
+
+    pending = (authoritative_state or {}).get("pending_decision_question")
+    pending_name = (
+        _canonical_constraint_fact_name(str(pending.get("fact_name") or ""))
+        if isinstance(pending, dict)
+        else ""
+    )
+    if sewer_target and pending_name == "diameter_mm":
+        spoken_metric_mentions = extract_spoken_cardinal_mentions(
+            current_message,
+            minimum=1,
+            maximum=1000,
+        )
+        metric_candidates: list[tuple[float, int, int]] = []
+        for mention in spoken_metric_mentions:
+            unit_match = _SPOKEN_MILLIMETRE_UNIT_RE.match(
+                current_message[mention.end :]
+            )
+            if unit_match is None:
+                continue
+            metric_candidates.append(
+                (mention.value, mention.start, mention.end + unit_match.end())
+            )
+        if len(metric_candidates) == 1:
+            raw_value, start, end = metric_candidates[0]
+            value = int(raw_value) if raw_value.is_integer() else raw_value
+            evidence = current_message[start:end].strip()
+            matching = [
+                item
+                for item in constraints
+                if _normalize_schema_identifier(item.get("name"))
+                in {"diameter_mm", "diameter"}
+                and item.get("status") == ConstraintStatus.KNOWN.value
+            ]
+            if len(matching) <= 1:
+                constraints[:] = [
+                    item
+                    for item in constraints
+                    if _normalize_schema_identifier(item.get("name"))
+                    not in {"diameter_mm", "diameter"}
+                ]
+                _append_known_constraint(
+                    constraints,
+                    name="diameter_mm",
+                    value=value,
+                    unit="mm",
+                    evidence=evidence,
+                    applies_to_product=target_index,
+                )
+                repaired_turn["answers_pending_question"] = True
+                if current_operation in {
+                    GoalOperation.NEW.value,
+                    GoalOperation.UNKNOWN.value,
+                }:
+                    repaired_turn["operation"] = GoalOperation.CONTINUE.value
+                changes.append("pending_spoken_metric_answer_recovered")
+            else:
+                changes.append("pending_spoken_metric_answer_ambiguous")
 
     def ontology_evidence(aliases: tuple[str, ...]) -> str | None:
         normalized_message = _normalize_evidence(current_message)
@@ -5225,8 +5296,10 @@ def _anchor_polarity(current_message: str, start: int, end: int) -> str:
 def _typed_numeric_anchors(current_message: str) -> list[dict[str, Any]]:
     """Extract only unit/shape anchors with an unambiguous engineering type.
 
-    This intentionally does not calculate or convert values.  Every evidence
-    fragment is an exact slice of the current message.
+    This performs only syntax-bound normalization, including a bounded Russian
+    cardinal grammar.  It never assigns a dimension without an explicit unit
+    or typed product context.  Every evidence fragment is an exact slice of
+    the current message.
     """
 
     anchors: list[dict[str, Any]] = []
@@ -5278,6 +5351,24 @@ def _typed_numeric_anchors(current_message: str) -> list[dict[str, Any]]:
                     match.end(),
                 ),
                 "range_bounds": (minimum, maximum),
+            }
+        )
+    for mention in extract_spoken_cardinal_mentions(current_message):
+        unit_match = _SPOKEN_POWER_UNIT_RE.match(current_message[mention.end :])
+        if unit_match is None:
+            continue
+        end = mention.end + unit_match.end()
+        anchors.append(
+            {
+                "family": "boiler",
+                "name": "power_kw",
+                "value": int(mention.value) if mention.value.is_integer() else mention.value,
+                "unit": "kW",
+                "evidence": current_message[mention.start : end].strip(),
+                "start": mention.start,
+                "end": end,
+                "polarity": _anchor_polarity(current_message, mention.start, end),
+                "recovery_code": "spoken_boiler_power_anchor_recovered",
             }
         )
     for match in _POWER_ANCHOR_RE.finditer(current_message):
@@ -5609,7 +5700,9 @@ def _recover_typed_numeric_constraints(
                 evidence=anchor["evidence"],
             ).model_dump(mode="json")
         )
-        changes.append("constraint_typed_numeric_anchor_recovered")
+        changes.append(
+            str(anchor.get("recovery_code") or "constraint_typed_numeric_anchor_recovered")
+        )
     return recovered
 
 
@@ -7103,11 +7196,24 @@ def repair_grounded_semantic_payload(
         normalized_constraints,
         changes,
     )
+    active_numeric_goal = _active_authoritative_goal(
+        authoritative_dialogue_state
+    )
+    numeric_product_hints = (
+        (
+            {
+                "canonical_type": str(active_numeric_goal.get("canonical_type") or ""),
+                "category": str(active_numeric_goal.get("category") or ""),
+            },
+        )
+        if active_numeric_goal is not None
+        else authoritative_product_hints
+    )
     repaired["constraints"] = _recover_typed_numeric_constraints(
         normalized_constraints,
         normalized_products,
         current_message,
-        authoritative_product_hints,
+        numeric_product_hints,
         changes,
     )
     repaired["constraints"] = _recover_circulation_pump_designation_constraints(

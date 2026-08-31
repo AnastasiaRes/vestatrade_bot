@@ -82,6 +82,114 @@ _RUSSIAN_CARDINAL_PATTERN = "|".join(
     sorted(_RUSSIAN_CARDINALS, key=len, reverse=True)
 )
 
+# Inflected forms are intentionally parsed in the shared deterministic numeric
+# layer.  The semantic model may identify the predicate, but it is not trusted
+# to turn a word such as ``четырёх`` into a number on its own.  This bounded
+# grammar covers ordinary Russian cardinals up to hundreds and keeps exact
+# source spans for the semantic gate.
+_RUSSIAN_CARDINAL_FORMS: dict[str, int] = {
+    **_RUSSIAN_CARDINALS,
+    "одного": 1,
+    "одной": 1,
+    "одну": 1,
+    "двух": 2,
+    "трех": 3,
+    "трёх": 3,
+    "четырех": 4,
+    "четырёх": 4,
+    "пяти": 5,
+    "шести": 6,
+    "семи": 7,
+    "восьми": 8,
+    "девяти": 9,
+    "десяти": 10,
+    "одиннадцати": 11,
+    "двенадцати": 12,
+    "тринадцати": 13,
+    "четырнадцати": 14,
+    "пятнадцати": 15,
+    "шестнадцати": 16,
+    "семнадцати": 17,
+    "восемнадцати": 18,
+    "девятнадцати": 19,
+    "двадцати": 20,
+    "тридцати": 30,
+    "сорока": 40,
+    "пятидесяти": 50,
+    "шестидесяти": 60,
+    "семидесяти": 70,
+    "восьмидесяти": 80,
+    "девяноста": 90,
+    "ста": 100,
+}
+
+
+def extract_spoken_cardinal_mentions(
+    text: str,
+    *,
+    minimum: int = 1,
+    maximum: int = 999,
+) -> tuple[NumericMention, ...]:
+    """Return exact spans of deterministically parseable Russian cardinals.
+
+    The function only parses a conventional cardinal sequence (for example
+    ``двадцать четыре`` or ``двадцати четырёх``).  It does not assign a
+    physical dimension: a caller must still prove an adjacent unit or a typed
+    pending question, so ``двадцать четыре трубы`` cannot become boiler power.
+    """
+
+    normalized = text.casefold().replace("ё", "е")
+    forms = {
+        key.replace("ё", "е"): value
+        for key, value in _RUSSIAN_CARDINAL_FORMS.items()
+    }
+    tokens = list(re.finditer(r"[а-я]+", normalized))
+    mentions: list[NumericMention] = []
+    index = 0
+    while index < len(tokens):
+        first = tokens[index]
+        first_value = forms.get(first.group(0))
+        if first_value is None:
+            index += 1
+            continue
+
+        values = [first_value]
+        end_index = index
+        # Only adjacent words may form one number.  Punctuation starts a new
+        # mention, preventing independent quantities from being summed.
+        for candidate_index in range(index + 1, min(index + 3, len(tokens))):
+            previous = tokens[candidate_index - 1]
+            candidate = tokens[candidate_index]
+            if normalized[previous.end() : candidate.start()].strip(" \t\r\n-"):
+                break
+            value = forms.get(candidate.group(0))
+            if value is None:
+                break
+            proposed = [*values, value]
+            valid = bool(
+                (len(proposed) == 2 and values[0] >= 20 and values[0] % 10 == 0 and 1 <= value <= 9)
+                or (len(proposed) == 2 and values[0] >= 100 and values[0] % 100 == 0 and 10 <= value <= 90)
+                or (len(proposed) == 3 and values[0] >= 100 and values[0] % 100 == 0 and values[1] >= 20 and values[1] % 10 == 0 and 1 <= value <= 9)
+            )
+            if not valid:
+                break
+            values.append(value)
+            end_index = candidate_index
+
+        total = sum(values)
+        if minimum <= total <= maximum:
+            mentions.append(
+                NumericMention(
+                    float(total),
+                    first.start(),
+                    tokens[end_index].end(),
+                )
+            )
+            index = end_index + 1
+        else:
+            index += 1
+    return tuple(mentions)
+
 
 def extract_spoken_area_m2(text: str) -> float | None:
     """Read an area stated with Russian number words.
