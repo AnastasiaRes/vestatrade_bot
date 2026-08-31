@@ -16,6 +16,7 @@ class FrozenModel(BaseModel):
 
 
 class OfferFactKind(str, Enum):
+    CARD = "card"
     PRICE = "price"
     STOCK = "stock"
     LINK = "link"
@@ -29,13 +30,16 @@ class OfferFactStatus(str, Enum):
 
 class OfferFactScopeOrigin(str, Enum):
     V2_DELIVERED = "v2_delivered"
+    V2_CONTEXTUAL_FOCUS = "v2_contextual_focus"
     EXPLICIT_SKU = "explicit_sku"
+    EXPLICIT_NAMED_PRODUCT = "explicit_named_product"
     NONE = "none"
 
 
 class OfferFactReferenceKind(str, Enum):
     EXACT_SKU = "exact_sku"
     PARTIAL_SKU = "partial_sku"
+    NAMED_PRODUCT = "named_product"
     ORDINAL = "ordinal"
     CURRENT_FOCUS = "current_focus"
     SINGLE_PRESENTED = "single_presented"
@@ -69,6 +73,13 @@ class OfferFactRequest(FrozenModel):
     source_revision: str | None = None
     scope_origin: OfferFactScopeOrigin
     product_ref: OfferFactProductReference
+    requested_quantity: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def quantity_is_only_for_stock(self) -> "OfferFactRequest":
+        if self.requested_quantity is not None and self.fact_kind != OfferFactKind.STOCK:
+            raise ValueError("requested offer quantity requires stock fact")
+        return self
 
 
 class OfferFactResult(FrozenModel):
@@ -87,6 +98,8 @@ class OfferFactResult(FrozenModel):
     currency: str | None = None
     source: OfferFactSourceReference | None = None
     clarification: str | None = None
+    requested_quantity: int | None = Field(default=None, ge=1)
+    available_quantity: int | None = Field(default=None, ge=0)
     outcome_gate_passed: bool = False
     reason_codes: tuple[str, ...] = ()
 
@@ -97,6 +110,13 @@ class OfferFactResult(FrozenModel):
                 raise ValueError("answered offer fact requires source-backed value")
         if self.status == OfferFactStatus.NEED_CLARIFICATION and not self.clarification:
             raise ValueError("offer clarification requires text")
+        if (
+            self.requested_quantity is not None
+            or self.available_quantity is not None
+        ) and self.fact_kind != OfferFactKind.STOCK:
+            raise ValueError("offer quantity details require stock fact")
+        if self.requested_quantity is not None and self.available_quantity is None:
+            raise ValueError("quantified stock result requires confirmed available quantity")
         if self.outcome_gate_passed and self.status == OfferFactStatus.REJECTED:
             raise ValueError("rejected offer fact cannot pass outcome gate")
         return self

@@ -1,4 +1,4 @@
-"""Read-only, source-bound answers for price, stock and link questions."""
+"""Read-only, source-bound answers for a named card, price, stock and link."""
 
 from __future__ import annotations
 
@@ -6,6 +6,10 @@ import hashlib
 import re
 
 from app.answer_v2.contracts import AnswerSourceSnapshot
+from app.catalog_v2.product_reference import (
+    NamedProductResolutionStatus,
+    resolve_strict_named_catalog_product,
+)
 from app.dialogue_v2.contracts import NextActionKind, TaskAct
 from app.dialogue_v2.controller import DialogueV2Outcome
 from app.models import SessionState
@@ -31,7 +35,16 @@ from .contracts import (
 _PRICE_RE = re.compile(r"(?iu)(?:сколько\s+стоит|какая\s+цена|цена|стоимост)")
 _STOCK_RE = re.compile(r"(?iu)(?:есть\s+ли\s+(?:он\s+)?в\s+наличии|в\s+наличии|остаток)")
 _LINK_RE = re.compile(r"(?iu)(?:ссылк\w*|где\s+открыть\s+товар)")
+_CARD_RE = re.compile(r"(?iu)(?:покаж\w*\s+(?:карточк\w*|товар)|карточк\w*\s+товар)")
 _QUANTITY_RE = re.compile(r"(?iu)(?:\b\d+(?:[.,]\d+)?\s*(?:шт\.?|штук|метр\w*)\b|\bпосчита\w*)")
+_STOCK_QUANTITY_RE = re.compile(
+    r"(?iu)(?:"
+    r"\b(?:есть|имеется|остал(?:ся|ось|ись)|будет)\b[^.!?]{0,32}?"
+    r"\b(?P<before>\d+)\s*(?:шт\.?|штук)\b|"
+    r"\b(?P<after>\d+)\s*(?:шт\.?|штук)\b[^.!?]{0,32}?"
+    r"\b(?:есть|имеется|в\s+наличии)\b"
+    r")"
+)
 
 
 def _task_for_offer(outcome: DialogueV2Outcome) -> tuple[str | None, str | None]:
@@ -49,17 +62,29 @@ def _task_for_offer(outcome: DialogueV2Outcome) -> tuple[str | None, str | None]
     return None, outcome.state_after.active_goal_id
 
 
-def _kind(text: str) -> OfferFactKind | None:
-    # Quantified requests are owned by Calculation even if they happen to use
-    # the word "стоит".  This service only reads one existing offer fact.
+def _requested_stock_quantity(text: str) -> int | None:
+    match = _STOCK_QUANTITY_RE.search(text)
+    if match is None:
+        return None
+    raw = match.group("before") or match.group("after")
+    return int(raw) if raw else None
+
+
+def _kind(text: str) -> tuple[OfferFactKind, int | None] | None:
+    requested_stock_quantity = _requested_stock_quantity(text)
+    if requested_stock_quantity is not None:
+        return OfferFactKind.STOCK, requested_stock_quantity
+    # Quantified price / amount requests remain owned by Calculation.  A stock
+    # question with a requested number was recognized above and never enters
+    # arithmetic or readiness.
     if _QUANTITY_RE.search(text):
         return None
     if _PRICE_RE.search(text):
-        return OfferFactKind.PRICE
+        return OfferFactKind.PRICE, None
     if _STOCK_RE.search(text):
-        return OfferFactKind.STOCK
+        return OfferFactKind.STOCK, None
     if _LINK_RE.search(text):
-        return OfferFactKind.LINK
+        return OfferFactKind.LINK, None
     return None
 
 
@@ -110,6 +135,58 @@ def _reference(
                 reason_code="multiple_explicit_offer_references",
             ),
             OfferFactScopeOrigin.NONE,
+            (),
+            None,
+            None,
+        )
+    named = resolve_strict_named_catalog_product(text, snapshot.products)
+    if named.status == NamedProductResolutionStatus.EXACT:
+        sku = named.canonical_sku
+        assert sku is not None
+        return (
+            OfferFactProductReference(
+                kind=OfferFactReferenceKind.NAMED_PRODUCT,
+                raw=named.raw,
+                canonical_sku=sku,
+                candidate_skus=(sku,),
+                reason_code=named.reason_code,
+            ),
+            OfferFactScopeOrigin.EXPLICIT_NAMED_PRODUCT,
+            (),
+            None,
+            None,
+        )
+    if named.status == NamedProductResolutionStatus.AMBIGUOUS:
+        return (
+            OfferFactProductReference(
+                kind=OfferFactReferenceKind.UNRESOLVED,
+                raw=named.raw,
+                candidate_skus=named.candidate_skus,
+                reason_code=named.reason_code,
+            ),
+            OfferFactScopeOrigin.NONE,
+            (),
+            None,
+            None,
+        )
+    # A contextual card may set a focus without creating a Selection scope.
+    # Never let that focus preempt an ordinal from a valid multi-card scope:
+    # «второй» must remain the second card, not the previous focus.
+    if (
+        not scope.is_valid
+        and session.product_focus is not None
+        and snapshot.product(session.product_focus.sku)
+    ):
+        sku = session.product_focus.sku
+        return (
+            OfferFactProductReference(
+                kind=OfferFactReferenceKind.CURRENT_FOCUS,
+                raw=sku,
+                canonical_sku=sku,
+                candidate_skus=(sku,),
+                reason_code="v2_contextual_product_focus",
+            ),
+            OfferFactScopeOrigin.V2_CONTEXTUAL_FOCUS,
             (),
             None,
             None,
@@ -202,14 +279,26 @@ def build_offer_fact_request(
     *,
     original_utterance: str,
 ) -> OfferFactRequest | None:
-    kind = _kind(original_utterance)
-    if kind is None:
-        return None
     reference, origin, ordered, selection_id, revision = _reference(
         original_utterance,
         snapshot,
         session,
     )
+    parsed_kind = _kind(original_utterance)
+    if parsed_kind is not None:
+        kind, requested_quantity = parsed_kind
+    elif (
+        _CARD_RE.search(original_utterance) is not None
+        and reference.kind
+        in {
+            OfferFactReferenceKind.EXACT_SKU,
+            OfferFactReferenceKind.PARTIAL_SKU,
+            OfferFactReferenceKind.NAMED_PRODUCT,
+        }
+    ):
+        kind, requested_quantity = OfferFactKind.CARD, None
+    else:
+        return None
     task_id, goal_id = _task_for_offer(outcome)
     return OfferFactRequest(
         task_id=task_id,
@@ -221,6 +310,7 @@ def build_offer_fact_request(
         source_revision=revision,
         scope_origin=origin,
         product_ref=reference,
+        requested_quantity=requested_quantity,
     )
 
 
@@ -268,10 +358,33 @@ def build_offer_fact_result(
             product_ref=reference,
             reason_codes=("offer_product_missing_from_source_snapshot",),
         )
-    if request.fact_kind == OfferFactKind.PRICE:
+    requested_quantity = request.requested_quantity
+    available_quantity = None
+    if request.fact_kind == OfferFactKind.CARD:
+        value, field, currency = product.sku, "product_card", None
+    elif request.fact_kind == OfferFactKind.PRICE:
         value, field, currency = product.price, "price", product.currency
     elif request.fact_kind == OfferFactKind.STOCK:
         value, field, currency = product.stock_status, "stock_status", None
+        if requested_quantity is not None:
+            if product.stock_qty is None:
+                return OfferFactResult(
+                    status=OfferFactStatus.NEED_CLARIFICATION,
+                    task_id=request.task_id,
+                    goal_id=request.goal_id,
+                    fact_kind=request.fact_kind,
+                    selection_id=request.selection_id,
+                    source_revision=snapshot.source_revision,
+                    scope_origin=request.scope_origin,
+                    product_ref=reference,
+                    clarification=(
+                        "Точный остаток по этому товару в текущем каталоге не указан."
+                    ),
+                    outcome_gate_passed=True,
+                    reason_codes=("offer_stock_quantity_not_confirmed",),
+                )
+            available_quantity = product.stock_qty
+            field = "stock_qty"
     else:
         value, field, currency = product.url, "url", None
     if value is None or (request.fact_kind == OfferFactKind.PRICE and not currency):
@@ -295,7 +408,9 @@ def build_offer_fact_result(
         sku=product.sku,
         field_name=field,
         source_revision=snapshot.source_revision,
-        raw_value=str(value),
+        raw_value=str(
+            available_quantity if field == "stock_qty" else value
+        ),
     )
     return OfferFactResult(
         status=OfferFactStatus.ANSWERED,
@@ -311,6 +426,8 @@ def build_offer_fact_result(
         value=value,
         currency=currency,
         source=source,
+        requested_quantity=requested_quantity,
+        available_quantity=available_quantity,
         outcome_gate_passed=True,
         reason_codes=("offer_fact_from_current_source_snapshot",),
     )
@@ -322,6 +439,8 @@ def render_offer_fact_result(result: OfferFactResult) -> str:
     if result.status != OfferFactStatus.ANSWERED:
         return "Не могу подтвердить цену, наличие или ссылку по этому товару из текущего каталога."
     assert result.product_name is not None
+    if result.fact_kind == OfferFactKind.CARD:
+        return f"Показываю карточку товара «{result.product_name}»."
     if result.fact_kind == OfferFactKind.PRICE:
         assert result.currency is not None
         value = float(result.value) if isinstance(result.value, (int, float)) else result.value
@@ -329,5 +448,18 @@ def render_offer_fact_result(result: OfferFactResult) -> str:
         currency = "₽" if result.currency.upper() in {"RUB", "RUR"} else result.currency
         return f"{result.product_name}: {price} {currency}."
     if result.fact_kind == OfferFactKind.STOCK:
+        if result.requested_quantity is not None:
+            assert result.available_quantity is not None
+            if result.available_quantity >= result.requested_quantity:
+                return (
+                    f"Да, «{result.product_name}» есть в наличии: "
+                    f"{result.available_quantity} шт. Запрошенные "
+                    f"{result.requested_quantity} шт. доступны."
+                )
+            return (
+                f"Нет, «{result.product_name}»: доступно "
+                f"{result.available_quantity} шт., а вы запросили "
+                f"{result.requested_quantity} шт."
+            )
         return f"{result.product_name}: {result.value}."
     return f"Ссылка на {result.product_name}: {result.value}"

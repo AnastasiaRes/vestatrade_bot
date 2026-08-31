@@ -19,6 +19,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.agents.passport_answer import PassportAnswerAgent
 from app.agents.domain_ontology import fact_aliases
 from app.catalog_v2.contracts import CatalogProductSnapshot
+from app.catalog_v2.product_reference import (
+    NamedProductResolutionStatus,
+    resolve_strict_named_catalog_product,
+)
 from app.component_evidence import builtin_part_evidence
 from app.config import PROJECT_ROOT, Settings
 from app.diagnostic_telemetry import record_passport_event
@@ -379,12 +383,6 @@ _QUESTION_RE = re.compile(
     r"\?|^\s*(?:как|какой|какая|какое|какие|можно|нужно|почему|чем|что|сколько|где)\b",
     re.IGNORECASE,
 )
-_MODEL_MARKER_RE = re.compile(
-    r"(?<![\w])(?:[a-zа-я]{1,12}\s*[-/]?\s*\d{1,4})(?![\w])",
-    re.IGNORECASE,
-)
-
-
 def _normalise(text: object) -> str:
     return " ".join(str(text or "").casefold().replace("ё", "е").split())
 
@@ -922,32 +920,15 @@ class ProductFactEvidenceService:
         service without inventing a new fuzzy search path.
         """
 
-        normalized = _normalise(question)
-        model_markers = tuple(
-            _normalise(match.group(0)).replace(" ", "")
-            for match in _MODEL_MARKER_RE.finditer(question)
-        )
-        if not model_markers:
+        resolved = resolve_strict_named_catalog_product(question, self.products)
+        if resolved.status != NamedProductResolutionStatus.EXACT:
             return None
-
-        candidates: list[Product] = []
-        for product in self.products:
-            brand = _normalise(product.brand or "")
-            if not brand or brand not in normalized:
-                continue
-            product_name = _normalise(product.name).replace(" ", "")
-            if any(marker and marker in product_name for marker in model_markers):
-                candidates.append(product)
-        unique = tuple({item.sku: item for item in candidates}.values())
-        if len(unique) != 1:
-            return None
-        product = unique[0]
         return ProductReference(
             kind=ProductReferenceKind.NAMED_PRODUCT,
-            raw=question[:240],
-            canonical_sku=product.sku,
-            candidate_skus=(product.sku,),
-            reason_code="strict_brand_model_catalogue_match",
+            raw=resolved.raw,
+            canonical_sku=resolved.canonical_sku,
+            candidate_skus=resolved.candidate_skus,
+            reason_code=resolved.reason_code,
         )
 
     @staticmethod

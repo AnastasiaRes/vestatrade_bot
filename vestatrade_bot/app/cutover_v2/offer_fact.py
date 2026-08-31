@@ -101,6 +101,7 @@ def build_v2_offer_fact_candidate(
     # associated ``TaskAct`` below.
     primary_action = NextActionKind.ANSWER_DIRECT_QUESTION
     task_act = {
+        OfferFactKind.CARD: TaskAct.SELECT,
         OfferFactKind.PRICE: TaskAct.CHECK_PRICE,
         OfferFactKind.STOCK: TaskAct.CHECK_STOCK,
         OfferFactKind.LINK: TaskAct.GET_LINK,

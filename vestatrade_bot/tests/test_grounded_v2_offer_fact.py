@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 from app.answer_v2.contracts import AnswerSourceSnapshot, CatalogAnswerProduct
-from app.catalog_v2.contracts import CatalogProductRole, ProductKind
+from app.catalog_v2.contracts import (
+    CatalogFact,
+    CatalogProductRole,
+    FactProvenance,
+    ProductKind,
+)
 from app.cutover_v2.contracts import V2TurnCandidate
 from app.cutover_v2.offer_fact import build_v2_offer_fact_candidate
 from app.dialogue_v2.contracts import (
@@ -15,9 +20,17 @@ from app.dialogue_v2.contracts import (
     TaskAct,
 )
 from app.dialogue_v2.controller import DialogueV2Outcome
-from app.models import ProductCard, SessionState
-from app.offer_fact_v2.contracts import OfferFactStatus
-from app.offer_fact_v2.service import build_offer_fact_request, build_offer_fact_result
+from app.models import ProductCard, ProductFocusState, SessionState
+from app.offer_fact_v2.contracts import (
+    OfferFactKind,
+    OfferFactReferenceKind,
+    OfferFactStatus,
+)
+from app.offer_fact_v2.service import (
+    build_offer_fact_request,
+    build_offer_fact_result,
+    render_offer_fact_result,
+)
 
 
 def _product(sku: str, price: float, stock: str = "в наличии") -> CatalogAnswerProduct:
@@ -41,6 +54,37 @@ def _snapshot() -> AnswerSourceSnapshot:
         products=(
             _product("53843", 4_500),
             _product("68/2/8", 5_000, stock="нет в наличии"),
+        ),
+    )
+
+
+def _boiler_snapshot() -> AnswerSourceSnapshot:
+    return AnswerSourceSnapshot(
+        source_revision="source-boiler-v1",
+        products=(
+            CatalogAnswerProduct(
+                sku="2202210",
+                name="Котел электрический Arderia E9, 9 кВт",
+                product_kind=ProductKind.ELECTRIC_BOILER,
+                role=CatalogProductRole.BASE_PRODUCT,
+                price=35_365,
+                currency="RUB",
+                stock_status="в наличии",
+                stock_qty=2,
+                url="https://example.test/2202210",
+                facts=(
+                    CatalogFact(
+                        name="brand",
+                        value="Arderia",
+                        provenance=FactProvenance(
+                            source="identity",
+                            source_field="brand",
+                            raw_value="Arderia",
+                            parser="test",
+                        ),
+                    ),
+                ),
+            ),
         ),
     )
 
@@ -202,3 +246,88 @@ def test_offer_candidate_preserves_selection_identity_and_cards_scope() -> None:
     assert candidate.state_after.answer_plan_summary is not None
     assert candidate.state_after.answer_plan_summary.selection_id == "selection-pumps"
     assert [item.sku for item in candidate.response.products] == ["68/2/8"]
+
+
+def test_named_single_product_card_uses_catalogue_identity_without_readiness() -> None:
+    snapshot = _boiler_snapshot()
+    request = build_offer_fact_request(
+        _outcome(),
+        SessionState(session_id="named-boiler"),
+        snapshot,
+        original_utterance="Котёл электрический Arderia E9. Покажите карточку.",
+    )
+
+    assert request is not None
+    assert request.fact_kind == OfferFactKind.CARD
+    assert request.product_ref.kind == OfferFactReferenceKind.NAMED_PRODUCT
+    assert request.product_ref.canonical_sku == "2202210"
+    result = build_offer_fact_result(request, snapshot)
+    assert result.status == OfferFactStatus.ANSWERED
+    assert result.sku == "2202210"
+    assert result.source is not None
+    assert result.source.field_name == "product_card"
+
+    candidate = build_v2_offer_fact_candidate(
+        _outcome(),
+        V2TurnCandidate(
+            turn_id="named-boiler-card",
+            state_before=_outcome().state_before,
+            state_after=_outcome().state_after,
+            validation_status="not_run",
+        ),
+        result,
+        snapshot,
+        session_id="named-boiler",
+        turn_id="named-boiler-card",
+    )
+    assert candidate is not None
+    assert candidate.focus_product_sku == "2202210"
+    assert [item.sku for item in candidate.response.products] == ["2202210"]
+
+
+def test_quantified_stock_checks_resolved_product_without_calculation() -> None:
+    snapshot = _boiler_snapshot()
+    for message, expected in (
+        ("Котёл электрический Arderia E9: есть 2 шт?", True),
+        ("Котёл электрический Arderia E9: есть 3 шт?", False),
+    ):
+        request = build_offer_fact_request(
+            _outcome(),
+            SessionState(session_id="named-boiler-stock"),
+            snapshot,
+            original_utterance=message,
+        )
+        assert request is not None
+        assert request.fact_kind == OfferFactKind.STOCK
+        assert request.requested_quantity in {2, 3}
+        assert request.product_ref.canonical_sku == "2202210"
+        result = build_offer_fact_result(request, snapshot)
+        assert result.status == OfferFactStatus.ANSWERED
+        assert result.available_quantity == 2
+        rendered = render_offer_fact_result(result)
+        assert ("Да," in rendered) is expected
+        assert ("Нет," in rendered) is not expected
+
+
+def test_quantified_stock_can_follow_a_v2_contextual_product_focus() -> None:
+    snapshot = _boiler_snapshot()
+    session = SessionState(
+        session_id="named-boiler-focus",
+        product_focus=ProductFocusState(
+            sku="2202210",
+            category="Котлы",
+            origin="v2_contextual_product",
+        ),
+    )
+    request = build_offer_fact_request(
+        _outcome(),
+        session,
+        snapshot,
+        original_utterance="А есть 2 шт?",
+    )
+
+    assert request is not None
+    assert request.fact_kind == OfferFactKind.STOCK
+    assert request.product_ref.kind == OfferFactReferenceKind.CURRENT_FOCUS
+    assert request.product_ref.canonical_sku == "2202210"
+    assert build_offer_fact_result(request, snapshot).available_quantity == 2

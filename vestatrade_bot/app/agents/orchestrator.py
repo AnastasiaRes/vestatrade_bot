@@ -1427,8 +1427,6 @@ class ChatOrchestrator:
         # lacking the source-bound price/stock/link requested by the buyer.
         # A resolved OfferFactResult is the more specific evidence-backed
         # implementation of that action and must take precedence.
-        if outcome.status != "applied":
-            return base_candidate
         request = build_offer_fact_request(
             outcome,
             before_turn,
@@ -1436,6 +1434,24 @@ class ChatOrchestrator:
             original_utterance=message,
         )
         if request is None:
+            return base_candidate
+        # A short follow-up such as «А есть 3 шт?» is completely
+        # deterministic once V2 itself has delivered a single contextual
+        # product.  The semantic LLM can still reject that fragment because
+        # it carries no category or model marker.  Do not lose a checked
+        # stock answer for that reason, but keep this exception deliberately
+        # narrow: it requires an exact V2 focus, a quantity-stock question
+        # and no catalogue search or readiness decision.
+        recovered_contextual_stock = bool(
+            outcome.status != "applied"
+            and request.fact_kind.value == "stock"
+            and request.requested_quantity is not None
+            and request.scope_origin.value == "v2_contextual_focus"
+            and request.product_ref.kind.value == "current_focus"
+            and before_turn.product_focus is not None
+            and before_turn.product_focus.origin == "v2_contextual_product"
+        )
+        if outcome.status != "applied" and not recovered_contextual_stock:
             return base_candidate
         result = build_offer_fact_result(request, snapshot)
         native_candidate_is_complete = (

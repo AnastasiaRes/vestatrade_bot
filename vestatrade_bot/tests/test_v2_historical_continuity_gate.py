@@ -111,6 +111,20 @@ def _semantic(
     )
 
 
+def _rejected_semantic() -> SemanticInterpretationResult:
+    """Model a structurally rejected short follow-up from the semantic LLM."""
+
+    return SemanticInterpretationResult(
+        status="rejected",
+        requested=True,
+        transport_succeeded=True,
+        output_accepted=False,
+        model="test/semantic",
+        latency_ms=0,
+        rejection_reason="test_short_contextual_stock_fragment",
+    )
+
+
 def _preview_settings(tmp_path):
     return get_settings().model_copy(
         update={
@@ -393,6 +407,96 @@ def test_catalog_bound_numeric_and_slash_sku_keep_v2_ownership_and_report_stock(
     assert traces[0]["cutover_v2"]["offer_fact_delivery"]["value"] == "нет в наличии"
     assert traces[1]["cutover_v2"]["offer_fact_delivery"]["sku"] == "68/2/8"
     assert traces[1]["cutover_v2"]["offer_fact_delivery"]["value"] == 6_828
+
+
+def test_named_single_product_card_then_quantity_stock_stays_v2_owned(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """A uniquely named model bypasses selection readiness and keeps focus.
+
+    The buyer did not ask V2 to recommend a boiler.  They named one catalogue
+    model and then asked whether two units are available.  Both turns must be
+    answered from the checked source snapshot, with no fallback to a new
+    selection or engineering questionnaire.
+    """
+
+    boiler = _product(
+        "2202210",
+        "Котёл электрический Arderia E9, 9 кВт",
+        "Котельное оборудование",
+        price=35_365,
+        stock_qty=2,
+        attributes={
+            "Тип товара": "Котёл",
+            "Тип котла": "Электрический",
+            "Мощность, кВт": "9",
+            "Количество контуров": "Одноконтурный",
+        },
+    ).model_copy(update={"brand": "Arderia"})
+    settings = _preview_settings(tmp_path)
+    bot = ChatOrchestrator(settings=settings, products=[boiler])
+
+    named_card = _frame(
+        operation="new",
+        acts=["find"],
+        products=[
+            {
+                "text": "электрический котёл Arderia E9",
+                "canonical_type": "electric_boiler",
+                "category": "boilers",
+                "role": "target",
+                "evidence": "Arderia E9",
+            }
+        ],
+    )
+    frames = iter((named_card,))
+
+    def interpret(_message: str, _before):
+        try:
+            return _semantic(next(frames))
+        except StopIteration:
+            # The recovery seam is specifically for a short request whose
+            # semantic candidate was rejected despite V2's confirmed focus.
+            return _rejected_semantic()
+
+    monkeypatch.setattr(bot.semantic_interpreter, "interpret", interpret)
+
+    session_id = "v2-named-product-stock"
+    card = bot.handle_chat(
+        session_id,
+        "Котёл электрический Arderia E9. Покажите карточку.",
+        client_turn_id="v2-named-product-stock-1",
+        qa_mode=DialogueQAMode.V2_PREVIEW,
+    )
+    stock = bot.handle_chat(
+        session_id,
+        "А есть 2 шт?",
+        client_turn_id="v2-named-product-stock-2",
+        qa_mode=DialogueQAMode.V2_PREVIEW,
+    )
+
+    assert [item.sku for item in card.products] == ["2202210"]
+    assert "показываю карточку" in card.answer.lower()
+    assert [item.sku for item in stock.products] == ["2202210"]
+    assert "да," in stock.answer.lower()
+    assert "2 шт" in stock.answer
+
+    stored = bot.sessions.snapshot(session_id)
+    assert stored.product_focus is not None
+    assert stored.product_focus.sku == "2202210"
+    traces = [
+        json.loads(line)
+        for line in settings.diagnostic_trace_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert [
+        trace["cutover_v2"]["decision"]["owner_candidate"] for trace in traces
+    ] == ["v2", "v2"]
+    delivery = traces[-1]["cutover_v2"]["offer_fact_delivery"]
+    assert delivery["sku"] == "2202210"
+    assert delivery["requested_quantity"] == 2
+    assert delivery["available_quantity"] == 2
 
 
 def test_returned_goal_receives_its_pending_answer_without_valve_fact_leakage(
